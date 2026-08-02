@@ -29,6 +29,11 @@ pub trait VideoSink {
     /// drawn over the video area.
     fn set_video_obstructed(&mut self, _obstructed: bool, _commit_parent: bool) {}
 
+    /// GUI hint, updated every repaint tick (BeforeRendering): whether the frame the GUI is
+    /// about to commit is the video-player scene. Subsurface sinks gate stacking-above on
+    /// this, since parking the GUI is only safe on a player-scene buffer.
+    fn set_gui_scene_is_player(&mut self, _player: bool) {}
+
     /// Whether the sink currently presents independently of the GUI render loop (e.g. its
     /// subsurface is stacked above the GUI, whose redraw cycle may therefore be parked). When
     /// true, new frames are delivered via [`render_standalone`](Self::render_standalone) from the

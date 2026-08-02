@@ -66,9 +66,8 @@ struct Tracking {
     // The compositor's main DRM device (a dev_t) from the v4 feedback; used to pick the matching
     // Vulkan physical device so exported dmabufs are importable on multi-GPU systems.
     main_device: Option<u64>,
-    // wl_buffers the compositor has released since the last render tick. Needed because a
-    // scanned-out buffer stays in use for a whole refresh cycle — rendering into it before its
-    // release tears (black clear bands sweeping the screen at display-rate video).
+    // wl_buffers the compositor has released since the last render tick. A scanned-out buffer
+    // stays in use for a whole refresh cycle, and rendering into it before its release tears.
     released_buffers: Vec<ObjectId>,
     // wp_image_description_v1 readiness handshake.
     desc_ready: bool,
@@ -394,10 +393,9 @@ struct Decision {
 
 pub struct WaylandSubsurfaceSink {
     wl: Option<Wayland>,
-    /// The sink's own Vulkan libplacebo context. When present, all dmabuf targets are created and
-    /// rendered on it instead of the shared (Slint EGL) GL context passed into `render` — the GL
-    /// context then only serves the in-surface swapchain fallback. `None` means Vulkan was
-    /// unavailable and the GL path is used exactly as before.
+    /// The sink's own Vulkan libplacebo context. When present, all dmabuf targets are created
+    /// and rendered on it, and the shared (Slint EGL) GL context only serves the in-surface
+    /// swapchain fallback. `None` means Vulkan was unavailable and the GL path is used.
     ///
     /// Field order matters: `vk` must drop before `pl_log` (libplacebo objects borrow the log).
     vk: Option<PlaceboContext>,
@@ -410,9 +408,8 @@ pub struct WaylandSubsurfaceSink {
     /// one is committed/pending, and one is free to render into.
     targets: [Option<Target>; 3],
     /// Per-slot "the compositor still holds this buffer" flag: set on commit, cleared when the
-    /// matching `wl_buffer.release` arrives. Rendering into a held buffer tears — under direct
-    /// scanout a buffer stays in use for a full refresh cycle, so at 60 fps video on a 60 Hz
-    /// display a plain double-buffer rotation reuses buffers that are still on screen.
+    /// matching `wl_buffer.release` arrives. Rendering into a held buffer tears, since under
+    /// direct scanout a buffer stays in use for a full refresh cycle.
     busy: [bool; 3],
     current: usize,
     /// Last color signature applied to the surface (None = nothing applied yet).
@@ -429,19 +426,26 @@ pub struct WaylandSubsurfaceSink {
     /// preferred image description changes). HDR is only forwarded when this is true; otherwise
     /// libplacebo tone-maps to SDR.
     output_is_hdr: bool,
-    /// Set when no dma-buf the compositor can import is available (e.g. a cross-GPU PRIME setup
-    /// where our render GPU differs from the compositor's). We then render into Slint's own
-    /// surface via the libplacebo swapchain — not zero-copy, but it works everywhere.
+    /// Set when no dma-buf the compositor can import is available (e.g. a cross-GPU PRIME
+    /// setup). We then render into Slint's own surface via the libplacebo swapchain, not
+    /// zero-copy but works everywhere.
     use_swapchain_fallback: bool,
     swapchain_size: (u32, u32),
-    /// GUI hint: something (controls, subtitles, toast, …) is drawn over the video area.
-    /// Conservative default `true` — the video stays below the GUI until told otherwise.
+    /// GUI hint: something (controls, subtitles, toast) is drawn over the video area.
+    /// Conservative default `true`, the video stays below the GUI until told otherwise.
     obstructed: bool,
     /// Current *requested* subsurface stacking: `true` = above the GUI (scanout-friendly,
     /// self-clocked), `false` = below (GUI composites over the video).
     stacked_above: bool,
     /// Size of the last opaque region applied to the video surface; `(0, 0)` = none yet.
     opaque_size: (u32, u32),
+    /// Whether the frame the GUI is about to commit is the player scene, updated every
+    /// repaint tick via [`VideoSink::set_gui_scene_is_player`]. Stacking the video above
+    /// parks the GUI on its last-committed buffer, which the reveal path re-presents (see
+    /// [`sync_stacking`](Self::sync_stacking)), so "above" waits on this flag to keep the
+    /// parked buffer from being the idle screen. A render alone is not a readiness signal,
+    /// Slint can still be showing the previous scene.
+    gui_scene_ready: bool,
 }
 
 impl WaylandSubsurfaceSink {
@@ -465,15 +469,21 @@ impl WaylandSubsurfaceSink {
             obstructed: true,
             stacked_above: false,
             opaque_size: (0, 0),
+            gui_scene_ready: false,
         }
     }
 
     /// Apply the desired subsurface stacking. The video only goes above the GUI when
-    /// unobstructed AND rendering on our own Vulkan context — stacked above, the GUI's redraw
-    /// loop can park (occluded surfaces stop getting frame callbacks), after which frames must
-    /// render without Slint's GL context (see [`VideoSink::render_standalone`]).
+    /// unobstructed and rendering on our own Vulkan context. Stacked above, the GUI's redraw
+    /// loop can park, after which frames must render without Slint's GL context (see
+    /// [`VideoSink::render_standalone`]).
     fn sync_stacking(&mut self, commit_parent: bool) {
-        let want_above = !self.obstructed && self.vk.is_some() && !self.use_swapchain_fallback;
+        // gui_scene_ready: wait for the player scene so the reveal re-presents transparent
+        // content instead of flashing the idle screen.
+        let want_above = !self.obstructed
+            && self.vk.is_some()
+            && !self.use_swapchain_fallback
+            && self.gui_scene_ready;
         if want_above == self.stacked_above {
             return;
         }
@@ -485,10 +495,9 @@ impl WaylandSubsurfaceSink {
         }
         self.stacked_above = want_above;
         // Subsurface z-order is parent-buffered state. When the GUI render loop is live, its
-        // own next commit applies the restack in sync with the new GUI content. When it's
-        // parked (we occlude it), nothing would ever apply the request — so the caller asks us
-        // to commit the (state-less between renders) parent ourselves: the restack un-occludes
-        // the GUI, frame callbacks resume, and winit's pending redraw finally fires.
+        // next commit applies the restack. When it's parked, nothing would apply the request,
+        // so the caller asks us to commit the parent ourselves: the restack un-occludes the
+        // GUI and its redraw loop resumes.
         if commit_parent {
             wl.parent.commit();
         }
@@ -513,8 +522,8 @@ impl WaylandSubsurfaceSink {
         self.stacked_above = false;
     }
 
-    /// Render the frame into Slint's own surface via the libplacebo swapchain — the same path
-    /// `SwapchainSink` uses. Used as a fallback when we can't share a dma-buf with the compositor.
+    /// Render the frame into Slint's own surface via the libplacebo swapchain, the same path
+    /// `SwapchainSink` uses. Fallback for when we can't share a dma-buf with the compositor.
     fn render_via_swapchain(
         &mut self,
         placebo: &mut PlaceboContext,
@@ -534,11 +543,9 @@ impl WaylandSubsurfaceSink {
             .map_err(|err| anyhow!("placebo swapchain render failed: {err}"))?;
         placebo.submit_frame();
 
-        // libplacebo leaves its own FBO + viewport bound. Restore the default framebuffer so that
-        // (a) Slint renders its UI into the right target afterwards, and (b) lib.rs's per-tick
-        // `gl.clear` on the *next* tick — including the EOS tick, where no frame is rendered —
-        // clears fb0 rather than libplacebo's leftover FBO, which would otherwise leave the final
-        // video frame on screen after the stream ends.
+        // libplacebo leaves its own FBO + viewport bound. Restore the default framebuffer so
+        // Slint renders its UI into the right target and lib.rs's per-tick `gl.clear` clears
+        // fb0 rather than libplacebo's leftover FBO.
         unsafe {
             use glow::HasContext;
             gl.bind_framebuffer(glow::FRAMEBUFFER, None);
@@ -559,8 +566,8 @@ impl WaylandSubsurfaceSink {
     ) -> Result<()> {
         warn!(
             ?err,
-            "No compositor-importable dma-buf (likely a cross-GPU setup); falling back to \
-             in-surface rendering — video will display but without the zero-copy subsurface path"
+            "No compositor-importable dma-buf (likely a cross-GPU setup), falling back to \
+             in-surface rendering. Video will display without the zero-copy subsurface path"
         );
         self.use_swapchain_fallback = true;
         // The fallback shares Slint's surface; the video must never sit above it again.
@@ -641,10 +648,10 @@ impl WaylandSubsurfaceSink {
         surface.set_input_region(Some(&empty_input));
         empty_input.destroy();
 
-        // Optional opaque-black backdrop below the video subsurface, so a transparent GUI region —
-        // or the gap after the video unmaps on EOS — shows black instead of the desktop. Needs the
-        // single-pixel-buffer extension (for a 1×1 solid buffer) and viewporter (to scale it to the
-        // window). Its destination size is set lazily on the first render, once we know the window.
+        // Optional opaque-black backdrop below the video subsurface, so a transparent GUI
+        // region (or the gap after the video unmaps on EOS) shows black instead of the
+        // desktop. Needs the single-pixel-buffer extension and viewporter. Its destination
+        // size is set lazily on the first render, once we know the window.
         let background = (|| {
             let spb: WpSinglePixelBufferManagerV1 = globals.bind(&qh, 1..=1, ()).ok()?;
             let viewporter: WpViewporter = globals.bind(&qh, 1..=1, ()).ok()?;
@@ -854,9 +861,9 @@ impl WaylandSubsurfaceSink {
         Ok(())
     }
 
-    /// (Re)apply the color description to the surface if it changed. On *any* failure we set
+    /// (Re)apply the color description to the surface if it changed. On any failure we set
     /// [`Self::color_mgmt_failed`] and never touch color management again, because a color-mgmt
-    /// protocol error is fatal to the (shared) connection — we must not risk re-triggering it.
+    /// protocol error is fatal to the shared connection.
     fn apply_color(&mut self, sig: &ColorSig) -> Result<()> {
         if self.color_mgmt_failed || self.applied_color.as_ref() == Some(sig) {
             return Ok(());
@@ -949,9 +956,8 @@ impl WaylandSubsurfaceSink {
                 let desc = params.create(&qh, ());
 
                 // The image description must reach the "ready" state before it can be used. A
-                // protocol error here surfaces as the roundtrip's DispatchError, which carries the
-                // offending interface + code + message — far more useful than libwayland's raw
-                // "Protocol error N on object @M".
+                // protocol error here surfaces as the roundtrip's DispatchError, which carries
+                // the offending interface, code and message.
                 let mut state = WaylandState {
                     t: wl.tracking.clone(),
                 };
@@ -1049,10 +1055,10 @@ fn decide_color(frame: &Frame, allow_hdr: bool) -> Decision {
                 None
             }
         });
-        // The protocol raises the *fatal* `invalid_luminance` error unless max_L > min_L (in its
-        // units: max_lum * 10000 > min_lum). Validate exactly that, plus finiteness/sane range,
-        // and skip the request entirely on any doubt — a bad value would tear down the shared
-        // connection (and with it Slint).
+        // The protocol raises the fatal `invalid_luminance` error unless max_L > min_L (in its
+        // units: max_lum * 10000 > min_lum). Validate exactly that, plus finiteness and sane
+        // range, and skip the request on any doubt. A bad value would tear down the shared
+        // connection.
         let mastering_lum = frame.mastering_display_info.as_ref().and_then(|mdi| {
             let min_nits = mdi.min_luminance_as_nits();
             let max_nits = mdi.max_luminance_as_nits();
@@ -1169,7 +1175,7 @@ fn create_target(
     // aux plane, so the compositor samples raw compressed data (washed-out colors + speckle;
     // clean under INTEL_DEBUG=noccs). host_readable makes libplacebo add
     // VK_IMAGE_USAGE_HOST_TRANSFER_BIT, which forces ANV to keep the image uncompressed.
-    // Empirical and driver-specific — the proper fix belongs in ANV/libplacebo (e.g.
+    // Empirical and driver-specific. The proper fix belongs in ANV/libplacebo (e.g.
     // VK_EXT_image_compression_control on exported images). Also enables the
     // FCAST_DUMP_VIDEO_FRAME readback.
     tex_params.host_readable = true;
@@ -1357,6 +1363,16 @@ impl VideoSink for WaylandSubsurfaceSink {
         self.sync_stacking(commit_parent);
     }
 
+    fn set_gui_scene_is_player(&mut self, player: bool) {
+        if player == self.gui_scene_ready {
+            return;
+        }
+        self.gui_scene_ready = player;
+        // Called from BeforeRendering: the next commit carries the scene described by
+        // `player`, so the stacking change rides it atomically.
+        self.sync_stacking(false);
+    }
+
     fn self_clocked(&self) -> bool {
         self.stacked_above && self.vk.is_some() && !self.use_swapchain_fallback && self.wl.is_some()
     }
@@ -1404,6 +1420,9 @@ impl VideoSink for WaylandSubsurfaceSink {
         // Force fresh buffers and re-application of the color description for the next stream.
         self.current = 0;
         self.applied_color = None;
+        // After EOS the GUI may return to the idle scene. The next stream must re-prove
+        // the player scene before stacking above again.
+        self.gui_scene_ready = false;
     }
 
     fn flush_cache(&mut self, placebo: &mut PlaceboContext) {
@@ -1414,9 +1433,9 @@ impl VideoSink for WaylandSubsurfaceSink {
     }
 
     fn needs_render_every_repaint(&self) -> bool {
-        // A mapped subsurface keeps showing its last committed buffer across Slint repaints, so we
-        // only need to re-render on a new frame or a resize — not on focus/cursor repaints. The
-        // in-surface swapchain fallback shares Slint's surface (cleared every repaint), so it does.
+        // A mapped subsurface keeps showing its last committed buffer across Slint repaints,
+        // so we only need to re-render on a new frame or a resize. The in-surface swapchain
+        // fallback shares Slint's surface (cleared every repaint), so it does.
         self.use_swapchain_fallback
     }
 
@@ -1446,6 +1465,7 @@ impl VideoSink for WaylandSubsurfaceSink {
         self.stacked_above = false;
         self.obstructed = true;
         self.opaque_size = (0, 0);
+        self.gui_scene_ready = false;
         if let Some(wl) = self.wl.take() {
             if let Some(bg) = wl.background {
                 bg.viewport.destroy();
@@ -1653,9 +1673,9 @@ impl WaylandSubsurfaceSink {
         } else {
             unsafe { pl_gpu_flush(pl.gpu()) };
 
-            // libplacebo leaves its own FBO + viewport bound; restore the default framebuffer that
-            // Slint expects to render its UI into afterwards. (The Vulkan path never touches GL
-            // state, so this is GL-only — and the GL path always comes with Slint's context.)
+            // libplacebo leaves its own FBO + viewport bound. Restore the default framebuffer
+            // that Slint expects to render its UI into afterwards. The Vulkan path never
+            // touches GL state, so this is GL-only.
             if let Some(gl) = gl {
                 unsafe {
                     use glow::HasContext;
@@ -1667,11 +1687,10 @@ impl WaylandSubsurfaceSink {
 
         let wl = self.wl.as_ref().unwrap();
         if self.opaque_size != (width, height) {
-            // The video buffer is fully opaque (letterbox bars cleared to alpha=1), but its
-            // fourcc (ABGR…) carries an alpha channel — without an explicit opaque region the
-            // compositor must assume transparency: it blends the video instead of culling
-            // whatever is underneath, and won't consider the surface for direct scanout.
-            // (set_opaque_region has copy semantics; the region can be destroyed right away.)
+            // The video buffer is fully opaque, but its fourcc carries an alpha channel.
+            // Without an explicit opaque region the compositor must assume transparency,
+            // blending the video and refusing direct scanout. set_opaque_region has copy
+            // semantics, the region can be destroyed right away.
             let region = wl.compositor.create_region(&wl.qh, ());
             region.add(0, 0, width as i32, height as i32);
             wl.surface.set_opaque_region(Some(&region));

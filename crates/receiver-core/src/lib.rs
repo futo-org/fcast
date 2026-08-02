@@ -573,6 +573,40 @@ pub fn run<S: VideoSink + 'static>(
                     debug!("Got graphics API: {graphics_api:?}");
                     let ui_weak = ui_weak.clone();
 
+                    // The controls reveal must be INPUT-driven: while the subsurface sink
+                    // presents above the redraw-parked GUI, the Slint `changed` callbacks
+                    // that mirror hover state into `Bridge.video-obstructed` never run (no
+                    // update cycles while parked), so pointer activity must restack the
+                    // video below directly. Registered HERE and not at app setup:
+                    // on_winit_window_event silently no-ops unless the winit window
+                    // adapter exists, which RenderingSetup guarantees.
+                    #[cfg(feature = "wayland-subsurface")]
+                    if let Some(ui) = ui_weak.upgrade() {
+                        use i_slint_backend_winit::WinitWindowAccessor;
+                        debug!("Installing winit input-reveal filter");
+                        ui.window().on_winit_window_event({
+                            let tick = tick.clone();
+                            move |_window, event| {
+                                use i_slint_backend_winit::winit::event::WindowEvent;
+                                if matches!(
+                                    event,
+                                    WindowEvent::CursorEntered { .. }
+                                        | WindowEvent::CursorMoved { .. }
+                                ) {
+                                    // try_borrow: input events never race the other tick
+                                    // users today; stay panic-free if that changes.
+                                    if let Ok(mut t) = tick.try_borrow_mut() {
+                                        if t.video_sink.self_clocked() {
+                                            debug!("Pointer activity while parked: revealing GUI");
+                                            t.video_sink.set_video_obstructed(true, true);
+                                        }
+                                    }
+                                }
+                                i_slint_backend_winit::EventResult::Propagate
+                            }
+                        });
+                    }
+
                     #[cfg(not(target_os = "android"))]
                     if let Some(fullscreen) = start_fullscreen.take() {
                         ui_weak
@@ -739,6 +773,16 @@ pub fn run<S: VideoSink + 'static>(
                         t.video_sink.flush_cache(placebo);
                     }
 
+                    // Tell the sink whether THIS repaint renders purely the video-player
+                    // scene. `video-scene-clean` (main.slint) is the state condition AND
+                    // "no idle/loading/startup view is still fading over it" — the state
+                    // alone is not enough: those views fade out over 100ms after the state
+                    // flips, so early Playing-state frames still DRAW the idle screen, and
+                    // parking the GUI on such a frame is the one-frame idle flash on
+                    // overlay reveal.
+                    t.video_sink
+                        .set_gui_scene_is_player(ui.get_video_scene_clean());
+
                     let mut new_frame = false;
                     if let Some(payload_handle) = &t.payload_handle {
                         if let Some(pay) = payload_handle.0.lock().take() {
@@ -879,6 +923,10 @@ pub fn run<S: VideoSink + 'static>(
                     .set_video_obstructed(obstructed, true);
             }
         });
+
+        // NB the input-driven controls reveal (winit window event filter) is registered in
+        // the rendering notifier's RenderingSetup arm: on_winit_window_event silently
+        // no-ops unless the winit window adapter already exists.
 
         // One invocation per decoded frame (proxied from the GStreamer streaming thread).
         // Normally we just schedule a repaint and let `BeforeRendering` take the frame, while

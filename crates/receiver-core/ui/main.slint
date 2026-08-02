@@ -49,6 +49,12 @@ export component MainWindow inherits Window {
     property <bool> video-obstructed: Bridge.video-obstructed;
     changed video-obstructed => Bridge.video-obstructed-changed(self.video-obstructed);
 
+    // True only when the frame being rendered is PURELY the video-player scene: right
+    // state AND none of the fading views (idle/loading/startup) still drawn over it.
+    out property <bool> video-scene-clean: Bridge.app-state == AppState.Playing
+        && Bridge.player-variant == UiPlayerVariant.Video
+        && !idle-view.visible && !loading-view.visible && !startup-view.visible;
+
     property <bool> show-inspector: Bridge.show-inspector;
     changed show-inspector => Bridge.inspector-toggled(self.show-inspector);
 
@@ -66,7 +72,7 @@ export component MainWindow inherits Window {
 
     if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Raop: RaopView { }
 
-    IdleView {
+    idle-view := IdleView {
         opacity: Bridge.app-state == AppState.Idle ? 100% : 0%;
         visible: self.opacity > 0%;
 
@@ -75,7 +81,7 @@ export component MainWindow inherits Window {
         }
     }
 
-    LoadingMediaView {
+    loading-view := LoadingMediaView {
         opacity: Bridge.app-state == AppState.LoadingMedia ? 100% : 0%;
         visible: self.opacity > 0%;
 
@@ -90,7 +96,7 @@ export component MainWindow inherits Window {
 
     SettingsDrawer { }
 
-    StartupView {
+    startup-view := StartupView {
         opacity: Bridge.starting-up ? 100% : 0%;
         visible: self.opacity > 0%;
 
