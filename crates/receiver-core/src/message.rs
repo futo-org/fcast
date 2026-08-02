@@ -200,7 +200,6 @@ pub enum Message {
         epoch: u64,
     },
     /// The seek broadcast debounce expired (see `Application::seek_quiet`).
-    /// If the seek still has not settled, v4 senders get a Buffering state.
     SeekQuietTimeout {
         epoch: u64,
     },

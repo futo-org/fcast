@@ -51,6 +51,10 @@ use crate::{Settings, mdns};
 use crate::{airplay, message::AirPlay};
 
 const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
+
+/// How long a seek may stay unsettled before senders hear anything (see
+/// `Application::seek_quiet`).
+const SEEK_QUIET_DEBOUNCE: Duration = Duration::from_millis(500);
 const DEFAULT_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 const PROGRESS_TICK_INTERVAL: Duration = Duration::from_millis(100);
 /// Buffered-range/nub polling is cheap but not free (the stream-mode nub walks
@@ -526,6 +530,12 @@ pub struct Application {
     last_volume_cmd: Option<Instant>,
     pending_seek_op: Option<(PacketOrigin, gst::ClockTime)>,
     pending_seek_epoch: u64,
+    /// Silences playback-state broadcasts while a seek is in flight, since
+    /// transient Idle/Buffering read as "playback ended" to senders. Disarmed
+    /// on landing (or stop). If `SeekQuietTimeout` fires first, v4 senders
+    /// get Buffering and v1-v3 (no Buffering on the wire) get nothing.
+    seek_quiet: bool,
+    seek_quiet_epoch: u64,
     /// Active optimistic hold for a GUI-originated seek: the slider thumb stays
     /// pinned at `target` (and the GUI's `seek-pending` flag stays set) until the
     /// pipeline reports it has landed there, so a stale position tick can't
@@ -853,6 +863,8 @@ impl Application {
             last_volume_cmd: None,
             pending_seek_op: None,
             pending_seek_epoch: 0,
+            seek_quiet: false,
+            seek_quiet_epoch: 0,
             gui_seek_hold: None,
             load_watchdog_epoch: 0,
             current_image_id: 0,
@@ -1089,7 +1101,26 @@ impl Application {
         }
     }
 
+    /// Arm the seek broadcast debounce (see `seek_quiet`).
+    fn arm_seek_quiet(&mut self) {
+        self.seek_quiet = true;
+        self.seek_quiet_epoch += 1;
+        let epoch = self.seek_quiet_epoch;
+        let msg_tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(SEEK_QUIET_DEBOUNCE).await;
+            msg_tx.send(Message::SeekQuietTimeout { epoch });
+        });
+    }
+
     fn playback_state_changed(&mut self, state: fcast_protocol::v4::PlaybackState) {
+        use fcast_protocol::v4::PlaybackState as S;
+        // Seek debounce: transients stay quiet, a settled state ends the window.
+        match state {
+            S::Idle | S::Buffering if self.seek_quiet => return,
+            S::Playing | S::Paused | S::Ended => self.seek_quiet = false,
+            _ => {}
+        }
         if self.should_broadcast() {
             self.broadcast_update(ReceiverToSenderMessage::V4(
                 fcast::V4Message::PlaybackStateChanged(state),
@@ -1207,6 +1238,7 @@ impl Application {
         self.push_buffered_ranges();
 
         if self.should_broadcast()
+            && !self.seek_quiet
             && (self.last_sent_update.elapsed() >= SENDER_UPDATE_INTERVAL || force)
         {
             let update = v3::PlaybackUpdateMessage {
@@ -1240,6 +1272,8 @@ impl Application {
         preserve_playlist: PreservePlaylist,
     ) {
         self.current_duration = None;
+        // Playback is stopping or being replaced: a real Idle must go out.
+        self.seek_quiet = false;
         // Playback is being replaced: any pending gapless pre-arm targets
         // media that is going away (the player's load reset drops the
         // prepared input; this clears the bookkeeping).
@@ -2778,6 +2812,7 @@ impl Application {
                     // the item's duration GROWS between PAUSED and PLAYING,
                     // which would now clamp where it previously would not.
                     let time = self.clamp_seek_target(origin, time);
+                    self.arm_seek_quiet();
                     // Seeking away from the end invalidates "plays to its end,
                     // next item follows", and a flushing seek must not reach
                     // the pipeline before the cancellation is confirmed.
@@ -3672,6 +3707,9 @@ impl Application {
                 self.player.end_of_stream_reached();
 
                 debug!("Player reached EOS");
+
+                // A seek to the end lands here, not on a transport settle.
+                self.seek_quiet = false;
 
                 self.media_ended();
 
@@ -5194,6 +5232,17 @@ impl Application {
                     self.drop_pending_seek();
                 }
             }
+            Message::SeekQuietTimeout { epoch } => {
+                // Still unsettled after the debounce: v4 gets Buffering,
+                // v1-v3 have no such state and stay silent.
+                if epoch == self.seek_quiet_epoch && self.seek_quiet && self.should_broadcast() {
+                    self.broadcast_update(ReceiverToSenderMessage::V4(
+                        fcast::V4Message::PlaybackStateChanged(
+                            fcast_protocol::v4::PlaybackState::Buffering,
+                        ),
+                    ));
+                }
+            }
             Message::LoadStallCheck { item, epoch } => {
                 // DIAGNOSTIC only. Fire iff this is still the load we armed for
                 // (epoch + item) and the pipeline has NOT reached a steady
@@ -5314,6 +5363,7 @@ impl Application {
             } else {
                 None
             };
+            let initial_volume = self.player.volume();
             async move {
                 if let Err(err) = SessionDriver::new(
                     stream,
@@ -5323,6 +5373,7 @@ impl Application {
                     comp_tx,
                     receiver_info,
                     initial_v4_state,
+                    initial_volume,
                 )
                 .run(updates_rx, &msg_tx, comp_rx, recv_to_f_rx)
                 .await
