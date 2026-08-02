@@ -306,6 +306,7 @@ component PlaybackControls inherits Rectangle {
         elems-opacity = 100%;
         tim.running = true;
         suggested-cursor = MouseCursor.default;
+        Bridge.set-cursor-hidden(false);
     }
 
     public function close() {
@@ -656,7 +657,7 @@ component PlaybackControls inherits Rectangle {
             if !Bridge.is-scrubbing-position
                 && (ta.has-hover || !focus.has-focus || show-settings) {
                 parent.close();
-                Bridge.hide-cursor-hack();
+                Bridge.set-cursor-hidden(true);
             }
         }
     }

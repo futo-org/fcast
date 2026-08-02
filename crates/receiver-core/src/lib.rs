@@ -798,6 +798,9 @@ pub fn run<S: VideoSink + 'static>(
                                     if let Some(placebo) = pl_context.as_mut() {
                                         t.video_sink.flush_cache(placebo);
                                     }
+                                    // Undo the player's winit-level cursor hide
+                                    // so the idle scene gets the cursor back.
+                                    bridge.invoke_set_cursor_hidden(false);
                                 }
                             }
                         }
@@ -963,6 +966,9 @@ pub fn run<S: VideoSink + 'static>(
                         t.video_sink.clear();
                         t.video_sink.flush_cache_standalone();
                         t.pending_gl_flush = true;
+                        // Undo the player's winit-level cursor hide so the idle
+                        // scene gets the cursor back.
+                        bridge.invoke_set_cursor_hidden(false);
                         ui.window().request_redraw();
                     }
                     Some(frame) => {

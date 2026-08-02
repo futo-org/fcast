@@ -191,7 +191,7 @@ export global Bridge {
     callback port-conflict-quit();
     callback debug-toggled();
     callback change-playback-rate(rate: float);
-    callback hide-cursor-hack();
+    callback set-cursor-hidden(hidden: bool);
     callback select-track(id: int, variant: UiMediaTrackType);
     callback select-playlist-item(idx: int);
     callback perform-app-update();
