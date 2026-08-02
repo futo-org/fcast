@@ -773,13 +773,11 @@ pub fn run<S: VideoSink + 'static>(
                         t.video_sink.flush_cache(placebo);
                     }
 
-                    // Tell the sink whether THIS repaint renders purely the video-player
-                    // scene. `video-scene-clean` (main.slint) is the state condition AND
-                    // "no idle/loading/startup view is still fading over it" — the state
-                    // alone is not enough: those views fade out over 100ms after the state
-                    // flips, so early Playing-state frames still DRAW the idle screen, and
-                    // parking the GUI on such a frame is the one-frame idle flash on
-                    // overlay reveal.
+                    // Whether this repaint renders purely the player scene.
+                    // `video-scene-clean` (main.slint) also requires that no
+                    // idle/loading view is still fading over it, since early
+                    // Playing-state frames still draw the idle screen and
+                    // parking the GUI on one flashes it on reveal.
                     t.video_sink
                         .set_gui_scene_is_player(ui.get_video_scene_clean());
 
@@ -798,8 +796,7 @@ pub fn run<S: VideoSink + 'static>(
                                     if let Some(placebo) = pl_context.as_mut() {
                                         t.video_sink.flush_cache(placebo);
                                     }
-                                    // Undo the player's winit-level cursor hide
-                                    // so the idle scene gets the cursor back.
+                                    // Undo the player's winit-level cursor hide.
                                     bridge.invoke_set_cursor_hidden(false);
                                 }
                             }
@@ -966,8 +963,7 @@ pub fn run<S: VideoSink + 'static>(
                         t.video_sink.clear();
                         t.video_sink.flush_cache_standalone();
                         t.pending_gl_flush = true;
-                        // Undo the player's winit-level cursor hide so the idle
-                        // scene gets the cursor back.
+                        // Undo the player's winit-level cursor hide.
                         bridge.invoke_set_cursor_hidden(false);
                         ui.window().request_redraw();
                     }
