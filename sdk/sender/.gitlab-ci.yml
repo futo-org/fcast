@@ -188,7 +188,7 @@ publishAndroidSdk:
   tags:
     - fcast-instance-runner
   rules:
-    - if: '$CI_COMMIT_TAG =~ /^sender-sdk-v/'
+    - if: '$CI_COMMIT_TAG =~ /^android-sender-sdk-v/'
   script:
     # The signing key comes either from a file-type variable (SIGNING_KEY) or
     # directly as ORG_GRADLE_PROJECT_signingInMemoryKey. Only derive the
@@ -197,5 +197,5 @@ publishAndroidSdk:
     - if [ -n "$SIGNING_KEY" ]; then export ORG_GRADLE_PROJECT_signingInMemoryKey="$(cat "$SIGNING_KEY")"; fi
     - test -n "$ORG_GRADLE_PROJECT_signingInMemoryKey" || { echo "No signing key configured (set SIGNING_KEY or ORG_GRADLE_PROJECT_signingInMemoryKey)"; exit 1; }
     - cargo utask android download-sdk
-    - export ORG_GRADLE_PROJECT_sdkVersion="${CI_COMMIT_TAG#sender-sdk-v}"
+    - export ORG_GRADLE_PROJECT_sdkVersion="${CI_COMMIT_TAG#android-sender-sdk-v}"
     - cargo utask kotlin build-aar --release --module-dir sdk/sender/android --gradle-task publishToMavenCentral
