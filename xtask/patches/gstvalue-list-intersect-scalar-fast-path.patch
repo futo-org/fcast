@@ -1,0 +1,177 @@
+value: add a scalar fast path to list intersections
+
+Every entry of a list intersection funnels through
+gst_value_intersect(), paying two G_IS_VALUE type checks, the list-type
+checks, a compare-function hash lookup and dispatch per entry. For the
+dominant caps content (string format lists, int rate lists) the whole
+intersection of two same-type scalars is a single equality check:
+no same-type intersect function exists for these types, so compare
+equal means copy, compare unequal means empty.
+
+Handle G_TYPE_STRING and G_TYPE_INT entry pairs directly in
+gst_value_intersect_list() and both gst_value_intersect_list_list()
+loops, with NULL string handling mirroring gst_value_compare_string().
+Everything else falls back to the generic path unchanged.
+
+gstcapsops benchmark, best of 5, together with the preceding
+strict-equality commit:
+
+  value_intersect string x 82-list   2510 ->   312 ns  (8.0x)
+  value_intersect 82-list x 82-list 10873 ->  5123 ns  (2.1x)
+  intersect fixed x template         2600 ->   993 ns  (2.6x)
+  can_intersect fixed x template      846 ->   326 ns  (2.6x)
+  intersect template x template     16091 -> 11865 ns  (1.4x)
+  is_equal template x copy          13351 ->  5873 ns  (2.3x)
+  8-hop query fold (template)      197476 -> 97207 ns  (2.0x)
+
+The remaining template x template cost is dest building (a string copy
+per matched entry), not the search.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+diff --git a/subprojects/gstreamer/gst/gstvalue.c b/subprojects/gstreamer/gst/gstvalue.c
+index 2eb9fe404f..4b174f2777 100644
+--- a/subprojects/gstreamer/gst/gstvalue.c
++++ b/subprojects/gstreamer/gst/gstvalue.c
+@@ -188,6 +188,8 @@ static gchar *gst_string_wrap (const gchar * s);
+ static gchar *gst_string_unwrap (const gchar * s);
+ 
+ static void gst_value_move (GValue * dest, GValue * src);
++static inline gboolean gst_value_intersect_scalar_fast (GValue * dest,
++    const GValue * item, const GValue * value2, GType type2, gboolean * hit);
+ static void _gst_value_list_append_and_take_value (GValue * value,
+     GValue * append_value);
+ static void _gst_value_array_append_and_take_value (GValue * value,
+@@ -5561,7 +5563,12 @@ gst_value_intersect_list_list (GValue * dest, const GValue * value1,
+       const GValue *item1 = VALUE_LIST_GET_VALUE (value1, it1);
+       for (it2 = 0; it2 < len2; it2++) {
+         const GValue *item2 = VALUE_LIST_GET_VALUE (value2, it2);
+-        if (gst_value_intersect (NULL, item1, item2)) {
++        gboolean hit;
++
++        if (!gst_value_intersect_scalar_fast (NULL, item1, item2,
++                G_VALUE_TYPE (item2), &hit))
++          hit = gst_value_intersect (NULL, item1, item2);
++        if (hit) {
+           res = TRUE;
+           goto beach;
+         }
+@@ -5599,11 +5606,17 @@ gst_value_intersect_list_list (GValue * dest, const GValue * value1,
+     const GValue *item1 = VALUE_LIST_GET_VALUE (value1, it1);
+     for (it2 = start2; it2 < len2; it2++) {
+       const GValue *item2;
++      gboolean hit;
++
+       if (is_visited (it2))
+         continue;
+       item2 = VALUE_LIST_GET_VALUE (value2, it2);
+ 
+-      if (gst_value_intersect (tmp, item1, item2)) {
++      if (!gst_value_intersect_scalar_fast (tmp, item1, item2,
++              G_VALUE_TYPE (item2), &hit))
++        hit = gst_value_intersect (tmp, item1, item2);
++
++      if (hit) {
+         res = TRUE;
+         mark_visited (it2);
+         /* Increment our inner-loop starting point */
+@@ -5645,6 +5658,44 @@ beach:
+   return res;
+ }
+ 
++/* Fast path for same-type scalar entries in list intersections, for
++ * which equality is the entire intersection (no same-type intersect
++ * function exists for these types). Skips the per-entry type checks,
++ * compare-function lookup and dispatch of gst_value_intersect().
++ *
++ * Returns TRUE when the pair was handled, storing the verdict in @hit
++ * and, on a hit, the intersection (a copy of @item) in @dest when
++ * non-NULL. @dest must be zero-initialized. Returns FALSE when the
++ * pair needs the generic gst_value_intersect() path.
++ */
++static inline gboolean
++gst_value_intersect_scalar_fast (GValue * dest, const GValue * item,
++    const GValue * value2, GType type2, gboolean * hit)
++{
++  gboolean equal;
++
++  if (G_VALUE_TYPE (item) != type2)
++    return FALSE;
++
++  if (type2 == G_TYPE_STRING) {
++    const gchar *s1 = item->data[0].v_pointer;
++    const gchar *s2 = value2->data[0].v_pointer;
++
++    /* Mirrors gst_value_compare_string: both NULL compare equal, a
++     * single NULL is unordered (no intersection). */
++    equal = (s1 == s2) || (s1 != NULL && s2 != NULL && strcmp (s1, s2) == 0);
++  } else if (type2 == G_TYPE_INT) {
++    equal = item->data[0].v_int == value2->data[0].v_int;
++  } else {
++    return FALSE;
++  }
++
++  *hit = equal;
++  if (equal && dest != NULL)
++    gst_value_init_and_copy (dest, item);
++  return TRUE;
++}
++
+ static gboolean
+ gst_value_intersect_list (GValue * dest, const GValue * value1,
+     const GValue * value2)
+@@ -5670,31 +5721,34 @@ gst_value_intersect_list (GValue * dest, const GValue * value1,
+   size = VALUE_LIST_SIZE (value1);
+   for (i = 0; i < size; i++) {
+     const GValue *cur = VALUE_LIST_GET_VALUE (value1, i);
++    gboolean hit;
++
++    if (!gst_value_intersect_scalar_fast (dest ? &intersection : NULL, cur,
++            value2, type2, &hit))
++      hit = gst_value_intersect (dest ? &intersection : NULL, cur, value2);
++
++    if (!hit)
++      continue;
+ 
+     /* quicker version when we don't need the resulting set */
+     if (!dest) {
+-      if (gst_value_intersect (NULL, cur, value2)) {
+-        ret = TRUE;
+-        break;
+-      }
+-      continue;
++      ret = TRUE;
++      break;
+     }
+ 
+-    if (gst_value_intersect (&intersection, cur, value2)) {
+-      /* append value */
+-      if (!ret) {
+-        gst_value_move (dest, &intersection);
+-        ret = TRUE;
+-      } else if (GST_VALUE_HOLDS_LIST (dest)) {
+-        _gst_value_list_append_and_take_value (dest, &intersection);
+-      } else {
+-        GValue temp;
++    /* append value */
++    if (!ret) {
++      gst_value_move (dest, &intersection);
++      ret = TRUE;
++    } else if (GST_VALUE_HOLDS_LIST (dest)) {
++      _gst_value_list_append_and_take_value (dest, &intersection);
++    } else {
++      GValue temp;
+ 
+-        gst_value_move (&temp, dest);
+-        gst_value_list_merge (dest, &temp, &intersection);
+-        g_value_unset (&temp);
+-        g_value_unset (&intersection);
+-      }
++      gst_value_move (&temp, dest);
++      gst_value_list_merge (dest, &temp, &intersection);
++      g_value_unset (&temp);
++      g_value_unset (&intersection);
+     }
+   }
+ 
+

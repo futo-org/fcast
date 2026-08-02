@@ -1,0 +1,247 @@
+RFC: value: share list payloads on copy, materialize on mutation
+
+Copying a GST_TYPE_LIST / GST_TYPE_ARRAY / unique-list GValue deep-copied
+every entry: a GValue init plus a heap string copy per entry for the
+format lists all negotiation caps carry. Caps are conceptually immutable
+once created, yet every gst_caps_copy, fixate and query-path copy paid
+the full walk.
+
+Give the private GstValueList an atomic refcount. Copies share the
+payload, and the mutation entry points (append, prepend, and the
+entry-stealing gst_value_list_concat_and_take_values) materialize a
+private copy first when it is shared. The GArray-prefix layout that
+gststructure.c peeks at is preserved (the refcount sits after the
+existing fields).
+
+Semantics notes for review:
+
+- NOCOPY values borrow a caller-owned list. They are never shared into
+  (copy from a NOCOPY source still deep-copies) and mutate their
+  borrowed payload in place exactly as before.
+- Mutating list entries through a peeked or const-cast pointer was
+  always undefined. It previously corrupted one value, it now corrupts
+  every sharer. This is the main behavioral risk of the change.
+- Concurrent copy/free of DIFFERENT values sharing a payload is safe
+  via the atomic refcount. Concurrent copy and mutation of the SAME
+  value was never allowed and still is not.
+
+gstcapsops benchmark, best of 5, on top of the two previous commits
+(videoconvert-style template, 82-entry format lists):
+
+  copy template     11700 ->  785 ns  (14.9x)
+  fixate template   12234 ->  986 ns  (12.4x)
+
+All 113 core tests pass.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+diff --git a/subprojects/gstreamer/gst/gstvalue.c b/subprojects/gstreamer/gst/gstvalue.c
+index 4b174f2777..f00f92859b 100644
+--- a/subprojects/gstreamer/gst/gstvalue.c
++++ b/subprojects/gstreamer/gst/gstvalue.c
+@@ -157,6 +157,12 @@ struct _GstValueList
+   guint len;
+ 
+   guint allocated;
++  /* Lists are shared on copy and only materialized when mutated
++   * (copy-on-write): a term in the refcount is a GValue holding this
++   * list. Mutating entries through a peeked/borrowed pointer was
++   * always undefined and now corrupts every sharer. Atomic, since
++   * sharing values may be copied and freed from different threads. */
++  gint refcount;
+   GValue arr[1];
+ };
+ 
+@@ -280,10 +286,55 @@ _gst_value_list_new (guint prealloc)
+   res->len = 0;
+   res->allocated = n_alloc;
+   res->fields = &res->arr[0];
++  res->refcount = 1;
+ 
+   return res;
+ }
+ 
++static inline GstValueList *
++gst_value_list_ref (GstValueList * vlist)
++{
++  g_atomic_int_inc (&vlist->refcount);
++  return vlist;
++}
++
++static void
++gst_value_list_unref (GstValueList * vlist)
++{
++  if (g_atomic_int_dec_and_test (&vlist->refcount)) {
++    guint i;
++
++    for (i = 0; i < vlist->len; i++)
++      g_value_unset (&vlist->fields[i]);
++    if (VALUE_LIST_IS_USING_DYNAMIC_ARRAY (vlist))
++      g_free (vlist->fields);
++    g_free (vlist);
++  }
++}
++
++static GstValueList *copy_gst_value_list (const GstValueList * src);
++
++/* Get the list payload of @value for mutation, materializing a private
++ * copy first when it is shared. NOCOPY values borrow a caller-owned
++ * list and are passed through, matching the previous in-place
++ * mutation behavior for them. */
++static GstValueList *
++gst_value_list_ensure_writable (GValue * value)
++{
++  GstValueList *vlist = VALUE_LIST_ARRAY (value);
++
++  if ((value->data[1].v_uint & G_VALUE_NOCOPY_CONTENTS) == 0 &&
++      G_UNLIKELY (g_atomic_int_get (&vlist->refcount) != 1)) {
++    GstValueList *copy = copy_gst_value_list (vlist);
++
++    gst_value_list_unref (vlist);
++    value->data[0].v_pointer = copy;
++    vlist = copy;
++  }
++
++  return vlist;
++}
++
+ static void
+ _gst_value_list_init (GValue * value, guint prealloc)
+ {
+@@ -574,26 +625,24 @@ copy_gst_value_list (const GstValueList * src)
+ static void
+ gst_value_copy_list_or_array (const GValue * src_value, GValue * dest_value)
+ {
+-  dest_value->data[0].v_pointer =
+-      copy_gst_value_list (VALUE_LIST_ARRAY (src_value));
++  /* Share the payload, materialized only on mutation (see
++   * gst_value_list_ensure_writable). A NOCOPY source borrows a
++   * caller-owned list whose lifetime we do not control, so it is
++   * deep-copied as before. */
++  if (G_UNLIKELY (src_value->data[1].v_uint & G_VALUE_NOCOPY_CONTENTS)) {
++    dest_value->data[0].v_pointer =
++        copy_gst_value_list (VALUE_LIST_ARRAY (src_value));
++  } else {
++    dest_value->data[0].v_pointer =
++        gst_value_list_ref (VALUE_LIST_ARRAY (src_value));
++  }
+ }
+ 
+ static void
+ gst_value_free_list_or_array (GValue * value)
+ {
+-  guint i, len;
+-  GstValueList *src = VALUE_LIST_ARRAY (value);
+-  len = src->len;
+-
+-  if ((value->data[1].v_uint & G_VALUE_NOCOPY_CONTENTS) == 0) {
+-    for (i = 0; i < len; i++) {
+-      g_value_unset (&src->fields[i]);
+-    }
+-    if (VALUE_LIST_IS_USING_DYNAMIC_ARRAY (src)) {
+-      g_free (src->fields);
+-    }
+-    g_free (src);
+-  }
++  if ((value->data[1].v_uint & G_VALUE_NOCOPY_CONTENTS) == 0)
++    gst_value_list_unref (VALUE_LIST_ARRAY (value));
+ }
+ 
+ static gpointer
+@@ -693,7 +742,8 @@ gst_value_list_or_array_are_compatible (const GValue * value1,
+ static inline void
+ _gst_value_list_append_and_take_value (GValue * value, GValue * append_value)
+ {
+-  _gst_value_list_append_val (VALUE_LIST_ARRAY (value), append_value);
++  _gst_value_list_append_val (gst_value_list_ensure_writable (value),
++      append_value);
+   memset (append_value, 0, sizeof (GValue));
+ }
+ 
+@@ -735,7 +785,7 @@ gst_value_list_append_value (GValue * value, const GValue * append_value)
+           append_value));
+ 
+   gst_value_init_and_copy (&val, append_value);
+-  _gst_value_list_append_val (VALUE_LIST_ARRAY (value), &val);
++  _gst_value_list_append_val (gst_value_list_ensure_writable (value), &val);
+ }
+ 
+ /**
+@@ -756,7 +806,7 @@ gst_value_list_prepend_value (GValue * value, const GValue * prepend_value)
+           prepend_value));
+ 
+   gst_value_init_and_copy (&val, prepend_value);
+-  _gst_value_list_prepend_val (VALUE_LIST_ARRAY (value), &val);
++  _gst_value_list_prepend_val (gst_value_list_ensure_writable (value), &val);
+ }
+ 
+ /**
+@@ -838,10 +888,13 @@ gst_value_list_concat_and_take_values (GValue * dest, GValue * val1,
+   vlist->len = val1_length + val2_length;
+ 
+   if (val1_is_list) {
++    /* Stealing the entries mutates the payload, which may be shared. */
++    GstValueList *src = gst_value_list_ensure_writable (val1);
++
+     for (i = 0; i < val1_length; i++) {
+-      vlist->fields[i] = *VALUE_LIST_GET_VALUE (val1, i);
++      vlist->fields[i] = src->fields[i];
+     }
+-    VALUE_LIST_ARRAY (val1)->len = 0;
++    src->len = 0;
+     g_value_unset (val1);
+   } else {
+     vlist->fields[0] = *val1;
+@@ -849,12 +902,13 @@ gst_value_list_concat_and_take_values (GValue * dest, GValue * val1,
+   }
+ 
+   if (val2_is_list) {
++    GstValueList *src = gst_value_list_ensure_writable (val2);
++
+     for (i = 0; i < val2_length; i++) {
+-      const GValue *v2 = VALUE_LIST_GET_VALUE (val2, i);
+-      vlist->fields[i + val1_length] = *v2;
++      vlist->fields[i + val1_length] = src->fields[i];
+     }
+ 
+-    VALUE_LIST_ARRAY (val2)->len = 0;
++    src->len = 0;
+     g_value_unset (val2);
+   } else {
+     vlist->fields[val1_length] = *val2;
+@@ -1016,13 +1070,14 @@ gst_value_array_append_value (GValue * value, const GValue * append_value)
+           append_value));
+ 
+   gst_value_init_and_copy (&val, append_value);
+-  _gst_value_list_append_val (VALUE_LIST_ARRAY (value), &val);
++  _gst_value_list_append_val (gst_value_list_ensure_writable (value), &val);
+ }
+ 
+ static inline void
+ _gst_value_array_append_and_take_value (GValue * value, GValue * append_value)
+ {
+-  _gst_value_list_append_val (VALUE_LIST_ARRAY (value), append_value);
++  _gst_value_list_append_val (gst_value_list_ensure_writable (value),
++      append_value);
+   memset (append_value, 0, sizeof (GValue));
+ }
+ 
+@@ -1064,7 +1119,7 @@ gst_value_array_prepend_value (GValue * value, const GValue * prepend_value)
+           prepend_value));
+ 
+   gst_value_init_and_copy (&val, prepend_value);
+-  _gst_value_list_prepend_val (VALUE_LIST_ARRAY (value), &val);
++  _gst_value_list_prepend_val (gst_value_list_ensure_writable (value), &val);
+ }
+ 
+ /**
+@@ -1132,7 +1187,7 @@ gst_value_unique_list_append_value (GValue * value, const GValue * append_value)
+   }
+ 
+   gst_value_init_and_copy (&val, append_value);
+-  _gst_value_list_append_val (VALUE_LIST_ARRAY (value), &val);
++  _gst_value_list_append_val (gst_value_list_ensure_writable (value), &val);
+ }
+ 
+ /**
+

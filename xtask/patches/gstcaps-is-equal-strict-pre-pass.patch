@@ -1,0 +1,38 @@
+caps: try strict equality before the double subset pass in gst_caps_is_equal
+
+For non-fixed caps, gst_caps_is_equal() runs gst_caps_is_subset() in
+both directions. Each subset pass pairwise-intersects structures, which
+walks every entry of list-typed fields with full GValue dispatch and
+allocation churn.
+
+Callers frequently compare caps with identical contents (sticky caps
+deduplication, renegotiation checks). Strict equality catches that case
+with a single linear field-by-field compare and fails fast on any
+mismatch, so the worst-case overhead for genuinely different caps is
+small compared to the retained subset passes.
+
+gstcapsops benchmark (videoconvert-style template with an 82-entry
+format list, identical copies): is_equal 19.2 us -> 12.0 us. The
+remaining cost is the list compare itself.
+
+Co-Authored-By: Claude Fable 5 <noreply@anthropic.com>
+
+diff --git a/subprojects/gstreamer/gst/gstcaps.c b/subprojects/gstreamer/gst/gstcaps.c
+index 7ec84a0929..cb17167d15 100644
+--- a/subprojects/gstreamer/gst/gstcaps.c
++++ b/subprojects/gstreamer/gst/gstcaps.c
+@@ -1876,6 +1876,13 @@ gst_caps_is_equal (const GstCaps * caps1, const GstCaps * caps2)
+   if (G_UNLIKELY (gst_caps_is_fixed (caps1) && gst_caps_is_fixed (caps2)))
+     return gst_caps_is_equal_fixed (caps1, caps2);
+ 
++  /* Callers frequently compare caps with identical contents (e.g. sticky
++   * caps deduplication). Strict equality is a linear field-by-field pass
++   * and much cheaper than the two subset passes below, which pairwise
++   * intersect every structure. It fails fast on a mismatch. */
++  if (gst_caps_is_strictly_equal (caps1, caps2))
++    return TRUE;
++
+   return gst_caps_is_subset (caps1, caps2) && gst_caps_is_subset (caps2, caps1);
+ }
+ 
+
