@@ -1,0 +1,88 @@
+diff --git a/subprojects/gstreamer/plugins/elements/gstmultiqueue.c b/subprojects/gstreamer/plugins/elements/gstmultiqueue.c
+index a2f6272e24..8f9c1d9a1b 100644
+--- a/subprojects/gstreamer/plugins/elements/gstmultiqueue.c
++++ b/subprojects/gstreamer/plugins/elements/gstmultiqueue.c
+@@ -221,6 +221,9 @@ static void gst_single_queue_flush_queue (GstSingleQueue * sq, gboolean full);
+ 
+ static void calculate_interleave (GstMultiQueue * mq, GstSingleQueue * sq);
+ 
++static GstIterator *gst_multi_queue_iterate_internal_links (GstPad * pad,
++    GstObject * parent);
++
+ static GstStaticPadTemplate sinktemplate = GST_STATIC_PAD_TEMPLATE ("sink_%u",
+     GST_PAD_SINK,
+     GST_PAD_REQUEST,
+@@ -542,15 +545,73 @@ gst_multiqueue_pad_finalize (GObject * object)
+   G_OBJECT_CLASS (gst_multiqueue_pad_parent_class)->finalize (object);
+ }
+ 
++/* GstPadClass::forward implementation: a multiqueue pad has exactly one
++ * internal link, the other pad of its GstSingleQueue, so call the forward
++ * function directly on it instead of going through the generic GstIterator
++ * machinery. The internal pad is resolved exactly like
++ * gst_multi_queue_iterate_internal_links() resolves it, and the no-parent
++ * bail-out matches ACQUIRE_PARENT in gst_pad_iterate_internal_links(); the
++ * parent is only checked, never dereferenced, so no reference is taken. */
++static gboolean
++gst_multiqueue_pad_forward (GstPad * pad, GstPadForwardFunction forward,
++    gpointer user_data)
++{
++  GstSingleQueue *sq;
++  GstPad *opad;
++  gboolean res = FALSE;
++
++  GST_OBJECT_LOCK (pad);
++  if (G_UNLIKELY (GST_PAD_ITERINTLINKFUNC (pad) !=
++          gst_multi_queue_iterate_internal_links)) {
++    /* a custom internal-links function was installed on this pad instance,
++     * use the generic iterator-based implementation */
++    GST_OBJECT_UNLOCK (pad);
++    return GST_PAD_CLASS (gst_multiqueue_pad_parent_class)->forward (pad,
++        forward, user_data);
++  }
++  if (G_UNLIKELY (GST_OBJECT_PARENT (pad) == NULL
++          && GST_PAD_NEEDS_PARENT (pad))) {
++    GST_OBJECT_UNLOCK (pad);
++    GST_DEBUG_OBJECT (pad, "no parent");
++    return FALSE;
++  }
++  GST_OBJECT_UNLOCK (pad);
++
++  sq = GST_MULTIQUEUE_PAD (pad)->sq;
++
++  switch (GST_PAD_DIRECTION (pad)) {
++    case GST_PAD_SRC:
++      opad = g_weak_ref_get (&sq->sinkpad);
++      break;
++    case GST_PAD_SINK:
++      opad = g_weak_ref_get (&sq->srcpad);
++      break;
++    default:
++      g_return_val_if_reached (FALSE);
++  }
++
++  if (opad) {
++    GST_LOG_OBJECT (pad, "calling forward function on pad %s:%s",
++        GST_DEBUG_PAD_NAME (opad));
++    res = forward (opad, user_data);
++    gst_object_unref (opad);
++  }
++
++  return res;
++}
++
+ static void
+ gst_multiqueue_pad_class_init (GstMultiQueuePadClass * klass)
+ {
+   GObjectClass *gobject_class = (GObjectClass *) klass;
++  GstPadClass *pad_class = (GstPadClass *) klass;
+ 
+   gobject_class->set_property = gst_multiqueue_pad_set_property;
+   gobject_class->get_property = gst_multiqueue_pad_get_property;
+   gobject_class->finalize = gst_multiqueue_pad_finalize;
+ 
++  pad_class->forward = gst_multiqueue_pad_forward;
++
+   /**
+    * GstMultiQueuePad:group-id:
+    *
