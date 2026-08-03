@@ -2985,12 +2985,43 @@ impl ByteSink for NetworkStream {
     }
 }
 
-/// Answer one companion `GetResource`. Sends a `NotFound` frame when `source` is `None`, otherwise
-/// the requested byte range (whole resource when `read_head` is `None`) split into
-/// `MAX_RESOURCE_READ_SIZE` parts.
+/// Answer a companion `GetResource` that cannot be fulfilled, with a single terminal `NotFound`
+/// frame.
 ///
-/// A served range of zero bytes (empty resource, or a range past EOF), and a range needing more
-/// than 255 parts, both emit no frames, so the requester gets no response.
+/// `NotFound` is the wire's only "no data" result (see [`companion::GetResourceResult`]), so it
+/// doubles as the answer to a request that names nothing readable. Being precise about the reason
+/// matters far less than answering at all: the requester is blocked on the response, and the
+/// receiver's image fetch blocks on it with no timeout whatsoever.
+async fn send_resource_not_found<S: ByteSink>(
+    stream: &mut S,
+    request_id: u32,
+) -> Result<(), utils::WorkError> {
+    let body = companion::ResourceResponse {
+        request_id,
+        part: 0,
+        total_parts: 1,
+        result: companion::GetResourceResult::NotFound,
+    }
+    .serialize();
+
+    let size = 1 + body.len();
+    let mut header = [0u8; HEADER_LENGTH];
+    header[..HEADER_LENGTH - 1].copy_from_slice(&(size as u32).to_le_bytes());
+    header[HEADER_LENGTH - 1] = Opcode::Resource as u8;
+    stream.write_all(&header).await?;
+    stream.write_all(&body).await?;
+    stream.flush().await?;
+
+    Ok(())
+}
+
+/// Answer one companion `GetResource`: the requested byte range (the whole resource when
+/// `read_head` is `None`) split into `MAX_RESOURCE_READ_SIZE` parts.
+///
+/// Every request gets exactly one answer, terminated by a frame whose `part` is `total_parts - 1`
+/// (that is what releases the requester's pending entry). An unknown resource, a range naming no
+/// readable bytes (an empty resource, or one starting at or past EOF), and a range too large for
+/// the 255 parts the wire format can carry are all answered with `NotFound`.
 async fn serve_resource<S: ByteSink>(
     stream: &mut S,
     source: Option<&mut WrappedCompanionSource>,
@@ -2998,22 +3029,7 @@ async fn serve_resource<S: ByteSink>(
     read_head: Option<(/* start */ u64, /* stop_inclusive */ u64)>,
 ) -> Result<(), utils::WorkError> {
     let Some(source) = source else {
-        let body = companion::ResourceResponse {
-            request_id,
-            part: 0,
-            total_parts: 1,
-            result: companion::GetResourceResult::NotFound,
-        }
-        .serialize();
-
-        let size = 1 + body.len();
-        let mut header = [0u8; HEADER_LENGTH];
-        header[..HEADER_LENGTH - 1].copy_from_slice(&(size as u32).to_le_bytes());
-        header[HEADER_LENGTH - 1] = Opcode::Resource as u8;
-        stream.write_all(&header).await?;
-        stream.write_all(&body).await?;
-        stream.flush().await?;
-        return Ok(());
+        return send_resource_not_found(stream, request_id).await;
     };
 
     let file_len = source.len;
@@ -3022,17 +3038,24 @@ async fn serve_resource<S: ByteSink>(
         None => (0, file_len.saturating_sub(1)),
     };
 
-    source.data.seek(std::io::SeekFrom::Start(start))?;
-
     let max_packet_size = companion::MAX_RESOURCE_READ_SIZE;
     let mut bytes_to_read = resource_bytes_to_read(start, stop_inclusive, file_len);
+    if bytes_to_read == 0 {
+        warn!(
+            "Companion resource request {request_id} names no readable bytes (start={start}, stop_inclusive={stop_inclusive}, len={file_len}), answering NotFound"
+        );
+        return send_resource_not_found(stream, request_id).await;
+    }
+
     let total_packets = bytes_to_read.div_ceil(max_packet_size as u64);
     if total_packets > u8::MAX.into() {
         error!(
-            "Companion resource request {request_id} needs {total_packets} parts, exceeding the 256-part limit"
+            "Companion resource request {request_id} needs {total_packets} parts, exceeding the 255-part limit"
         );
-        return Ok(());
+        return send_resource_not_found(stream, request_id).await;
     }
+
+    source.data.seek(std::io::SeekFrom::Start(start))?;
 
     let total_packets = total_packets as u8;
     let mut current_packet = 0;
@@ -3206,17 +3229,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn serve_resource_start_past_eof_sends_nothing() {
-        // A range entirely past EOF yields no frames at all (documented behaviour).
+    async fn serve_resource_start_past_eof_answers_not_found() {
         let mut src = bytes_source((0..100u8).collect());
-        assert!(serve(Some(&mut src), Some((100, 200))).await.is_empty());
+        let frames = parse_frames(&serve(Some(&mut src), Some((100, 200))).await);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].request_id, 42);
+        assert_eq!(frames[0].result, companion::GetResourceResult::NotFound);
     }
 
     #[tokio::test]
-    async fn serve_resource_empty_resource_sends_nothing() {
-        // A zero-length resource yields no frames (documented behaviour).
+    async fn serve_resource_empty_resource_answers_not_found() {
         let mut src = bytes_source(Vec::new());
-        assert!(serve(Some(&mut src), None).await.is_empty());
+        let frames = parse_frames(&serve(Some(&mut src), None).await);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].request_id, 42);
+        assert_eq!(frames[0].result, companion::GetResourceResult::NotFound);
+    }
+
+    /// Every `GetResource` must be answered, and the answer must terminate the request.
+    ///
+    /// Zero-byte ranges used to emit no frames at all, which parks the requester on a response that
+    /// never arrives: `fcompsrc` eats a 2.5s stall and then errors, and the receiver's companion
+    /// image fetch awaits the channel with no timeout, so it hangs outright. Reachable from a
+    /// caller as soon as it registers an empty resource (`SubtitleContent::Data` with no bytes) or
+    /// seeks to EOF.
+    #[tokio::test]
+    async fn serve_resource_always_answers_and_terminates() {
+        // (name, resource length, read head)
+        let cases: &[(&str, usize, Option<(u64, u64)>)] = &[
+            ("empty resource, implicit whole-range", 0, None),
+            ("empty resource, explicit range", 0, Some((0, 99))),
+            ("range starting exactly at eof", 100, Some((100, 200))),
+            ("range starting past eof", 100, Some((1000, 2000))),
+            ("inverted range", 100, Some((50, 10))),
+            ("range within the resource", 100, Some((0, 9))),
+            ("whole resource", 100, None),
+            (
+                "multi-part whole resource",
+                companion::MAX_RESOURCE_READ_SIZE * 2 + 1,
+                None,
+            ),
+        ];
+
+        for (name, len, head) in cases {
+            let mut src = bytes_source((0..*len).map(|i| i as u8).collect());
+            let frames = parse_frames(&serve(Some(&mut src), *head).await);
+            assert!(!frames.is_empty(), "{name}: request went unanswered");
+            let last = frames.last().unwrap();
+            // The requester releases its pending entry on the frame whose part is the last one, so
+            // an answer that never marks itself final leaves the request dangling.
+            assert_eq!(
+                last.part,
+                last.total_parts.saturating_sub(1),
+                "{name}: answer never terminates the request"
+            );
+            for frame in &frames {
+                assert_eq!(frame.request_id, 42, "{name}: wrong request id");
+            }
+        }
     }
 
     #[tokio::test]
