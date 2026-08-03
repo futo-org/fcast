@@ -119,6 +119,8 @@ pub(crate) struct PumpCtx {
     /// An external subtitle input is attached: the re-emit flush races the
     /// external inputs' reconfiguration and can freeze the play item, so
     /// the pump neither schedules nor dispatches one while this holds.
+    /// (Externals need no engine flush anyway: the crate replays the
+    /// input itself whenever its stream joins the overlay.)
     pub(crate) externals_attached: bool,
     /// Stream ids each attached external input has produced so far, for
     /// resolving [`TrackTarget::ExternalSubtitle`].
@@ -185,6 +187,11 @@ pub(crate) struct SelectionEngine {
     /// converged or dispatches. Dispatching ONLY on fresh events keeps the
     /// engine convergent (a selection decodebin3 refuses cannot ping-pong).
     dirty: bool,
+    /// A `STREAMS_SELECTED` of this load has been adopted. From then on an
+    /// empty applied text slot is decodebin3's REAL state, not ignorance
+    /// awaiting the auto-select, and `collection_changed` must not seed it
+    /// (see there).
+    adopted: bool,
 }
 
 impl SelectionEngine {
@@ -237,6 +244,16 @@ impl SelectionEngine {
         // phantom in-flight request starves every later change (seen when
         // re-attaching an external subtitle re-posts the collection while
         // subtitles are switched off).
+        //
+        // The text slot needs one more guard: decodebin3 auto-selects
+        // text only until it has seen an explicit `SELECT_STREAMS`, so
+        // once ANY selection of this load was adopted, an EMPTY text slot
+        // is its real state. Seeding it then makes the pump treat a
+        // re-enable as already applied and dispatch nothing (the external
+        // re-select-after-deselect wedge). A POPULATED slot whose stream
+        // left the collection still falls back to the default, mirroring
+        // decodebin3 replacing a vanished selected stream.
+        let text_was_applied = self.applied.subtitle.is_some();
         self.applied.video = Self::seed_slot(
             &self.collection,
             StreamKind::Video,
@@ -253,7 +270,8 @@ impl SelectionEngine {
             &self.collection,
             StreamKind::Text,
             self.applied.subtitle.take(),
-            self.desired_subtitle != Some(SubtitleDesire::Stream(None)),
+            (text_was_applied || !self.adopted)
+                && self.desired_subtitle != Some(SubtitleDesire::Stream(None)),
         );
 
         self.selecting = None;
@@ -313,6 +331,7 @@ impl SelectionEngine {
     /// fresh non-matching `STREAMS_SELECTED` to fire again, and decodebin3
     /// auto-selects at most once per collection.
     pub(crate) fn streams_selected(&mut self, seqnum: gst::Seqnum, reported: &TrackSelection) {
+        self.adopted = true;
         self.applied = reported.clone();
 
         match self.selecting.take() {
@@ -1185,6 +1204,34 @@ mod tests {
         );
         engine.selection_dispatched(gst::Seqnum::next(), target.clone());
         engine.streams_selected(gst::Seqnum::next(), &target);
+        assert_eq!(engine.pump(&ctx_ext(true, false, externals)), None);
+        assert!(!engine.has_dispatchable_work());
+    }
+
+    #[test]
+    fn external_switch_never_schedules_the_refresh() {
+        // No refresh flush while an external input is attached; the
+        // crate's join-time input replay covers externals instead.
+        let mut engine = settled_engine();
+        let ext = crate::ExternalSubId(1);
+        engine.request(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(ext));
+
+        let mut streams = avt_collection();
+        streams.push(CollectionStream {
+            sid: "ext-t".into(),
+            kind: StreamKind::Text,
+        });
+        engine.collection_changed(streams);
+        let externals: &[(ExternalSubId, &[&str])] = &[(ext, &["ext-t"])];
+
+        let target = sel(Some("v0"), Some("a0"), Some("ext-t"));
+        assert_eq!(
+            engine.pump(&ctx_ext(true, false, externals)),
+            Some(Command::SelectStreams(target.clone()))
+        );
+        let sn = gst::Seqnum::next();
+        engine.selection_dispatched(sn, target.clone());
+        engine.streams_selected(sn, &target);
         assert_eq!(engine.pump(&ctx_ext(true, false, externals)), None);
         assert!(!engine.has_dispatchable_work());
     }

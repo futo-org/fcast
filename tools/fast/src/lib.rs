@@ -134,6 +134,11 @@ pub enum Send {
         select: bool,
         name: Option<&'static str>,
     },
+    AddSubtitleSourceCompanionV4 {
+        resource_id: u32,
+        select: bool,
+        name: Option<&'static str>,
+    },
     /// Attach an external subtitle pointing at a well-formed URL that 404s.
     AddSubtitleSourceFakeUrlV4 {
         select: bool,
@@ -387,6 +392,8 @@ cases!(
     external_sub_add_after_deselect_v4,
     external_sub_reselect_after_deselect_v4,
     external_sub_seek_v4,
+    external_sub_companion_v4,
+    external_sub_companion_multipart_v4,
     external_sub_empty_url_malformed_v4,
     external_sub_add_invalid_url_v4,
     external_sub_no_media_rejected_v4,
@@ -2293,6 +2300,92 @@ define_test_case!(
             audio: Some(0),
             subtitle: Some(0),
         },
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    external_sub_companion_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::CompanionHello),
+        send!(Send::ServeCompanionFile {
+            resource_id: 0,
+            path: "subs/sample_en.srt",
+            mime: "application/x-subrip",
+        }),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(1000),
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(4.0)),
+        send!(Send::AddSubtitleSourceCompanionV4 {
+            resource_id: 0,
+            select: true,
+            name: Some("English (companion)"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        recv!(Receive::NextProgressV4AtLeast(3.0)),
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    external_sub_companion_multipart_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::CompanionHello),
+        send!(Send::ServeCompanionFile {
+            resource_id: 0,
+            path: "subs/generated_dense.vtt",
+            mime: "text/vtt",
+        }),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(1000),
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(2.0)),
+        send!(Send::AddSubtitleSourceCompanionV4 {
+            resource_id: 0,
+            select: false,
+            name: Some("Dense (companion)"),
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 1,
+        },
+        // Attaching unselected must leave the subtitle off.
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: None,
+        },
+        send!(Send::ChangeTrack {
+            kind: TrackKind::Subtitle,
+            index: Some(0),
+        }),
+        Step::AwaitTrackState {
+            video: Some(0),
+            audio: Some(0),
+            subtitle: Some(0),
+        },
+        recv!(Receive::NextProgressV4AtLeast(2.0)),
         send!(Send::StopV4),
     ]
 );

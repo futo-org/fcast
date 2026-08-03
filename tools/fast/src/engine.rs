@@ -948,28 +948,14 @@ impl<'a> Engine<'a> {
         // Explicitly report not-found resources so the receiver surfaces a
         // ResourceNotFound error.
         if self.companion_missing.contains_key(&resource_id) {
-            let body = companion::ResourceResponse {
-                request_id,
-                part: 1,
-                total_parts: 1,
-                result: companion::GetResourceResult::NotFound,
-            }
-            .serialize();
-            return self.conn.write(Opcode::Resource, Some(&body)).await;
+            return self.send_companion_not_found(request_id).await;
         }
         let Some(data) = self
             .companion_resources
             .get(&resource_id)
             .map(|r| r.data.clone())
         else {
-            let body = companion::ResourceResponse {
-                request_id,
-                part: 1,
-                total_parts: 1,
-                result: companion::GetResourceResult::NotFound,
-            }
-            .serialize();
-            return self.conn.write(Opcode::Resource, Some(&body)).await;
+            return self.send_companion_not_found(request_id).await;
         };
 
         let end = read_head
@@ -988,8 +974,13 @@ impl<'a> Engine<'a> {
         let total_parts = chunks.len() as u8;
 
         for (i, chunk) in chunks.iter().enumerate() {
+            // Part numbering is 0-based (v4 spec, Resource/Response: "Part #
+            // must always start at 0"). The receiver releases the pending
+            // request on the part equal to total_parts - 1, so 1-based
+            // numbering would leave every request dangling and never close the
+            // response channel a whole-resource reader waits on.
             let header =
-                companion::ResourceResponse::header_success(request_id, (i + 1) as u8, total_parts);
+                companion::ResourceResponse::header_success(request_id, i as u8, total_parts);
             let body = [header.as_slice(), chunk].concat();
             self.conn.write(Opcode::Resource, Some(&body)).await?;
         }
@@ -1002,6 +993,19 @@ impl<'a> Engine<'a> {
             );
         }
         Ok(())
+    }
+
+    /// The single terminal `NotFound` frame answering an unfulfillable
+    /// `GetResource`.
+    async fn send_companion_not_found(&mut self, request_id: u32) -> Result<()> {
+        let body = companion::ResourceResponse {
+            request_id,
+            part: 0,
+            total_parts: 1,
+            result: companion::GetResourceResult::NotFound,
+        }
+        .serialize();
+        self.conn.write(Opcode::Resource, Some(&body)).await
     }
 
     fn validate_awaited(&self, opcode: Opcode, body: Option<&[u8]>) -> Result<()> {
@@ -2297,6 +2301,24 @@ impl<'a> Engine<'a> {
                 name,
             } => {
                 let (url, _mime, _headers) = self.file(*file_id)?;
+                let msg = v4::MessageBuilder::new().add_subtitle_source(&url, *select, *name);
+                self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
+            }
+            Op::AddSubtitleSourceCompanionV4 {
+                resource_id,
+                select,
+                name,
+            } => {
+                let provider_id = self.companion_provider_id.ok_or_else(|| {
+                    anyhow!("CompanionHello must complete before AddSubtitleSourceCompanionV4")
+                })?;
+                if !self.companion_resources.contains_key(resource_id) {
+                    bail!("companion resource {resource_id} was not served");
+                }
+                let url = companion::create_url(provider_id, *resource_id);
+                // The receiver fetches this over the companion channel, so the
+                // provider must answer before the attach can materialize.
+                self.expect.companion_served = Some(*resource_id);
                 let msg = v4::MessageBuilder::new().add_subtitle_source(&url, *select, *name);
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }

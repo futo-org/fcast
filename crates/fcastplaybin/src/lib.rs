@@ -28,7 +28,7 @@ use std::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow};
@@ -85,7 +85,7 @@ pub struct StartOutcome {
 const PREROLL_TIMEOUT: gst::ClockTime = gst::ClockTime::from_seconds(10);
 
 /// Identifies one attached external subtitle input for later detach. The id is STABLE across
-/// internal re-arms (see `Inner::handle_external_error`).
+/// in-place recoveries (see `Inner::handle_external_error`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ExternalSubId(u64);
 
@@ -93,9 +93,11 @@ pub struct ExternalSubId(u64);
 /// failed.
 const EXTERNAL_SUB_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How soon after a (re-)attach an external input's bus error may trigger another re-arm. A dying
-/// input posts several errors in a burst and only the first past this window may replace it.
-const EXTERNAL_REARM_DEBOUNCE: Duration = Duration::from_secs(1);
+/// How many times an external input that died before anything of it reached
+/// decodebin3 is re-attached (see [`Job::RetrySub`]). A genuinely bad URL
+/// exhausts these near-instantly and the materialization watchdog delivers
+/// the verdict.
+const MAX_ATTACH_RETRIES: u32 = 3;
 
 /// A cumulative byte counter for one input stream's PARSED (compressed) data, for bitrate
 /// inspection (see [`FcastPlaybin::stream_io_stats`]). Counters are per-load by construction (they
@@ -177,7 +179,7 @@ pub struct SourceDbg {
 
 /// Where a bus error originated, derived from the generation-tagged inputs. This replaces
 /// playbin3's contextless `failed_uri` guessing. Errors from live external subtitle inputs never
-/// surface here: the crate handles them internally (re-arm, or
+/// surface here: the crate handles them internally (in-place recovery, or
 /// [`PlaybinEvent::ExternalSubtitleFailed`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ErrorOrigin {
@@ -290,7 +292,7 @@ pub enum PlaybinEvent {
     /// An attached external subtitle input failed for good and has already been DETACHED by the
     /// crate: its attach failed outright, a bus error arrived while its stream was selected (or
     /// before it ever produced one), or it produced no stream within the materialization timeout.
-    /// Deselect-race errors are re-armed internally and never surface (see
+    /// Deselect-race errors recover in place and never surface (see
     /// `Inner::handle_external_error`). The caller drops its bookkeeping for the id and reports the
     /// failure.
     ExternalSubtitleFailed {
@@ -395,17 +397,23 @@ enum Job {
         id: ExternalSubId,
         epoch: u32,
     },
-    /// Replace a deselected external subtitle input that died in the
-    /// deselect race with a fresh element on the same URI, under the SAME
-    /// id (see `Inner::handle_external_error`).
-    RearmSub {
-        id: ExternalSubId,
-        epoch: u32,
-    },
     /// Bounded materialization check, armed per (re-)attach: an input still
     /// without streams when this fires is dead (bad URL that never errors)
     /// and is failed.
     CheckSub {
+        id: ExternalSubId,
+        epoch: u32,
+    },
+    /// Re-attach an external input that died before anything of it
+    /// reached decodebin3 (see `FcastPlaybin::retry_subtitle`).
+    RetrySub {
+        id: ExternalSubId,
+        epoch: u32,
+    },
+    /// Replay an external input whose stream just joined the overlay: a
+    /// flushing zero-seek into the input (see `Inner::poll_text_policy`,
+    /// which queues one on EVERY join).
+    ReplaySub {
         id: ExternalSubId,
         epoch: u32,
     },
@@ -474,13 +482,18 @@ impl std::fmt::Debug for Job {
                 .field("id", id)
                 .field("epoch", epoch)
                 .finish(),
-            Job::RearmSub { id, epoch } => f
-                .debug_struct("RearmSub")
+            Job::CheckSub { id, epoch } => f
+                .debug_struct("CheckSub")
                 .field("id", id)
                 .field("epoch", epoch)
                 .finish(),
-            Job::CheckSub { id, epoch } => f
-                .debug_struct("CheckSub")
+            Job::RetrySub { id, epoch } => f
+                .debug_struct("RetrySub")
+                .field("id", id)
+                .field("epoch", epoch)
+                .finish(),
+            Job::ReplaySub { id, epoch } => f
+                .debug_struct("ReplaySub")
                 .field("id", id)
                 .field("epoch", epoch)
                 .finish(),
@@ -531,15 +544,13 @@ struct StreamTap {
 /// input).
 struct ExternalInput {
     id: ExternalSubId,
-    /// The subtitle URI, kept for re-arming with a fresh element.
+    /// The subtitle URI, kept for the never-linked attach retry (see
+    /// `FcastPlaybin::retry_subtitle`).
     uri: String,
-    /// Bumped on every re-attach under this id. Queued fail/re-arm/check
-    /// jobs carry the epoch they were decided against and no-op on a
-    /// mismatch, so a stale job can never detach the healthy input a
-    /// re-arm just built.
+    /// Bumped per attach retry. Queued fail/check/retry/replay jobs carry
+    /// the epoch they were decided against and no-op on a mismatch, so a
+    /// stale job can never act on a different incarnation of the id.
     epoch: u32,
-    /// When this input was (re-)attached, for the error debounce.
-    attached_at: Instant,
     /// Block this input's buffers at its source pads until a selection
     /// naming its stream applies.
     ///
@@ -1465,10 +1476,10 @@ impl FcastPlaybin {
     /// Live-attach an external subtitle by URI (file/http) under a
     /// pre-reserved id. Works in any pipeline state. The stream becomes
     /// selectable once decodebin3 announces the updated collection. The
-    /// crate babysits the input from here: an input that dies in the
-    /// deselect race is re-armed internally under the same id, and one that
-    /// fails for good (or never produces a stream within the bounded wait)
-    /// is detached and reported as
+    /// crate babysits the input from here: an input whose task dies in the
+    /// deselect race recovers in place through the join-time replay, and
+    /// one that fails for good (or never produces a stream within the
+    /// bounded wait) is detached and reported as
     /// [`PlaybinEvent::ExternalSubtitleFailed`].
     pub fn attach_subtitle_with_id(&self, id: ExternalSubId, uri: &str) -> Result<()> {
         let generation = self.inner.current_generation();
@@ -1481,10 +1492,8 @@ impl FcastPlaybin {
             id,
             uri: uri.to_string(),
             epoch: 0,
-            attached_at: Instant::now(),
-            // Held from the very first attach: a fresh input's first push is
-            // just as fatal as a re-armed one's whenever the stream is not
-            // selected yet (see `ExternalInput::hold_until_selected`).
+            // Held from the very first attach: an unselected stream's first
+            // push is fatal (see `ExternalInput::hold_until_selected`).
             hold_until_selected: true,
         };
         Inner::add_input(&self.inner, element, generation, Some(external))?;
@@ -1738,6 +1747,10 @@ impl FcastPlaybin {
         // the state change, which joins streaming threads.
         self.inner.swap_gate.abort();
         *self.inner.prepared.lock() = None;
+        // And wake every parked text push, or the downward change
+        // deadlocks on the pad locks those pushes hold (see
+        // `Inner::flush_parked_text_pushes`).
+        self.inner.flush_parked_text_pushes();
         {
             let _gate = Inner::gate(&self.inner);
             self.inner
@@ -2252,6 +2265,9 @@ impl Drop for Inner {
         // Wake any prepared-input thread parked on the swap gate before the
         // state change joins streaming threads.
         self.swap_gate.abort();
+        // And every parked text push, or the NULLs below deadlock on the
+        // pad locks those pushes hold (see the helper).
+        self.flush_parked_text_pushes();
         // A state-locked prepared input does not follow the pipeline down:
         // down it explicitly or its unref at PLAYING trips a CRITICAL.
         for input in self.routing.lock().inputs.iter() {
@@ -2396,75 +2412,51 @@ impl Inner {
         ErrorSource::Unknown
     }
 
-    /// Decide what a bus error from a live external subtitle input means
-    /// and queue the follow-up on the worker. Runs on the posting
-    /// (streaming) thread, so it only inspects state. The detach/re-attach
-    /// itself must not run here.
-    ///
-    /// An error from an input whose stream is currently SELECTED, or from
-    /// one that never produced a stream on its first attach (a bad URL
-    /// dying), is a genuine failure: the input is detached and reported as
-    /// [`PlaybinEvent::ExternalSubtitleFailed`]. An error from a DESELECTED
-    /// input that had materialized is the known deselect race (switching
-    /// away from a selected external races its in-flight push against
-    /// decodebin3's slot deactivation and kills the source with not-linked):
-    /// the input is RE-ARMED with a fresh element on the same URI, under the
-    /// same id, so the track stays selectable. The stream id is URI-derived
-    /// and survives the replacement, so the caller's bookkeeping stays
-    /// valid without it ever learning about the re-arm. A re-armed input's
-    /// own early errors are left to its watchdog ([`Job::CheckSub`]).
-    fn handle_external_error(&self, id: ExternalSubId, error: &gst::glib::Error) {
-        let routing = self.routing.lock();
-        let Some(input) = routing.inputs.iter().find(|i| i.is_external(id)) else {
-            // Already detached (a re-arm or removal won the race).
-            debug!(?id, "error from an already-detached external input");
-            return;
+    /// Decide what a bus error from a live external subtitle input means,
+    /// by its cause (see [`decisions::external_error_action`]). A
+    /// transport-race death recovers in place: the join-time replay
+    /// restarts the task, or the never-linked retry re-attaches. Anything
+    /// else is detached and reported as
+    /// [`PlaybinEvent::ExternalSubtitleFailed`]. Runs on the posting
+    /// (streaming) thread, so it only queues worker follow-up.
+    fn handle_external_error(
+        &self,
+        id: ExternalSubId,
+        error: &gst::glib::Error,
+        debug_info: Option<gst::glib::GString>,
+    ) {
+        let (epoch, never_linked) = {
+            let routing = self.routing.lock();
+            let Some(input) = routing.inputs.iter().find(|i| i.is_external(id)) else {
+                debug!(?id, "error from an already-detached external input");
+                return;
+            };
+            (
+                input.external.as_ref().expect("external input").epoch,
+                input.stream_ids().is_empty() && input.db3_sink_pads.is_empty(),
+            )
         };
-        // The borrow checker cannot see through Option here, but
-        // `is_external` guarantees it.
-        let external = input.external.as_ref().expect("external input");
-        let epoch = external.epoch;
-        let sids = input.stream_ids();
-        let selected = routing.routed.iter().any(|r| {
-            r.kind == StreamKind::Text
-                && r.db3_src_pad
-                    .stream_id()
-                    .is_some_and(|routed| sids.iter().any(|sid| *sid == routed))
-        });
-        let action = decisions::external_error_action(
-            !sids.is_empty(),
-            selected,
-            epoch > 0,
-            external.attached_at.elapsed(),
-            EXTERNAL_REARM_DEBOUNCE,
-        );
-        drop(routing);
 
         use decisions::ExternalErrorAction as Action;
-        match action {
+        match decisions::external_error_action(debug_info.as_deref()) {
             Action::Fail => {
-                warn!(?id, %error, "external subtitle input failed");
+                warn!(?id, %error, ?debug_info, "external subtitle input failed");
                 let _ = self.work_tx.send(Job::FailSub { id, epoch });
             }
-            Action::Rearm => {
-                info!(?id, %error, "re-arming the deselected external subtitle input");
-                let _ = self.work_tx.send(Job::RearmSub { id, epoch });
+            // A linked input recovers through the join-time replay. One
+            // that died before anything of it reached decodebin3 has
+            // nothing to select, so the replay can never run: re-attach
+            // it (safe exactly here, see `retry_subtitle`), a bounded
+            // number of times.
+            Action::Recover if never_linked && epoch < MAX_ATTACH_RETRIES => {
+                info!(?id, %error, epoch, "the input died before reaching decodebin3; retrying the attach");
+                let _ = self.work_tx.send(Job::RetrySub { id, epoch });
             }
-            Action::RearmDeferred => {
-                info!(?id, %error, "re-arming the deselected external subtitle input (deferred)");
-                let work_tx = self.work_tx.clone();
-                let spawned = std::thread::Builder::new()
-                    .name("fpb-sub-rearm".into())
-                    .spawn(move || {
-                        std::thread::sleep(EXTERNAL_REARM_DEBOUNCE);
-                        let _ = work_tx.send(Job::RearmSub { id, epoch });
-                    });
-                if let Err(err) = spawned {
-                    warn!(?err, ?id, "failed to defer the subtitle re-arm");
-                }
+            Action::Recover if never_linked => {
+                debug!(?id, %error, "the input keeps dying unlinked; the watchdog owns the verdict");
             }
-            Action::Ignore => {
-                debug!(?id, %error, "ignoring error from a just (re-)attached external input");
+            Action::Recover => {
+                debug!(?id, %error, "a transport race killed the input's task; the next join's replay restarts it");
             }
         }
     }
@@ -2812,7 +2804,7 @@ impl Inner {
                 // typed failure event), never surfaced as pipeline errors.
                 let origin = match self.classify_error_src(msg.src()) {
                     ErrorSource::External(id) => {
-                        self.handle_external_error(id, &error.error());
+                        self.handle_external_error(id, &error.error(), error.debug());
                         return None;
                     }
                     ErrorSource::Prepared(generation) => {
@@ -2966,8 +2958,8 @@ impl Inner {
                 // event arrives in a fresh load's order and stamping.
                 self.try_activate_prepared(&all_ids);
 
-                // A re-armed external held blocked until selected may flow
-                // now (see `ExternalInput::hold_until_selected`).
+                // An external held blocked until selected may flow now
+                // (see `ExternalInput::hold_until_selected`).
                 self.unblock_selected_externals(&all_ids);
 
                 let seqnum = msg.seqnum();
@@ -3120,6 +3112,7 @@ impl FcastPlaybin {
                     error!(?err, "Failed to seek");
                     inner.emit(PlaybinEvent::SeekFailed);
                 } else {
+                    inner.forward_seek_to_live_externals(rate, position);
                     inner.emit(PlaybinEvent::RateChanged(rate));
                 }
             }
@@ -3186,11 +3179,14 @@ impl FcastPlaybin {
             Job::FailSub { id, epoch } => {
                 self.fail_subtitle(id, epoch);
             }
-            Job::RearmSub { id, epoch } => {
-                self.rearm_subtitle(id, epoch);
-            }
             Job::CheckSub { id, epoch } => {
                 self.check_subtitle(id, epoch);
+            }
+            Job::RetrySub { id, epoch } => {
+                self.retry_subtitle(id, epoch);
+            }
+            Job::ReplaySub { id, epoch } => {
+                self.replay_subtitle(id, epoch);
             }
             Job::DumpGraph { done } => {
                 done(graph::snapshot(inner.pipeline.upcast_ref()));
@@ -3451,47 +3447,105 @@ impl FcastPlaybin {
         self.inner.emit(PlaybinEvent::ExternalSubtitleFailed { id });
     }
 
-    /// Worker side of the deselect-race recovery: replace the dead input
-    /// element with a fresh one on the same URI under the same id (bumped
-    /// epoch). A re-arm that cannot attach is a genuine failure.
-    fn rearm_subtitle(&self, id: ExternalSubId, epoch: u32) {
+    /// Worker side of the never-linked attach retry: an input killed
+    /// BEFORE anything of it reached decodebin3 has nothing to select, so
+    /// the join-time replay can never run and the watchdog would eat the
+    /// user's subtitle. Replacing the element is safe exactly here,
+    /// unlike the removed general re-arm: no pad locks for the NULL to
+    /// deadlock on, no collection presence to churn. Epoch-capped by the
+    /// caller ([`MAX_ATTACH_RETRIES`]); a genuinely bad URL exhausts the
+    /// retries and the watchdog delivers the verdict.
+    fn retry_subtitle(&self, id: ExternalSubId, epoch: u32) {
+        {
+            let routing = self.inner.routing.lock();
+            let Some(input) = routing.inputs.iter().find(|i| {
+                i.external
+                    .as_ref()
+                    .is_some_and(|e| e.id == id && e.epoch == epoch)
+            }) else {
+                debug!(?id, epoch, "stale subtitle retry; input already gone");
+                return;
+            };
+            // Linked after all (a pad appeared between the error and this
+            // job): the join-time replay owns recovery, and a replacement
+            // would reintroduce the hazards the retry exists to avoid.
+            if !input.stream_ids().is_empty() || !input.db3_sink_pads.is_empty() {
+                debug!(
+                    ?id,
+                    epoch, "input reached decodebin3 after all; leaving it be"
+                );
+                return;
+            }
+        }
         let Some(input) = self.take_external_input(id, epoch) else {
-            debug!(?id, epoch, "stale subtitle re-arm job; input already gone");
             return;
         };
         let uri = input.external.as_ref().expect("external input").uri.clone();
         Inner::remove_input(&self.inner, input);
 
         let attach = Inner::make_urisourcebin(&uri, false).and_then(|element| {
-            let external = ExternalInput {
-                id,
-                uri: uri.clone(),
-                epoch: epoch + 1,
-                attached_at: Instant::now(),
-                // Like every attach: the replacement holds its buffers until
-                // a selection actually wants its stream (see
-                // `ExternalInput::hold_until_selected`).
-                hold_until_selected: true,
-            };
             Inner::add_input(
                 &self.inner,
                 element,
                 self.inner.current_generation(),
-                Some(external),
+                Some(ExternalInput {
+                    id,
+                    uri: uri.clone(),
+                    epoch: epoch + 1,
+                    hold_until_selected: true,
+                }),
             )
         });
         match attach {
             Ok(()) => {
-                info!(?id, uri, "re-armed external subtitle input");
-                // The fresh input can fail as silently as the original:
-                // without a new bounded check, a dead re-armed input would
-                // stay selectable forever and a selection parked on it
-                // would never resolve or error.
+                info!(
+                    ?id,
+                    uri,
+                    epoch = epoch + 1,
+                    "retried the external subtitle attach"
+                );
                 self.arm_sub_watchdog(id, epoch + 1);
             }
             Err(err) => {
-                error!(?err, ?id, uri, "re-arming the external subtitle failed");
+                error!(?err, ?id, uri, "the attach retry failed");
                 self.inner.emit(PlaybinEvent::ExternalSubtitleFailed { id });
+            }
+        }
+    }
+
+    /// Worker side of the join-time replay: a flushing zero-seek into the
+    /// input's own source pads (a pipeline seek never reaches side
+    /// inputs). The flush resets any slot queue state a previous drain
+    /// left FLUSHING, restarts a task the deselect race killed, and the
+    /// source re-pushes the whole file, exactly like a fresh attach: past
+    /// cues fall to sync, the current one shows. Epoch-guarded like the
+    /// other subtitle jobs.
+    fn replay_subtitle(&self, id: ExternalSubId, epoch: u32) {
+        let pads: Vec<gst::Pad> = {
+            let routing = self.inner.routing.lock();
+            let Some(input) = routing.inputs.iter().find(|i| {
+                i.external
+                    .as_ref()
+                    .is_some_and(|e| e.id == id && e.epoch == epoch)
+            }) else {
+                debug!(?id, epoch, "stale subtitle replay job; input already gone");
+                return;
+            };
+            input.element.src_pads()
+        };
+        let seek = gst::event::Seek::builder(
+            1.0,
+            gst::SeekFlags::FLUSH | gst::SeekFlags::ACCURATE,
+            gst::SeekType::Set,
+            gst::ClockTime::ZERO,
+            gst::SeekType::None,
+            gst::ClockTime::NONE,
+        )
+        .build();
+        for pad in pads {
+            info!(pad = %pad.name(), ?id, "replaying the spent external subtitle input");
+            if !pad.send_event(seek.clone()) {
+                warn!(pad = %pad.name(), ?id, "the external input refused the replay seek");
             }
         }
     }
@@ -3774,6 +3828,96 @@ impl Inner {
         for (pad, probe) in to_unblock {
             debug!(pad = %pad.name(), "releasing a selected external input's data hold");
             pad.remove_probe(probe);
+        }
+    }
+
+    /// Wake every parked text push before a downward state change. Two
+    /// kinds of thread sit parked HOLDING pad locks the state change
+    /// needs to deactivate pads, wedging `set_state` forever: a live
+    /// overlay branch inside textoverlay's cue sync, and a mid-push input
+    /// inside its byte-limited decodebin3 slot. The flush pairs wake
+    /// both.
+    fn flush_parked_text_pushes(&self) {
+        let routing = self.routing.lock();
+        for routed in routing.routed.iter() {
+            if routed.kind == StreamKind::Text
+                && let Some(downstream) = &routed.downstream
+            {
+                let _ = downstream.send_event(gst::event::FlushStart::new());
+                let _ = downstream.send_event(gst::event::FlushStop::new(true));
+            }
+        }
+        for input in routing.inputs.iter() {
+            for db3_sink in &input.db3_sink_pads {
+                let _ = db3_sink.send_event(gst::event::FlushStart::new());
+                let _ = db3_sink.send_event(gst::event::FlushStop::new(true));
+            }
+        }
+    }
+
+    /// Forward a just-performed user seek into every external subtitle
+    /// input whose stream is live in the overlay. A pipeline seek travels
+    /// the sink chains and decodebin3 forwards it up the MAIN input only,
+    /// so a side input's segment stays on the old timeline and its cues
+    /// never sync against the sought video again. The same seek through
+    /// the input aligns its segment and replays from the target
+    /// (uridecodebin3 forwarded seeks to every source handler for the
+    /// same reason). Deselected inputs are skipped: their replayed data
+    /// would land in the parking sink, and the join-time replay owns
+    /// their recovery.
+    fn forward_seek_to_live_externals(&self, rate: f64, position: gst::ClockTime) {
+        let targets: Vec<gst::Pad> = {
+            let routing = self.routing.lock();
+            let live_text: Vec<String> = routing
+                .routed
+                .iter()
+                .filter(|r| r.kind == StreamKind::Text && r.downstream.is_some())
+                .filter_map(|r| r.db3_src_pad.stream_id().map(|s| s.to_string()))
+                .collect();
+            routing
+                .inputs
+                .iter()
+                .filter(|i| {
+                    i.external.is_some() && i.stream_ids().iter().any(|sid| live_text.contains(sid))
+                })
+                .flat_map(|i| i.element.src_pads())
+                .collect()
+        };
+        if targets.is_empty() {
+            return;
+        }
+        // Mirror `send_rate_seek`'s event exactly so both sides of the
+        // pipeline land on the same segment.
+        let mut flags = gst::SeekFlags::ACCURATE | gst::SeekFlags::FLUSH;
+        if rate < 0.0 || rate > 2.0 {
+            flags |= gst::SeekFlags::TRICKMODE;
+        }
+        let event = if rate >= 0.0 {
+            gst::event::Seek::builder(
+                rate,
+                flags,
+                gst::SeekType::Set,
+                position,
+                gst::SeekType::None,
+                gst::ClockTime::NONE,
+            )
+            .build()
+        } else {
+            gst::event::Seek::builder(
+                rate,
+                flags,
+                gst::SeekType::Set,
+                gst::ClockTime::ZERO,
+                gst::SeekType::End,
+                position,
+            )
+            .build()
+        };
+        for pad in targets {
+            debug!(pad = %pad.name(), "forwarding the seek to a live external subtitle input");
+            if !pad.send_event(event.clone()) {
+                warn!(pad = %pad.name(), "the external input refused the forwarded seek");
+            }
         }
     }
 
@@ -4584,6 +4728,14 @@ impl Inner {
         // A still-locked prepared input unlocks on its way out (harmless
         // for ordinary inputs).
         input.element.set_locked_state(false);
+        // A mid-push input's streaming thread is parked inside its
+        // decodebin3 slot HOLDING ITS OWN PAD LOCKS, and the NULL below
+        // deadlocks on them (this wedged the worker in the field). Flush
+        // the input's decodebin3 chain first to release the parked pushes.
+        for db3_sink in &input.db3_sink_pads {
+            let _ = db3_sink.send_event(gst::event::FlushStart::new());
+            let _ = db3_sink.send_event(gst::event::FlushStop::new(true));
+        }
         // Losing the state change here is fine, the element is leaving.
         let _ = input.element.set_state(gst::State::Null);
         for db3_sink in &input.db3_sink_pads {
@@ -5045,6 +5197,7 @@ impl Inner {
         {
             return;
         }
+        let mut joined: Option<String> = None;
         for routed in routing
             .routed
             .iter_mut()
@@ -5099,6 +5252,7 @@ impl Inner {
                     info!(pad = %routed.db3_src_pad.name(), "text stream joined subtitleoverlay");
                     routed.downstream = Some(queue_entry);
                     routed.tqueue = Some(tqueue);
+                    joined = sid.map(|s| s.to_string());
                 }
                 Err(err) => {
                     warn!(?err, "failed to link text stream into subtitleoverlay");
@@ -5114,6 +5268,25 @@ impl Inner {
                         }
                         Err(err) => warn!(?err, "failed to re-park the text stream"),
                     }
+                }
+            }
+        }
+        // EVERY join of an external stream replays its input: by join
+        // time anything may have drained its data beyond reach (deselect
+        // drains, the deselect-race death, auto-select releasing the hold
+        // into a parked branch), no flag can track those orderings, and
+        // the replay is idempotent. Queued only AFTER the link, so the
+        // replayed data lands in the overlay and not in the parking sink.
+        if let Some(sid) = joined {
+            for input in routing.inputs.iter() {
+                let Some(external) = input.external.as_ref() else {
+                    continue;
+                };
+                if !external.hold_until_selected && input.stream_ids().contains(&sid) {
+                    let _ = inner.work_tx.send(Job::ReplaySub {
+                        id: external.id,
+                        epoch: external.epoch,
+                    });
                 }
             }
         }
@@ -5194,56 +5367,29 @@ mod decisions {
     pub(crate) enum ExternalErrorAction {
         /// Genuine failure: detach and report `ExternalSubtitleFailed`.
         Fail,
-        /// The deselect race: replace the input under the same id.
-        Rearm,
-        /// The deselect race hit a just-attached input (its error burst is
-        /// still settling): replace it after the debounce. A dead input
-        /// must NEVER stay attached: its stream keeps advertising in the
-        /// merged collection while its multiqueue slot gets reused, and
-        /// such a ghost stream blocks `all_streams_present` for every newer
-        /// collection, wedging all future selections.
-        RearmDeferred,
-        /// A dying input's echo: the watchdog owns the final verdict.
-        Ignore,
+        /// A transport race: the source is fine, only its task stopped (a
+        /// deselect or a flush caught it mid-push). Keep the input
+        /// attached; the join-time replay seek restarts it (idempotent,
+        /// so a dying input's error burst needs no debounce).
+        Recover,
     }
 
-    /// Decide an external input's error. `materialized` is whether the
-    /// input ever produced a stream, `selected` whether one of its streams
-    /// is the current subtitle selection, `ever_rearmed` whether this
-    /// element is already a replacement, and `since_attach` how long ago
-    /// this element was (re-)attached.
-    pub(crate) fn external_error_action(
-        materialized: bool,
-        selected: bool,
-        ever_rearmed: bool,
-        since_attach: std::time::Duration,
-        debounce: std::time::Duration,
-    ) -> ExternalErrorAction {
-        // Dying while its stream is SHOWN: a genuine failure the user sees.
-        if selected {
-            return ExternalErrorAction::Fail;
-        }
-        if !materialized {
-            // Never produced a stream. On the first attach that is a bad
-            // URL dying: fail fast so the requester gets its error
-            // promptly. A re-armed element's early errors are echoes of
-            // the race that killed its predecessor, and its watchdog fails
-            // it if no stream ever appears.
-            return if ever_rearmed {
-                ExternalErrorAction::Ignore
-            } else {
-                ExternalErrorAction::Fail
-            };
-        }
-        // Deselected but materialized: the deselect race (the input worked,
-        // switching away killed it). Replaceable, but a dying input posts
-        // several errors in a burst, so a young input's re-arm is DEFERRED
-        // past the debounce (every burst error defers one, the first to run
-        // wins by epoch, the rest no-op) instead of firing per error.
-        if since_attach < debounce {
-            ExternalErrorAction::RearmDeferred
+    /// Decide an external input's error by its CAUSE, read from the error
+    /// message's debug string: a transport race (a deselect or one of our
+    /// own flushes catching the source mid-push) dies as basesrc's
+    /// "streaming stopped" with reason not-linked or flushing and
+    /// recovers in place; everything else (resource, decode, network) is
+    /// a genuine failure, failed fast. Selection state plays NO part:
+    /// decodebin3's auto-select can route, join and show a fresh external
+    /// before anyone asked for it, so every heuristic on it misclassified
+    /// a flush-killed healthy input as a genuine failure.
+    pub(crate) fn external_error_action(debug_info: Option<&str>) -> ExternalErrorAction {
+        let transport_race = debug_info
+            .is_some_and(|d| d.contains("reason not-linked") || d.contains("reason flushing"));
+        if transport_race {
+            ExternalErrorAction::Recover
         } else {
-            ExternalErrorAction::Rearm
+            ExternalErrorAction::Fail
         }
     }
 
@@ -5379,77 +5525,29 @@ mod tests {
 
     // --- external subtitle error policy --------------------------------------
 
-    use std::time::Duration;
-
-    const DEBOUNCE: Duration = Duration::from_secs(1);
-    const YOUNG: Duration = Duration::from_millis(100);
-    const OLD: Duration = Duration::from_secs(2);
-
     #[test]
-    fn error_while_shown_fails() {
-        // The user is looking at this track, so a dying input is a real
-        // failure regardless of age or re-arm history.
-        for (rearmed, age) in [(false, YOUNG), (false, OLD), (true, YOUNG), (true, OLD)] {
-            assert_eq!(
-                external_error_action(true, true, rearmed, age, DEBOUNCE),
-                ExternalErrorAction::Fail
-            );
-        }
+    fn transport_race_deaths_recover_in_place() {
+        // A deselect or one of our own flushes caught the source
+        // mid-push: the source is fine, it stays attached, and the
+        // join-time replay (or the never-linked retry) restarts it.
+        assert_eq!(
+            external_error_action(Some("streaming stopped, reason not-linked (-1)")),
+            ExternalErrorAction::Recover
+        );
+        assert_eq!(
+            external_error_action(Some("streaming stopped, reason flushing (-2)")),
+            ExternalErrorAction::Recover
+        );
     }
 
     #[test]
-    fn error_before_first_stream_fails_fast() {
-        // A bad URL dies without ever producing a stream: the requester gets
-        // its ResourceNotFound promptly instead of waiting out the watchdog.
+    fn genuine_errors_fail_fast() {
+        // Resource/decode/network errors are real failures, failed fast.
         assert_eq!(
-            external_error_action(false, false, false, YOUNG, DEBOUNCE),
+            external_error_action(Some("Could not open resource for reading.")),
             ExternalErrorAction::Fail
         );
-        assert_eq!(
-            external_error_action(false, false, false, OLD, DEBOUNCE),
-            ExternalErrorAction::Fail
-        );
-    }
-
-    #[test]
-    fn rearmed_input_without_streams_defers_to_the_watchdog() {
-        // A replacement element's early errors are echoes of the race that
-        // killed its predecessor, and failing (or re-arming again) on them
-        // would flap. The watchdog armed at the re-arm owns the verdict.
-        assert_eq!(
-            external_error_action(false, false, true, YOUNG, DEBOUNCE),
-            ExternalErrorAction::Ignore
-        );
-        assert_eq!(
-            external_error_action(false, false, true, OLD, DEBOUNCE),
-            ExternalErrorAction::Ignore
-        );
-    }
-
-    #[test]
-    fn deselect_race_rearms_past_the_debounce() {
-        // A materialized, deselected input dying is the deselect race: the
-        // input is replaceable and the track must stay selectable.
-        assert_eq!(
-            external_error_action(true, false, false, OLD, DEBOUNCE),
-            ExternalErrorAction::Rearm
-        );
-        assert_eq!(
-            external_error_action(true, false, true, OLD, DEBOUNCE),
-            ExternalErrorAction::Rearm
-        );
-        // Within the debounce the burst of errors from one death coalesces
-        // into deferred re-arms (the first past the debounce wins by epoch,
-        // the rest no-op). A dead input must never stay attached: its ghost
-        // stream would wedge every future selection.
-        assert_eq!(
-            external_error_action(true, false, false, YOUNG, DEBOUNCE),
-            ExternalErrorAction::RearmDeferred
-        );
-        assert_eq!(
-            external_error_action(true, false, true, YOUNG, DEBOUNCE),
-            ExternalErrorAction::RearmDeferred
-        );
+        assert_eq!(external_error_action(None), ExternalErrorAction::Fail);
     }
 }
 

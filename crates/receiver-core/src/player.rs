@@ -201,7 +201,8 @@ pub enum PlayerEvent {
     Error {
         /// Which input the error came from (fcastplaybin's generation-tagged
         /// attribution). Never an external subtitle input: those errors are
-        /// handled inside fcastplaybin (re-arm or `ExternalSubtitleFailed`).
+        /// handled inside fcastplaybin (in-place recovery or
+        /// `ExternalSubtitleFailed`).
         origin: fcastplaybin::ErrorOrigin,
         kind: MediaErrorKind,
         message: String,
@@ -1286,7 +1287,7 @@ impl Player {
     /// becomes selectable once decodebin3 announces the updated collection
     /// (always a later collection, mapped back with
     /// `external_stream_sid_of`). fcastplaybin babysits the input from
-    /// here: deselect-race deaths re-arm internally under the same id, and
+    /// here: deselect-race deaths recover in place under the same id, and
     /// a genuine failure (failed attach, error while shown, or no stream
     /// within its watchdog) comes back as
     /// `PlayerEvent::ExternalSubtitleFailed` with the input already
@@ -1306,9 +1307,8 @@ impl Player {
 
     /// The GStreamer stream id of an attached external subtitle input, once
     /// its stream has appeared in the advertised collection. The id is
-    /// URI-derived and therefore STABLE across fcastplaybin's internal
-    /// re-arms of the input, so callers should remember it rather than
-    /// re-query.
+    /// URI-derived and therefore STABLE for the input's lifetime, so
+    /// callers should remember it rather than re-query.
     pub fn external_stream_sid_of(&self, id: fcastplaybin::ExternalSubId) -> Option<String> {
         let sids = self.fcast.subtitle_stream_ids(id);
         let sid = sids
