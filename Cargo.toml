@@ -58,7 +58,7 @@ mdns-sd = "0.20.2"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = "0.3"
-tracing-gstreamer = { git = "https://github.com/MAlba124/tracing-gstreamer.git", rev = "3f7965c" }
+tracing-gstreamer = { git = "https://github.com/MAlba124/tracing-gstreamer.git", rev = "3ad7a1e71a4ca4d1fd9a229642fd09586370acaf" }
 tracing-panic = "0.1.2"
 parking_lot = "0.12"
 slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "b296700c75293a59a65f23145a9cd10de6080ece", default-features = false }
