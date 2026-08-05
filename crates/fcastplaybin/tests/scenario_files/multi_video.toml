@@ -1,0 +1,50 @@
+# Two VIDEO streams in one collection. multi_audio.toml and multi_text.toml cover
+# the same shape for their kinds; nothing in the suite had a second video stream,
+# and the video branch is the one with the subtitle overlay, the converter chain
+# and the sink that is NOT rebuilt per load.
+#
+# Real media does this constantly: a camera angle track, an attached cover-art or
+# thumbnail track, a MKV with a second video track for sign/song translations.
+# Only one is decoded, so the file proves that a second video stream in the
+# collection neither gets a second decoder plugged nor stalls the input when its
+# pad goes unlinked (ftestsrc's flow-combiner rule idles a deselected stream while
+# a sibling still delivers, see push_buffer).
+#
+# video_1 differs in framerate and GOP, not just in id: a later switch-to-video_1
+# test has to renegotiate the video chain rather than reuse video_0's caps, and
+# identical caps would make that assertion vacuous. The differing framerate also
+# gives the second stream a different buffer count, so a collection that mixes the
+# two streams' timings up is visible.
+#
+# The two streams deliberately share a RESOLUTION, which is the one axis that looks
+# like it should vary here and must not. ftestvdec's src pad template is
+# caps::raw_video_caps(), which pins width=16,height=16, and GstVideoDecoder proxies
+# that constraint back onto its sink-pad caps query, so ftestvdec answers ACCEPT_CAPS
+# with "no" for an encoded stream declaring any other size. decodebin3 then reports
+# "missing a decoder for video/x-fcasttest, width=(int)32...", drops the stream from
+# the selection, and for video that is a fatal "No suitable plugins found". It only
+# bites when decodebin3 tries the second stream before the explicit SELECT_STREAMS
+# lands, so it presents as an INTERMITTENT load failure rather than a consistent one.
+# Framerate is safe because raw_video_caps() leaves it unfixed. The same trap applies
+# to `channels` on an audio stream (raw_audio_caps() pins channels=2), which is why
+# multi_audio.toml's channels = 1 flakes the same way; `rate` is free.
+key = "multivideo"
+duration_ms = 800
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "video_0"
+kind = "video"
+fps = 25
+keyframe_interval = 25
+
+[[stream]]
+id = "video_1"
+kind = "video"
+fps = 10
+keyframe_interval = 10
+
+[[stream]]
+id = "audio_0"
+kind = "audio"

@@ -1,0 +1,17 @@
+# Video with no audio stream, so `ensure_audio_sink` is never reached and the
+# pipeline runs without an audio sink at all.
+#
+# The audio sink is normally the pipeline's clock provider, which makes this the
+# shape behind the clock-freeze family of wedges: with no audio sink the clock
+# comes from somewhere else (or nowhere), and preroll, PLAYING and EOS all have to
+# hold anyway.
+key = "videoonly"
+duration_ms = 1200
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "video_0"
+kind = "video"
+fps = 25
+keyframe_interval = 25

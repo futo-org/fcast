@@ -11,4 +11,12 @@ tracing = { workspace = true }
 parking_lot = { workspace = true }
 
 [dev-dependencies]
+fcasttest = { path = "../fcasttest" }
+# fcastaudiostretch: the constructor builds it unconditionally, and in
+# production it is the RECEIVER that registers it (receiver-core::gstreamer).
+# Test processes have to do the receiver's part themselves.
+fcast-gst-elements = { path = "../fcast-gst-elements" }
+# The subtitle parser the receiver ships (see receiver-core's rank swap):
+# scenario tests attach real subtitle files through it.
+gst-subparse.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }

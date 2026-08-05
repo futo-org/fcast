@@ -1,0 +1,38 @@
+# Streams that end at very different times: audio runs out 1 second before video,
+# text 400 ms before that. One stream's EOS therefore travels the graph while the
+# others are still pushing.
+#
+# This is the shape behind the gapless half-ended-group wedge: an early audio EOS
+# ending part of a synchronising group is what parked the multiqueue task, and the
+# pipeline EOS must still wait for the LAST stream rather than following the first.
+#
+# NOTE: there is no top-level duration_ms on purpose. The top-level key is applied
+# to every stream at registration, whatever the individual entries say, so setting
+# it here would flatten exactly the raggedness this file exists to describe. Every
+# stream therefore carries its own duration_ms (a stream without one would fall back
+# to the 10 s default and make the case slow, not wrong).
+key = "raggedeos"
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "video_0"
+kind = "video"
+fps = 25
+keyframe_interval = 25
+duration_ms = 1600
+
+[[stream]]
+id = "audio_0"
+kind = "audio"
+duration_ms = 600
+
+[[stream]]
+id = "text_0"
+kind = "text"
+duration_ms = 200
+
+[[stream.cue]]
+start_ms = 40
+end_ms = 180
+text = "SHORT00"

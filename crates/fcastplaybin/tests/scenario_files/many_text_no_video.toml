@@ -1,0 +1,63 @@
+# Four text streams and one audio stream, with NO video anywhere.
+#
+# audio_text_no_video.toml already proves the text-without-video guard keeps a
+# load playable, but with a single text stream, where "strip the subtitle" is one
+# decision about one id. Real media reaches this shape at width. A music album or
+# an audio-described track ships with lyric, chapter and translation subtitle
+# tracks, and a video file can have its only video stream deselected at the
+# source.
+#
+# What width changes is that the guard has to hold for EVERY text stream at once
+# and produce a selection that names none of them, rather than one that strips one
+# and quietly keeps the next. A rule applied to "the subtitle" instead of "the
+# text streams" passes the narrow file and leaves three streams selected here,
+# each asking subtitleoverlay for a video chain that is never built.
+#
+# The four tracks carry DIFFERENT cue timings, not copies, so a selection that
+# collapses them onto one id is visible in the log rather than indistinguishable.
+# Kept to 600 ms because the cost is per stream and nothing here needs length.
+key = "manytextnovideo"
+duration_ms = 600
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "audio_0"
+kind = "audio"
+
+[[stream]]
+id = "text_0"
+kind = "text"
+
+[[stream.cue]]
+start_ms = 50
+end_ms = 250
+text = "MT0A"
+
+[[stream.cue]]
+start_ms = 300
+end_ms = 500
+text = "MT0B"
+
+[[stream]]
+id = "text_1"
+kind = "text"
+
+[[stream.cue]]
+start_ms = 100
+end_ms = 200
+text = "MT1A"
+
+[[stream]]
+id = "text_2"
+kind = "text"
+
+[[stream.cue]]
+start_ms = 0
+end_ms = 600
+text = "MT2A"
+
+# No cues at all, so one of the four is pure gap even here.
+[[stream]]
+id = "text_3"
+kind = "text"

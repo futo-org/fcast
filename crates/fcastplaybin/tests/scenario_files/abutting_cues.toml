@@ -1,0 +1,54 @@
+# A text stream with NO gap in it at all: the first cue starts at exactly 0 and
+# every following cue starts on the previous one's end. build_schedule only emits
+# a GAP when `cue.start > cursor`, and the last cue ends exactly on the media
+# duration, so this stream is four back-to-back buffers and nothing else.
+#
+# It is the exact mirror of late_first_cue.toml, which is a text branch that is
+# almost entirely GAP. Between them they pin both ends of the sparse-stream
+# handling: a branch that never gaps must not be treated as dense (nothing may
+# wait for a GAP to advance the branch), and a cue whose PTS is 0 must not be
+# mistaken for "no timestamp yet" during preroll, which is when the very first
+# cue is handed to subtitleoverlay before a single video frame has been shown.
+#
+# The abutting boundaries (200/200, 400/400, 600/600) are deliberate: a renderer
+# that treats a cue's end as inclusive shows two cues at once on every boundary,
+# and a scheduler that inserts a zero-length gap between them emits a GAP the
+# schedule does not contain.
+key = "abuttingcues"
+duration_ms = 800
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "video_0"
+kind = "video"
+fps = 25
+keyframe_interval = 25
+
+[[stream]]
+id = "audio_0"
+kind = "audio"
+
+[[stream]]
+id = "text_0"
+kind = "text"
+
+[[stream.cue]]
+start_ms = 0
+end_ms = 200
+text = "AB00"
+
+[[stream.cue]]
+start_ms = 200
+end_ms = 400
+text = "AB01"
+
+[[stream.cue]]
+start_ms = 400
+end_ms = 600
+text = "AB02"
+
+[[stream.cue]]
+start_ms = 600
+end_ms = 800
+text = "AB03"

@@ -168,10 +168,11 @@ pub(crate) struct SelectionEngine {
     /// dirty for re-dispatch. No timeout: a slow selection stays in flight
     /// until its confirmation arrives.
     selecting: Option<(gst::Seqnum, TrackSelection)>,
-    /// Dispatches superseded before confirming (the paused supersede path).
-    /// Their late confirmations are our own stale echoes, recognized here
-    /// by seqnum or content so they neither settle the live request nor
-    /// masquerade as an overtaking foreign selection. Cleared on settle.
+    /// Dispatches superseded before confirming (the paused supersede path),
+    /// oldest first. Their late confirmations are our own stale echoes,
+    /// recognized here by seqnum or content so they neither settle the live
+    /// request nor masquerade as an overtaking foreign selection. Cleared on
+    /// settle, and drained up to each match (see `take_superseded_echo`).
     superseded: Vec<(gst::Seqnum, TrackSelection)>,
     /// In-flight refresh seek, settled by the next `ASYNC_DONE`
     /// (attribution by exclusivity, see the module docs).
@@ -187,11 +188,20 @@ pub(crate) struct SelectionEngine {
     /// converged or dispatches. Dispatching ONLY on fresh events keeps the
     /// engine convergent (a selection decodebin3 refuses cannot ping-pong).
     dirty: bool,
-    /// A `STREAMS_SELECTED` of this load has been adopted. From then on an
-    /// empty applied text slot is decodebin3's REAL state, not ignorance
-    /// awaiting the auto-select, and `collection_changed` must not seed it
-    /// (see there).
-    adopted: bool,
+    /// The last pump could not resolve the subtitle desire because its
+    /// external input has not produced its text stream yet. Unlike every
+    /// other reason a resolution is deferred, this one turns on state that
+    /// reaches the engine only through the pump's `PumpCtx` (the routing
+    /// table's view of the input's pads), so NO event marks the moment it
+    /// becomes resolvable and `dirty` alone would strand the desire. Makes
+    /// the next pump reconsider instead.
+    awaiting_external: bool,
+    /// A `STREAMS_SELECTED` of this load has been adopted AND it could
+    /// speak about the text slot (a text stream was advertised, or the
+    /// report named one). From then on an empty applied text slot is
+    /// decodebin3's REAL state, not ignorance awaiting the auto-select, and
+    /// `collection_changed` must not seed it (see there).
+    text_state_known: bool,
 }
 
 impl SelectionEngine {
@@ -203,6 +213,43 @@ impl SelectionEngine {
     /// previous item.
     pub(crate) fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    /// A GAPLESS activation: the ITEM changed but the USER's intent did not.
+    ///
+    /// Everything applied/in-flight belonged to the retired item and is dropped
+    /// exactly like [`Self::reset`], and so are the stream-id desires, since a
+    /// sid names a stream of the item that just ended. An explicit slot DISABLE
+    /// is the one desire that is item-INDEPENDENT, and it must survive: a queue
+    /// transition is the crate's own decision, not a new user request, and
+    /// nothing re-applies the intent afterwards (receiver-core's
+    /// `apply_subtitle_target` is reachable only from an incoming sender packet,
+    /// never from its `GaplessActivated` handler, and receiver-core holds no
+    /// subtitle desire of its own to replay, it mirrors the player's).
+    ///
+    /// Resetting it outright turned subtitles the user had switched OFF back on
+    /// at every gapless boundary: with `desired_subtitle` unset,
+    /// `collection_changed` seeds the text slot with the new collection's
+    /// default, the pump dispatches it, and `Inner::poll_text_policy` relinks
+    /// the branch.
+    pub(crate) fn reset_across_gapless(&mut self) {
+        let subtitle_off = self.desired_subtitle == Some(SubtitleDesire::Stream(None));
+        let video_off = self.desired_video == Some(None);
+        let audio_off = self.desired_audio == Some(None);
+        *self = Self::default();
+        if subtitle_off {
+            self.desired_subtitle = Some(SubtitleDesire::Stream(None));
+        }
+        if video_off {
+            self.desired_video = Some(None);
+        }
+        if audio_off {
+            self.desired_audio = Some(None);
+        }
+        // The carried desires must be reconciled against the incoming item's
+        // collection. `collection_changed` (called right after this) marks
+        // dirty anyway; explicit here so the intent does not depend on that.
+        self.dirty = subtitle_off || video_off || audio_off;
     }
 
     /// State a slot's desired target (latest wins). `TrackTarget::
@@ -234,6 +281,11 @@ impl SelectionEngine {
     /// confirmation targeted the previous collection and may never confirm,
     /// so abandon it deterministically.
     pub(crate) fn collection_changed(&mut self, collection: Vec<CollectionStream>) {
+        debug!(
+            ?collection,
+            text_state_known = self.text_state_known,
+            "collection changed"
+        );
         self.collection = collection;
         // A slot the desire explicitly disables must NOT be seeded with the
         // collection default: the pipeline honors the disable across
@@ -247,11 +299,14 @@ impl SelectionEngine {
         //
         // The text slot needs one more guard: decodebin3 auto-selects
         // text only until it has seen an explicit `SELECT_STREAMS`, so
-        // once ANY selection of this load was adopted, an EMPTY text slot
-        // is its real state. Seeding it then makes the pump treat a
-        // re-enable as already applied and dispatch nothing (the external
-        // re-select-after-deselect wedge). A POPULATED slot whose stream
-        // left the collection still falls back to the default, mirroring
+        // once a selection of this load was adopted that could speak about
+        // text, an EMPTY text slot is its real state. Seeding it then makes
+        // the pump treat a re-enable as already applied and dispatch
+        // nothing (the external re-select-after-deselect wedge). A report
+        // made while the collection held no text stream is not one of those.
+        // It left the slot empty out of ignorance and the seeding must still
+        // happen (see `text_state_known`). A POPULATED slot whose stream left
+        // the collection still falls back to the default, mirroring
         // decodebin3 replacing a vanished selected stream.
         let text_was_applied = self.applied.subtitle.is_some();
         self.applied.video = Self::seed_slot(
@@ -270,7 +325,7 @@ impl SelectionEngine {
             &self.collection,
             StreamKind::Text,
             self.applied.subtitle.take(),
-            (text_was_applied || !self.adopted)
+            (text_was_applied || !self.text_state_known)
                 && self.desired_subtitle != Some(SubtitleDesire::Stream(None)),
         );
 
@@ -331,11 +386,30 @@ impl SelectionEngine {
     /// fresh non-matching `STREAMS_SELECTED` to fire again, and decodebin3
     /// auto-selects at most once per collection.
     pub(crate) fn streams_selected(&mut self, seqnum: gst::Seqnum, reported: &TrackSelection) {
-        self.adopted = true;
-        self.applied = reported.clone();
+        // A report speaks about the text slot only when a text stream was
+        // there to be reported. decodebin3 merges one input's collection at
+        // a time and reports against what it has merged so far, so a report
+        // made before the text input joined leaves the slot empty out of
+        // ignorance, not out of a decision (see `collection_changed`).
+        if reported.subtitle.is_some()
+            || self
+                .collection
+                .iter()
+                .any(|stream| stream.kind == StreamKind::Text)
+        {
+            self.text_state_known = true;
+        }
 
         match self.selecting.take() {
             None => {
+                // A superseded dispatch's echo is ours and stale in this
+                // branch too. The overtake path below abandons the live wait
+                // without clearing the superseded records, so the same echo
+                // can land here with nothing in flight.
+                if self.take_superseded_echo(seqnum, reported) {
+                    return;
+                }
+                self.applied = reported.clone();
                 // Nothing in flight: this is decodebin3 selecting on its
                 // own (a fresh collection's auto-select). If an explicit
                 // desire diverges, re-assert it.
@@ -349,6 +423,7 @@ impl SelectionEngine {
             }
             Some((expected, desired_sel)) => {
                 if expected == seqnum || &desired_sel == reported {
+                    self.applied = reported.clone();
                     self.superseded.clear();
                     // Ours settled. Anything the report still diverges on
                     // (decodebin3 adjusting the request) is deliberately
@@ -356,21 +431,46 @@ impl SelectionEngine {
                     // ping-pong against a selection the pipeline refuses.
                     return;
                 }
-                if self
-                    .superseded
-                    .iter()
-                    .any(|(sn, sel)| *sn == seqnum || sel == reported)
-                {
-                    // A superseded dispatch's late confirmation: ours but
-                    // stale, the live request's own confirmation is still
-                    // en route.
+                if self.take_superseded_echo(seqnum, reported) {
+                    // A superseded dispatch's late confirmation. It is ours
+                    // but stale, and the live request's own confirmation is
+                    // still en route.
                     self.selecting = Some((expected, desired_sel));
                     return;
                 }
+                self.applied = reported.clone();
                 debug!(?desired_sel, ?reported, "selection overtaken, re-asserting");
                 self.dirty = true;
             }
         }
+    }
+
+    /// Whether `reported` is the late confirmation of a dispatch that was
+    /// superseded before it confirmed, by seqnum or by content (the seqnum
+    /// is lost when decodebin3 coalesces or no-ops a request).
+    ///
+    /// Such an echo must NOT be adopted as applied. The superseding
+    /// dispatch is the newer truth, and rewinding `applied` to the stale
+    /// one re-arms `subtitle_sid` with the very subtitle that dispatch is
+    /// turning off, letting `poll_text_policy` relink the cue the eager
+    /// detach just cleared (and making the next request compose against a
+    /// reverted state).
+    ///
+    /// Matching drains the record and every older one. decodebin3 confirms
+    /// in dispatch order, so a record still unmatched behind this one never
+    /// will be, its request having been folded into a later dispatch.
+    /// Draining is what keeps a stale record from swallowing a genuinely
+    /// foreign selection that names the same streams much later.
+    fn take_superseded_echo(&mut self, seqnum: gst::Seqnum, reported: &TrackSelection) -> bool {
+        let Some(pos) = self
+            .superseded
+            .iter()
+            .position(|(sn, sel)| *sn == seqnum || sel == reported)
+        else {
+            return false;
+        };
+        self.superseded.drain(..=pos);
+        true
     }
 
     /// A top-level `ASYNC_DONE` arrived. Returns whether it finished our
@@ -453,12 +553,42 @@ impl SelectionEngine {
         match &self.desired_subtitle {
             None => false,
             Some(SubtitleDesire::Stream(want)) => want != &reported.subtitle,
-            // Resolution against the externals map happens in the pump;
-            // here a parked external only counts once its own sid is known
-            // to differ, which it cannot be without the map. Dirty is set
-            // by the collection change instead.
-            Some(SubtitleDesire::External(_)) => false,
+            // An external desire cannot be compared here: resolving it
+            // needs the externals map, which only the pump has. Treating
+            // it as "never diverges" loses the re-assertion entirely once
+            // the engine has converged (the desire is applied, nothing in
+            // flight, nothing dirty) and decodebin3 then auto-selects the
+            // embedded default over it: no collection change follows to
+            // re-dirty, so the external would stay silently deselected.
+            // Deferring the comparison to the pump instead is convergent:
+            // it resolves against the map and dispatches only when the
+            // resolution actually differs from what was just reported, and
+            // each re-assertion needs a fresh foreign `STREAMS_SELECTED`.
+            Some(SubtitleDesire::External(_)) => true,
         }
+    }
+
+    /// Whether the subtitle desire is parked on an external input that has
+    /// not produced an advertised TEXT stream yet, the one resolution input
+    /// that arrives outside the engine's own event stream.
+    ///
+    /// The collection change that merges the external's stream re-dirties
+    /// the engine, but only the pump's `PumpCtx` says whether the INPUT has
+    /// produced the id, and the two need not arrive in that order. When they
+    /// do not, `dirty` has already been spent on a resolution that could not
+    /// see the input yet, and nothing else ever re-arms it.
+    fn external_desire_unresolved(&self, ctx: &PumpCtx) -> bool {
+        let Some(SubtitleDesire::External(id)) = &self.desired_subtitle else {
+            return false;
+        };
+        !ctx.externals.iter().any(|(eid, sids)| {
+            eid == id
+                && sids.iter().any(|sid| {
+                    self.collection
+                        .iter()
+                        .any(|s| &s.sid == sid && s.kind == StreamKind::Text)
+                })
+        })
     }
 
     /// Resolve the desired state against the current collection into the
@@ -470,18 +600,60 @@ impl SelectionEngine {
             return None;
         }
         let in_collection = |sid: &String| self.collection.iter().any(|s| &s.sid == sid);
+        // An external input is a plain urisourcebin over a caller-supplied
+        // URI: nothing constrains it to a single stream (a container
+        // handed in as "the subtitle" advertises its A/V streams too), and
+        // its ids arrive in source-pad order. The subtitle slot may only
+        // ever hold a TEXT stream, so resolve against the kind the
+        // collection advertises, not against mere membership.
+        let advertised_text = |sid: &String| {
+            self.collection
+                .iter()
+                .any(|s| &s.sid == sid && s.kind == StreamKind::Text)
+        };
+        // The collection's own default for a kind, mirroring decodebin3's
+        // auto-select and `Self::seed_slot`.
+        let default_of = |kind: StreamKind| {
+            self.collection
+                .iter()
+                .find(|s| s.kind == kind)
+                .map(|s| s.sid.clone())
+        };
         // An explicit stream that left the collection cannot be selected.
         // Fall back to what is applied rather than fabricating a disable.
-        let resolve_slot =
-            |desired: &Option<Option<String>>, applied: &Option<String>| match desired {
-                None => applied.clone().filter(in_collection),
-                Some(Some(sid)) if in_collection(sid) => Some(sid.clone()),
-                Some(Some(_)) => applied.clone().filter(in_collection),
-                Some(None) => None,
-            };
+        //
+        // An UNSET slot means "follow the pipeline", and the pipeline
+        // auto-selects the first stream of each kind. Omitting a kind from a
+        // `SELECT_STREAMS` asks decodebin3 to turn it OFF, so an unset slot
+        // with nothing applied must resolve to the collection default rather
+        // than to nothing. `applied` is not a reliable stand-in on its own.
+        // It is adopted verbatim from `STREAMS_SELECTED`, and decodebin3
+        // reports its selection while its merged collection is still growing
+        // (one post per input as each parsebin reports), so an early report
+        // can name audio alone and leave this slot empty with the video
+        // stream sitting right there in the collection.
+        // A/B lever for bisecting regressions without a rebuild, like
+        // FCAST_NO_SELECTION_REPLAY.
+        let slot_defaults = std::env::var_os("FCAST_NO_SLOT_DEFAULTS").is_none();
+        let fallback = |applied: &Option<String>, kind: StreamKind| {
+            let kept = applied.clone().filter(in_collection);
+            if slot_defaults {
+                kept.or_else(|| default_of(kind))
+            } else {
+                kept
+            }
+        };
+        let resolve_slot = |desired: &Option<Option<String>>,
+                            applied: &Option<String>,
+                            kind: StreamKind| match desired {
+            None => fallback(applied, kind),
+            Some(Some(sid)) if in_collection(sid) => Some(sid.clone()),
+            Some(Some(_)) => fallback(applied, kind),
+            Some(None) => None,
+        };
 
-        let video = resolve_slot(&self.desired_video, &self.applied.video);
-        let audio = resolve_slot(&self.desired_audio, &self.applied.audio);
+        let video = resolve_slot(&self.desired_video, &self.applied.video, StreamKind::Video);
+        let audio = resolve_slot(&self.desired_audio, &self.applied.audio, StreamKind::Audio);
         let mut subtitle = match &self.desired_subtitle {
             None => self.applied.subtitle.clone().filter(in_collection),
             Some(SubtitleDesire::Stream(None)) => None,
@@ -494,7 +666,7 @@ impl SelectionEngine {
                     .externals
                     .iter()
                     .find(|(eid, _)| eid == id)
-                    .and_then(|(_, sids)| sids.iter().find(|sid| in_collection(sid)))
+                    .and_then(|(_, sids)| sids.iter().find(|sid| advertised_text(sid)))
                     .cloned();
                 match resolved {
                     Some(sid) => Some(sid),
@@ -505,11 +677,68 @@ impl SelectionEngine {
             }
         };
 
-        // A text stream cannot be presented without a video stream:
+        // A text stream cannot be presented without a video stream, so
         // deselecting video implicitly deselects subtitles.
+        //
+        // "The selection has no video" and "the collection has no video" are
+        // different situations, and only the first one is a deselect. The
+        // second is decodebin3's merged collection still growing towards its
+        // video stream, or a media that simply has none. Nothing is routing
+        // video there, so `poll_text_policy` never links text into the
+        // overlay in the first place (it returns early without a live video
+        // stream) and no renegotiation is riding on the text slot.
         if video.is_none() && subtitle.is_some() {
-            debug!("dropping the subtitle stream from a selection without video");
-            subtitle = None;
+            let collection_has_video = self
+                .collection
+                .iter()
+                .any(|stream| stream.kind == StreamKind::Video);
+            let video_is_being_turned_off =
+                collection_has_video || self.desired_video == Some(None);
+            // Whether this dispatch would carry nothing but the loss of the
+            // subtitle.
+            let only_the_subtitle_moves =
+                video == self.applied.video && audio == self.applied.audio;
+            if !video_is_being_turned_off
+                && std::env::var_os("FCAST_NO_SUBTITLE_HOLDBACK").is_none()
+            {
+                if only_the_subtitle_moves {
+                    // Nothing to gain and everything to lose. decodebin3
+                    // grows its merged collection as each input reports, so
+                    // a resolution early in a load can see audio and text
+                    // with no video yet, and an event whose whole content is
+                    // dropping the text stream turns a request to ENABLE a
+                    // subtitle into one that disables it. decodebin3 honours
+                    // that and never auto-selects text again (the field
+                    // symptom was `sent SELECT_STREAMS ids=["...audio_0"]`
+                    // followed by `selection drops video, parking the video
+                    // chain at READY` during a load that asked for neither).
+                    // Wait. The collection change that brings video in
+                    // re-dirties the desire.
+                    debug!(
+                        collection = ?self.collection,
+                        "holding the subtitle selection back until the collection announces video"
+                    );
+                    return None;
+                }
+                // Another slot has real work, so this dispatch cannot wait.
+                // Send it with the subtitle KEPT. The video pinning the event
+                // carries is unavoidable while the collection has no video id
+                // to name, and dropping the text stream on top of that would
+                // be a second deselect nobody asked for, one decodebin3 never
+                // undoes.
+                debug!(
+                    collection = ?self.collection,
+                    "keeping the subtitle in a selection the collection cannot give video to"
+                );
+            } else {
+                debug!(
+                    desired_video = ?self.desired_video,
+                    applied_video = ?self.applied.video,
+                    collection = ?self.collection,
+                    "dropping the subtitle stream from a selection without video"
+                );
+                subtitle = None;
+            }
         }
 
         let selection = TrackSelection {
@@ -552,7 +781,17 @@ impl SelectionEngine {
             return None;
         }
 
-        if self.dirty {
+        // Retry a resolution that was deferred on an external input ONLY at
+        // the moment that input's stream actually shows up. Retrying on
+        // every pump would dispatch outside a fresh event, and dispatching
+        // only on fresh events is what keeps a selection decodebin3 adjusts
+        // from ping-ponging (it answers the dispatch with a different
+        // selection, which the engine deliberately does not re-assert).
+        let unresolved_external = self.external_desire_unresolved(ctx);
+        let external_arrived = self.awaiting_external && !unresolved_external;
+        self.awaiting_external = unresolved_external;
+
+        if self.dirty || external_arrived {
             self.dirty = false;
             if let Some(target) = self.resolve(ctx)
                 && target != self.applied
@@ -1171,6 +1410,42 @@ mod tests {
     }
 
     #[test]
+    fn an_external_that_materializes_before_its_input_is_visible_is_not_stranded() {
+        // Resolving the desire needs two independent things to line up:
+        // decodebin3 must advertise the input's stream, and the routing table
+        // must have seen that input produce the id. Only the first re-dirties
+        // the engine. Arriving in that order, the pump spends the dirty flag
+        // on a resolution that cannot see the input yet, and without
+        // `awaiting_external` nothing ever re-arms it: no further collection
+        // change is due, so the desire parks for the rest of the load.
+        let mut engine = settled_engine();
+        let ext = crate::ExternalSubId(1);
+        engine.request(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(ext));
+
+        let mut streams = avt_collection();
+        streams.push(CollectionStream {
+            sid: "ext-t".into(),
+            kind: StreamKind::Text,
+        });
+        engine.collection_changed(streams);
+
+        // The pump runs before the routing table lists the input's ids.
+        assert_eq!(engine.pump(&ctx_ext(true, false, &[(ext, &[])])), None);
+
+        // They appear. Nothing else happens, so this pump is the only chance
+        // the desire gets.
+        let externals: &[(ExternalSubId, &[&str])] = &[(ext, &["ext-t"])];
+        assert_eq!(
+            engine.pump(&ctx_ext(true, false, externals)),
+            Some(Command::SelectStreams(sel(
+                Some("v0"),
+                Some("a0"),
+                Some("ext-t")
+            )))
+        );
+    }
+
+    #[test]
     fn external_desire_survives_the_autoselect_stomp() {
         // The full external_sub_add_unselected sequence, declaratively: the
         // desire dispatches after materialization, decodebin3's auto-select
@@ -1253,12 +1528,199 @@ mod tests {
     }
 
     #[test]
+    fn external_desire_is_reasserted_after_a_foreign_autoselect() {
+        // The external counterpart of
+        // `foreign_autoselect_with_nothing_in_flight_is_reasserted`: the
+        // external's stream is selected and CONFIRMED (nothing in flight,
+        // the engine converged), then decodebin3 auto-selects the embedded
+        // text default on its own and stomps it. The desire must
+        // re-assert, exactly as an explicit `Stream` desire does. No
+        // collection change follows such a stomp, so nothing else would
+        // ever re-dirty the engine.
+        let mut engine = settled_engine();
+        let ext = crate::ExternalSubId(1);
+        engine.request(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(ext));
+
+        let mut streams = avt_collection();
+        streams.push(CollectionStream {
+            sid: "ext-t".into(),
+            kind: StreamKind::Text,
+        });
+        engine.collection_changed(streams);
+        let externals: &[(ExternalSubId, &[&str])] = &[(ext, &["ext-t"])];
+        let target = sel(Some("v0"), Some("a0"), Some("ext-t"));
+        assert_eq!(
+            engine.pump(&ctx_ext(true, false, externals)),
+            Some(Command::SelectStreams(target.clone()))
+        );
+        let sn = gst::Seqnum::next();
+        engine.selection_dispatched(sn, target.clone());
+        engine.streams_selected(sn, &target);
+        // Converged: nothing in flight, nothing dirty.
+        assert_eq!(engine.pump(&ctx_ext(true, false, externals)), None);
+
+        // decodebin3 selects the embedded text default on its own.
+        engine.streams_selected(
+            gst::Seqnum::next(),
+            &sel(Some("v0"), Some("a0"), Some("t0")),
+        );
+        assert_eq!(
+            engine.pump(&ctx_ext(true, false, externals)),
+            Some(Command::SelectStreams(target))
+        );
+    }
+
+    #[test]
+    fn a_stale_superseded_echo_does_not_revert_applied() {
+        // The paused supersede path: a dispatch's late confirmation is our
+        // own stale echo. It is recognized as such for the in-flight wait,
+        // but must not be adopted as the applied state either: `applied`
+        // (and with it `subtitle_sid`, which gates what may join the
+        // overlay) would name the subtitle the superseding dispatch is in
+        // the middle of turning OFF, so `poll_text_policy` could relink the
+        // cue the eager detach just cleared.
+        let mut engine = settled_engine();
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t1".into())));
+        let first = sel(Some("v0"), Some("a0"), Some("t1"));
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(first.clone()))
+        );
+        let sn1 = gst::Seqnum::next();
+        engine.selection_dispatched(sn1, first.clone());
+
+        // Paused: the next request supersedes the parked dispatch.
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(None));
+        let second = sel(Some("v0"), Some("a0"), None);
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(second.clone()))
+        );
+        let sn2 = gst::Seqnum::next();
+        engine.selection_dispatched(sn2, second.clone());
+
+        // The superseded dispatch's late echo arrives.
+        engine.streams_selected(sn1, &first);
+        assert!(engine.selecting.is_some(), "the live wait must survive");
+        assert_eq!(
+            engine.applied(),
+            &second,
+            "a stale echo must not revert the applied selection"
+        );
+        assert_eq!(
+            engine.subtitle_sid(),
+            None,
+            "a stale echo must not re-authorize the subtitle being turned off"
+        );
+    }
+
+    #[test]
+    fn external_resolution_picks_the_inputs_text_stream() {
+        // An external subtitle input is a plain urisourcebin over a
+        // caller-supplied URI: nothing forces it to hold exactly one
+        // stream (a container handed in as "the subtitle" advertises its
+        // A/V streams too), and its stream ids arrive in source-pad order.
+        // Resolving the desire to the input's FIRST advertised stream
+        // therefore drops a non-text id into the subtitle slot, selecting
+        // the wrong stream and deselecting the text one entirely.
+        let mut engine = settled_engine();
+        let ext = crate::ExternalSubId(1);
+        engine.request(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(ext));
+
+        let mut streams = avt_collection();
+        streams.push(CollectionStream {
+            sid: "ext-a".into(),
+            kind: StreamKind::Audio,
+        });
+        streams.push(CollectionStream {
+            sid: "ext-t".into(),
+            kind: StreamKind::Text,
+        });
+        engine.collection_changed(streams);
+
+        let externals: &[(ExternalSubId, &[&str])] = &[(ext, &["ext-a", "ext-t"])];
+        assert_eq!(
+            engine.pump(&ctx_ext(true, false, externals)),
+            Some(Command::SelectStreams(sel(
+                Some("v0"),
+                Some("a0"),
+                Some("ext-t")
+            )))
+        );
+    }
+
+    #[test]
     fn video_disable_implicitly_drops_subtitles() {
         let mut engine = settled_engine();
         engine.request(TrackSlot::Video, TrackTarget::Stream(None));
         assert_eq!(
             engine.pump(&ctx(true, false)),
             Some(Command::SelectStreams(sel(None, Some("a0"), None)))
+        );
+    }
+
+    /// decodebin3 reports its selection while its merged collection is still
+    /// growing, so a report can name audio alone with the video stream
+    /// already advertised. Composing against that empty video slot asks
+    /// decodebin3 to turn video OFF, which nobody requested, and the rule
+    /// above then strips the subtitle the request was about.
+    #[test]
+    fn an_unset_slot_left_empty_by_a_partial_report_resolves_to_the_default() {
+        let mut engine = SelectionEngine::new();
+        engine.collection_changed(avt_collection());
+        // decodebin3's own first report, before its video input reported.
+        engine.streams_selected(gst::Seqnum::next(), &sel(None, Some("a0"), Some("t0")));
+        assert_eq!(engine.applied().video, None);
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t1".into())));
+        assert_eq!(
+            engine.pump(&ctx(true, false)),
+            Some(Command::SelectStreams(sel(
+                Some("v0"),
+                Some("a0"),
+                Some("t1")
+            ))),
+            "the unset video slot must follow the collection default, not compose a disable"
+        );
+    }
+
+    /// The same growth window, one post earlier, when the collection has no
+    /// video stream at all yet. Nothing can be composed that honours the
+    /// request, so nothing is dispatched. The collection change that brings
+    /// video in re-dirties the desire.
+    #[test]
+    fn a_subtitle_request_waits_for_a_collection_that_has_video() {
+        let mut engine = SelectionEngine::new();
+        engine.collection_changed(collection(&[
+            ("a0", StreamKind::Audio),
+            ("t0", StreamKind::Text),
+            ("t1", StreamKind::Text),
+        ]));
+        // decodebin3 auto-selected audio and the first text before its video
+        // input reported, so a subtitle IS showing. Without that the stripped
+        // target equals `applied` and the no-op check hides the defect.
+        engine.streams_selected(gst::Seqnum::next(), &sel(None, Some("a0"), Some("t0")));
+
+        // Switching to the other text stream must not be answered by turning
+        // subtitles off, which is what stripping t1 and dispatching the
+        // remainder amounts to.
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t1".into())));
+        assert_eq!(
+            engine.pump(&ctx(true, false)),
+            None,
+            "a selection that strips the requested subtitle must not be dispatched"
+        );
+
+        // Video arrives. Now the request is expressible, and the collection
+        // change re-dirtied it.
+        engine.collection_changed(avt_collection());
+        assert_eq!(
+            engine.pump(&ctx(true, false)),
+            Some(Command::SelectStreams(sel(
+                Some("v0"),
+                Some("a0"),
+                Some("t1")
+            )))
         );
     }
 
@@ -1296,5 +1758,675 @@ mod tests {
         assert!(engine.selecting.is_none());
         // The failed switch's flush must not fire as an orphan.
         assert_eq!(engine.pump(&ctx(true, false)), None);
+    }
+
+    #[test]
+    fn a_superseded_echo_after_a_foreign_overtake_does_not_revert_applied() {
+        // `a_stale_superseded_echo_does_not_revert_applied` covers the echo
+        // arriving while the superseding dispatch is still tracked. The
+        // overtake path drops that tracking (`selecting` is taken and never
+        // restored) while the superseded records stay, so the same echo then
+        // lands with nothing in flight and is mistaken for a foreign
+        // selection. Adopting it re-arms `subtitle_sid` with the very
+        // subtitle the newest dispatch is turning off, which is what lets
+        // `poll_text_policy` relink the cue the eager park just cleared.
+        let mut engine = settled_engine();
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t1".into())));
+        let first = sel(Some("v0"), Some("a0"), Some("t1"));
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(first.clone()))
+        );
+        let sn1 = gst::Seqnum::next();
+        engine.selection_dispatched(sn1, first.clone());
+
+        // Paused, so the next request supersedes the parked dispatch.
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(None));
+        let second = sel(Some("v0"), Some("a0"), None);
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(second.clone()))
+        );
+        let sn2 = gst::Seqnum::next();
+        engine.selection_dispatched(sn2, second.clone());
+
+        // decodebin3's own auto-select lands before either confirmation:
+        // neither seqnum nor content matches, so the live wait is abandoned
+        // and the desire re-asserts. The superseded record for sn1 outlives
+        // it.
+        let foreign = sel(Some("v0"), Some("a1"), None);
+        engine.streams_selected(gst::Seqnum::next(), &foreign);
+        assert_eq!(engine.subtitle_sid(), None);
+
+        // Only now does the superseded dispatch's confirmation arrive.
+        engine.streams_selected(sn1, &first);
+        assert_eq!(
+            engine.subtitle_sid(),
+            None,
+            "a superseded dispatch's late echo must not re-authorize its subtitle"
+        );
+        assert_eq!(
+            engine.applied().subtitle,
+            None,
+            "a superseded dispatch's late echo must not revert the applied selection"
+        );
+    }
+
+    #[test]
+    fn two_superseded_dispatches_are_recognized_and_then_forgotten() {
+        // Three paused dispatches, each superseding the last, so two records
+        // are outstanding at once. decodebin3 folds the first into the second
+        // and confirms the second only, which must retire BOTH records: an
+        // echo that has not arrived by the time a later one has never will,
+        // and a record that outlives its dispatch goes on swallowing genuine
+        // foreign selections that happen to name the same streams.
+        let mut engine = settled_engine();
+
+        engine.request(TrackSlot::Audio, TrackTarget::Stream(Some("a1".into())));
+        let first = sel(Some("v0"), Some("a1"), Some("t0"));
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(first.clone()))
+        );
+        engine.selection_dispatched(gst::Seqnum::next(), first.clone());
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t1".into())));
+        let second = sel(Some("v0"), Some("a1"), Some("t1"));
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(second.clone()))
+        );
+        let sn_second = gst::Seqnum::next();
+        engine.selection_dispatched(sn_second, second.clone());
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(None));
+        let third = sel(Some("v0"), Some("a1"), None);
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(third.clone()))
+        );
+        engine.selection_dispatched(gst::Seqnum::next(), third.clone());
+
+        engine.streams_selected(sn_second, &second);
+        assert!(
+            engine.selecting.is_some(),
+            "a stale echo must not settle the live wait"
+        );
+        assert_eq!(
+            engine.applied(),
+            &third,
+            "a stale echo must not revert the applied selection"
+        );
+
+        // The first dispatch's streams are no longer ours to recognize. A
+        // selection naming them now is decodebin3's own and must re-assert
+        // the desire instead of being swallowed as an echo that can never
+        // come.
+        engine.streams_selected(gst::Seqnum::next(), &first);
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(third)),
+            "a retired superseded record must not swallow a foreign selection"
+        );
+    }
+
+    /// What a gapless boundary carries. A stream id names a stream of the
+    /// item that just ended, so only an explicit DISABLE is item-independent
+    /// and survives. An external desire goes with the rest because the
+    /// activation removes the previous generation's inputs, external subtitle
+    /// inputs included (`Job::FinishActivation`), so there is no input left
+    /// for it to name.
+    #[test]
+    fn a_gapless_boundary_carries_explicit_disables_only() {
+        struct Case {
+            name: &'static str,
+            setup: fn(&mut SelectionEngine),
+            applied: TrackSelection,
+            dispatch: Option<TrackSelection>,
+        }
+        let cases = [
+            Case {
+                name: "nothing requested",
+                setup: |_| {},
+                applied: sel(Some("v0"), Some("a0"), Some("t0")),
+                dispatch: None,
+            },
+            Case {
+                name: "an explicit subtitle stream is dropped",
+                setup: |engine| {
+                    engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t1".into())))
+                },
+                applied: sel(Some("v0"), Some("a0"), Some("t0")),
+                dispatch: None,
+            },
+            Case {
+                name: "an external subtitle desire is dropped with its input",
+                setup: |engine| {
+                    engine.request(
+                        TrackSlot::Subtitle,
+                        TrackTarget::ExternalSubtitle(crate::ExternalSubId(4)),
+                    )
+                },
+                applied: sel(Some("v0"), Some("a0"), Some("t0")),
+                dispatch: None,
+            },
+            Case {
+                name: "subtitles off survive",
+                setup: |engine| engine.request(TrackSlot::Subtitle, TrackTarget::Stream(None)),
+                applied: sel(Some("v0"), Some("a0"), None),
+                dispatch: None,
+            },
+            Case {
+                name: "video off survives and re-asserts",
+                setup: |engine| engine.request(TrackSlot::Video, TrackTarget::Stream(None)),
+                applied: sel(None, Some("a0"), Some("t0")),
+                dispatch: Some(sel(None, Some("a0"), None)),
+            },
+            Case {
+                name: "audio off survives",
+                setup: |engine| engine.request(TrackSlot::Audio, TrackTarget::Stream(None)),
+                applied: sel(Some("v0"), None, Some("t0")),
+                dispatch: None,
+            },
+        ];
+
+        for case in cases {
+            let mut engine = settled_engine();
+            (case.setup)(&mut engine);
+            engine.reset_across_gapless();
+            // The activation feeds the next item's collection right after.
+            engine.collection_changed(avt_collection());
+            assert_eq!(
+                engine.applied(),
+                &case.applied,
+                "applied state after the boundary, case: {}",
+                case.name
+            );
+            assert_eq!(
+                engine.pump(&ctx(true, false)),
+                case.dispatch.map(Command::SelectStreams),
+                "dispatch after the boundary, case: {}",
+                case.name
+            );
+        }
+    }
+
+    #[test]
+    fn a_report_made_before_text_was_advertised_does_not_turn_text_off() {
+        // decodebin3 merges one input's collection at a time and reports its
+        // selection against whatever it has merged so far. A report made
+        // while the collection held no text stream says NOTHING about the
+        // text slot, yet it flips `adopted`, and from then on
+        // `collection_changed` refuses to seed the slot. The next dispatch
+        // (here an ordinary audio switch) then composes an event that omits
+        // text, which is decodebin3's way of being told to turn it off, and
+        // its own auto-select never runs again.
+        let mut engine = SelectionEngine::new();
+        engine.collection_changed(collection(&[("a0", StreamKind::Audio)]));
+        engine.streams_selected(gst::Seqnum::next(), &sel(None, Some("a0"), None));
+
+        // The video and text inputs report and the merged collection grows.
+        engine.collection_changed(avt_collection());
+        assert_eq!(
+            engine.applied().subtitle,
+            Some("t0".into()),
+            "an empty text slot from a report made before text existed is not \
+             a decision to keep text off"
+        );
+
+        engine.request(TrackSlot::Audio, TrackTarget::Stream(Some("a1".into())));
+        assert_eq!(
+            engine.pump(&ctx(true, false)),
+            Some(Command::SelectStreams(sel(
+                Some("v0"),
+                Some("a1"),
+                Some("t0")
+            ))),
+            "an audio switch must not deselect the text stream nobody touched"
+        );
+    }
+
+    /// A decodebin3 stand-in for the exhaustive ordering search below: it
+    /// applies verbatim what it is told and confirms with the dispatch's own
+    /// seqnum, so any divergence the search reports is the engine's.
+    struct Model {
+        engine: SelectionEngine,
+        /// Dispatched, not yet confirmed, oldest first.
+        inflight: std::collections::VecDeque<(gst::Seqnum, TrackSelection)>,
+        /// What the ops asked for, mirrored here so the oracle does not read
+        /// the state it is checking.
+        want_audio: Option<Option<&'static str>>,
+        want_subtitle: SubWant,
+        /// Whether any subtitle op ran at all, which is what makes an UNSET
+        /// desire mean "never touched" rather than "reset by a failed
+        /// external".
+        subtitle_ever_requested: bool,
+        want_video: Option<Option<&'static str>>,
+        collection: Vec<CollectionStream>,
+        /// Stream ids each attached external input has produced, exactly as
+        /// `PumpCtx` carries them.
+        externals: Vec<(ExternalSubId, Vec<String>)>,
+    }
+
+    /// The subtitle slot's desire as the ops set it, mirrored so the oracle
+    /// does not read the state it is checking.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum SubWant {
+        Unset,
+        Off,
+        Stream(&'static str),
+        External,
+    }
+
+    /// The one external input the searches use.
+    const EXT: ExternalSubId = ExternalSubId(9);
+    /// The text stream that external input advertises once it materializes.
+    const EXT_SID: &str = "ext-t";
+
+    /// The ops the search permutes. Each is something the crate really does
+    /// to the engine.
+    #[derive(Clone, Copy, Debug)]
+    enum Op {
+        Pump {
+            paused: bool,
+        },
+        /// Deliver the oldest pending confirmation.
+        Echo,
+        /// decodebin3 auto-selects the collection defaults on its own.
+        Foreign,
+        WantSubtitle(Option<&'static str>),
+        WantAudio(Option<&'static str>),
+        WantVideo(Option<&'static str>),
+        /// The merged collection grows to the full A/V+text one.
+        Grow,
+        /// The external input attaches: its pads exist and carry their
+        /// stream ids, but decodebin3 has not merged them yet.
+        AttachExternal,
+        /// decodebin3 merges the external's stream into the collection.
+        MaterializeExternal,
+        WantExternal,
+        /// The input failed or was detached.
+        ExternalGone,
+    }
+
+    impl Model {
+        fn new(collection: Vec<CollectionStream>) -> Self {
+            let mut engine = SelectionEngine::new();
+            engine.collection_changed(collection.clone());
+            Self {
+                engine,
+                inflight: std::collections::VecDeque::new(),
+                want_audio: None,
+                want_subtitle: SubWant::Unset,
+                subtitle_ever_requested: false,
+                want_video: None,
+                collection,
+                externals: Vec::new(),
+            }
+        }
+
+        fn ctx(&self, paused: bool) -> PumpCtx {
+            PumpCtx {
+                gate: SelectionGate {
+                    quiet: true,
+                    paused,
+                    seekable: true,
+                },
+                externals_attached: !self.externals.is_empty(),
+                externals: self.externals.clone(),
+            }
+        }
+
+        /// Whether the external desire has everything it needs to resolve:
+        /// the input has produced the id AND decodebin3 advertises it as
+        /// text.
+        fn external_resolves(&self) -> bool {
+            self.externals
+                .iter()
+                .any(|(id, sids)| *id == EXT && sids.iter().any(|s| s == EXT_SID))
+                && self
+                    .collection
+                    .iter()
+                    .any(|s| s.sid == EXT_SID && s.kind == StreamKind::Text)
+        }
+
+        fn default_of(&self, kind: StreamKind) -> Option<String> {
+            self.collection
+                .iter()
+                .find(|s| s.kind == kind)
+                .map(|s| s.sid.clone())
+        }
+
+        fn pump_once(&mut self, paused: bool) -> bool {
+            let ctx = self.ctx(paused);
+            match self.engine.pump(&ctx) {
+                None => false,
+                Some(Command::SelectStreams(target)) => {
+                    assert!(
+                        target.video.is_some()
+                            || target.audio.is_some()
+                            || target.subtitle.is_some(),
+                        "an empty selection was dispatched"
+                    );
+                    let seqnum = gst::Seqnum::next();
+                    self.engine.selection_dispatched(seqnum, target.clone());
+                    self.inflight.push_back((seqnum, target));
+                    true
+                }
+                Some(Command::RefreshSeek) => {
+                    self.engine.refresh_dispatched(gst::Seqnum::next());
+                    self.engine.refresh_done();
+                    true
+                }
+            }
+        }
+
+        fn echo(&mut self) -> bool {
+            match self.inflight.pop_front() {
+                Some((seqnum, target)) => {
+                    self.engine.streams_selected(seqnum, &target);
+                    true
+                }
+                None => false,
+            }
+        }
+
+        fn apply(&mut self, op: Op) {
+            match op {
+                Op::Pump { paused } => {
+                    self.pump_once(paused);
+                }
+                Op::Echo => {
+                    self.echo();
+                }
+                Op::Foreign => {
+                    let foreign = TrackSelection {
+                        video: self.default_of(StreamKind::Video),
+                        audio: self.default_of(StreamKind::Audio),
+                        subtitle: self.default_of(StreamKind::Text),
+                    };
+                    self.engine.streams_selected(gst::Seqnum::next(), &foreign);
+                }
+                Op::WantSubtitle(sid) => {
+                    self.want_subtitle = match sid {
+                        Some(sid) => SubWant::Stream(sid),
+                        None => SubWant::Off,
+                    };
+                    self.subtitle_ever_requested = true;
+                    self.engine.request(
+                        TrackSlot::Subtitle,
+                        TrackTarget::Stream(sid.map(str::to_string)),
+                    );
+                }
+                Op::WantAudio(sid) => {
+                    self.want_audio = Some(sid);
+                    self.engine.request(
+                        TrackSlot::Audio,
+                        TrackTarget::Stream(sid.map(str::to_string)),
+                    );
+                }
+                Op::WantVideo(sid) => {
+                    self.want_video = Some(sid);
+                    self.engine.request(
+                        TrackSlot::Video,
+                        TrackTarget::Stream(sid.map(str::to_string)),
+                    );
+                }
+                Op::Grow => {
+                    // The external's stream, once merged, stays merged.
+                    let ext = self.collection.iter().any(|s| s.sid == EXT_SID).then(|| {
+                        CollectionStream {
+                            sid: EXT_SID.into(),
+                            kind: StreamKind::Text,
+                        }
+                    });
+                    self.collection = avt_collection();
+                    self.collection.extend(ext);
+                    self.engine.collection_changed(self.collection.clone());
+                }
+                Op::AttachExternal => {
+                    if !self.externals.iter().any(|(id, _)| *id == EXT) {
+                        self.externals.push((EXT, vec![EXT_SID.to_string()]));
+                    }
+                }
+                Op::MaterializeExternal => {
+                    if !self.collection.iter().any(|s| s.sid == EXT_SID) {
+                        self.collection.push(CollectionStream {
+                            sid: EXT_SID.into(),
+                            kind: StreamKind::Text,
+                        });
+                        self.engine.collection_changed(self.collection.clone());
+                    }
+                }
+                Op::WantExternal => {
+                    self.want_subtitle = SubWant::External;
+                    self.subtitle_ever_requested = true;
+                    self.engine
+                        .request(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(EXT));
+                }
+                Op::ExternalGone => {
+                    self.externals.retain(|(id, _)| *id != EXT);
+                    self.collection.retain(|s| s.sid != EXT_SID);
+                    if self.want_subtitle == SubWant::External {
+                        // `external_gone` resets the desire to UNSET, and
+                        // whatever was showing keeps showing.
+                        self.want_subtitle = SubWant::Unset;
+                    }
+                    self.engine.external_gone(EXT);
+                }
+            }
+        }
+
+        /// Run the pipeline to a standstill: every confirmation delivered,
+        /// every dispatch the engine still wants made and confirmed. Bounded,
+        /// so a re-assertion that ping-pongs fails here rather than hanging.
+        fn settle(&mut self, trace: &[Op]) {
+            for _ in 0..64 {
+                while self.echo() {}
+                if !self.pump_once(false) && self.inflight.is_empty() {
+                    assert!(
+                        !self.engine.has_dispatchable_work(),
+                        "settled with work still pending, trace {trace:?}"
+                    );
+                    return;
+                }
+            }
+            panic!("the engine never converged, trace {trace:?}");
+        }
+
+        fn has(&self, sid: &str) -> bool {
+            self.collection.iter().any(|s| s.sid == sid)
+        }
+
+        fn has_video(&self) -> bool {
+            self.collection.iter().any(|s| s.kind == StreamKind::Video)
+        }
+
+        /// Every explicit desire the current collection CAN express must be
+        /// the applied state once everything has settled.
+        fn check_desires(&self, trace: &[Op]) {
+            let applied = self.engine.applied();
+            match self.want_video {
+                Some(Some(sid)) if self.has(sid) => assert_eq!(
+                    applied.video.as_deref(),
+                    Some(sid),
+                    "the video desire was not applied, trace {trace:?}, applied {applied:?}"
+                ),
+                Some(None) => assert_eq!(
+                    applied.video, None,
+                    "the video disable was not applied, trace {trace:?}, applied {applied:?}"
+                ),
+                _ => {}
+            }
+            match self.want_audio {
+                Some(Some(sid)) if self.has(sid) => assert_eq!(
+                    applied.audio.as_deref(),
+                    Some(sid),
+                    "the audio desire was not applied, trace {trace:?}, applied {applied:?}"
+                ),
+                Some(None) => assert_eq!(
+                    applied.audio, None,
+                    "the audio disable was not applied, trace {trace:?}, applied {applied:?}"
+                ),
+                _ => {}
+            }
+            // Text cannot be presented without video, so neither a collection
+            // without a video stream nor a deselected video slot is something
+            // a subtitle desire can be held to.
+            let text_presentable = self.has_video() && applied.video.is_some();
+            match self.want_subtitle {
+                SubWant::Stream(sid) if self.has(sid) && text_presentable => assert_eq!(
+                    applied.subtitle.as_deref(),
+                    Some(sid),
+                    "the subtitle desire was not applied, trace {trace:?}, applied {applied:?}"
+                ),
+                SubWant::External if self.external_resolves() && text_presentable => assert_eq!(
+                    applied.subtitle.as_deref(),
+                    Some(EXT_SID),
+                    "the external subtitle desire was not applied, trace {trace:?}, \
+                     applied {applied:?}"
+                ),
+                SubWant::Off => assert_eq!(
+                    applied.subtitle, None,
+                    "the subtitle disable was not applied, trace {trace:?}, applied {applied:?}"
+                ),
+                // An UNSET desire follows the pipeline, and the pipeline
+                // auto-selects the first stream of each kind. Ending with the
+                // text slot off means a dispatch composed it away, which is
+                // the shape of the partial-report bug: nobody asked for it and
+                // decodebin3's auto-select never runs again once it has been
+                // told explicitly. Only checked when no subtitle op ran at
+                // all, since a desire RESET by a failed external legitimately
+                // leaves an earlier disable applied.
+                SubWant::Unset
+                    if !self.subtitle_ever_requested
+                        && text_presentable
+                        && self.default_of(StreamKind::Text).is_some() =>
+                {
+                    assert!(
+                        applied.subtitle.is_some(),
+                        "text was deselected without a request, trace {trace:?}, \
+                         applied {applied:?}"
+                    )
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Exhaustive over every ordering of a small op alphabet: whatever the
+    /// interleaving of requests, confirmations, foreign auto-selects and
+    /// collection growth, the engine must converge and end up applying every
+    /// desire the collection can express. This is where a lost desire, a
+    /// stale echo overwriting the applied state, or a re-assertion loop shows
+    /// up without anyone having to guess the ordering that triggers it.
+    #[test]
+    fn every_ordering_converges_on_the_desired_state() {
+        const OPS: &[Op] = &[
+            Op::Pump { paused: false },
+            Op::Pump { paused: true },
+            Op::Echo,
+            Op::Foreign,
+            Op::WantSubtitle(Some("t1")),
+            Op::WantSubtitle(None),
+            Op::WantAudio(Some("a1")),
+            Op::WantVideo(None),
+            Op::Grow,
+        ];
+        // Three starting points: a collection still growing (audio only,
+        // decodebin3 has merged one input), a media that genuinely has no
+        // video stream and never will, and the full one.
+        let starts = [
+            collection(&[("a0", StreamKind::Audio)]),
+            collection(&[
+                ("a0", StreamKind::Audio),
+                ("a1", StreamKind::Audio),
+                ("t0", StreamKind::Text),
+                ("t1", StreamKind::Text),
+            ]),
+            avt_collection(),
+        ];
+
+        for start in starts {
+            search(OPS, &start, 6);
+        }
+    }
+
+    /// The same exhaustive treatment for the external-subtitle desire, whose
+    /// resolution needs TWO independent things to line up (the input having
+    /// produced its stream id, and decodebin3 having merged that id into the
+    /// collection as text) plus a reset path when the input dies. Every
+    /// ordering of those against dispatch, confirmation and a foreign
+    /// auto-select must still end on the external's stream.
+    #[test]
+    fn every_external_ordering_converges_on_the_desired_state() {
+        const OPS: &[Op] = &[
+            Op::Pump { paused: false },
+            Op::Pump { paused: true },
+            Op::Echo,
+            Op::Foreign,
+            Op::AttachExternal,
+            Op::MaterializeExternal,
+            Op::WantExternal,
+            Op::ExternalGone,
+            Op::WantSubtitle(None),
+        ];
+        search(OPS, &avt_collection(), 5);
+    }
+
+    /// Every op sequence up to `max_len`, each run against a fresh engine and
+    /// then settled and checked.
+    fn search(ops: &[Op], start: &[CollectionStream], max_len: usize) {
+        for len in 1..=max_len {
+            let total = ops.len().pow(len as u32);
+            for n in 0..total {
+                let mut trace = Vec::with_capacity(len);
+                let mut rest = n;
+                for _ in 0..len {
+                    trace.push(ops[rest % ops.len()]);
+                    rest /= ops.len();
+                }
+                let mut model = Model::new(start.to_vec());
+                for op in &trace {
+                    model.apply(*op);
+                }
+                model.settle(&trace);
+                model.check_desires(&trace);
+            }
+        }
+    }
+
+    #[test]
+    fn a_held_back_subtitle_must_not_starve_the_other_slots() {
+        // The holdback added for the collection-growth window keys off "the
+        // collection has no video", which is also true for the whole life of
+        // a media that simply has none. The subtitle desire then stays set,
+        // every later resolve hits the holdback and returns None, and every
+        // other slot's request is dropped with it for the rest of the load.
+        let mut engine = SelectionEngine::new();
+        engine.collection_changed(collection(&[
+            ("a0", StreamKind::Audio),
+            ("a1", StreamKind::Audio),
+            ("t0", StreamKind::Text),
+            ("t1", StreamKind::Text),
+        ]));
+        engine.streams_selected(gst::Seqnum::next(), &sel(None, Some("a0"), Some("t0")));
+
+        // Nothing can honour this while the collection has no video, so it
+        // is held back rather than answered by an event that turns the
+        // showing subtitle off.
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t1".into())));
+        assert_eq!(engine.pump(&ctx(true, false)), None);
+
+        // An audio switch has nothing to do with the subtitle and must go
+        // out. It carries the subtitle, because a collection with no video
+        // id to name cannot express "video on" either way and stripping the
+        // text stream would be a second deselect nobody asked for.
+        engine.request(TrackSlot::Audio, TrackTarget::Stream(Some("a1".into())));
+        assert_eq!(
+            engine.pump(&ctx(true, false)),
+            Some(Command::SelectStreams(sel(None, Some("a1"), Some("t1")))),
+            "the holdback must defer only the subtitle, not every other slot"
+        );
     }
 }

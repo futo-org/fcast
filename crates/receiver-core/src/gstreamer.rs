@@ -15,11 +15,27 @@ pub fn init_and_load_plugins() {
         std::env::set_var("GST_REGISTRY_DISABLE", "yes");
     }
 
+    // subparse decides "is this UTF-8?" once per push buffer and latches a
+    // failure for the rest of the stream, so a multi-byte character that
+    // straddles a read boundary (4096 bytes for filesrc, a network chunk for
+    // fcasthttpsrc) flips a perfectly valid UTF-8 subtitle file to
+    // ISO-8859-15 from that point to EOF. Naming the encoding takes the one
+    // conversion path that hands a truncated trailing sequence to the next
+    // buffer instead of rejecting the whole block. matroskademux reads the
+    // same variable for embedded text. A user's own value wins because it is
+    // the only lever left for a legacy cp1252 file. Measurements:
+    // subtitle-encoding-findings.md.
+    if std::env::var_os("GST_SUBTITLE_ENCODING").is_none() {
+        unsafe {
+            std::env::set_var("GST_SUBTITLE_ENCODING", "UTF-8");
+        }
+    }
+
     gst::init().unwrap();
     debug!(gstreamer_version = %gst::version_string());
 
     // Dynamic-build path only: load the bundled plugin dylibs/DLLs and point
-    // GIO at the bundled TLS module. A static build must NOT do this — the
+    // GIO at the bundled TLS module. A static build must NOT do this. The
     // on-disk plugins would drag in a second glib ("cannot register existing
     // type"), and TLS is already compiled in (glib-networking's GIO module is
     // registered by gst_init_static_plugins).
@@ -56,6 +72,7 @@ pub fn init_and_load_plugins() {
 
     fcast_gst_elements::fcastwhepsrcbin::plugin_init().unwrap();
     fcast_gst_elements::fcasthttpsrc::plugin_init().unwrap();
+    fcast_gst_elements::fcastaudiostretch::plugin_init().unwrap();
     #[cfg(target_os = "linux")]
     fcast_gst_elements::pwaudiosink::plugin_init().unwrap();
     crate::fcompsrc::plugin_init().unwrap();
@@ -70,6 +87,28 @@ pub fn init_and_load_plugins() {
     #[cfg(target_os = "linux")]
     crate::vajpegdec::plugin_init().unwrap();
     gstrswebrtc::plugin_register_static().unwrap();
+    gstrssubparse::plugin_register_static().unwrap();
+
+    // decodebin3/parsebin and subtitleoverlay pick a subtitle parser by rank.
+    // rssubparse/rsssaparse register at NONE (never autoplugged) and the C
+    // subparse/ssaparse at PRIMARY, so swap the ranks to route every subtitle
+    // stream through the Rust elements while keeping the C ones around as a
+    // gst-launch escape hatch.
+    {
+        use gst::prelude::PluginFeatureExtManual;
+        let registry = gst::Registry::get();
+        for c_name in ["subparse", "ssaparse"] {
+            if let Some(feature) = registry.lookup_feature(c_name) {
+                feature.set_rank(gst::Rank::NONE);
+            }
+        }
+        for rs_name in ["rssubparse", "rsssaparse"] {
+            registry
+                .lookup_feature(rs_name)
+                .expect("registered by gstrssubparse above")
+                .set_rank(gst::Rank::PRIMARY);
+        }
+    }
 
     #[cfg(feature = "static-gst-plugins")]
     {
@@ -97,6 +136,11 @@ pub(crate) fn init_for_tests() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         gst::init().unwrap();
+        // Elements fcastplaybin builds unconditionally must be registered here
+        // too, or a test that constructs a pipeline fails on a missing factory
+        // rather than on whatever it meant to assert. `fcastaudiostretch` is in
+        // the audio chain of every pipeline.
+        fcast_gst_elements::fcastaudiostretch::plugin_init().unwrap();
     });
 }
 

@@ -9,6 +9,7 @@ tokio.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
 fcastplaybin = { path = "../fcastplaybin" }
 fcast-gst-elements = { path = "../fcast-gst-elements" }
+gst-subparse.workspace = true
 fcast-runtime = { path = "../fcast-runtime" }
 fcast-video = { path = "../fcast-video" }
 fcast-protocol = { path = "../../crates/fcast-protocol", features = ["tokio-receiver"] }

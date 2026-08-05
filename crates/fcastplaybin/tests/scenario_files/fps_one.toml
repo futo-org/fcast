@@ -1,0 +1,34 @@
+# One video frame per SECOND. Every other file in the suite runs at 25 fps, where a
+# frame is 40 ms and the gap between two video buffers is smaller than almost every
+# timeout, poll interval and settle window in the pipeline. At 1 fps it is larger
+# than all of them.
+#
+# This is not a synthetic curiosity: slideshow media, timelapse, screen-share and
+# security-camera streams all deliver at or below 1 fps, and the receiver plays
+# them. The failure mode it hunts is anything that infers "the video branch is
+# stuck" from the absence of a new frame: a watchdog, a position poll that expects
+# the sink's last-buffer time to keep moving, or a preroll wait sized for a 40 ms
+# frame. The video sink also has to hold each buffer against the clock for a full
+# second while audio keeps flowing, so audio and video are maximally far apart in
+# how often they touch their sinks.
+#
+# keyframe_interval = 1 makes every frame a sync point, which is what real 1 fps
+# media does (there is nothing to predict from a frame a second ago).
+#
+# 2000 ms is the shortest duration that still schedules more than one frame:
+# ftestsrc floors the buffer count, so anything under 2000 ms is a single-frame
+# clip and single_frame.toml already covers that.
+key = "fpsone"
+duration_ms = 2000
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "video_0"
+kind = "video"
+fps = 1
+keyframe_interval = 1
+
+[[stream]]
+id = "audio_0"
+kind = "audio"

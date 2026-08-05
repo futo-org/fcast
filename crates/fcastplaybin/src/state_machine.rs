@@ -98,8 +98,16 @@ pub enum BufferingStateResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
     Stopped,
-    /// A load was queued, waiting for the pipeline's climb.
-    Loading,
+    /// A load was queued, waiting for the pipeline's climb. `committed`
+    /// records whether a transport has been requested for this load yet
+    /// (`uri_loaded`, or a user Play/Pause landing mid-load). Until then
+    /// `target` is only `begin_load`'s optimistic auto-play default and the
+    /// climb's states are adopted verbatim; afterwards the climb is a
+    /// transition toward `target` and is judged against it, exactly like
+    /// `Changing`.
+    Loading {
+        committed: bool,
+    },
     Buffering {
         percent: i32,
     },
@@ -159,7 +167,7 @@ impl StateMachine {
     /// `Playing` made buffering completion settle without dispatching,
     /// parking the load).
     pub fn begin_load(&mut self) {
-        self.phase = Phase::Loading;
+        self.phase = Phase::Loading { committed: false };
         self.slot = SeekSlot::None;
         self.target = gst::State::Playing;
         self.current_state = gst::State::Ready;
@@ -185,11 +193,19 @@ impl StateMachine {
     pub fn queue_seek(&mut self, seek: Seek) {
         self.target = match (self.slot, self.phase) {
             (SeekSlot::None, Phase::Running(rs)) => rs.into(),
-            (SeekSlot::None, Phase::Stopped | Phase::Loading) => gst::State::Paused,
+            (SeekSlot::None, Phase::Stopped | Phase::Loading { .. }) => gst::State::Paused,
             // Buffering/Changing, or a seek already tracked: keep the target.
             _ => self.target,
         };
-        self.slot = SeekSlot::Parked(seek);
+        // Latest wins, and the hand-back is NOT necessarily the latest: it
+        // describes the seek the pipeline refused, and it travels back
+        // through the event queue, so a newer user seek can already be
+        // tracked by the time it lands. Parking the hand-back over it
+        // resurrected a stale position and dropped the newest scrub.
+        self.slot = match self.slot {
+            SeekSlot::Parked(newer) | SeekSlot::InFlightParked(newer) => SeekSlot::Parked(newer),
+            SeekSlot::None | SeekSlot::InFlight => SeekSlot::Parked(seek),
+        };
         // The parked seek's edges own the machine now. Buffering bookkeeping
         // (if any) is superseded.
         if matches!(self.phase, Phase::Buffering { .. }) {
@@ -279,8 +295,12 @@ impl StateMachine {
             // owns the pipeline, but the load's completion and any buffering
             // started mid-load converge on it (a pause landing mid-load used
             // to be stomped by buffering's hardcoded Playing target).
-            Phase::Loading => {
+            Phase::Loading { .. } => {
                 self.target = next;
+                // From here the climb is judged against `target`, so a Pause
+                // landing after the load's PLAYING commit is honored instead
+                // of being erased by the commit's own overshoot.
+                self.phase = Phase::Loading { committed: true };
                 None
             }
             Phase::Running(current) => {
@@ -358,7 +378,7 @@ impl StateMachine {
                 // A load defaults to Playing (`begin_load`), but a transport
                 // request that landed mid-load was recorded and must survive
                 // the rebuffer.
-                Phase::Loading | Phase::Changing => self.target,
+                Phase::Loading { .. } | Phase::Changing => self.target,
                 Phase::Running(rs) => rs.into(),
                 Phase::Buffering { .. } => unreachable!("handled above"),
             };
@@ -435,22 +455,42 @@ impl StateMachine {
         }
 
         match self.phase {
-            Phase::Stopped | Phase::Loading => {
+            Phase::Stopped | Phase::Loading { .. } => {
                 if matches!(pending, gst::State::Ready | gst::State::Null) {
                     return StateChangeResult::Waiting;
                 }
-                match new {
-                    gst::State::Paused => {
-                        self.phase = Phase::Running(RunningState::Paused);
-                        StateChangeResult::NewPlaybackState(PlaybackState::Paused)
+                // Ready/Null/VoidPending arrivals here are teardown echoes,
+                // not playback-state edges.
+                if !matches!(new, gst::State::Paused | gst::State::Playing) {
+                    return StateChangeResult::Waiting;
+                }
+                // Once a transport is committed for this load, its climb is a
+                // transition toward `target` and carries the same hazard
+                // `Phase::Changing` guards: the load's PLAYING commit is still
+                // in flight when a user Pause retargets it, so both the
+                // Paused-with-pending-Playing edge and the PLAYING overshoot
+                // that follows must be corrected, not adopted. Adopting them
+                // silently un-paused the user for the rest of the item.
+                if matches!(self.phase, Phase::Loading { committed: true }) {
+                    let stale_upward = new == gst::State::Paused && pending == gst::State::Playing;
+                    if new != self.target || stale_upward {
+                        return if pending == gst::State::VoidPending {
+                            self.phase = Phase::Changing;
+                            StateChangeResult::ChangeState(self.target)
+                        } else {
+                            StateChangeResult::Waiting
+                        };
                     }
+                }
+                match new {
                     gst::State::Playing => {
                         self.phase = Phase::Running(RunningState::Playing);
                         StateChangeResult::NewPlaybackState(PlaybackState::Playing)
                     }
-                    // Ready/Null arrivals here are teardown echoes, not
-                    // playback-state edges.
-                    _ => StateChangeResult::Waiting,
+                    _ => {
+                        self.phase = Phase::Running(RunningState::Paused);
+                        StateChangeResult::NewPlaybackState(PlaybackState::Paused)
+                    }
                 }
             }
             Phase::Changing => {
@@ -519,9 +559,20 @@ impl StateMachine {
     }
 
     pub fn seek_failed(&mut self) -> Option<gst::State> {
-        // Only an in-flight seek can fail. Buffering keeps its own recovery
-        // (completion re-derives the transitions).
+        // Only an in-flight seek can fail. Buffering owns the pipeline while
+        // it runs (its `Started(Paused)` is what drives it), so there is
+        // nothing to re-commit here and completion re-derives the
+        // transitions, but it only does so when the seek slot is CLEAR:
+        // retire the dead in-flight marker. Leaving it made completion
+        // report `FinishedButWaitingSeek` and wait for a settle edge an
+        // already-settled pipeline never posts again, stranding the receiver
+        // in "Buffering" for good.
         if matches!(self.phase, Phase::Buffering { .. }) {
+            if self.slot == SeekSlot::InFlight {
+                self.slot = SeekSlot::None;
+            }
+            // A seek parked mid-buffer superseded the failed one and has not
+            // been dispatched yet, so it is not what failed: keep it.
             return None;
         }
         match self.slot {

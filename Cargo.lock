@@ -2697,10 +2697,28 @@ name = "fcastplaybin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fcast-gst-elements",
+ "fcasttest",
+ "gst-subparse",
  "gstreamer",
  "parking_lot",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "fcasttest"
+version = "0.1.0"
+dependencies = [
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-video",
+ "parking_lot",
+ "serde",
+ "toml 1.1.2+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]
@@ -3615,6 +3633,18 @@ checksum = "4a65a57d00a57ff98b4f5d51375ee90295865bb76e6a8c5cec8d36aabf396e4b"
 dependencies = [
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "gst-subparse"
+version = "0.1.0"
+source = "git+https://github.com/MAlba124/gst-subparse-rs.git?rev=da54cd9#da54cd9361287458a826c4763c2a7be77cec888f"
+dependencies = [
+ "encoding_rs",
+ "gst-plugin-version-helper",
+ "gstreamer",
+ "gstreamer-base",
+ "subparse-formats",
 ]
 
 [[package]]
@@ -7822,6 +7852,7 @@ dependencies = [
  "gst-plugin-dav1d",
  "gst-plugin-rtp",
  "gst-plugin-webrtc",
+ "gst-subparse",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-audio",
@@ -8994,6 +9025,11 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "subparse-formats"
+version = "0.1.0"
+source = "git+https://github.com/MAlba124/gst-subparse-rs.git?rev=da54cd9#da54cd9361287458a826c4763c2a7be77cec888f"
 
 [[package]]
 name = "subtle"

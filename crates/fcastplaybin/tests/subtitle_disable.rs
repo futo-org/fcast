@@ -54,6 +54,10 @@ fn init() {
                 .try_init();
         }
         gst::init().unwrap();
+        // The receiver's part of the pipeline: fcastaudiostretch is built by
+        // the fcastplaybin constructor but registered by the application.
+        fcast_gst_elements::fcastaudiostretch::plugin_init()
+            .expect("registering fcastaudiostretch");
     });
 }
 
@@ -274,10 +278,18 @@ impl Harness {
 
     /// Load `uri`, start playback and wait for the settled PLAYING.
     fn load_and_play(&self, uri: &str) {
+        self.load_and_play_at(uri, gst::ClockTime::ZERO);
+    }
+
+    /// Load `uri` starting at `position` (the receiver's resume path) and
+    /// wait for the settled PLAYING. A non-zero start point is the second
+    /// way, next to a user seek, for the pipeline's running-time origin to
+    /// sit above zero.
+    fn load_and_play_at(&self, uri: &str, position: gst::ClockTime) {
         self.playbin.load_async(
             MediaInput::Uri(uri.to_owned()),
             StartPoint::Seek {
-                position: gst::ClockTime::ZERO,
+                position,
                 rate: 1.0,
             },
         );
@@ -353,10 +365,11 @@ impl Harness {
                         let luma = &map[..map.len().min(640 * 480)];
                         luma.iter().filter(|&&y| y > 128).count() >= 10
                     });
-                seen_cb
-                    .lock()
-                    .unwrap()
-                    .push((Instant::now(), has_meta || has_pixels));
+                seen_cb.lock().unwrap().push((
+                    Instant::now(),
+                    buffer.pts(),
+                    has_meta || has_pixels,
+                ));
             }
             gst::PadProbeReturn::Ok
         });
@@ -408,15 +421,16 @@ impl Harness {
     }
 }
 
-/// Per-buffer record from [`Harness::install_text_probe`]: arrival time and
-/// whether the buffer carried a rendered cue.
-type TextSeen = std::sync::Arc<std::sync::Mutex<Vec<(Instant, bool)>>>;
+/// Per-buffer record from [`Harness::install_text_probe`]: arrival time,
+/// the buffer's playback position (its PTS, so an assert can say WHERE a
+/// cue rendered and not just when) and whether it carried a rendered cue.
+type TextSeen = std::sync::Arc<std::sync::Mutex<Vec<(Instant, Option<gst::ClockTime>, bool)>>>;
 
 /// The cue must be visible on buffers before a disable can claim to have
 /// removed it.
 fn wait_cue_visible(harness: &Harness, seen: &TextSeen) {
     let deadline = Instant::now() + EVENT_TIMEOUT;
-    while !seen.lock().unwrap().iter().any(|(_, text)| *text) {
+    while !seen.lock().unwrap().iter().any(|(_, _, text)| *text) {
         assert!(
             Instant::now() < deadline,
             "the rendered cue never appeared in the video buffers"
@@ -436,7 +450,7 @@ fn wait_cue_visible_after(harness: &Harness, seen: &TextSeen, after: Instant, wh
         .lock()
         .unwrap()
         .iter()
-        .any(|(at, text)| *text && *at > after)
+        .any(|(at, _, text)| *text && *at > after)
     {
         assert!(
             Instant::now() < deadline,
@@ -453,11 +467,14 @@ fn assert_cue_cleared(harness: &Harness, seen: &TextSeen, t_disable: Instant, wh
     let deadline = Instant::now() + EVENT_TIMEOUT;
     loop {
         let log = seen.lock().unwrap();
-        if log.iter().any(|(at, _)| *at > t_disable + CUE_CLEAR_BOUND) {
+        if log
+            .iter()
+            .any(|(at, _, _)| *at > t_disable + CUE_CLEAR_BOUND)
+        {
             let last_text = log
                 .iter()
-                .filter(|(_, text)| *text)
-                .map(|(at, _)| *at)
+                .filter(|(_, _, text)| *text)
+                .map(|(at, _, _)| *at)
                 .max();
             if let Some(last) = last_text {
                 let after = last.saturating_duration_since(t_disable);
@@ -574,7 +591,15 @@ fn embedded_subtitle_disable_is_immediate() {
     );
     assert_cue_cleared(&harness, &text_seen, t_disable, "embedded");
 
-    // Round trip: the same track must come back on request.
+    // Round trip: the same track must come back on request, and RENDER.
+    // Topology plus a confirmed selection is not enough here for the same
+    // reason it is not enough for the external twin
+    // (`external_subtitle_reenable_renders_again`): the regression class is a
+    // re-select that confirms against a drained decodebin3 slot with the
+    // branch linked while not one buffer, not even caps, ever reaches the
+    // overlay again. Before this wait was added, this leg asserted only
+    // "linked" and would have passed straight through that.
+    let t_reenable = Instant::now();
     harness
         .playbin
         .request_track(TrackSlot::Subtitle, TrackTarget::Stream(Some(sid)));
@@ -589,6 +614,7 @@ fn embedded_subtitle_disable_is_immediate() {
         )
     });
     harness.wait_subtitle_branch(true, EVENT_TIMEOUT, "re-enable");
+    wait_cue_visible_after(&harness, &text_seen, t_reenable, "embedded re-enable");
 
     harness.wait_for("EndOfStream", |event| {
         matches!(event, PlaybinEvent::EndOfStream)
@@ -694,8 +720,14 @@ fn paused_subtitle_disable_is_immediate() {
     });
 }
 
-/// Disable and re-enable back to back. The branch must end up linked and
-/// playback must survive to EOS.
+/// Disable and re-enable an EMBEDDED track back to back. The branch must end
+/// up linked, must RENDER again, and playback must survive to EOS.
+///
+/// The rendering requirement is the point: the external twin
+/// (`rapid_external_subtitle_toggle_renders_again`) has always had it, and
+/// this one did not, so the embedded side of the "linked but dead" class was
+/// unguarded — a relink that reattaches a drained slot passes every topology
+/// and event assertion in this test.
 #[test]
 fn rapid_subtitle_toggle_recovers() {
     init();
@@ -707,7 +739,11 @@ fn rapid_subtitle_toggle_recovers() {
     let harness = Harness::new();
     harness.load_and_play(&uri);
     let sid = enable_and_await_subtitles(&harness);
+    let text_seen = harness.install_text_probe();
     harness.wait_position(gst::ClockTime::from_mseconds(2000));
+    // Not vacuous: the track is genuinely on screen before the toggle.
+    wait_cue_visible(&harness, &text_seen);
+    let t_toggle = Instant::now();
 
     harness
         .playbin
@@ -732,6 +768,7 @@ fn rapid_subtitle_toggle_recovers() {
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+    wait_cue_visible_after(&harness, &text_seen, t_toggle, "embedded rapid toggle");
 
     harness.wait_for("EndOfStream", |event| {
         matches!(event, PlaybinEvent::EndOfStream)
@@ -1541,4 +1578,246 @@ fn load_replaces_media_under_midpush_external() {
     harness.wait_for("EndOfStream", |event| {
         matches!(event, PlaybinEvent::EndOfStream)
     });
+}
+
+/// An SRT with exactly the given cue spans (milliseconds). Cue-free
+/// stretches are what makes a cue's position identify it: the dense
+/// `srt_content` has a cue live at every instant, which hides a replay
+/// from the start of the file behind a plausible-looking render.
+fn write_sparse_srt(name: &str, spans: &[(u32, u32)]) -> std::path::PathBuf {
+    let path = tmp_path(name);
+    let stamp = |ms: u32| {
+        format!(
+            "{:02}:{:02}:{:02},{:03}",
+            ms / 3_600_000,
+            (ms / 60_000) % 60,
+            (ms / 1000) % 60,
+            ms % 1000
+        )
+    };
+    let mut srt = String::new();
+    for (i, (start, end)) in spans.iter().enumerate() {
+        srt.push_str(&format!(
+            "{}\n{} --> {}\nCUE{i:02}XXXXXXXX\n\n",
+            i + 1,
+            stamp(*start),
+            stamp(*end),
+        ));
+    }
+    std::fs::write(&path, srt).expect("writing the srt file");
+    path
+}
+
+/// The playback positions of every cue-bearing buffer after `after`, in
+/// arrival order. An unstamped buffer still counts as a hit.
+fn cue_hits_after(seen: &TextSeen, after: Instant) -> Vec<Option<gst::ClockTime>> {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .filter(|(at, _, text)| *text && *at > after)
+        .map(|(_, pts, _)| *pts)
+        .collect()
+}
+
+/// Playback must reach `until` without one cue rendering after `after`:
+/// the probe staying dark IS the pass. Buffers must have flowed, or the
+/// assert would pass vacuously on a dead branch.
+fn assert_dark_until(
+    harness: &Harness,
+    seen: &TextSeen,
+    after: Instant,
+    until: gst::ClockTime,
+    what: &str,
+) {
+    let deadline = Instant::now() + EVENT_TIMEOUT;
+    loop {
+        let hits = cue_hits_after(seen, after);
+        assert!(
+            hits.is_empty(),
+            "cues rendered at {hits:?}, before {until} is reached ({what})"
+        );
+        if harness.playbin.position().is_some_and(|pos| pos >= until) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "position never reached {until} ({what})"
+        );
+        harness.settle_pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let flowed = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(at, _, _)| *at > after)
+        .count();
+    assert!(flowed > 0, "no video buffers flowed at all ({what})");
+}
+
+/// The position of the first cue-bearing buffer after `after`, waiting up
+/// to `bound`.
+fn first_cue_position_after(
+    harness: &Harness,
+    seen: &TextSeen,
+    after: Instant,
+    bound: Duration,
+    what: &str,
+) -> gst::ClockTime {
+    let deadline = Instant::now() + bound;
+    loop {
+        if let Some(hit) = cue_hits_after(seen, after).first() {
+            return hit.expect("a rendered video buffer carries a position");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no cue rendered within {bound:?} ({what}); position {:?}",
+            harness.playbin.position()
+        );
+        harness.settle_pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Re-enabling an external must not replay the file from its start. The
+/// join-time replay seek that revives decodebin3's spent slot has to land
+/// on the pipeline's running-time ORIGIN, which every flushing seek moves
+/// to its target. Replaying from zero instead gives the branch a segment
+/// starting at zero while the video's starts at the seek target, so every
+/// replayed cue renders shifted by that target and the subtitles play
+/// again from cue one (the field report). The seek here is what creates
+/// the non-zero origin; at origin zero the replay is already correct.
+#[test]
+fn external_reenable_does_not_replay_stale_cues() {
+    init();
+    if !plugins_available() {
+        eprintln!("skipping: required GStreamer plugins missing");
+        return;
+    }
+    let uri = encode_video_mkv("stale-replay.mkv", 20);
+    // The first cue is over before the re-enable, the second is still due:
+    // a render before 13s can only be the replayed first one.
+    let srt = write_sparse_srt("stale-replay.srt", &[(200, 6_000), (13_000, 19_000)]);
+    let harness = Harness::new();
+    harness.load_and_play(&uri);
+    let (id, text_seen) = attach_and_show_external(&harness, &srt);
+
+    // Origin 9s. Nothing may render there: 6s < 9s < 13s.
+    seek_to(&harness, gst::ClockTime::from_seconds(9));
+    harness.disable_subtitles_and_measure();
+    let before = harness.playbin.position().expect("a position");
+
+    let t_reenable = Instant::now();
+    harness
+        .playbin
+        .request_track(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(id));
+    harness.playbin.pump_selection(harness.gate());
+    harness.wait_subtitle_branch(true, EVENT_TIMEOUT, "stale-replay re-enable link");
+
+    // The replay must not drag playback backwards either (the report reads
+    // both ways: replayed cues, or a rewound position).
+    let after = harness.playbin.position().expect("a position");
+    assert!(
+        after >= before,
+        "the re-enable moved playback backwards, from {before} to {after}"
+    );
+
+    assert_dark_until(
+        &harness,
+        &text_seen,
+        t_reenable,
+        gst::ClockTime::from_mseconds(12_500),
+        "after the re-enable",
+    );
+    // Not vacuous: the re-enabled track still renders, on time.
+    let at = first_cue_position_after(
+        &harness,
+        &text_seen,
+        t_reenable,
+        Duration::from_secs(5),
+        "the cue due after the re-enable",
+    );
+    assert!(
+        (12_900..13_600).contains(&at.mseconds()),
+        "the re-enabled track's next cue rendered at {at} instead of its 13s span"
+    );
+    assert_worker_alive(&harness, "after the re-enable");
+
+    // No EOS wait: the second cue ends at 19s and the replay behaviour is
+    // already settled here.
+}
+
+/// Enabling an external late must show the cue due at the CURRENT
+/// position, and nothing else. Same alignment as the re-enable, reached
+/// without any disable: a load that starts mid-file also puts the origin
+/// above zero, and a freshly attached input always pushes from the file's
+/// start.
+#[test]
+fn external_enable_late_shows_position_correct_cue() {
+    init();
+    if !plugins_available() {
+        eprintln!("skipping: required GStreamer plugins missing");
+        return;
+    }
+    let uri = encode_video_mkv("late-enable.mkv", 24);
+    // The early cue is over before the load's start point; the second
+    // spans the enable and the re-enable.
+    let srt = write_sparse_srt("late-enable.srt", &[(200, 2_000), (9_000, 16_000)]);
+    let harness = Harness::new();
+    harness.load_and_play_at(&uri, gst::ClockTime::from_seconds(6));
+    let text_seen = harness.install_text_probe();
+    harness.wait_position(gst::ClockTime::from_seconds(7));
+
+    let id = harness
+        .playbin
+        .attach_subtitle(&format!("file://{}", srt.display()))
+        .expect("attaching the external subtitle");
+    let sid = external_sid(&harness, id);
+    let t_attach = switch_subtitle(
+        &harness,
+        TrackTarget::ExternalSubtitle(id),
+        &sid,
+        "fresh attach past the early cue",
+    );
+
+    assert_dark_until(
+        &harness,
+        &text_seen,
+        t_attach,
+        gst::ClockTime::from_mseconds(8_500),
+        "after the fresh attach",
+    );
+    let at = first_cue_position_after(
+        &harness,
+        &text_seen,
+        t_attach,
+        Duration::from_secs(5),
+        "the 9s cue after a fresh attach",
+    );
+    assert!(
+        (8_900..9_700).contains(&at.mseconds()),
+        "the fresh attach rendered a cue at {at} instead of the 9s one"
+    );
+
+    // Now mid-cue: a re-enable must bring THAT cue back at once, not the
+    // file's first one, and not this one shifted into the future.
+    harness.disable_subtitles_and_measure();
+    let t_reenable = Instant::now();
+    harness
+        .playbin
+        .request_track(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(id));
+    harness.playbin.pump_selection(harness.gate());
+    harness.wait_subtitle_branch(true, EVENT_TIMEOUT, "late-enable re-enable link");
+    let at = first_cue_position_after(
+        &harness,
+        &text_seen,
+        t_reenable,
+        Duration::from_secs(3),
+        "the spanning cue after the re-enable",
+    );
+    assert!(
+        (9_000..14_000).contains(&at.mseconds()),
+        "the re-enable rendered a cue at {at}, outside the 9-16s cue that spans it"
+    );
+    assert_worker_alive(&harness, "after the mid-cue re-enable");
 }

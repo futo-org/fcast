@@ -34,6 +34,10 @@ fn init() {
                 .try_init();
         }
         gst::init().unwrap();
+        // The receiver's part of the pipeline: fcastaudiostretch is built by
+        // the fcastplaybin constructor but registered by the application.
+        fcast_gst_elements::fcastaudiostretch::plugin_init()
+            .expect("registering fcastaudiostretch");
     });
 }
 
@@ -184,6 +188,26 @@ impl Harness {
         }
     }
 
+    /// Everything the callback has produced and nobody consumed yet, taken
+    /// without blocking. Lets a test assert on what did NOT arrive by a
+    /// given instant, which [`Harness::wait_for`] cannot: `wait_for` walks
+    /// the whole backlog, so an event delivered seconds earlier still
+    /// satisfies a wait issued now.
+    fn drain_pending(&self) -> Vec<(PlaybinEvent, u64)> {
+        let mut seen = Vec::new();
+        while let Ok(entry) = self.events.try_recv() {
+            seen.push(entry);
+        }
+        seen
+    }
+
+    /// Pump for `settle` and return everything that arrived, so a test can
+    /// assert an event did not repeat.
+    fn drain_after(&self, settle: Duration) -> Vec<(PlaybinEvent, u64)> {
+        std::thread::sleep(settle);
+        self.drain_pending()
+    }
+
     /// Load `uri`, wait for the load to finish wiring, and start playback.
     fn load_and_play(&self, uri: &str) -> u64 {
         let generation = self.playbin.load_async(
@@ -284,6 +308,27 @@ fn assert_rebased_position(samples: &[Option<gst::ClockTime>], context: &str) {
             "post-swap position {sample} exceeds {limit} ({context}): the new item is ~2s \
              long, so this is the CUMULATIVE running time: the per-item segment.base \
              bump was skipped. Samples: {samples:?}"
+        );
+    }
+    // An upper bound alone cannot fail on a timeline that is not moving:
+    // a `position()` frozen at zero satisfies "< 1900 ms" forever. The
+    // readings are ~400 ms apart and the first is taken ~500 ms after the
+    // activation, so the new item's clock must be both PAST its start and
+    // ADVANCING between them.
+    let readings: Vec<gst::ClockTime> = samples.iter().flatten().copied().collect();
+    let floor = gst::ClockTime::from_mseconds(150);
+    let last = *readings.last().expect("at least one reading, asserted above");
+    assert!(
+        last >= floor,
+        "post-swap position {last} never got past {floor} ({context}): the new item's \
+         timeline is not running. Samples: {samples:?}"
+    );
+    if readings.len() > 1 {
+        let first = readings[0];
+        assert!(
+            last > first,
+            "post-swap position did not advance between the samples ({context}): the \
+             new item's timeline is frozen. Samples: {samples:?}"
         );
     }
 }
@@ -711,6 +756,21 @@ fn mid_item_cancel_does_not_end_the_item_early() {
             .any(|(event, _)| matches!(event, PlaybinEvent::PreparedActivated)),
         "no activation may fire after a cancel; seen: {seen:#?}"
     );
+    // EXACTLY one, as the doc comment says. The cancel path synthesizes an
+    // end when the hold recorded a dropped EOS (`SwapState::dropped_eos`),
+    // so a hold that MARKS without dropping produces the real end AND a
+    // synthetic one. Only counting catches that: waiting for "an EOS"
+    // is satisfied by either of the two.
+    let after = h.drain_after(Duration::from_millis(700));
+    let extra = after
+        .iter()
+        .filter(|(event, _)| matches!(event, PlaybinEvent::EndOfStream))
+        .count();
+    assert_eq!(
+        extra, 0,
+        "the item ended {extra} extra time(s) after its real end: the cancel \
+         synthesized an end that was never consumed; after: {after:#?}"
+    );
     h.playbin.stop().expect("stop");
 }
 
@@ -744,6 +804,24 @@ fn cancel_after_consumed_end_synthesizes_end_of_stream() {
     // Let the item play past its 2s end: its EOS reaches the outputs and
     // the pending hold consumes it.
     std::thread::sleep(Duration::from_secs(3));
+
+    // The PRECONDITION this test is named for, and the only thing that makes
+    // the assertions below mean anything. `wait_for` walks the whole event
+    // backlog, so an EOS the hold failed to consume at ~2s still satisfies a
+    // wait issued after the cancel: without this check the test passes
+    // unchanged on a crate whose gapless EOS hold drops nothing at all
+    // (verified by mutation: returning `behind` instead of `pending ||
+    // behind` from `gapless_eos_check_and_mark` leaves this test green).
+    let before_cancel = h.drain_pending();
+    assert!(
+        !before_cancel
+            .iter()
+            .any(|(event, _)| matches!(event, PlaybinEvent::EndOfStream)),
+        "the item's real EndOfStream reached the caller while a prepare was still \
+         pending, so the hold never consumed it and nothing below exercises the \
+         synthesis; seen: {before_cancel:#?}"
+    );
+
     h.playbin.cancel_prepared_async();
 
     let seen = h.wait_for("the synthesized EndOfStream", |event, _| {

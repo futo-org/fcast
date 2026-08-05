@@ -1,3 +1,4 @@
+pub mod fcastaudiostretch;
 pub mod fcasthttpsrc;
 #[cfg(feature = "textoverlay")]
 pub mod fcasttextoverlay;

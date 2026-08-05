@@ -28,6 +28,7 @@ members = [
     "crates/inhibit-screensaver",
     "crates/fcastplaybin",
     "crates/fcast-gst-elements",
+    "crates/fcasttest",
     "crates/fcast-runtime",
     "crates/fcast-video",
     "fuzz",
@@ -50,6 +51,7 @@ gst-plugin-rtp = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "http
 gst-plugin-webrtc = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false }
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
+gst-subparse = { git = "https://github.com/MAlba124/gst-subparse-rs.git", rev = "da54cd9" }
 serde_json = "1.0"
 thiserror = "2.0"
 log = "0.4"

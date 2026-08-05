@@ -525,6 +525,7 @@ pub struct Application {
     current_duration: Option<gst::ClockTime>,
     pending_subtitle_adds: Vec<PendingSubtitleAdd>,
     pending_subtitle_add_epoch: u64,
+    /// Fetch+transcode jobs in flight for `AddSubtitleSource` (see
     last_progress_broadcast: Option<Instant>,
     last_buffered_push: Option<Instant>,
     last_volume_cmd: Option<Instant>,
@@ -3200,6 +3201,17 @@ impl Application {
             return Ok(false);
         }
 
+        // The sender's URL is attached as-is. The receiver used to fetch the
+        // whole file first and rewrite it as UTF-8-with-BOM into a temp file,
+        // because the C `subparse` guessed the charset per push buffer and
+        // latched the first failure, so a network chunk splitting a multi-byte
+        // character mojibaked the rest of the file. `rssubparse` decides the
+        // charset from whole-stream evidence instead, and holds an incomplete
+        // trailing sequence across buffers, so there is nothing left for a
+        // pre-pass to fix. See `subtitle_encoding.rs`'s `production_parser`
+        // tests, which pin the cases that used to need it.
+        let source_url = url.clone();
+
         // Every catalog external is a LIVE input, attached simultaneously
         // (decodebin3 request pads) so switching is pure stream selection,
         // no reload in either direction. The virtual track is advertised
@@ -3218,7 +3230,7 @@ impl Application {
         media.next_external_id += 1;
         media.external_subtitles.push(ExternalSubtitle {
             id,
-            url,
+            url: source_url,
             name,
             requested_by: origin,
             handle,
