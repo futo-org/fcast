@@ -8,7 +8,7 @@ use std::{
     fmt,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -819,6 +819,13 @@ mod imp {
         /// Per-entry gst logging, off by default so the record path never formats.
         silent: AtomicBool,
         capture_details: AtomicBool,
+        /// See the `stall-transition` property.
+        stall_transition: Mutex<Option<String>>,
+        stall_ms: AtomicU64,
+        /// Name of the thread that entered the stall, published through the
+        /// read-only `stalled-thread` property. Empty until the stall engages,
+        /// which is also how a test detects that it engaged at all.
+        stalled_thread: Mutex<Option<String>>,
     }
 
     impl Default for FTestSink {
@@ -828,6 +835,9 @@ mod imp {
                 recording_key: Mutex::new(None),
                 silent: AtomicBool::new(true),
                 capture_details: AtomicBool::new(true),
+                stall_transition: Mutex::new(None),
+                stall_ms: AtomicU64::new(0),
+                stalled_thread: Mutex::new(None),
             }
         }
     }
@@ -923,6 +933,31 @@ mod imp {
                             .default_value(true)
                             .readwrite()
                             .build(),
+                        glib::ParamSpecString::builder("stall-transition")
+                            .nick("Stall transition")
+                            .blurb(
+                                "GstStateChange to stall in ONCE, spelled as its Rust debug name \
+                                 (\"ReadyToPaused\"). Manufactures a slow state change: a real \
+                                 window-bound video sink can take seconds here, and the caller of \
+                                 set_state waits inside it.",
+                            )
+                            .readwrite()
+                            .build(),
+                        glib::ParamSpecUInt64::builder("stall-ms")
+                            .nick("Stall milliseconds")
+                            .blurb("How long the stall holds. 0 disables it.")
+                            .default_value(0)
+                            .readwrite()
+                            .build(),
+                        glib::ParamSpecString::builder("stalled-thread")
+                            .nick("Stalled thread")
+                            .blurb(
+                                "Name of the thread that entered the stall, empty until it does. \
+                                 Reading it is how a test learns WHICH thread made the blocking \
+                                 set_state call.",
+                            )
+                            .read_only()
+                            .build(),
                     ]
                 });
             PROPERTIES.as_ref()
@@ -942,6 +977,13 @@ mod imp {
                     value.get().expect("type checked upstream"),
                     Ordering::Relaxed,
                 ),
+                "stall-transition" => {
+                    *self.stall_transition.lock() = value.get().expect("type checked upstream");
+                }
+                "stall-ms" => self.stall_ms.store(
+                    value.get().expect("type checked upstream"),
+                    Ordering::Relaxed,
+                ),
                 other => unimplemented!("unknown property {other}"),
             }
         }
@@ -951,6 +993,9 @@ mod imp {
                 "recording-key" => self.recording_key.lock().to_value(),
                 "silent" => self.silent.load(Ordering::Relaxed).to_value(),
                 "capture-details" => self.capture_details.load(Ordering::Relaxed).to_value(),
+                "stall-transition" => self.stall_transition.lock().to_value(),
+                "stall-ms" => self.stall_ms.load(Ordering::Relaxed).to_value(),
+                "stalled-thread" => self.stalled_thread.lock().to_value(),
                 other => unimplemented!("unknown property {other}"),
             }
         }
@@ -998,6 +1043,47 @@ mod imp {
                 transition,
                 monotonic: Instant::now(),
             });
+            // Manufactured slow state change, see `stall-transition`. Held
+            // BEFORE chaining up so the caller of `set_state` is inside the
+            // element's own transition, exactly where a window-bound sink
+            // waits on its display server. Once only: the release path of
+            // whatever the test wedged must not be stalled again.
+            let stall_ms = self.stall_ms.load(Ordering::Relaxed);
+            let wanted = self.stall_transition.lock().clone();
+            let stall =
+                stall_ms > 0 && wanted.as_deref() == Some(format!("{transition:?}").as_str());
+            if stall {
+                // The OS thread name, not the Rust one: the threads that matter
+                // here are GStreamer's (a multiqueue slot task, a source task),
+                // which Rust reports as unnamed. `/proc/thread-self` is the
+                // CURRENT thread's directory, so this names the caller exactly.
+                // The Rust name is the fallback and identifies the crate's own
+                // threads on any platform.
+                let thread = std::thread::current();
+                let name = std::fs::read_to_string("/proc/thread-self/comm")
+                    .map(|comm| comm.trim().to_owned())
+                    .ok()
+                    .filter(|comm| !comm.is_empty())
+                    .or_else(|| thread.name().map(str::to_owned))
+                    .unwrap_or_else(|| format!("unnamed-{:?}", thread.id()));
+                let engage = {
+                    let mut stalled = self.stalled_thread.lock();
+                    let first = stalled.is_none();
+                    if first {
+                        *stalled = Some(name.clone());
+                    }
+                    first
+                };
+                if engage {
+                    let held = Duration::from_millis(stall_ms);
+                    gst::warning!(
+                        CAT,
+                        imp = self,
+                        "stalling {transition:?} for {held:?} on thread {name}"
+                    );
+                    std::thread::sleep(held);
+                }
+            }
             if transition == gst::StateChange::NullToReady && !self.stash_recording() {
                 // Retried here because a scenario may be registered after the
                 // property is set. Still missing by now is a test bug.

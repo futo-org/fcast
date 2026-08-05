@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::{
     registry::{self, Scenario, SyncPoint},
     sink::{FTestSink, Recording},
-    spec::{CueSpec, MediaSpec, Pacing, StreamSpec},
+    spec::{BufferingSpec, CueSpec, MediaSpec, Pacing, StreamSpec},
 };
 
 use super::timeline::Timeline;
@@ -102,6 +102,22 @@ impl ScenarioBuilder {
     /// Applied to every stream, see [`duration`](Self::duration).
     pub fn bytes_per_buffer(mut self, bytes: usize) -> Self {
         self.bytes_per_buffer = Some(bytes);
+        self
+    }
+
+    /// Scheduled buffering messages over the whole media, see
+    /// [`BufferingSpec`]. Without this a scenario never reports buffering at
+    /// all, because ftest media has no buffering element.
+    pub fn buffering(mut self, buffering: BufferingSpec) -> Self {
+        self.spec.buffering = Some(buffering);
+        self
+    }
+
+    /// Model an adaptive (DASH/HLS) main input: the source answers the
+    /// SELECTABLE query, so decodebin3 defers ALL stream selection upstream.
+    /// See [`MediaSpec::upstream_selection`].
+    pub fn upstream_selection(mut self) -> Self {
+        self.spec.upstream_selection = true;
         self
     }
 
@@ -299,6 +315,48 @@ mod tests {
         );
         assert_eq!(video.faults.len(), 1);
 
+        handle.unregister();
+    }
+
+    #[test]
+    fn buffering_reaches_the_registered_spec() {
+        use crate::spec::{BufferingDip, BufferingRecovery, BufferingSpec, PeriodicBuffering};
+
+        let handle = ScenarioBuilder::new("bufknob")
+            .audio("audio_0")
+            .buffering(
+                BufferingSpec::new(25)
+                    .with_initial_ms(100)
+                    .with_periodic(400, 50)
+                    .with_dip(BufferingDip {
+                        stream: "audio_0".to_owned(),
+                        buffer_index: 3,
+                        recovery: BufferingRecovery::OnSyncPoint("refill".to_owned()),
+                    }),
+            )
+            .register();
+        let buffering = handle
+            .spec()
+            .buffering
+            .as_ref()
+            .expect("the registered buffering spec");
+        assert_eq!(buffering.low_percent, 25);
+        assert_eq!(buffering.initial_ms, Some(100));
+        assert_eq!(
+            buffering.periodic,
+            Some(PeriodicBuffering {
+                period_ms: 400,
+                low_ms: 50
+            })
+        );
+        assert_eq!(
+            buffering.dips,
+            vec![BufferingDip {
+                stream: "audio_0".to_owned(),
+                buffer_index: 3,
+                recovery: BufferingRecovery::OnSyncPoint("refill".to_owned()),
+            }]
+        );
         handle.unregister();
     }
 

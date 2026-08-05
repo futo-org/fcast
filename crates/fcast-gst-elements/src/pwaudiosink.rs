@@ -1,9 +1,11 @@
 //! `fcastpwaudiosink`: a native PipeWire audio sink.
 //!
-//! Failure discipline: this element must NEVER park a thread unboundedly,
-//! that is the disease it exists to treat. A dead daemon/stream posts an
-//! element error (core + stream listeners), `write()` gives up after a
-//! bounded stall, and `reset()` aborts a blocked `write()` immediately.
+//! Failure discipline: this element must NEVER park a thread unboundedly or
+//! stall silently, those are the diseases it exists to treat. A dead
+//! daemon/stream posts an element error (core + stream listeners), a graph
+//! that stops consuming posts one from `write()` itself (returning -1 alone
+//! reaches nobody, see [`imp::StallVerdict::escalates`]), and `reset()`
+//! aborts a blocked `write()` immediately.
 
 use gst::{glib, prelude::*};
 
@@ -12,7 +14,7 @@ mod imp {
 
     use parking_lot::{Condvar, Mutex};
 
-    use gst::{glib, subclass::prelude::*};
+    use gst::{glib, prelude::ElementExt, subclass::prelude::*};
     use gst_audio::subclass::prelude::*;
     use gst_base::prelude::BaseSinkExt;
 
@@ -39,6 +41,32 @@ mod imp {
     /// shorter than the settle timeouts a silent stall would otherwise eat.
     const WRITE_STALL_LIMIT: Duration = Duration::from_secs(2);
     const WRITE_STALL_STEP: Duration = Duration::from_millis(100);
+    /// How long `write()` tolerates the soft-cork before checking it against
+    /// the element's own state. A cork is only legitimate while the element
+    /// is PAUSED. Held with the element PLAYING it is stale (a lost uncork)
+    /// and parks the writer forever with no error anywhere: the
+    /// `forzen-at-the-start.txt` freeze (ring thread in `wait_for`, every
+    /// pw loop idle, no stall error because stall accounting is paused).
+    const CORK_RECONCILE_AFTER: Duration = Duration::from_secs(5);
+    /// How long ONE un-corked `write()` call may stay blocked in total, even
+    /// while the graph keeps freeing a little space (which resets the
+    /// per-progress clock above, forever, while real time is frozen).
+    ///
+    /// A healthy graph is nowhere near it: a blocked `write()` needs ONE
+    /// segment of room and the graph consumes at the device rate, so the
+    /// wait is one segment of audio. The field sizing (`ring 16224/16384`)
+    /// is 48kHz stereo F32 with a 10ms segment: the WHOLE ring is 2048
+    /// frames = 43ms, one segment 10ms. Even a 200ms buffer-time
+    /// negotiation only makes it 200ms, so 6s is >=30x the worst legitimate
+    /// block, and it still covers a device suspend/resume or a Bluetooth
+    /// route move (<1s). See the `a_healthy_graph_...` test.
+    const WRITE_TOTAL_BLOCK_LIMIT: Duration = Duration::from_secs(6);
+    /// How long the graph may deliver NO process() callback at all while
+    /// the element is settled at PLAYING and un-corked. Cycles are the only
+    /// direct "the graph is running our stream" signal (`BridgeShared::cycles`,
+    /// what `prepare()` waits on). A stream that stops being cycled plays
+    /// nothing and reports nothing, which is the freeze this treats.
+    const CYCLE_STALL_LIMIT: Duration = Duration::from_secs(5);
 
     /// `FCAST_PW_DELAY_TRACE=1`: eprintln the delay()/process() internals
     /// (rate-limited), the A/V-sync debugging view. Cached: the process
@@ -59,6 +87,136 @@ mod imp {
     fn no_device_latency() -> bool {
         static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *ON.get_or_init(|| std::env::var("FCAST_PW_NO_DEVICE_LATENCY").is_ok_and(|v| v == "1"))
+    }
+
+    /// `FCAST_PW_NO_TOTAL_STALL_CAP=1`: bail out of a blocked `write()` only
+    /// on the per-progress clock, the behaviour before
+    /// [`WRITE_TOTAL_BLOCK_LIMIT`]. A graph that frees space in a trickle can
+    /// then block one write, and playback, for as long as it likes.
+    fn no_total_stall_cap() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("FCAST_PW_NO_TOTAL_STALL_CAP").is_ok_and(|v| v == "1"))
+    }
+
+    /// `FCAST_PW_NO_CYCLE_WATCHDOG=1`: stop treating "the graph delivered no
+    /// process() callback for [`CYCLE_STALL_LIMIT`]" as a failure.
+    fn no_cycle_watchdog() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("FCAST_PW_NO_CYCLE_WATCHDOG").is_ok_and(|v| v == "1"))
+    }
+
+    /// `FCAST_PW_NO_STALL_ELEMENT_ERROR=1`: restore the old, INVISIBLE
+    /// handling of the [`WRITE_STALL_LIMIT`] stall. `write()` returned a
+    /// LoggableError, the gstreamer-rs trampoline dropped it unlogged
+    /// (`imp.write(..).unwrap_or(-1)`), and gstaudiosink turned the -1 into a
+    /// debug warning plus a skipped segment: no element error ever reached
+    /// the bus, so a stalled graph was a silent freeze by construction.
+    fn no_stall_element_error() -> bool {
+        static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ON.get_or_init(|| std::env::var("FCAST_PW_NO_STALL_ELEMENT_ERROR").is_ok_and(|v| v == "1"))
+    }
+
+    /// Why a blocked un-corked `write()` gives up, most specific first.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    enum StallVerdict {
+        /// Keep waiting, the block is still within every bound.
+        Wait,
+        /// No process() callback at all: the graph is not running our stream.
+        NoCycles,
+        /// Space is freed, but so slowly that this write() (and playback)
+        /// has been blocked past [`WRITE_TOTAL_BLOCK_LIMIT`].
+        TotalBlocked,
+        /// Nothing freed at all for [`WRITE_STALL_LIMIT`].
+        NoProgress,
+    }
+
+    impl StallVerdict {
+        fn reason(self) -> &'static str {
+            match self {
+                StallVerdict::Wait => "not stalled",
+                StallVerdict::NoCycles => "the pw graph delivered no process cycle",
+                StallVerdict::TotalBlocked => "the pw graph freed ring space only in a trickle",
+                StallVerdict::NoProgress => "the pw graph freed no ring space",
+            }
+        }
+
+        /// Whether to post an element error (and park the writer) instead of
+        /// handing -1 back for one skipped segment. A negative `write()`
+        /// alone is NOT loud: gstaudiosink logs a debug warning, skips the
+        /// segment and calls straight back
+        /// (`audioringbuffer_thread_func`), and the binding drops our
+        /// LoggableError unlogged, so nothing reaches the bus and the
+        /// skip-crawl spins. Only `FCAST_PW_NO_STALL_ELEMENT_ERROR` keeps
+        /// that old handling, and only for the plain no-progress stall.
+        fn escalates(self, stall_errors_levered_off: bool) -> bool {
+            match self {
+                StallVerdict::Wait => false,
+                StallVerdict::NoProgress => !stall_errors_levered_off,
+                StallVerdict::NoCycles | StallVerdict::TotalBlocked => true,
+            }
+        }
+    }
+
+    /// Everything the bail-out policy looks at, snapshotted so the decision
+    /// is a pure function (unit-tested, no pw graph or element needed).
+    #[derive(Debug, Clone, Copy)]
+    struct StallSnapshot {
+        current: gst::State,
+        pending: gst::State,
+        /// Soft-corked: the pause path owns that case entirely.
+        corked: bool,
+        /// Since the ring last shrank.
+        since_progress: Duration,
+        /// Since this write() call started blocking.
+        blocked_total: Duration,
+        /// Since `BridgeShared::cycles` last moved (kept across write() calls).
+        since_cycle: Duration,
+    }
+
+    /// The limits in force, so the env levers stay out of the decision.
+    /// `None` = that check is levered off.
+    #[derive(Debug, Clone, Copy)]
+    struct StallLimits {
+        no_progress: Duration,
+        total: Option<Duration>,
+        cycle: Option<Duration>,
+    }
+
+    fn stall_limits() -> StallLimits {
+        StallLimits {
+            no_progress: WRITE_STALL_LIMIT,
+            total: (!no_total_stall_cap()).then_some(WRITE_TOTAL_BLOCK_LIMIT),
+            cycle: (!no_cycle_watchdog()).then_some(CYCLE_STALL_LIMIT),
+        }
+    }
+
+    /// Decide whether a blocked `write()` may keep waiting.
+    fn write_stall_verdict(snap: &StallSnapshot, limits: &StallLimits) -> StallVerdict {
+        // A soft-cork legitimately never drains and has its own bounded
+        // arms (hand the segment back under a pending transition, reconcile
+        // a cork held while settled PLAYING).
+        if snap.corked {
+            return StallVerdict::Wait;
+        }
+        // The two graph-is-stopped verdicts are only knowable with the
+        // element settled at PLAYING: a preroll, a transition in flight and
+        // a teardown all stop the graph from draining for good reasons, and
+        // `prepare()` owns the startup wait.
+        if snap.current == gst::State::Playing && snap.pending == gst::State::VoidPending {
+            if limits.cycle.is_some_and(|limit| snap.since_cycle >= limit) {
+                return StallVerdict::NoCycles;
+            }
+            if limits
+                .total
+                .is_some_and(|limit| snap.blocked_total >= limit)
+            {
+                return StallVerdict::TotalBlocked;
+            }
+        }
+        if snap.since_progress >= limits.no_progress {
+            return StallVerdict::NoProgress;
+        }
+        StallVerdict::Wait
     }
 
     /// Re-declare the device latency only once it has moved this far. Every
@@ -140,11 +298,12 @@ mod imp {
         /// idle/paused silence-fill cycles too, a coarse stat, logged at
         /// unprepare for quantum sanity-checking, not an error signal.
         underruns: u64,
-        /// Total process() cycles, prepare() waits on this: cycles
-        /// running is the real "the graph is consuming" signal
-        /// (StreamState::Streaming only means the node is active, a
-        /// suspended device delays the first cycle by its resume time).
-        cycles: u64,
+        /// A stall has been reported for this prepared stream: post the
+        /// element error once, and park the writer instead of failing every
+        /// segment (gstaudiosink skips a refused segment and calls straight
+        /// back, which with an unresponsive graph is a busy loop). Cleared
+        /// by the next drain and by every `prepare()`.
+        stalled: bool,
     }
 
     impl Default for Bridge {
@@ -164,7 +323,7 @@ mod imp {
                 eos: false,
                 drained: 0,
                 underruns: 0,
-                cycles: 0,
+                stalled: false,
             }
         }
     }
@@ -240,6 +399,13 @@ mod imp {
         /// Lock-free copy of `Bridge::bytes_per_frame` for the process
         /// callback's no-lock silence path (0 until first prepare()).
         bytes_per_frame: std::sync::atomic::AtomicUsize,
+        /// process() callbacks since `prepare()`, the one direct "the graph
+        /// is running our stream" signal (StreamState::Streaming only means
+        /// the node is active, a suspended device delays the first cycle by
+        /// its resume time). Bumped BEFORE the bridge try_lock, so a cycle
+        /// that loses the race still counts: the cycle watchdog must not
+        /// read lock contention as a dead graph.
+        cycles: std::sync::atomic::AtomicU64,
     }
 
     impl BridgeShared {
@@ -292,6 +458,12 @@ mod imp {
         /// `write()` calls, to keep the device-latency re-check off the hot
         /// path (one segment per call, so every 32nd is a third of a second).
         writes: std::sync::atomic::AtomicU64,
+        /// Cycle-watchdog state, writer thread only: the last observed
+        /// `BridgeShared::cycles` and when it last moved. Kept ACROSS write()
+        /// calls, because a bail-out ends the call but gstaudiosink just
+        /// skips that segment and calls again, and because a graph that died
+        /// during a pause must be caught on the first write after the resume.
+        cycle_probe: Mutex<Option<(u64, std::time::Instant)>>,
     }
 
     impl PwAudioSink {
@@ -363,8 +535,38 @@ mod imp {
             }
             self.announced_device_delay
                 .store(capped.nseconds(), std::sync::atomic::Ordering::Relaxed);
-            gst::info!(CAT, "device latency {capped}, declaring it as render delay");
+            // WARNING, not info: this posts a LATENCY message from whatever
+            // thread called (the ring writer, every 32nd write), so it
+            // redistributes the whole pipeline's latency mid-play. Field logs
+            // capture WARNING and above, and a freeze correlating with a
+            // latency recalculation has to be visible in them.
+            gst::warning!(
+                CAT,
+                imp = self,
+                "device latency {capped}, declaring it as render delay \
+                 (posts LATENCY, redistributes the pipeline)"
+            );
             self.obj().set_render_delay(capped);
+        }
+
+        /// How long the graph has gone without delivering a process()
+        /// callback, updating the probe on the way. Reads zero the first
+        /// time and whenever the count moves, so a `prepare()` (which zeroes
+        /// `cycles`) always starts the clock over.
+        ///
+        /// A cycle that misses the bridge try_lock does not count, which
+        /// cannot persist: a blocked `write()` holds the lock only between
+        /// its 100ms waits.
+        fn observe_cycles(&self, cycles: u64) -> Duration {
+            let now = std::time::Instant::now();
+            let mut probe = self.cycle_probe.lock();
+            match *probe {
+                Some((seen, at)) if seen == cycles => now.saturating_duration_since(at),
+                _ => {
+                    *probe = Some((cycles, now));
+                    Duration::ZERO
+                }
+            }
         }
 
         /// Let the graph take what is left in the bridge after an EOS, before
@@ -600,7 +802,7 @@ mod imp {
                 bridge.dead = false;
                 bridge.ring.clear();
                 bridge.underruns = 0;
-                bridge.cycles = 0;
+                bridge.stalled = false;
                 // ~2 segments of headroom: enough that process() never
                 // starves between write() wakeups, small enough that the
                 // base class's ring (segsize×segtotal) dominates latency.
@@ -609,6 +811,12 @@ mod imp {
             self.shared
                 .bytes_per_frame
                 .store(bytes_per_frame, std::sync::atomic::Ordering::Relaxed);
+            // A fresh stream starts the cycle watchdog over, never against
+            // the previous stream's count.
+            self.shared
+                .cycles
+                .store(0, std::sync::atomic::Ordering::Relaxed);
+            *self.cycle_probe.lock() = None;
 
             let mut audio_info = spa::param::audio::AudioInfoRaw::new();
             audio_info.set_format(match info.format() {
@@ -702,6 +910,13 @@ mod imp {
                     }
                 })
                 .process(move |stream, _| {
+                    // First thing, unconditionally: this is the graph
+                    // proving it still schedules us, and the cycle watchdog
+                    // reads it. A cycle that finds no buffer or loses the
+                    // try_lock below still ran.
+                    shared
+                        .cycles
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     let Some(mut pwbuf) = stream.dequeue_buffer() else {
                         return;
                     };
@@ -738,7 +953,6 @@ mod imp {
                         return;
                     };
                     let (filled, stride, drained) = {
-                        bridge.cycles += 1;
                         let paused = bridge.paused;
                         let bytes_per_frame = bridge.bytes_per_frame.max(1);
                         if delay_trace() {
@@ -866,14 +1080,16 @@ mod imp {
             drop(guard);
             let deadline = std::time::Instant::now() + Duration::from_millis(1500);
             let died = loop {
+                if self.shared.bridge.lock().dead {
+                    break true;
+                }
+                if self
+                    .shared
+                    .cycles
+                    .load(std::sync::atomic::Ordering::Relaxed)
+                    >= 2
                 {
-                    let bridge = self.shared.bridge.lock();
-                    if bridge.dead {
-                        break true;
-                    }
-                    if bridge.cycles >= 2 {
-                        break false;
-                    }
+                    break false;
                 }
                 if std::time::Instant::now() >= deadline {
                     gst::warning!(CAT, "no pw graph cycles within 1.5s; starting anyway");
@@ -926,7 +1142,15 @@ mod imp {
             if bridge.capacity < data.len() {
                 bridge.capacity = data.len() * 2;
             }
-            let mut stalled = Duration::ZERO;
+            // Progress = the ring actually shrinking. Judging by wakeups let
+            // a drip of progress-free notifies reset the stall clock forever.
+            let mut last_progress = std::time::Instant::now();
+            let mut last_fill = bridge.ring.len();
+            // A trickle of REAL progress resets that clock just as well, so
+            // bound the total time this one call may stay blocked too.
+            let mut blocked_since = last_progress;
+            let mut was_corked = bridge.paused;
+            let limits = stall_limits();
             loop {
                 if bridge.dead {
                     return Err(gst::loggable_error!(CAT, "pw stream is dead"));
@@ -941,24 +1165,126 @@ mod imp {
                     bridge.ring.extend(data);
                     return Ok(data.len() as i32);
                 }
-                if stalled >= WRITE_STALL_LIMIT {
-                    // The graph freed nothing for the whole window and no error listener fired:
-                    // fail loud. Never park unbounded, that is the disease this element treats.
-                    return Err(gst::loggable_error!(
-                        CAT,
-                        "pw graph consumed no audio for {stalled:?}; giving up"
-                    ));
+                if bridge.ring.len() < last_fill {
+                    last_fill = bridge.ring.len();
+                    last_progress = std::time::Instant::now();
+                    // The graph is consuming again: a later stall is news.
+                    bridge.stalled = false;
                 }
-                let timeout = self.shared.space.wait_for(&mut bridge, WRITE_STALL_STEP);
-                // While soft-corked the ring legitimately never drains: a pause must block for as
-                // long as the user pauses, interruptible by resume/flush/teardown/death (all of
-                // which notify). Stall accounting only runs unpaused, where process() drains a full
-                // ring every cycle and only notifies on progress.
-                if timeout.timed_out() && !bridge.paused {
-                    stalled += WRITE_STALL_STEP;
-                } else if !timeout.timed_out() {
-                    stalled = Duration::ZERO;
+                if bridge.paused {
+                    was_corked = true;
+                } else if was_corked {
+                    // Leaving a cork (a resume, or the stale-cork reconcile
+                    // below): the cork WAS the reason nothing drained, so
+                    // every stall clock restarts here. Without this, any
+                    // pause longer than WRITE_STALL_LIMIT ends as a stall
+                    // error the moment the user resumes.
+                    was_corked = false;
+                    last_fill = bridge.ring.len();
+                    last_progress = std::time::Instant::now();
+                    blocked_since = last_progress;
                 }
+                let blocked = last_progress.elapsed();
+                let (_, current, pending) = self.obj().state(Some(gst::ClockTime::ZERO));
+                if bridge.paused {
+                    // A settled pause legitimately never drains: block for as
+                    // long as the user pauses (resume/flush/teardown/death all
+                    // notify). Everything else may not park here:
+                    if pending != gst::State::VoidPending {
+                        // A transition is waiting on this write to RETURN
+                        // (the parent parks its ring thread only after it, so
+                        // blocking wedged PLAYING->PAUSED for as long as the
+                        // cork held, measured pending=paused 5s+). Swallow
+                        // like the flush path: one segment lost at worst, the
+                        // resume ramp covers the seam.
+                        if blocked >= WRITE_STALL_LIMIT {
+                            gst::warning!(
+                                CAT,
+                                imp = self,
+                                "write blocked {blocked:?} under a pending transition \
+                                 (corked, ring {}/{}); handing the segment back",
+                                bridge.ring.len(),
+                                bridge.capacity
+                            );
+                            return Ok(data.len() as i32);
+                        }
+                    } else if current == gst::State::Playing
+                        && blocked >= CORK_RECONCILE_AFTER
+                        && std::env::var_os("FCAST_PW_NO_CORK_RECONCILE").is_none()
+                    {
+                        // Corked with the element SETTLED at PLAYING = a lost
+                        // uncork; nothing else ever clears it. Field:
+                        // `forzen-at-the-start.txt`.
+                        gst::warning!(
+                            CAT,
+                            imp = self,
+                            "soft-cork held while the element is settled PLAYING; clearing \
+                             the stale cork (ring {}/{} bytes)",
+                            bridge.ring.len(),
+                            bridge.capacity
+                        );
+                        bridge.paused = false;
+                        // The next iteration restarts the stall clocks (see
+                        // the corked-edge reset above), or this recovery
+                        // would turn straight into a stall error.
+                        continue;
+                    }
+                } else {
+                    // Un-corked: the graph owes us space at the device rate,
+                    // so every way of not getting it is bounded. Never park
+                    // unbounded, that is the disease this element treats.
+                    let snap = StallSnapshot {
+                        current,
+                        pending,
+                        corked: false,
+                        since_progress: blocked,
+                        blocked_total: blocked_since.elapsed(),
+                        since_cycle: self.observe_cycles(
+                            self.shared
+                                .cycles
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                        ),
+                    };
+                    let verdict = write_stall_verdict(&snap, &limits);
+                    if verdict != StallVerdict::Wait {
+                        let detail = format!(
+                            "{} (ring {}/{} bytes, blocked {:?}, nothing freed for {:?}, \
+                             last process cycle {:?} ago)",
+                            verdict.reason(),
+                            bridge.ring.len(),
+                            bridge.capacity,
+                            snap.blocked_total,
+                            snap.since_progress,
+                            snap.since_cycle,
+                        );
+                        if !verdict.escalates(no_stall_element_error()) {
+                            drop(bridge);
+                            return Err(gst::loggable_error!(CAT, "{detail}"));
+                        }
+                        if !bridge.stalled {
+                            bridge.stalled = true;
+                            // Report outside the bridge lock: posting can reach
+                            // a sync bus handler, and the error path must never
+                            // invite one in here.
+                            drop(bridge);
+                            gst::error!(CAT, imp = self, "{detail}");
+                            gst::element_imp_error!(
+                                self,
+                                gst::ResourceError::Failed,
+                                ("PipeWire playback stalled: {}", detail)
+                            );
+                            bridge = self.shared.bridge.lock();
+                        }
+                        // Reported once. Keep waiting at the same 100ms
+                        // cadence rather than failing the segment: gstaudiosink
+                        // skips a refused one and calls straight back, which
+                        // against an unresponsive graph is a busy loop posting
+                        // per segment. Teardown, flush and death all still
+                        // break the loop at the top, and a graph that recovers
+                        // resumes playback.
+                    }
+                }
+                let _ = self.shared.space.wait_for(&mut bridge, WRITE_STALL_STEP);
             }
         }
 
@@ -1089,6 +1415,332 @@ mod imp {
         // Pause note: AudioSinkImpl has no pause hook, GstAudioSink calls reset() on pause (bridge
         // drops <=2 segments, alsasink-style) and stops calling write(). The pw stream keeps running
         // and silence- fills, which keeps the graph and delay() honest for resume.
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn limits() -> StallLimits {
+            StallLimits {
+                no_progress: WRITE_STALL_LIMIT,
+                total: Some(WRITE_TOTAL_BLOCK_LIMIT),
+                cycle: Some(CYCLE_STALL_LIMIT),
+            }
+        }
+
+        /// A write blocked on a healthy graph: settled PLAYING, un-corked,
+        /// space freed a moment ago.
+        fn healthy() -> StallSnapshot {
+            StallSnapshot {
+                current: gst::State::Playing,
+                pending: gst::State::VoidPending,
+                corked: false,
+                since_progress: Duration::from_millis(20),
+                blocked_total: Duration::from_millis(20),
+                since_cycle: Duration::from_millis(20),
+            }
+        }
+
+        #[test]
+        fn a_normally_blocked_write_keeps_waiting() {
+            assert_eq!(
+                write_stall_verdict(&healthy(), &limits()),
+                StallVerdict::Wait
+            );
+        }
+
+        #[test]
+        fn nothing_freed_bails_out_in_any_state() {
+            // The pre-existing arm, unchanged: un-corked, the graph owes us
+            // space whatever the element is doing.
+            for state in [gst::State::Playing, gst::State::Paused] {
+                let snap = StallSnapshot {
+                    current: state,
+                    since_progress: WRITE_STALL_LIMIT,
+                    blocked_total: WRITE_STALL_LIMIT,
+                    since_cycle: Duration::ZERO,
+                    ..healthy()
+                };
+                assert_eq!(
+                    write_stall_verdict(&snap, &limits()),
+                    StallVerdict::NoProgress
+                );
+            }
+            // It posts an element error now, unless levered back to the old
+            // (invisible) skipped-segment handling.
+            assert!(StallVerdict::NoProgress.escalates(false));
+            assert!(!StallVerdict::NoProgress.escalates(true));
+        }
+
+        #[test]
+        fn a_trickle_that_defeats_the_progress_clock_trips_the_total_cap() {
+            // Round 6's shape: space freed often enough to reset the
+            // per-progress clock, real time frozen anyway.
+            let snap = StallSnapshot {
+                since_progress: Duration::from_millis(1_900),
+                blocked_total: WRITE_TOTAL_BLOCK_LIMIT,
+                since_cycle: Duration::from_millis(1_900),
+                ..healthy()
+            };
+            assert_eq!(
+                write_stall_verdict(&snap, &limits()),
+                StallVerdict::TotalBlocked
+            );
+            assert!(StallVerdict::TotalBlocked.escalates(true));
+            // One second short of the cap it is still just backpressure.
+            let snap = StallSnapshot {
+                blocked_total: WRITE_TOTAL_BLOCK_LIMIT - Duration::from_secs(1),
+                ..snap
+            };
+            assert_eq!(write_stall_verdict(&snap, &limits()), StallVerdict::Wait);
+        }
+
+        #[test]
+        fn a_graph_that_stopped_cycling_trips_the_watchdog() {
+            let snap = StallSnapshot {
+                since_progress: Duration::from_millis(500),
+                blocked_total: Duration::from_millis(500),
+                since_cycle: CYCLE_STALL_LIMIT,
+                ..healthy()
+            };
+            assert_eq!(
+                write_stall_verdict(&snap, &limits()),
+                StallVerdict::NoCycles
+            );
+            assert!(StallVerdict::NoCycles.escalates(true));
+        }
+
+        #[test]
+        fn the_most_specific_cause_is_reported() {
+            let snap = StallSnapshot {
+                since_progress: WRITE_TOTAL_BLOCK_LIMIT,
+                blocked_total: WRITE_TOTAL_BLOCK_LIMIT,
+                since_cycle: WRITE_TOTAL_BLOCK_LIMIT,
+                ..healthy()
+            };
+            assert_eq!(
+                write_stall_verdict(&snap, &limits()),
+                StallVerdict::NoCycles
+            );
+        }
+
+        #[test]
+        fn a_cork_never_trips_anything() {
+            // A settled pause blocks for as long as the user pauses, and the
+            // paused arms (hand-back, stale-cork reconcile) own that path.
+            let snap = StallSnapshot {
+                corked: true,
+                current: gst::State::Paused,
+                since_progress: Duration::from_secs(3_600),
+                blocked_total: Duration::from_secs(3_600),
+                since_cycle: Duration::from_secs(3_600),
+                ..healthy()
+            };
+            assert_eq!(write_stall_verdict(&snap, &limits()), StallVerdict::Wait);
+            // Even a cork held while PLAYING is the reconcile's business.
+            let snap = StallSnapshot {
+                current: gst::State::Playing,
+                ..snap
+            };
+            assert_eq!(write_stall_verdict(&snap, &limits()), StallVerdict::Wait);
+        }
+
+        #[test]
+        fn startup_teardown_and_transitions_never_trip_the_new_checks() {
+            // prepare()'s own startup wait stays the only judge before
+            // PLAYING, and a transition in flight or a teardown descent has
+            // every right to stop the graph from draining.
+            for (current, pending) in [
+                (gst::State::Null, gst::State::VoidPending),
+                (gst::State::Ready, gst::State::Paused),
+                (gst::State::Paused, gst::State::Playing),
+                (gst::State::Playing, gst::State::Paused),
+                (gst::State::Playing, gst::State::Ready),
+            ] {
+                let snap = StallSnapshot {
+                    current,
+                    pending,
+                    since_progress: Duration::from_millis(500),
+                    blocked_total: Duration::from_secs(60),
+                    since_cycle: Duration::from_secs(60),
+                    ..healthy()
+                };
+                assert_eq!(
+                    write_stall_verdict(&snap, &limits()),
+                    StallVerdict::Wait,
+                    "{current:?}/{pending:?} must not accuse the graph"
+                );
+            }
+        }
+
+        #[test]
+        fn each_lever_restores_the_old_behaviour() {
+            let stalled = StallSnapshot {
+                since_progress: Duration::from_millis(500),
+                blocked_total: Duration::from_secs(60),
+                since_cycle: Duration::from_secs(60),
+                ..healthy()
+            };
+            let no_cycle = StallLimits {
+                cycle: None,
+                ..limits()
+            };
+            assert_eq!(
+                write_stall_verdict(&stalled, &no_cycle),
+                StallVerdict::TotalBlocked
+            );
+            let neither = StallLimits {
+                cycle: None,
+                total: None,
+                ..limits()
+            };
+            // Old behaviour: only the per-progress clock, which a trickle
+            // resets forever.
+            assert_eq!(write_stall_verdict(&stalled, &neither), StallVerdict::Wait);
+        }
+
+        /// The eight silent stall modes enumerated in FREEZE-DIAGN.md
+        /// section 4, and which bail-out (if any) sees each one. The three
+        /// that read as `Wait` are uncovered BY DESIGN: from inside the sink
+        /// they are indistinguishable from a legitimate pause or from
+        /// healthy playback, and only the receiver-level freeze watchdog can
+        /// see them.
+        #[test]
+        fn the_known_silent_stall_modes_map_to_verdicts() {
+            let stopped = Duration::from_secs(10);
+            let cases: [(&str, StallSnapshot, StallVerdict); 7] = [
+                (
+                    "1. the graph stops scheduling a Streaming node",
+                    StallSnapshot {
+                        since_progress: stopped,
+                        blocked_total: stopped,
+                        since_cycle: stopped,
+                        ..healthy()
+                    },
+                    StallVerdict::NoCycles,
+                ),
+                (
+                    // Cycles are counted before the dequeue, so the graph
+                    // still reads as running: the ring not moving is what
+                    // catches this one.
+                    "2. dequeue_buffer() returns None every cycle",
+                    StallSnapshot {
+                        since_progress: WRITE_STALL_LIMIT,
+                        blocked_total: WRITE_STALL_LIMIT,
+                        since_cycle: Duration::ZERO,
+                        ..healthy()
+                    },
+                    StallVerdict::NoProgress,
+                ),
+                (
+                    "3. the stream is moved to Paused/Unconnected",
+                    StallSnapshot {
+                        since_progress: stopped,
+                        blocked_total: stopped,
+                        since_cycle: stopped,
+                        ..healthy()
+                    },
+                    StallVerdict::NoCycles,
+                ),
+                (
+                    // The crawl is the OLD handling of this verdict, gone
+                    // now that the verdict escalates and parks.
+                    "4. the endless 2s-per-segment skip crawl",
+                    StallSnapshot {
+                        since_progress: WRITE_STALL_LIMIT,
+                        blocked_total: WRITE_STALL_LIMIT,
+                        since_cycle: Duration::from_millis(20),
+                        ..healthy()
+                    },
+                    StallVerdict::NoProgress,
+                ),
+                (
+                    "5. a settled-PAUSED cork parks the writer for ever",
+                    StallSnapshot {
+                        corked: true,
+                        current: gst::State::Paused,
+                        since_progress: stopped,
+                        blocked_total: stopped,
+                        since_cycle: stopped,
+                        ..healthy()
+                    },
+                    StallVerdict::Wait,
+                ),
+                (
+                    "6. FCAST_PW_NO_CORK_RECONCILE removes the only escape",
+                    StallSnapshot {
+                        corked: true,
+                        since_progress: stopped,
+                        blocked_total: stopped,
+                        since_cycle: stopped,
+                        ..healthy()
+                    },
+                    StallVerdict::Wait,
+                ),
+                (
+                    "7. the graph consumes normally but nothing is audible",
+                    healthy(),
+                    StallVerdict::Wait,
+                ),
+            ];
+            for (mode, snap, want) in cases {
+                assert_eq!(write_stall_verdict(&snap, &limits()), want, "{mode}");
+            }
+            // 8. the sink's own pw thread-loop wedges: no callbacks reach us,
+            // which is mode 1 from the writer's side.
+            assert_eq!(
+                write_stall_verdict(
+                    &StallSnapshot {
+                        since_progress: stopped,
+                        blocked_total: stopped,
+                        since_cycle: stopped,
+                        ..healthy()
+                    },
+                    &limits()
+                ),
+                StallVerdict::NoCycles
+            );
+        }
+
+        /// `prepare()`'s ring sizing, so the cap's justifying arithmetic is
+        /// checked instead of just asserted in a comment.
+        fn ring_capacity(segsize: usize, bytes_per_frame: usize) -> usize {
+            segsize.max(bytes_per_frame * 1024) * 2
+        }
+
+        #[test]
+        fn a_healthy_graph_never_blocks_one_write_for_seconds() {
+            // The field's `ring 16224/16384` is this formula at 48kHz stereo
+            // F32 with the default 10ms segment: a FULL ring is 43ms of
+            // audio, so a full ring is the steady state, never evidence of a
+            // stall.
+            assert_eq!(ring_capacity(3840, 8), 16384);
+
+            // A blocked write() needs ONE segment of room and the graph
+            // consumes at the device rate, so the wait is one segment of
+            // audio however big the ring is. (rate, bytes/frame, segsize):
+            // 48k stereo F32 at 10ms and at 200ms buffer-time, 8k mono S16,
+            // 44.1k stereo S16.
+            for (rate, bpf, segsize) in [
+                (48_000usize, 8usize, 3_840usize),
+                (48_000, 8, 9_600),
+                (8_000, 2, 160),
+                (44_100, 4, 3_528),
+            ] {
+                let segment = Duration::from_secs_f64(segsize as f64 / (bpf * rate) as f64);
+                assert!(
+                    segment * 20 < WRITE_TOTAL_BLOCK_LIMIT,
+                    "{rate}Hz bpf={bpf} seg={segsize}: one segment is {segment:?}, \
+                     too close to the {WRITE_TOTAL_BLOCK_LIMIT:?} cap"
+                );
+                // The whole ring, the most a graph could ever owe us.
+                let ring = Duration::from_secs_f64(
+                    ring_capacity(segsize, bpf) as f64 / (bpf * rate) as f64,
+                );
+                assert!(ring * 8 < WRITE_TOTAL_BLOCK_LIMIT, "ring spans {ring:?}");
+            }
+        }
     }
 }
 

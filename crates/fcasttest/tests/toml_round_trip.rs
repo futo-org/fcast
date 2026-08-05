@@ -8,7 +8,9 @@ use fcasttest::{
         ScenarioBuilder,
         toml::{load_str, to_toml},
     },
-    spec::{CueSpec, Fault, StreamKind, StreamSpec},
+    spec::{
+        BufferingDip, BufferingRecovery, BufferingSpec, CueSpec, Fault, StreamKind, StreamSpec,
+    },
 };
 
 fn round_trip(key: &str, build: impl FnOnce(ScenarioBuilder) -> ScenarioBuilder) {
@@ -20,6 +22,7 @@ fn round_trip(key: &str, build: impl FnOnce(ScenarioBuilder) -> ScenarioBuilder)
 
     let (left, right) = (original.spec(), replayed.spec());
     assert_eq!(left.seed, right.seed, "seed\n{document}");
+    assert_eq!(left.buffering, right.buffering, "buffering\n{document}");
     assert_eq!(
         left.streams.len(),
         right.streams.len(),
@@ -100,6 +103,12 @@ fn awkward_strings_survive_the_dump() {
                         *text,
                     )],
                 )
+                // A buffering recovery gate is a free-form name too.
+                .buffering(BufferingSpec::new(20).with_dip(BufferingDip {
+                    stream: "video_0".to_owned(),
+                    buffer_index: 2,
+                    recovery: BufferingRecovery::OnSyncPoint((*text).to_owned()),
+                }))
         });
     }
 }
@@ -129,5 +138,16 @@ fn an_ordinary_scenario_survives_the_dump() {
             )
             .duration(gst::ClockTime::from_mseconds(900))
             .bytes_per_buffer(64)
+            // Every buffering shape the dump can carry, in one document.
+            .buffering(
+                BufferingSpec::new(35)
+                    .with_initial_ms(120)
+                    .with_periodic(700, 90)
+                    .with_dip(BufferingDip {
+                        stream: "video_0".to_owned(),
+                        buffer_index: 4,
+                        recovery: BufferingRecovery::AfterMs(60),
+                    }),
+            )
     });
 }

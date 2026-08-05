@@ -125,6 +125,11 @@ pub(crate) struct PumpCtx {
     /// Stream ids each attached external input has produced so far, for
     /// resolving [`TrackTarget::ExternalSubtitle`].
     pub(crate) externals: Vec<(ExternalSubId, Vec<String>)>,
+    /// An adaptive demuxer owns stream selection, so decodebin3 posts NO
+    /// `STREAMS_SELECTED` of its own: the only confirmations a caller can ever
+    /// see in this mode are the ones this crate produces. See
+    /// [`Command::ConfirmApplied`].
+    pub(crate) upstream_owns: bool,
 }
 
 /// What the pump decided to dispatch next.
@@ -132,6 +137,20 @@ pub(crate) struct PumpCtx {
 pub(crate) enum Command {
     SelectStreams(TrackSelection),
     RefreshSeek,
+    /// A USER REQUEST that is already satisfied: nothing to dispatch, and in
+    /// upstream-selection mode nothing else will ever tell the caller so.
+    ///
+    /// Without this the receiver never relays a `StreamsSelected` and never
+    /// sends SetTrackIds, so the UI keeps showing the previous track while the
+    /// requested one is already active (field: attaching a subtitle with select
+    /// on a paused adaptive item). The caller-visible answer is the same
+    /// `StreamsSelected` a dispatch would have produced, naming the applied set
+    /// including the crate-merged subtitle sid.
+    ///
+    /// Fires once per user request, never for a `dirty` set by a collection
+    /// change, a foreign report or engine-internal reseeding: those are not
+    /// questions anyone asked.
+    ConfirmApplied(TrackSelection),
 }
 
 /// The subtitle slot's explicit desire (video/audio desires are plain
@@ -188,6 +207,13 @@ pub(crate) struct SelectionEngine {
     /// converged or dispatches. Dispatching ONLY on fresh events keeps the
     /// engine convergent (a selection decodebin3 refuses cannot ping-pong).
     dirty: bool,
+    /// A USER REQUEST has not been answered to the caller yet. Set only by
+    /// [`Self::request`], consumed by the pump when it either dispatches (the
+    /// dispatch's confirmation is the answer) or finds the request already
+    /// satisfied (see [`Command::ConfirmApplied`]). Deliberately survives every
+    /// None-returning gate: a request made while the transport is not quiet is
+    /// answered at the first pump that can answer it, not dropped.
+    unanswered_request: bool,
     /// The last pump could not resolve the subtitle desire because its
     /// external input has not produced its text stream yet. Unlike every
     /// other reason a resolution is deferred, this one turns on state that
@@ -271,6 +297,7 @@ impl SelectionEngine {
             }
         }
         self.dirty = true;
+        self.unanswered_request = true;
     }
 
     /// A new stream collection arrived. Reconcile: drop applied sids whose
@@ -479,6 +506,25 @@ impl SelectionEngine {
         self.refreshing.take().is_some()
     }
 
+    /// Whether the dispatch stamped `seqnum` is STILL awaiting its
+    /// confirmation. The upstream-selection split's bounded fallback asks this
+    /// before manufacturing one, so a confirmation that arrived normally is
+    /// never duplicated.
+    pub(crate) fn selection_in_flight(&self, seqnum: gst::Seqnum) -> bool {
+        self.selecting
+            .as_ref()
+            .is_some_and(|(tracked, _)| *tracked == seqnum)
+    }
+
+    /// Whether the engine has moved on from the refresh `seqnum` names: it is
+    /// waiting on a DIFFERENT one, so this job is a superseded flushing seek
+    /// and must not be performed. `None` in flight is not supersession, a
+    /// caller may force a refresh through
+    /// [`FcastPlaybin::refresh_seek_async`] without the engine tracking it.
+    pub(crate) fn refresh_superseded(&self, seqnum: gst::Seqnum) -> bool {
+        self.refreshing.is_some_and(|tracked| tracked != seqnum)
+    }
+
     /// The refresh-seek job reported failure for `seqnum`.
     pub(crate) fn refresh_failed(&mut self, seqnum: gst::Seqnum) {
         if self.refreshing == Some(seqnum) {
@@ -498,6 +544,22 @@ impl SelectionEngine {
     /// detached stream.
     pub(crate) fn subtitle_sid(&self) -> Option<String> {
         self.applied.subtitle.clone()
+    }
+
+    /// Whether the DESIRED subtitle state is an explicit off.
+    ///
+    /// [`Self::subtitle_sid`] cannot answer this. It reads `applied`, which is
+    /// adopted verbatim from `STREAMS_SELECTED`, so decodebin3's
+    /// collection-default auto-select stomping an explicit subtitle-off makes
+    /// it name a stream the caller turned off. [`Self::streams_selected`]
+    /// records that divergence and marks `dirty`, but the corrective
+    /// re-assert only dispatches from a QUIET pump, so between the stomp and
+    /// the next settle point `applied` is not the caller's intent.
+    /// `Inner::poll_text_policy` must not join the stomped stream to the
+    /// overlay in that window (see there). `collection_changed` already
+    /// consults the desire the same way when it seeds the text slot.
+    pub(crate) fn subtitle_explicitly_off(&self) -> bool {
+        self.desired_subtitle == Some(SubtitleDesire::Stream(None))
     }
 
     /// Record a dispatched `SELECT_STREAMS` (the pump's caller sent it
@@ -589,6 +651,41 @@ impl SelectionEngine {
                         .any(|s| &s.sid == sid && s.kind == StreamKind::Text)
                 })
         })
+    }
+
+    /// Whether every EXPLICIT desire can be honoured against the current
+    /// collection, i.e. whether [`Self::resolve`] answers with what was asked
+    /// for rather than with a fallback.
+    ///
+    /// `resolve` deliberately falls back to the applied stream for a desire it
+    /// cannot honour yet (an external that has not materialized, a sid the
+    /// collection does not carry) so the pipeline keeps showing something. That
+    /// fallback must never be mistaken for a satisfied REQUEST: the field had a
+    /// select-true attach answered, in the same millisecond and before the
+    /// attach job even ran, with the EMBEDDED track the item was already
+    /// showing, which the receiver then reported to the sender as the confirmed
+    /// selection. An unresolvable desire leaves the request armed instead, and
+    /// the dispatch that follows materialization answers it.
+    ///
+    /// An explicit OFF (`Some(None)`) is always honourable. An UNSET slot is
+    /// nobody's request.
+    fn desires_resolvable(&self, ctx: &PumpCtx) -> bool {
+        let in_collection = |sid: &String| self.collection.iter().any(|s| &s.sid == sid);
+        let av_ok = |desired: &Option<Option<String>>| match desired {
+            Some(Some(sid)) => in_collection(sid),
+            _ => true,
+        };
+        if !av_ok(&self.desired_video) || !av_ok(&self.desired_audio) {
+            return false;
+        }
+        match &self.desired_subtitle {
+            Some(SubtitleDesire::Stream(Some(sid))) => self
+                .collection
+                .iter()
+                .any(|s| &s.sid == sid && s.kind == StreamKind::Text),
+            Some(SubtitleDesire::External(_)) => !self.external_desire_unresolved(ctx),
+            _ => true,
+        }
     }
 
     /// Resolve the desired state against the current collection into the
@@ -793,9 +890,28 @@ impl SelectionEngine {
 
         if self.dirty || external_arrived {
             self.dirty = false;
+            // An already-satisfied USER request still has to be answered, and
+            // only this crate can answer it in upstream-selection mode (see
+            // `Command::ConfirmApplied`). Taken either way: in db3-owned mode a
+            // request that changes nothing needs no synthetic confirmation
+            // (decodebin3 owns that channel there), and leaving the flag set
+            // would answer a later, unrelated pump.
+            // `desires_resolvable` FIRST: an unresolvable desire must not even
+            // consume the flag, or the request is lost.
+            if let Some(target) = self.resolve(ctx)
+                && target == self.applied
+                && self.desires_resolvable(ctx)
+                && std::mem::take(&mut self.unanswered_request)
+                && ctx.upstream_owns
+            {
+                debug!(?target, "a user request is already satisfied; confirming it locally");
+                return Some(Command::ConfirmApplied(target));
+            }
             if let Some(target) = self.resolve(ctx)
                 && target != self.applied
             {
+                // The dispatch's own confirmation answers the request.
+                self.unanswered_request = false;
                 // A flushing seek to the current position drops the
                 // deeply-buffered old track (decoded audio piled up in
                 // fpb-aqueue, video frames still carrying the old
@@ -878,7 +994,170 @@ mod tests {
             },
             externals_attached: false,
             externals: Vec::new(),
+            // These cases predate the split and model db3-owned mode.
+            upstream_owns: false,
         }
+    }
+
+    /// Upstream-selection mode, where decodebin3 posts no confirmations of its
+    /// own and the crate owes the caller every answer.
+    fn ctx_upstream(quiet: bool, paused: bool) -> PumpCtx {
+        PumpCtx {
+            upstream_owns: true,
+            ..ctx(quiet, paused)
+        }
+    }
+
+    /// A request for what is ALREADY applied still has to be answered in
+    /// upstream-selection mode: nothing else ever will, and the caller keeps
+    /// showing the previous track until it hears back (the field's paused
+    /// attach-with-select).
+    #[test]
+    fn an_already_satisfied_request_is_confirmed_once_in_upstream_mode() {
+        let mut engine = SelectionEngine::default();
+        engine.collection_changed(avt_collection());
+        engine.streams_selected(gst::Seqnum::next(), &sel(Some("v0"), Some("a0"), Some("t0")));
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t0".into())));
+        assert_eq!(
+            engine.pump(&ctx_upstream(true, false)),
+            Some(Command::ConfirmApplied(sel(
+                Some("v0"),
+                Some("a0"),
+                Some("t0")
+            ))),
+        );
+        // Exactly once per request.
+        assert_eq!(engine.pump(&ctx_upstream(true, false)), None);
+    }
+
+    /// A request naming an external that has NOT materialized is NOT satisfied
+    /// by whatever happens to be on screen. The field answered a select-true
+    /// attach with the embedded track, in the same millisecond, before the
+    /// attach job had even run.
+    #[test]
+    fn a_request_for_an_unmaterialized_external_is_not_confirmed() {
+        const EXT: ExternalSubId = ExternalSubId(9);
+        let mut engine = SelectionEngine::default();
+        engine.collection_changed(avt_collection());
+        engine.streams_selected(gst::Seqnum::next(), &sel(Some("v0"), Some("a0"), Some("t0")));
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(EXT));
+        // Nothing advertised for it yet: no answer, and the request survives.
+        assert_eq!(engine.pump(&ctx_upstream(true, false)), None);
+        assert_eq!(engine.pump(&ctx_upstream(true, false)), None);
+
+        // It materializes, and the REAL dispatch answers the request.
+        let mut collection = avt_collection();
+        collection.push(CollectionStream {
+            sid: "ext0".into(),
+            kind: StreamKind::Text,
+        });
+        engine.collection_changed(collection);
+        let ctx = PumpCtx {
+            upstream_owns: true,
+            ..ctx_ext(true, false, &[(EXT, &["ext0"])])
+        };
+        assert_eq!(
+            engine.pump(&ctx),
+            Some(Command::SelectStreams(sel(
+                Some("v0"),
+                Some("a0"),
+                Some("ext0")
+            ))),
+        );
+        // Consumed by that dispatch: no confirmation follows it.
+        let seqnum = gst::Seqnum::next();
+        engine.selection_dispatched(seqnum, sel(Some("v0"), Some("a0"), Some("ext0")));
+        engine.streams_selected(seqnum, &sel(Some("v0"), Some("a0"), Some("ext0")));
+        assert_eq!(engine.pump(&ctx), None);
+    }
+
+    /// A request for the external that IS already applied stays confirmable:
+    /// the acceptance case, and the reason the gate tests resolvability rather
+    /// than "is an external".
+    #[test]
+    fn a_request_for_the_already_applied_external_is_confirmed() {
+        const EXT: ExternalSubId = ExternalSubId(9);
+        let mut engine = SelectionEngine::default();
+        let mut collection = avt_collection();
+        collection.push(CollectionStream {
+            sid: "ext0".into(),
+            kind: StreamKind::Text,
+        });
+        engine.collection_changed(collection);
+        engine.streams_selected(gst::Seqnum::next(), &sel(Some("v0"), Some("a0"), Some("ext0")));
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(EXT));
+        let ctx = PumpCtx {
+            upstream_owns: true,
+            ..ctx_ext(true, false, &[(EXT, &["ext0"])])
+        };
+        assert_eq!(
+            engine.pump(&ctx),
+            Some(Command::ConfirmApplied(sel(
+                Some("v0"),
+                Some("a0"),
+                Some("ext0")
+            ))),
+        );
+    }
+
+    /// A request for a sid the collection does not carry is the same shape as
+    /// the unmaterialized external: a fallback, not an answer.
+    #[test]
+    fn a_request_for_an_absent_sid_is_not_confirmed() {
+        let mut engine = SelectionEngine::default();
+        engine.collection_changed(avt_collection());
+        engine.streams_selected(gst::Seqnum::next(), &sel(Some("v0"), Some("a0"), Some("t0")));
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("gone".into())));
+        assert_eq!(engine.pump(&ctx_upstream(true, false)), None);
+    }
+
+    /// The same request in db3-owned mode is answered by decodebin3, so the
+    /// engine must not manufacture a second confirmation there.
+    #[test]
+    fn an_already_satisfied_request_is_not_confirmed_in_db3_owned_mode() {
+        let mut engine = SelectionEngine::default();
+        engine.collection_changed(avt_collection());
+        engine.streams_selected(gst::Seqnum::next(), &sel(Some("v0"), Some("a0"), Some("t0")));
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t0".into())));
+        assert_eq!(engine.pump(&ctx(true, false)), None);
+    }
+
+    /// `dirty` set by anything OTHER than a user request must never confirm: a
+    /// collection change is not a question anyone asked, and answering it would
+    /// have the receiver relay unsolicited track changes.
+    #[test]
+    fn a_dirty_engine_without_a_request_confirms_nothing() {
+        let mut engine = SelectionEngine::default();
+        engine.collection_changed(avt_collection());
+        engine.streams_selected(gst::Seqnum::next(), &sel(Some("v0"), Some("a0"), Some("t0")));
+        // Collection churn, no request.
+        engine.collection_changed(avt_collection());
+        assert_eq!(engine.pump(&ctx_upstream(true, false)), None);
+    }
+
+    /// A request that lands while the transport is not quiet is ANSWERED LATER,
+    /// not dropped: the bookkeeping outlives every None-returning gate.
+    #[test]
+    fn a_request_made_while_not_quiet_is_answered_at_the_next_quiet_pump() {
+        let mut engine = SelectionEngine::default();
+        engine.collection_changed(avt_collection());
+        engine.streams_selected(gst::Seqnum::next(), &sel(Some("v0"), Some("a0"), Some("t0")));
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t0".into())));
+        assert_eq!(engine.pump(&ctx_upstream(false, false)), None);
+        assert_eq!(
+            engine.pump(&ctx_upstream(true, false)),
+            Some(Command::ConfirmApplied(sel(
+                Some("v0"),
+                Some("a0"),
+                Some("t0")
+            ))),
+        );
     }
 
     fn ctx_ext(quiet: bool, paused: bool, externals: &[(ExternalSubId, &[&str])]) -> PumpCtx {
@@ -888,6 +1167,7 @@ mod tests {
                 paused,
                 seekable: true,
             },
+            upstream_owns: false,
             externals_attached: true,
             externals: externals
                 .iter()
@@ -2074,6 +2354,7 @@ mod tests {
                 },
                 externals_attached: !self.externals.is_empty(),
                 externals: self.externals.clone(),
+                upstream_owns: false,
             }
         }
 
@@ -2101,6 +2382,11 @@ mod tests {
             let ctx = self.ctx(paused);
             match self.engine.pump(&ctx) {
                 None => false,
+                // Unreachable in db3-owned mode, which is what this driver
+                // models (`ctx` sets `upstream_owns: false`).
+                Some(Command::ConfirmApplied(_)) => unreachable!(
+                    "ConfirmApplied is scoped to upstream-selection mode"
+                ),
                 Some(Command::SelectStreams(target)) => {
                     assert!(
                         target.video.is_some()

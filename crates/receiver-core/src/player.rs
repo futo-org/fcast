@@ -45,6 +45,34 @@ fn missing_plugin_is_ignorable(msg: &gst::Message) -> bool {
     !caps.is_empty() && caps.iter().all(|s| s.name().as_str().starts_with("meta/"))
 }
 
+/// The debug text our adaptivedemux2 carry-patch posts when it discards a
+/// buffer instead of pausing the output task for good
+/// (`xtask/patches/adaptivedemux2-transient-flushing-no-permanent-pause.patch`).
+/// Ours, so it is stable, and it appears nowhere else in GStreamer.
+const TRANSIENT_FLUSHING_DISCARD: &str =
+    "downstream returned FLUSHING while this element is not flushing";
+
+/// Whether a bus WARNING is the carry-patch's transient-FLUSHING discard: the
+/// ONE warning class that must not reach the user.
+///
+/// It reports a RECOVERED hiccup (the patch turned a permanent silent freeze
+/// into one discarded buffer, playback continues), so the toast is pure noise,
+/// and the race can fire on any transient flush. The match is on the debug
+/// string because the patch posts a NULL user-facing text, so the message is
+/// GStreamer's generic "GStreamer encountered a general stream error." for
+/// STREAM/FAILED and cannot discriminate anything. Deliberately not a general
+/// suppression list: every other warning still toasts exactly as before.
+fn warning_is_transient_flushing_discard(debug: Option<&str>) -> bool {
+    debug.is_some_and(|debug| debug.contains(TRANSIENT_FLUSHING_DISCARD))
+}
+
+/// Lever: `FCAST_NO_WARNING_FILTER` (set = old behavior, every warning toasts).
+/// Read once, the hook runs on streaming threads.
+fn toast_every_warning() -> bool {
+    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *OFF.get_or_init(|| std::env::var_os("FCAST_NO_WARNING_FILTER").is_some())
+}
+
 /// The playback snapshot a load returns to once it prerolls (the start
 /// position/rate seek `fcastplaybin::load` applies in PAUSED).
 #[derive(Debug, Clone, Copy)]
@@ -467,6 +495,25 @@ impl Player {
                     true
                 }
                 MessageView::Warning(warning) => {
+                    let detail = warning.debug();
+                    if warning_is_transient_flushing_discard(detail.as_deref()) {
+                        // LOG-ONLY. Consuming the message here is what keeps the
+                        // toast away: the crate emits no event for a consumed
+                        // message, and `PlaybinEvent::Warning` is the only thing
+                        // that reaches the GUI. Log it anyway (unconditionally,
+                        // so the lever's A/B still has the marker), and with the
+                        // detail the user-facing text lacks: the message the
+                        // receiver used to print carried only GStreamer's
+                        // generic STREAM/FAILED sentence, which named neither
+                        // the element nor the pad.
+                        let src = msg.src().map(|src| src.name().to_string());
+                        warn!(
+                            src = src.as_deref().unwrap_or("?"),
+                            detail = detail.as_deref().unwrap_or(""),
+                            "adaptivedemux2 discarded data on a transient FLUSHING (recovered)"
+                        );
+                        return !toast_every_warning();
+                    }
                     if warning.error().matches(gst::CoreError::MissingPlugin) {
                         let real = missing_plugins.saw_real.swap(false, Ordering::SeqCst);
                         let ignorable = missing_plugins.saw_ignorable.swap(false, Ordering::SeqCst);
@@ -835,6 +882,28 @@ impl Player {
         });
     }
 
+    /// The freeze watchdog's recovery seek: a FLUSHING, ACCURATE seek to the
+    /// pipeline's current position at the current rate, performed IN PLACE
+    /// (no transport change). Returns the fresh seqnum it is stamped with, so
+    /// a refusal report can be attributed to it.
+    ///
+    /// Deliberately not [`Self::seek`]. That path refuses unless the pipeline
+    /// is settled at PAUSED and drives it there first (`Job::Seek` in
+    /// fcastplaybin), and a starved pipeline can NEVER complete a
+    /// PLAYING->PAUSED transition: it needs a buffer to preroll with and none
+    /// will arrive, so every sink returns ASYNC and stays there
+    /// (`gstbasesink.c:5815-5834`, `needs_preroll` at `:3749`). The seek would
+    /// park forever waiting for a settled-PAUSED edge, and a parked seek
+    /// silences the very progress tick the watchdog escalates from. The
+    /// crate's refresh seek is the one API that sends the flush in place
+    /// (FREEZE-DIAGN.md section 6: the FLUSH flag is mandatory and the seqnum
+    /// must be fresh or the demuxer drops the seek).
+    pub fn freeze_recovery_seek(&self) -> gst::Seqnum {
+        let seqnum = gst::Seqnum::next();
+        self.fcast.refresh_seek_async(seqnum);
+        seqnum
+    }
+
     fn applied_track_selection(&self) -> TrackSelection {
         self.selected.clone()
     }
@@ -1174,6 +1243,15 @@ impl Player {
         self.fcast.is_settled()
     }
 
+    /// Whether an async state change is in progress (a re-preroll, a flushing
+    /// seek's preroll). NOT the complement of
+    /// [`is_pipeline_stable`](Self::is_pipeline_stable): a flushing seek in
+    /// PLAYING re-prerolls with `pending` still VoidPending, so only this one
+    /// sees it.
+    pub fn has_async_transition(&self) -> bool {
+        self.fcast.has_async_transition()
+    }
+
     /// Diagnostic (load-stall investigation): explain why a load has not
     /// reached a steady PAUSED. Logs the pipeline's current+pending state, the
     /// media's stream collection kinds vs the decodebin3 pads actually routed
@@ -1209,6 +1287,12 @@ impl Player {
             "LOAD STALL DIAGNOSTIC: pipeline not steady"
         );
         self.fcast.dump_dot(&format!("load-stall-{tag}"));
+    }
+
+    /// Dump the pipeline as a `.dot` graph. A no-op unless
+    /// `GST_DEBUG_DUMP_DOT_DIR` is set.
+    pub fn dump_dot(&self, name: &str) {
+        self.fcast.dump_dot(name);
     }
 
     /// The GStreamer stream id of the `idx`th advertised stream.
@@ -1502,6 +1586,41 @@ mod tests {
             project_wire_state(PlayerState::Stopped, RunningState::Playing),
             PlaybackState::Idle,
         );
+    }
+
+    /// The field shape: our carry-patch's discard warning, as GStreamer
+    /// formats a debug string (source location and object path around it), must
+    /// be recognized so it stays out of the toast.
+    #[test]
+    fn the_carry_patchs_discard_warning_is_recognized() {
+        let debug = "gstadaptivedemux.c(3705): gst_adaptive_demux_output_loop (): \
+                     /GstPipeline:fcastplaybin/GstURISourceBin:fpb-src-0/GstDashDemux2:dashdemux2:\n\
+                     Discarding data on subtitle_00: downstream returned FLUSHING while this \
+                     element is not flushing";
+        assert!(warning_is_transient_flushing_discard(Some(debug)));
+        // Any pad name, and the bare message on its own.
+        assert!(warning_is_transient_flushing_discard(Some(
+            "Discarding data on video_01: downstream returned FLUSHING while this element is not flushing"
+        )));
+    }
+
+    /// Narrow on purpose: this is not a general warning-suppression list, so
+    /// everything else must keep reaching the user exactly as before.
+    #[test]
+    fn other_warnings_are_never_filtered() {
+        assert!(!warning_is_transient_flushing_discard(None));
+        assert!(!warning_is_transient_flushing_discard(Some("")));
+        assert!(!warning_is_transient_flushing_discard(Some(
+            "gsturidecodebin.c(1234): no decoder available for type 'video/x-h265'"
+        )));
+        // Superficially similar but a different condition: only the patch's
+        // full sentence counts.
+        assert!(!warning_is_transient_flushing_discard(Some(
+            "gstqueue.c(1393): pushing on pad src returned FLUSHING"
+        )));
+        assert!(!warning_is_transient_flushing_discard(Some(
+            "Discarding data on subtitle_00: downstream returned NOT_LINKED"
+        )));
     }
 
     #[test]

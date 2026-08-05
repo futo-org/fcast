@@ -29,19 +29,20 @@
 //! dropped afterwards: `Drop` runs a teardown down the very branch that is
 //! held, and would hang the process instead of reporting the result.
 //!
-//! # STATUS: three of these fail, and they are meant to
+//! # STATUS: all five pass, so a failure here is a real regression
 //!
-//! They are unfixed defects, written here so the diagnosis is reproducible
-//! rather than a paragraph in a document. Both controls pass, which is what
-//! makes the failures mean something.
+//! Three of these were written as reproducers for defects that were open at
+//! the time and failed on purpose. All three are fixed and the file is now a
+//! live gate throughout. Read a failure as a regression rather than as the
+//! documented state.
 //!
-//! | test | result | why |
+//! | test | role | the defect it pins |
 //! | --- | --- | --- |
-//! | `replacing_the_subtitle_track_at_rest_in_paused_returns` | passes | control, the deferral covers it |
-//! | `attaching_another_external_subtitle_while_paused_returns` | passes | control, the input side is off the branch |
-//! | `turning_subtitles_off_at_rest_in_paused_returns` | FAILS | `pump_selection` defers `Flush` but not `Park` |
-//! | `detaching_the_live_external_subtitle_while_paused_returns` | FAILS | `Inner::remove_input`'s decodebin3-sink flush reaches the branch |
-//! | `the_worker_survives_an_async_detach_while_paused` | FAILS | the same call on the worker, killing every job behind it |
+//! | `replacing_the_subtitle_track_at_rest_in_paused_returns` | control | the deferral covers it |
+//! | `attaching_another_external_subtitle_while_paused_returns` | control | the input side is off the branch |
+//! | `turning_subtitles_off_at_rest_in_paused_returns` | was failing | `pump_selection` deferred `Flush` but not `Park`, and now defers both |
+//! | `detaching_the_live_external_subtitle_while_paused_returns` | was failing | `Inner::remove_input`'s decodebin3-sink flush reached the branch, and is now gated on a live text branch of THAT input |
+//! | `the_worker_survives_an_async_detach_while_paused` | was failing | the same call on the worker, killing every job behind it |
 //!
 //! The controls also prove the harness is not blind. Running
 //! `replacing_the_subtitle_track_at_rest_in_paused_returns` with the crate's

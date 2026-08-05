@@ -20,8 +20,10 @@ pub use tracing;
 mod airplay;
 mod application;
 pub mod config;
+mod external_subtitles;
 mod fcast;
 mod fcompsrc;
+mod freeze_watchdog;
 mod fwebrtcsrc;
 mod gcast;
 mod gstreamer;
@@ -418,6 +420,13 @@ impl<S> VideoTick<S> {
     /// pipeline redistribute latency so the new value takes effect (fcastplaybin
     /// answers it with `recalculate_latency`).
     fn note_render_cost(&mut self, cost: std::time::Duration) {
+        // Every field freeze so far sits within ~1s of a latency
+        // redistribution, and this feedback is what triggers most of them
+        // mid-play. Lever for the A/B until that is settled.
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *OFF.get_or_init(|| std::env::var_os("FCAST_NO_RENDER_DELAY_FEEDBACK").is_some()) {
+            return;
+        }
         self.render_latency.record(cost);
         let Some(delay) = self.render_latency.poll(std::time::Instant::now()) else {
             return;

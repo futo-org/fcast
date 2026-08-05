@@ -36,7 +36,10 @@ use std::{fmt, path::Path};
 
 use serde::Deserialize;
 
-use crate::spec::{CueSpec, DecoderKnobs, Fault, Pacing, StreamKind, StreamSpec};
+use crate::spec::{
+    BufferingDip, BufferingRecovery, BufferingSpec, CueSpec, DecoderKnobs, Fault, FlowStopReason,
+    Pacing, PeriodicBuffering, StreamKind, StreamSpec,
+};
 
 use super::builder::{ScenarioBuilder, ScenarioHandle};
 
@@ -113,6 +116,8 @@ struct Document {
     duration_ms: Option<u64>,
     pacing: Option<PacingDoc>,
     bytes_per_buffer: Option<usize>,
+    /// Scheduled buffering messages over the whole media.
+    buffering: Option<BufferingDoc>,
     #[serde(default, rename = "stream")]
     streams: Vec<StreamDoc>,
 }
@@ -137,12 +142,35 @@ impl Document {
         if let Some(bytes) = self.bytes_per_buffer {
             builder = builder.bytes_per_buffer(bytes);
         }
+        if let Some(buffering) = self.buffering {
+            builder = builder.buffering(buffering.into_spec()?);
+        }
         for (index, stream) in self.streams.into_iter().enumerate() {
             builder = builder.stream(stream.into_spec(index)?);
         }
         check_every_stream_has_media(&builder)?;
+        check_every_dip_names_a_stream(&builder)?;
         Ok(builder)
     }
+}
+
+/// A dip anchored to a stream the document does not declare would never fire,
+/// which is exactly the "knob that silently did nothing" this module refuses.
+fn check_every_dip_names_a_stream(builder: &ScenarioBuilder) -> Result<(), ReadableError> {
+    let spec = builder.resolved_spec();
+    let Some(buffering) = &spec.buffering else {
+        return Ok(());
+    };
+    for (index, dip) in buffering.dips.iter().enumerate() {
+        if spec.stream(&dip.stream).is_none() {
+            return Err(ReadableError::new(format!(
+                "buffering.dip[{index}]: stream {:?} names no [[stream]] in this \
+                 document, so the dip could never fire",
+                dip.stream
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// A dense stream whose duration holds no whole buffer is not the media the
@@ -371,13 +399,13 @@ impl PacingDoc {
     }
 }
 
-/// One injected source-side failure. Exactly one of the three keys is set.
+/// One injected source-side failure. `sync_point` belongs to `stall` alone.
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct FaultDoc {
     /// Buffer number within the stream, what every fault indexes.
     buffer_index: u64,
-    /// `stall_at` when a `sync_point` is named, `error_at`/`eos_at` otherwise.
+    /// One of `stall`, `error`, `deselected`, `flushed`, `eos`.
     kind: FaultKindDoc,
     sync_point: Option<String>,
 }
@@ -387,6 +415,12 @@ struct FaultDoc {
 enum FaultKindDoc {
     Stall,
     Error,
+    /// [`Fault::FlowStoppedAt`] with [`FlowStopReason::NotLinked`]: a deselect
+    /// catching the source. Named by cause, which is what a scenario describes.
+    Deselected,
+    /// [`Fault::FlowStoppedAt`] with [`FlowStopReason::Flushing`]: a flush
+    /// catching the source mid-push.
+    Flushed,
     Eos,
 }
 
@@ -404,11 +438,19 @@ impl FaultDoc {
                     sync_point,
                 })
             }
-            FaultKindDoc::Error | FaultKindDoc::Eos if self.sync_point.is_some() => Err(
-                ReadableError::new(format!("{at}: sync_point only applies to a stall fault")),
-            ),
+            _ if self.sync_point.is_some() => Err(ReadableError::new(format!(
+                "{at}: sync_point only applies to a stall fault"
+            ))),
             FaultKindDoc::Error => Ok(Fault::ErrorAt {
                 buffer_index: self.buffer_index,
+            }),
+            FaultKindDoc::Deselected => Ok(Fault::FlowStoppedAt {
+                buffer_index: self.buffer_index,
+                reason: FlowStopReason::NotLinked,
+            }),
+            FaultKindDoc::Flushed => Ok(Fault::FlowStoppedAt {
+                buffer_index: self.buffer_index,
+                reason: FlowStopReason::Flushing,
             }),
             FaultKindDoc::Eos => Ok(Fault::EosAt {
                 buffer_index: self.buffer_index,
@@ -443,6 +485,91 @@ impl DecoderDoc {
     }
 }
 
+/// The `[buffering]` table, scheduled `GST_MESSAGE_BUFFERING` posts, see
+/// [`crate::spec::BufferingSpec`]. A table that schedules nothing at all is
+/// refused, the same way an unknown field is.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct BufferingDoc {
+    /// Percent carried by every low post, 0..=99.
+    low_percent: i32,
+    /// A buffering period that begins with the source, before any media flows.
+    initial_ms: Option<u64>,
+    periodic: Option<PeriodicDoc>,
+    #[serde(default, rename = "dip")]
+    dips: Vec<DipDoc>,
+}
+
+/// The `[buffering.periodic]` table, wall-clock dips to low and back to 100.
+#[derive(Debug, Clone, Copy, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PeriodicDoc {
+    period_ms: u64,
+    low_ms: u64,
+}
+
+/// One `[[buffering.dip]]`, anchored to a stream's buffer index. Exactly one
+/// of `recover_after_ms` and `recover_on` is set.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct DipDoc {
+    /// Stream-id suffix of the stream whose schedule anchors the dip.
+    stream: String,
+    buffer_index: u64,
+    /// Milliseconds from the low post to the 100 post.
+    recover_after_ms: Option<u64>,
+    /// Sync point whose release posts the 100.
+    recover_on: Option<String>,
+}
+
+impl BufferingDoc {
+    fn into_spec(self) -> Result<BufferingSpec, ReadableError> {
+        if !(0..=99).contains(&self.low_percent) {
+            return Err(ReadableError::new(format!(
+                "buffering: low_percent {} is outside 0..=99, and a dip that starts \
+                 at 100 never buffers at all",
+                self.low_percent
+            )));
+        }
+        if self.initial_ms.is_none() && self.periodic.is_none() && self.dips.is_empty() {
+            return Err(ReadableError::new(
+                "buffering: describes no buffering at all. Set initial_ms, add \
+                 [buffering.periodic] or add a [[buffering.dip]]",
+            ));
+        }
+        let mut spec = BufferingSpec::new(self.low_percent);
+        spec.initial_ms = self.initial_ms;
+        spec.periodic = self.periodic.map(|periodic| PeriodicBuffering {
+            period_ms: periodic.period_ms,
+            low_ms: periodic.low_ms,
+        });
+        for (index, dip) in self.dips.into_iter().enumerate() {
+            spec.dips.push(dip.into_spec(index)?);
+        }
+        Ok(spec)
+    }
+}
+
+impl DipDoc {
+    fn into_spec(self, index: usize) -> Result<BufferingDip, ReadableError> {
+        let recovery = match (self.recover_after_ms, self.recover_on) {
+            (Some(ms), None) => BufferingRecovery::AfterMs(ms),
+            (None, Some(name)) => BufferingRecovery::OnSyncPoint(name),
+            _ => {
+                return Err(ReadableError::new(format!(
+                    "buffering.dip[{index}]: set exactly one of recover_after_ms and \
+                     recover_on, or the dip cannot decide how its 100 is posted"
+                )));
+            }
+        };
+        Ok(BufferingDip {
+            stream: self.stream,
+            buffer_index: self.buffer_index,
+            recovery,
+        })
+    }
+}
+
 /// Serialises a registered scenario back into a document [`load_str`] accepts.
 /// The fuzz driver writes its failing case out with this, so a crash becomes a
 /// file that replays it.
@@ -451,6 +578,33 @@ pub fn to_toml(handle: &ScenarioHandle) -> String {
     let mut out = String::new();
     out.push_str(&format!("key = {}\n", toml_string(handle.key())));
     out.push_str(&format!("seed = {}\n", spec.seed));
+    if let Some(buffering) = &spec.buffering {
+        out.push_str("\n[buffering]\n");
+        out.push_str(&format!("low_percent = {}\n", buffering.low_percent));
+        if let Some(ms) = buffering.initial_ms {
+            out.push_str(&format!("initial_ms = {ms}\n"));
+        }
+        if let Some(periodic) = buffering.periodic {
+            out.push_str("\n[buffering.periodic]\n");
+            out.push_str(&format!(
+                "period_ms = {}\nlow_ms = {}\n",
+                periodic.period_ms, periodic.low_ms
+            ));
+        }
+        for dip in &buffering.dips {
+            out.push_str("\n[[buffering.dip]]\n");
+            out.push_str(&format!("stream = {}\n", toml_string(&dip.stream)));
+            out.push_str(&format!("buffer_index = {}\n", dip.buffer_index));
+            match &dip.recovery {
+                BufferingRecovery::AfterMs(ms) => {
+                    out.push_str(&format!("recover_after_ms = {ms}\n"))
+                }
+                BufferingRecovery::OnSyncPoint(name) => {
+                    out.push_str(&format!("recover_on = {}\n", toml_string(name)))
+                }
+            }
+        }
+    }
     for stream in &spec.streams {
         out.push_str("\n[[stream]]\n");
         out.push_str(&format!("id = {}\n", toml_string(&stream.id)));
@@ -463,9 +617,9 @@ pub fn to_toml(handle: &ScenarioHandle) -> String {
             } => {
                 out.push_str("kind = \"video\"\n");
                 out.push_str(&format!("width = {width}\nheight = {height}\n"));
-                // A whole framerate stays a plain integer so ordinary documents
-                // read the way a human writes them; anything else has to keep
-                // its denominator or the replay plays at a different rate.
+                // A whole framerate stays a plain integer so documents read the
+                // way a human writes them. Anything else keeps its denominator
+                // or the replay plays at a different rate.
                 out.push_str(&match (fps.numer(), fps.denom()) {
                     (numer, 1) => format!("fps = {numer}\n"),
                     (numer, denom) => format!("fps = [{numer}, {denom}]\n"),
@@ -510,6 +664,19 @@ pub fn to_toml(handle: &ScenarioHandle) -> String {
                 Fault::ErrorAt { buffer_index } => out.push_str(&format!(
                     "kind = \"error\"\nbuffer_index = {buffer_index}\n"
                 )),
+                Fault::FlowStoppedAt {
+                    buffer_index,
+                    reason,
+                } => {
+                    let kind = match reason {
+                        FlowStopReason::NotLinked => "deselected",
+                        FlowStopReason::Flushing => "flushed",
+                    };
+                    out.push_str(&format!(
+                        "kind = {}\nbuffer_index = {buffer_index}\n",
+                        toml_string(kind)
+                    ));
+                }
                 Fault::EosAt { buffer_index } => {
                     out.push_str(&format!("kind = \"eos\"\nbuffer_index = {buffer_index}\n"))
                 }
@@ -589,6 +756,24 @@ mod tests {
         pacing = { jitter = { base_ms = 3, jitter_ms = 7 } }
         bytes_per_buffer = 128
 
+        [buffering]
+        low_percent = 35
+        initial_ms = 120
+
+        [buffering.periodic]
+        period_ms = 700
+        low_ms = 90
+
+        [[buffering.dip]]
+        stream = "video_0"
+        buffer_index = 4
+        recover_after_ms = 60
+
+        [[buffering.dip]]
+        stream = "audio_0"
+        buffer_index = 9
+        recover_on = "refill"
+
         [[stream]]
         id = "video_0"
         kind = "video"
@@ -623,6 +808,14 @@ mod tests {
         [[stream.fault]]
         kind = "error"
         buffer_index = 7
+
+        [[stream.fault]]
+        kind = "deselected"
+        buffer_index = 8
+
+        [[stream.fault]]
+        kind = "flushed"
+        buffer_index = 9
 
         [[stream]]
         id = "text_0"
@@ -699,7 +892,20 @@ mod tests {
                 channels: 2
             }
         ));
-        assert_eq!(audio.faults, vec![Fault::ErrorAt { buffer_index: 7 }]);
+        assert_eq!(
+            audio.faults,
+            vec![
+                Fault::ErrorAt { buffer_index: 7 },
+                Fault::FlowStoppedAt {
+                    buffer_index: 8,
+                    reason: FlowStopReason::NotLinked
+                },
+                Fault::FlowStoppedAt {
+                    buffer_index: 9,
+                    reason: FlowStopReason::Flushing
+                },
+            ]
+        );
 
         let text = spec.stream("text_0").expect("the text stream");
         let StreamKind::Text { cues } = &text.kind else {
@@ -708,6 +914,25 @@ mod tests {
         assert_eq!(cues.len(), 2);
         assert_eq!(cues[1].text, "CUE01");
         assert_eq!(cues[1].start, gst::ClockTime::from_mseconds(500));
+
+        assert_eq!(
+            spec.buffering,
+            Some(
+                BufferingSpec::new(35)
+                    .with_initial_ms(120)
+                    .with_periodic(700, 90)
+                    .with_dip(BufferingDip {
+                        stream: "video_0".to_owned(),
+                        buffer_index: 4,
+                        recovery: BufferingRecovery::AfterMs(60),
+                    })
+                    .with_dip(BufferingDip {
+                        stream: "audio_0".to_owned(),
+                        buffer_index: 9,
+                        recovery: BufferingRecovery::OnSyncPoint("refill".to_owned()),
+                    })
+            )
+        );
 
         handle.unregister();
     }
@@ -724,6 +949,11 @@ mod tests {
         // resolved value on every stream and no top-level override.
         let (left, right) = (first.spec(), second.spec());
         assert_eq!(left.seed, right.seed);
+        assert_eq!(left.buffering, right.buffering);
+        assert!(
+            left.buffering.is_some(),
+            "the FULL document must exercise the buffering knob"
+        );
         assert_eq!(left.streams.len(), right.streams.len());
         for (left, right) in left.streams.iter().zip(&right.streams) {
             assert_eq!(left.id, right.id);
@@ -896,6 +1126,64 @@ mod tests {
                    id = "audio_0"
                    kind = "audio""#,
                 "ASCII alphanumeric",
+            ),
+            (
+                r#"key = "tb1"
+                   [buffering]
+                   low_percent = 100
+                   initial_ms = 50
+                   [[stream]]
+                   id = "audio_0"
+                   kind = "audio""#,
+                "outside 0..=99",
+            ),
+            (
+                r#"key = "tb2"
+                   [buffering]
+                   low_percent = 20
+                   [[stream]]
+                   id = "audio_0"
+                   kind = "audio""#,
+                "describes no buffering",
+            ),
+            (
+                r#"key = "tb3"
+                   [buffering]
+                   low_percent = 20
+                   [[buffering.dip]]
+                   stream = "audio_0"
+                   buffer_index = 2
+                   recover_after_ms = 10
+                   recover_on = "gate"
+                   [[stream]]
+                   id = "audio_0"
+                   kind = "audio""#,
+                "exactly one of recover_after_ms and recover_on",
+            ),
+            (
+                r#"key = "tb4"
+                   [buffering]
+                   low_percent = 20
+                   [[buffering.dip]]
+                   stream = "audio_0"
+                   buffer_index = 2
+                   [[stream]]
+                   id = "audio_0"
+                   kind = "audio""#,
+                "exactly one of recover_after_ms and recover_on",
+            ),
+            (
+                r#"key = "tb5"
+                   [buffering]
+                   low_percent = 20
+                   [[buffering.dip]]
+                   stream = "video_0"
+                   buffer_index = 2
+                   recover_after_ms = 10
+                   [[stream]]
+                   id = "audio_0"
+                   kind = "audio""#,
+                "names no [[stream]]",
             ),
         ];
         for (document, expected) in cases {

@@ -96,6 +96,11 @@ const EXTERNAL_SUB_TIMEOUT: Duration = Duration::from_secs(5);
 /// single trigger may issue (see `Job::VerifyReplay`).
 const REPLAY_VERIFY_AFTER: Duration = Duration::from_millis(400);
 const REPLAY_ATTEMPTS: u32 = 3;
+/// How long a SENT upstream selection may go unconfirmed before the crate
+/// confirms it locally (see `Inner::arm_upstream_confirm_fallback`). Longer than
+/// any demuxer edge takes, short enough that a user waiting for the track list
+/// to update does not notice.
+const UPSTREAM_CONFIRM_FALLBACK: Duration = Duration::from_millis(700);
 
 /// How many times an external input that died before anything of it reached
 /// decodebin3 is re-attached (see [`Job::RetrySub`]). A genuinely bad URL
@@ -477,6 +482,18 @@ enum Job {
     /// the worker does the routing-lock work, same reason as
     /// [`Job::FinishActivation`].
     SyncTextRunningTime,
+    /// Drain whatever text-branch work was postponed at a moment the
+    /// pipeline could not carry it out (see [`Inner::run_deferred_text_work`]).
+    ///
+    /// Queued by the bus translation on every PIPELINE state edge, so the
+    /// drain can never depend on the caller's poll cadence. Postponed work
+    /// used to drain only through [`FcastPlaybin::poll_text_policy`], and a
+    /// caller that stopped polling (or a state machine parked waiting for the
+    /// very work that was postponed) left it pending forever. The job itself
+    /// re-checks what the pipeline currently allows, so a drain queued on an
+    /// edge that still cannot complete simply leaves the work pending for the
+    /// next edge.
+    DrainTextWork,
     /// The item's video stream left decodebin3: park any overlay-linked text
     /// and take the video chain out of the pipeline (see
     /// [`Inner::unroute_db3_pad`]).
@@ -491,6 +508,95 @@ enum Job {
     /// `park_video_chain_for_deselect`'s, and the worker sat in
     /// `gst_pad_pause_task` waiting for that same streaming thread.
     VideoChainGone,
+    /// Re-commit a pipeline whose state changes GStreamer has latched off.
+    ///
+    /// ANY child error makes `gst_bin_handle_message_func` set
+    /// `GST_STATE_RETURN = FAILURE`, after which `bin_handle_async_done` refuses
+    /// every commit, so a pipeline that lost state keeps `pending` forever even
+    /// once all sinks have prerolled, and posts no further `state-changed`.
+    /// Nothing is unsettled, only uncommitted, hence `unsettled []`. Only a
+    /// fresh `set_state` clears it. So an error this crate CONSUMES rather than
+    /// surfaces has to re-commit, or the caller waits for a settle that can no
+    /// longer happen.
+    ///
+    /// Re-commit `GST_STATE_PENDING`, the transition actually refused, not
+    /// `current`: on a pipeline caught mid-climb the two differ and re-committing
+    /// `current` cancels the climb.
+    ///
+    /// Levers: `FCAST_NO_ERROR_STATE_UNLATCH`, `FCAST_UNLATCH_RECOMMIT_CURRENT`.
+    ClearStateFailure,
+}
+
+/// The overlay's ONE subtitle seat, as a lock rather than a fact read off the
+/// pad.
+///
+/// Two threads decide about `subtitle_sink` and they shared no lock:
+/// [`Inner::poll_text_policy`] links a fresh text queue into it on the caller
+/// thread, while [`Inner::dispose_text_branch_on`] checks `is_linked()` and, if
+/// free, sends it a flush pair from the worker. Lose that race and the pair
+/// lands on the branch that just joined: its queue's `srcresult` latches
+/// FLUSHING (`gstqueue.c` `out_flushing`), every later multiqueue push into it
+/// returns FLUSHING, the multiqueue latches too, and adaptivedemux2's single
+/// output task pauses for good with nothing posted at all (FREEZE-DIAGN.md
+/// section 8.2, top freeze candidate).
+///
+/// Lock order: `routing` then this, never the other way round. The linking side
+/// holds `routing`; the disposal side deliberately holds no routing lock (see
+/// [`Inner::live_text_downstream_pads`] for the inversion that forbids it), so
+/// there is no cycle.
+///
+/// Lever: `FCAST_NO_TEXT_SEAT_LOCK` (set = the old unsynchronized check).
+#[derive(Default)]
+struct TextSeat {
+    lock: Mutex<()>,
+    /// How often the two critical sections actually OVERLAPPED. The TOCTOU
+    /// needs exactly that overlap, and it is the only evidence a test can
+    /// gather that the window is real rather than argued from source.
+    contentions: AtomicU64,
+}
+
+/// How long the LINKING side may wait for the seat. Long enough to cover a
+/// disposal's ordinary flush (microseconds), short enough that the caller
+/// never notices.
+const TEXT_SEAT_LINK_WAIT: Duration = Duration::from_millis(5);
+
+impl TextSeat {
+    /// The DISPOSAL side, which may block: it runs on the worker or a streaming
+    /// thread, never on the caller. `None` means the lever turned the lock off,
+    /// not that the seat is busy.
+    fn hold(&self) -> Option<parking_lot::MutexGuard<'_, ()>> {
+        if std::env::var_os("FCAST_NO_TEXT_SEAT_LOCK").is_some() {
+            return None;
+        }
+        Some(match self.lock.try_lock() {
+            Some(guard) => guard,
+            None => {
+                self.contentions.fetch_add(1, Ordering::Relaxed);
+                self.lock.lock()
+            }
+        })
+    }
+
+    /// The LINKING side, which must NOT block: `poll_text_policy` runs on the
+    /// CALLER thread and a disposal holds the seat across a flush that waits
+    /// for the overlay's stream lock, which a parked cue push can hold for as
+    /// long as it likes (`tests/caller_nonblocking.rs` holds it for 12 s on
+    /// purpose). A seat still busy after [`TEXT_SEAT_LINK_WAIT`] means a
+    /// disposal is deciding about this very pad, so the link waits for the next
+    /// poll instead of for the flush. `Err` = busy.
+    fn try_hold(&self) -> Result<Option<parking_lot::MutexGuard<'_, ()>>, ()> {
+        if std::env::var_os("FCAST_NO_TEXT_SEAT_LOCK").is_some() {
+            return Ok(None);
+        }
+        if let Some(guard) = self.lock.try_lock() {
+            return Ok(Some(guard));
+        }
+        self.contentions.fetch_add(1, Ordering::Relaxed);
+        self.lock
+            .try_lock_for(TEXT_SEAT_LINK_WAIT)
+            .map(Some)
+            .ok_or(())
+    }
 }
 
 /// A text branch already taken out of the graph, waiting for its blocking
@@ -590,7 +696,9 @@ impl std::fmt::Debug for Job {
                 .finish(),
             Job::FinishActivation => write!(f, "FinishActivation"),
             Job::SyncTextRunningTime => write!(f, "SyncTextRunningTime"),
+            Job::DrainTextWork => write!(f, "DrainTextWork"),
             Job::VideoChainGone => write!(f, "VideoChainGone"),
+            Job::ClearStateFailure => write!(f, "ClearStateFailure"),
         }
     }
 }
@@ -602,9 +710,61 @@ struct SelectJob {
     /// The decodebin3 the selection was built against. The sender skips the
     /// job if a core swap superseded it (the selection could never confirm).
     db3: gst::Element,
+    /// Where the event goes: decodebin3 normally; the MAIN input when
+    /// upstream owns selection (an adaptive demuxer rejects any event that
+    /// names a foreign stream, and an external input's pads poison
+    /// `gst_bin_send_event`'s AND-fold through decodebin3).
+    target: gst::Element,
     event: gst::Event,
     /// The selected ids, kept for the video-deselect check after the send.
     stream_ids: Vec<String>,
+}
+
+/// A queued external-subtitle replay seek (see
+/// [`FcastPlaybin::replay_subtitle`]). Sent from a dedicated thread for the
+/// same reason as [`SelectJob`], and captured with gdb doing the damage. A
+/// FLUSHING seek is performed INLINE by the source on the sending thread,
+/// which pushes `FLUSH_START` down the whole live graph from there. When that
+/// reaches a `queue` whose src task is parked behind a sink in
+/// `gst_base_sink_wait_preroll`, the queue's own handler calls
+/// `gst_pad_pause_task` and the sender waits on that task's stream lock. The
+/// only thing that ends such a preroll wait is the pipeline reaching PLAYING,
+/// and the only thread that can carry [`Job::SetState`] is the worker, so
+/// sending from the worker closes a cycle through the worker itself.
+struct ReplayJob {
+    /// The input's source pads, resolved on the worker before the handover
+    /// so the send never re-enters the routing lock.
+    pads: Vec<gst::Pad>,
+    seek: gst::Event,
+    id: ExternalSubId,
+    epoch: u32,
+    attempt: u32,
+    /// Log-only, so the replay's line reads exactly as it did when the send
+    /// was inline on the worker.
+    origin: gst::ClockTime,
+    rate: f64,
+}
+
+/// A queued chain join: the blocking half of [`Inner::route_db3_pad`] (see
+/// [`Inner::run_chain_join`]).
+///
+/// Sent from a dedicated thread for the same reason as [`SelectJob`] and
+/// [`ReplayJob`], and with one extra constraint that rules the crate worker
+/// out entirely: `Inner::apply_start_seek` waits for the preroll on the
+/// worker (`pipeline.state(PREROLL_TIMEOUT)`), and the preroll cannot finish
+/// until this join has run. Queuing it behind that wait would be the
+/// postponed-work-blocked-by-its-own-drain shape a seventh time.
+struct ChainJoinJob {
+    /// The decodebin3 the route was made against. A core swap makes the join
+    /// stale (see `Inner::run_chain_join`).
+    db3: gst::Element,
+    /// The routed decodebin3 source pad, to re-check that the stream is still
+    /// routed by the time the join runs.
+    pad: gst::Pad,
+    kind: StreamKind,
+    /// The blocking probe holding this stream at the streamsynchronizer src
+    /// pad until the chain is up. Released by the join, whatever its outcome.
+    hold: Option<(gst::Pad, gst::PadProbeId)>,
 }
 
 /// A byte counter on one input stream's parsed data, for bitrate
@@ -665,6 +825,11 @@ struct ExternalInput {
     /// buffers follow once `STREAMS_SELECTED` confirms the selection (see
     /// [`Inner::unblock_selected_externals`]).
     hold_until_selected: bool,
+    /// The selection that lifted `hold_until_selected` also owes this input a
+    /// realigning replay, so its block probes are still installed and only
+    /// [`FcastPlaybin::run_replay_seek`] may remove them. See
+    /// [`Inner::release_owed_hold`].
+    hold_release_owed: bool,
 }
 
 /// One live input: an element (urisourcebin or caller-provided) whose source
@@ -784,6 +949,13 @@ struct RoutedStream {
     /// (uridecodebin3 keeps its gapless EOS drop open until every output
     /// pad has flipped to the new group, this is the per-pad equivalent).
     group: Option<gst::GroupId>,
+    /// Text only. The link policy's seat reclaim evicted this branch from
+    /// subtitleoverlay because its pad carried no sticky segment with
+    /// nothing left upstream to send one. While that stays true the entry
+    /// must not relink (it would win the seat back from the stream that can
+    /// actually render, forever, since routed order is stable). A segment
+    /// appearing on the pad is proof of life and clears the verdict.
+    seat_evicted: bool,
     kind: StreamKind,
 }
 
@@ -968,10 +1140,31 @@ struct Inner {
     /// Always held through [`RouteGate`], whose release re-attempts
     /// `deferred_pads`.
     route_gate: Mutex<()>,
-    /// Eager text-branch work that `pump_selection` could not carry out
-    /// because the pipeline was at rest in PAUSED, replayed by
-    /// [`Inner::run_deferred_text_work`] once it is playing again.
+    /// The chain-join half of `route_gate`, held by `fpb-join` across a chain
+    /// activation and by every downward transition (which takes BOTH, in that
+    /// order). DELIBERATELY NOT the same lock as `route_gate`: a join can
+    /// block for as long as a sink's transition takes, and a route that finds
+    /// `route_gate` taken DEFERS rather than waits, so joining under the route
+    /// gate made every multi-stream load defer its second stream. A deferred
+    /// pad is unlinked while it waits, so decodebin3 pushes its first buffer
+    /// into nothing and multiqueue drops it (measured: the audio sink's first
+    /// buffer became pts=20ms with no DISCONT in 5 of 6 `toml_scenarios`
+    /// runs). Two locks make joins exclusive with descents, which is what they
+    /// need, without ever making a route wait.
+    ///
+    /// Lock order where both are taken: `route_gate` then `join_gate`, and
+    /// [`Inner::gate`] is the only place that does it.
+    join_gate: Mutex<()>,
+    /// The pending eager text-branch flush, as a COALESCING intent (latest
+    /// wins, so a run of rapid switches leaves one flush, not a backlog).
+    /// Written by `pump_selection`'s dispatch, executed only by the worker
+    /// through [`Inner::run_deferred_text_work`], which every pipeline
+    /// state edge re-attempts. Cleared by teardown and the load reset, the
+    /// intent is per-item selection state.
     deferred_text_work: Mutex<Option<DeferredTextWork>>,
+    /// See [`TextSeat`]. Shared with [`Teardown`], which disposes of the
+    /// branches this crate could not.
+    text_seat: Arc<TextSeat>,
     /// Text branches unlinked but not yet torn down, because the pipeline was
     /// at rest in PAUSED when they were detached. Drained by
     /// [`Inner::run_deferred_text_work`].
@@ -988,6 +1181,63 @@ struct Inner {
     /// seek cannot be delivered to one at rest in PAUSED. See
     /// [`FcastPlaybin::replay_subtitle`].
     deferred_replays: Mutex<Vec<(ExternalSubId, u32, u32)>>,
+    /// Replay verdicts held because the check fired at a pipeline below a
+    /// settled PLAYING, where nothing flows and the branch stickies it would
+    /// read are leftovers of the input's previous tenure. Drained by
+    /// [`Inner::run_deferred_text_work`], which re-arms each held check so
+    /// it fires against a pipeline that can actually deliver. See
+    /// [`FcastPlaybin::verify_replay`].
+    deferred_verifications: Mutex<Vec<(ExternalSubId, u32, u32)>>,
+    /// Whether the LAST [`Job::DrainTextWork`] the worker ran was a no-op
+    /// (postponed work pending, pipeline below a settled PLAYING). While
+    /// set, [`Inner::poll_text_policy`] suppresses its per-poll re-poke,
+    /// because a drain already ran against this exact situation and decided
+    /// it cannot proceed, so re-running it on every 5ms poll is a busy loop
+    /// (measured at one worker job per poll for the whole time a pipeline
+    /// sat parked in Buffering). Cleared by every event that could change
+    /// that verdict, which keeps the poke live exactly when it can matter.
+    /// The recording of any new postponed item clears it, and the drain
+    /// itself clears it when it proceeds. Pipeline state edges do not need
+    /// to clear it because the bus translation queues the drain on every
+    /// edge unconditionally, and that queued run refreshes the verdict.
+    /// Suppression is disabled by the FCAST_NO_DRAIN_POKE_SUPPRESS lever,
+    /// which restores the poke-on-every-poll behavior. The flag is the only
+    /// thing the lever's branch reads, so the lever covers the whole
+    /// change.
+    drain_poke_parked: AtomicBool,
+    /// Diagnostic count of [`Job::DrainTextWork`] jobs the worker received.
+    /// Read through [`FcastPlaybin::drain_text_job_count`] by the busy-loop
+    /// regression test. Not behavior.
+    drain_jobs_seen: AtomicU64,
+    /// Whether the LAST selection this crate dispatched to decodebin3 turned
+    /// video off entirely (a video-bearing collection with no video id in the
+    /// selection). Written on the select-sender thread BEFORE the send, so a
+    /// pad decodebin3 exposes inside the send already reads the intent that
+    /// selection carries. Read by `route_db3_pad`, whose Video arm must not
+    /// rebuild the video chain for a stream decodebin3's collection-default
+    /// auto-select resurrected over an explicit deselect. The selection
+    /// engine owns the real desire and self-corrects the divergence. This
+    /// mirror exists only because the route decision runs on a streaming
+    /// thread at pad-exposure time, where the engine's answer arrives too
+    /// late (see the Video arm). Reset per load and at teardown, carried
+    /// across gapless exactly like the engine's carried video-off desire.
+    ///
+    /// Deliberately an atomic rather than an accessor on the selection
+    /// engine, and both halves of that are load-bearing. Reading the engine
+    /// would take a mutex on a streaming thread, which is the lock-ordering
+    /// hazard that wedged the pipeline against pad stream locks before the
+    /// routing lock learned to collect and then act. It would also answer
+    /// the wrong question, reporting the CURRENT desire when a pad exposed
+    /// inline inside `send_event` needs the intent of the selection being
+    /// dispatched right then.
+    video_deselected: AtomicBool,
+    /// A VIDEO stream was unrouted at least once since the load. The
+    /// drained-resurrect park in `route_db3_pad` only applies to a
+    /// RE-route. At the initial route of a fast-paced item the input can
+    /// already be at EOS while decodebin3's multiqueue still holds the
+    /// whole stream, and parking that first route would silence video for
+    /// the item. Reset per load.
+    video_unrouted_once: AtomicBool,
     /// decodebin3 source pads from the CURRENT core that `route_db3_pad`
     /// refused because `route_gate` was momentarily held by a concurrent
     /// downward transition. Dropping them for good stalled the active load
@@ -1039,6 +1289,12 @@ struct Inner {
     /// Feeds the SELECT_STREAMS sender thread (see [`SelectJob`]). Same
     /// lifetime discipline as `work_tx`.
     select_tx: mpsc::Sender<SelectJob>,
+    /// Feeds the replay-seek sender thread (see [`ReplayJob`]). Same
+    /// lifetime discipline as `work_tx`.
+    replay_tx: mpsc::Sender<ReplayJob>,
+    /// Feeds the chain-join thread (see [`ChainJoinJob`]). Same lifetime
+    /// discipline as `work_tx`.
+    join_tx: mpsc::Sender<ChainJoinJob>,
     routing: Mutex<RoutingState>,
     /// The declarative track-selection engine (see the [`selection`] module
     /// docs). Recording happens at bus-translate time, dispatch only in
@@ -1051,6 +1307,16 @@ struct Inner {
     /// already the new target by the time the confirmation arrives, so it
     /// cannot say whether the slot MOVED. Reset wherever the engine resets.
     last_applied_subtitle: Mutex<Option<String>>,
+    /// Whether the MAIN input answers the SELECTABLE query (an adaptive
+    /// demuxer): decodebin3 then defers ALL selection upstream and never
+    /// posts STREAMS_SELECTED (`is_selection_done` returns early). `None`
+    /// until first asked, reset wherever the engine resets. See
+    /// [`Inner::upstream_owns_selection`].
+    upstream_selection: Mutex<Option<bool>>,
+    /// The upstream-owned id set last dispatched while upstream owns
+    /// selection: an adaptive demuxer only confirms an activation EDGE, so a
+    /// no-op re-send would never confirm and must be settled locally instead.
+    last_upstream_ids: Mutex<Vec<String>>,
     /// The timeline the current item is MEANT to render against: rate and
     /// the position whose running time is zero, recorded when a load's
     /// start seek or a user seek is issued. `overlay_timeline` falls back to
@@ -1103,6 +1369,16 @@ struct Inner {
     /// post-ssync gate consumes them before they reach the sinks. Reset per
     /// load.
     passing_eos_group: Mutex<Option<gst::GroupId>>,
+    /// Stream ids whose INPUT-side stream has delivered EOS into decodebin3
+    /// and has not been restarted by a flush since (recorded by a probe on
+    /// every input pad linked into decodebin3, see `Inner::link_input_pad`).
+    /// A deselected stream's end never reaches the output probes (its slot
+    /// is gone), so `passing_eos_group` cannot see it, and re-routing such
+    /// a stream builds a chain that can never preroll. The
+    /// drained-resurrect park in `route_db3_pad` consults this next to the
+    /// group mirror. Reset per load. Maintained only while the park's lever
+    /// is unset (`FCAST_NO_DRAINED_RESURRECT_PARK`).
+    input_eos_sids: Mutex<std::collections::HashSet<String>>,
     /// A gapless activation's user-facing events (PreparedActivated + the new
     /// item's collection), held back from decodebin3's output until the new
     /// item's audio crosses the decoupling queue to the sink. The switch is
@@ -1116,32 +1392,49 @@ struct Inner {
     /// queue depth, and a superseding activation flushes any prior hold.
     /// Cleared per load.
     held_activation: Mutex<Option<HeldActivation>>,
+    /// The DROP probe a mid-item video deselect leaves on the pad feeding the
+    /// video chain (see `park_video_chain_for_deselect`). Removed when the
+    /// chain rejoins or leaves the pipeline, so a re-selected video stream is
+    /// never dropped. The pad is kept alongside the id because the probe has
+    /// to be removed from the same pad it was added to, and by then the
+    /// overlay may already be unlinked from it.
+    video_park_probe: Mutex<Option<(gst::Pad, gst::PadProbeId)>>,
+    /// Serialises the video chain's MEMBERSHIP change (see
+    /// [`Inner::attach_video_chain`]). A leaf lock: nothing is taken under it.
+    video_chain_membership: Mutex<()>,
 }
 
-/// An RAII hold on [`Inner::route_gate`]. Dropping it releases the gate
-/// FIRST and then re-attempts `deferred_pads`, so the invariant is simply
-/// "every gate release drains": a pad deferred while any holder had the gate
-/// is re-routed the moment that holder finishes, with no polling thread.
+/// An RAII hold on [`Inner::route_gate`], [`Inner::join_gate`] or both.
+/// Dropping it releases what it holds FIRST and then re-attempts
+/// `deferred_pads`, so the invariant is simply "every gate release drains": a
+/// pad deferred while any holder had the gate is re-routed the moment that
+/// holder finishes, with no polling thread.
 struct RouteGate<'a> {
     inner: &'a Arc<Inner>,
     guard: Option<parking_lot::MutexGuard<'a, ()>>,
+    join: Option<parking_lot::MutexGuard<'a, ()>>,
 }
 
 impl Drop for RouteGate<'_> {
     fn drop(&mut self) {
-        // Release the mutex before draining: the drain re-enters
+        // Release the mutexes before draining: the drain re-enters
         // `route_db3_pad`, which must be able to take the gate itself.
+        self.join.take();
         self.guard.take();
         Inner::drain_deferred_pads(self.inner);
     }
 }
 
 impl Inner {
-    /// Take the route gate (blocking). See [`RouteGate`].
+    /// Take BOTH gates (blocking): a downward transition excludes routes and
+    /// chain joins alike. See [`RouteGate`] and [`Inner::join_gate`].
     fn gate(inner: &Arc<Inner>) -> RouteGate<'_> {
+        let guard = inner.route_gate.lock();
+        let join = inner.join_gate.lock();
         RouteGate {
             inner,
-            guard: Some(inner.route_gate.lock()),
+            guard: Some(guard),
+            join: Some(join),
         }
     }
 
@@ -1150,7 +1443,18 @@ impl Inner {
         inner.route_gate.try_lock().map(|guard| RouteGate {
             inner,
             guard: Some(guard),
+            join: None,
         })
+    }
+
+    /// Take the JOIN gate only (blocking), which excludes downward transitions
+    /// without making a concurrent route defer. See [`Inner::join_gate`].
+    fn join_hold(inner: &Arc<Inner>) -> RouteGate<'_> {
+        RouteGate {
+            inner,
+            guard: None,
+            join: Some(inner.join_gate.lock()),
+        }
     }
 }
 
@@ -1431,6 +1735,8 @@ impl FcastPlaybin {
 
         let (work_tx, work_rx) = mpsc::channel();
         let (select_tx, select_rx) = mpsc::channel();
+        let (replay_tx, replay_rx) = mpsc::channel();
+        let (join_tx, join_rx) = mpsc::channel();
 
         let inner = Arc::new(Inner {
             video_chain: vec![overlay.clone(), video_sink.clone()],
@@ -1440,12 +1746,19 @@ impl FcastPlaybin {
             core: Mutex::new(None),
             token_src,
             route_gate: Mutex::new(()),
+            join_gate: Mutex::new(()),
             deferred_pads: Mutex::new(Vec::new()),
             deferred_text_work: Mutex::new(None),
+            text_seat: Arc::new(TextSeat::default()),
             deferred_text_disposal: Mutex::new(Vec::new()),
             deferred_input_removal: Mutex::new(Vec::new()),
             replay_checks_armed: Mutex::new(std::collections::HashSet::new()),
             deferred_replays: Mutex::new(Vec::new()),
+            deferred_verifications: Mutex::new(Vec::new()),
+            drain_poke_parked: AtomicBool::new(false),
+            drain_jobs_seen: AtomicU64::new(0),
+            video_deselected: AtomicBool::new(false),
+            video_unrouted_once: AtomicBool::new(false),
             generation: AtomicU64::new(0),
             next_generation: AtomicU64::new(0),
             overlay,
@@ -1455,9 +1768,13 @@ impl FcastPlaybin {
             events: Mutex::new(None),
             work_tx,
             select_tx,
+            replay_tx,
+            join_tx,
             routing: Mutex::new(RoutingState::default()),
             selection: Mutex::new(selection::SelectionEngine::new()),
             last_applied_subtitle: Mutex::new(None),
+            upstream_selection: Mutex::new(None),
+            last_upstream_ids: Mutex::new(Vec::new()),
             intended_timeline: Mutex::new((1.0, gst::ClockTime::ZERO)),
             db3_pad_request: Mutex::new(()),
             sub_timeout: Mutex::new(EXTERNAL_SUB_TIMEOUT),
@@ -1466,7 +1783,10 @@ impl FcastPlaybin {
             active_group: Mutex::new(None),
             retired_group: Mutex::new(None),
             passing_eos_group: Mutex::new(None),
+            input_eos_sids: Mutex::new(std::collections::HashSet::new()),
             held_activation: Mutex::new(None),
+            video_park_probe: Mutex::new(None),
+            video_chain_membership: Mutex::new(()),
         });
 
         Inner::install_core(&inner)?;
@@ -1545,6 +1865,22 @@ impl FcastPlaybin {
             .spawn(move || Inner::select_sender_loop(weak, select_rx))
             .context("spawning the fcastplaybin select sender")?;
 
+        // The replay-seek sender (see `ReplayJob`), same Weak/channel
+        // lifetime as the worker.
+        let weak = Arc::downgrade(&inner);
+        std::thread::Builder::new()
+            .name("fpb-replay".to_owned())
+            .spawn(move || Inner::replay_sender_loop(weak, replay_rx))
+            .context("spawning the fcastplaybin replay sender")?;
+
+        // The chain-join thread (see `ChainJoinJob`), same Weak/channel
+        // lifetime as the worker.
+        let weak = Arc::downgrade(&inner);
+        std::thread::Builder::new()
+            .name("fpb-join".to_owned())
+            .spawn(move || Inner::chain_join_loop(weak, join_rx))
+            .context("spawning the fcastplaybin chain joiner")?;
+
         Ok(Self { inner })
     }
 
@@ -1583,6 +1919,10 @@ impl FcastPlaybin {
         // Weak: a strong clone here would cycle pipeline -> bus -> handler.
         let weak = Arc::downgrade(&self.inner);
         self.bus().set_sync_handler(move |_, msg| {
+            // This upgrade may turn out to be the LAST strong reference, and
+            // it dies on the posting (streaming) thread. `Inner::drop` is
+            // written for exactly that; see the comment above `impl Drop for
+            // Inner`.
             if let Some(inner) = weak.upgrade() {
                 if let Some(hook) = &hook
                     && hook(msg)
@@ -1652,14 +1992,22 @@ impl FcastPlaybin {
         *inner.active_group.lock() = None;
         *inner.retired_group.lock() = None;
         *inner.passing_eos_group.lock() = None;
+        inner.input_eos_sids.lock().clear();
         // A fresh load supersedes any gapless activation still held for the
         // sink boundary; its events belong to a play item this load replaces.
         *inner.held_activation.lock() = None;
         // Track desires are per-item: the new load starts on the pipeline's
-        // own defaults.
+        // own defaults. A pending eager flush was the previous item's too,
+        // and left in the slot it would fire at this load's first settled
+        // PLAYING and flush the fresh text branch's first cues away.
         inner.selection.lock().reset();
         *inner.last_applied_subtitle.lock() = None;
+        *inner.upstream_selection.lock() = None;
+        inner.last_upstream_ids.lock().clear();
+        *inner.deferred_text_work.lock() = None;
         *inner.intended_timeline.lock() = (1.0, gst::ClockTime::ZERO);
+        inner.video_deselected.store(false, Ordering::SeqCst);
+        inner.video_unrouted_once.store(false, Ordering::SeqCst);
 
         let element = match input {
             MediaInput::Uri(uri) => Inner::make_urisourcebin(&uri, true)?,
@@ -1780,7 +2128,34 @@ impl FcastPlaybin {
     /// one that fails for good (or never produces a stream within the
     /// bounded wait) is detached and reported as
     /// [`PlaybinEvent::ExternalSubtitleFailed`].
+    ///
+    /// A URI that is ALREADY attached is refused. With nothing upstream to
+    /// inherit an id from, GStreamer derives a source pad's stream id by
+    /// hashing the element's URI, so a second input on the same URI would
+    /// report the first input's stream id, and every stream-id lookup in
+    /// the crate and its callers resolves first match. Twins under one id
+    /// answered about the wrong input everywhere at once (the hold release,
+    /// the join and replay machinery, the selection engine's external map),
+    /// and the observed end state was a subtitle path dead for the rest of
+    /// the item. Detaching the existing input first makes the URI
+    /// attachable again.
     pub fn attach_subtitle_with_id(&self, id: ExternalSubId, uri: &str) -> Result<()> {
+        {
+            let routing = self.inner.routing.lock();
+            let twin = routing.inputs.iter().find_map(|input| {
+                input
+                    .external
+                    .as_ref()
+                    .filter(|external| external.uri == uri)
+                    .map(|external| external.id)
+            });
+            if let Some(twin) = twin {
+                return Err(anyhow!(
+                    "subtitle URI is already attached as {twin:?}, and two inputs \
+                     on one URI would share a URI-derived stream id"
+                ));
+            }
+        }
         let generation = self.inner.current_generation();
         // NO buffering on subtitle side-inputs (uridecodebin3 also buffers
         // only the main item): a fresh input's own queue2 levels would drive
@@ -1794,6 +2169,7 @@ impl FcastPlaybin {
             // Held from the very first attach: an unselected stream's first
             // push is fatal (see `ExternalInput::hold_until_selected`).
             hold_until_selected: true,
+            hold_release_owed: false,
             task_dead: false,
             last_origin: gst::ClockTime::ZERO,
         };
@@ -1826,6 +2202,15 @@ impl FcastPlaybin {
     #[doc(hidden)]
     pub fn set_external_sub_timeout(&self, timeout: Duration) {
         *self.inner.sub_timeout.lock() = timeout;
+    }
+
+    /// How often a text-branch disposal and the overlay-seat link actually ran
+    /// at the same time (see [`TextSeat`]). For tests: a non-zero count is the
+    /// evidence that the unsynchronized `is_linked()` check this lock replaced
+    /// had a real window, not an argued one.
+    #[doc(hidden)]
+    pub fn text_seat_contentions(&self) -> u64 {
+        self.inner.text_seat.contentions.load(Ordering::Relaxed)
     }
 
     /// Whether any external subtitle input is currently attached. Callers
@@ -1911,22 +2296,42 @@ impl FcastPlaybin {
             enum Dispatch {
                 Select(TrackSelection, gst::Seqnum),
                 Refresh(gst::Seqnum),
+                ConfirmApplied(TrackSelection, gst::Seqnum),
             }
 
+            let (externals_attached, externals) = {
+                let routing = self.inner.routing.lock();
+                let externals: Vec<(ExternalSubId, Vec<String>)> = routing
+                    .inputs
+                    .iter()
+                    .filter_map(|i| i.external.as_ref().map(|e| (e.id, i.stream_ids())))
+                    .collect();
+                (!externals.is_empty(), externals)
+            };
+            // Read BEFORE the engine lock: the query takes the routing lock,
+            // and the order is routing then selection (see `Inner::routing`).
+            // The lever makes the engine behave as if nothing upstream owned
+            // selection, so no request is ever answered locally.
+            // NOT during a gapless activation. `applied` there already names
+            // the INCOMING item's streams, and a synthetic report naming them
+            // reaches `Inner::try_activate_prepared`, which IS the activation
+            // trigger: measured, confirming through that window took
+            // `gapless_switch_into_a_text_bearing_item` from its documented
+            // ~1-in-3 flake to 3 failures in 4 ("playback did not advance ... a
+            // parked streaming thread"). An activation posts a real collection
+            // and selection of its own, which answers anything waiting behind
+            // it, so nothing is owed here.
+            // Lever: `FCAST_NO_CONFIRM_APPLIED`.
+            let activating = self.inner.swap_gate.state.lock().activation_pending().is_some();
+            let upstream_owns = self.inner.upstream_owns_selection()
+                && !activating
+                && std::env::var_os("FCAST_NO_CONFIRM_APPLIED").is_none();
             let dispatch = {
-                let (externals_attached, externals) = {
-                    let routing = self.inner.routing.lock();
-                    let externals: Vec<(ExternalSubId, Vec<String>)> = routing
-                        .inputs
-                        .iter()
-                        .filter_map(|i| i.external.as_ref().map(|e| (e.id, i.stream_ids())))
-                        .collect();
-                    (!externals.is_empty(), externals)
-                };
                 let ctx = selection::PumpCtx {
                     gate,
                     externals_attached,
-                    externals,
+                    externals: externals.clone(),
+                    upstream_owns,
                 };
                 let mut engine = self.inner.selection.lock();
                 match engine.pump(&ctx) {
@@ -1940,6 +2345,15 @@ impl FcastPlaybin {
                         let seqnum = gst::Seqnum::next();
                         engine.refresh_dispatched(seqnum);
                         Dispatch::Refresh(seqnum)
+                    }
+                    // Recorded as a dispatch so the confirmation below settles
+                    // it through the ONE seqnum-keyed path every other
+                    // confirmation uses: nothing downstream can tell this from
+                    // a no-op dispatch's local confirm, which is the point.
+                    Some(selection::Command::ConfirmApplied(target)) => {
+                        let seqnum = gst::Seqnum::next();
+                        engine.selection_dispatched(seqnum, target.clone());
+                        Dispatch::ConfirmApplied(target, seqnum)
                     }
                 }
             };
@@ -1985,76 +2399,151 @@ impl FcastPlaybin {
                     // new target by now.
                     //
                     // Both halves flush the text branch, and a flush blocks
-                    // until that branch's streaming thread can be paused. At a
-                    // pipeline RESTING in PAUSED it never can: both sinks park
-                    // in `gst_base_sink_wait_preroll` holding their stream
-                    // locks, the text queue's task blocks pushing into
-                    // subtitleoverlay behind them, and the flush blocks behind
-                    // that. The caller is wedged, and the caller is the thread
-                    // that would have resumed playback, so the whole pipeline
-                    // freezes with no way out. Reported from the field on a
-                    // subtitle track switch while paused, captured with gdb.
+                    // until that branch's streaming thread can be paused.
+                    // Whether it can be paused NOW is not reliably decidable
+                    // from pipeline state (a pipeline resting in PAUSED never
+                    // releases it, one held below PLAYING by buffering does
+                    // not either, and three state-based guards over-matched
+                    // in a row), so the flush NEVER runs on this thread. See
+                    // `Inner::submit_text_flush`.
                     //
-                    // So it is POSTPONED rather than skipped. Skipping outright
-                    // was tried and takes `regression_gapless` from 2 runs in 6
-                    // to 6 in 6: a load sits at PAUSED, the work is dropped on
-                    // the floor and nothing ever does it. Deferring keeps the
-                    // behaviour and only moves it to the first moment the
-                    // pipeline can carry it out. A gapless transition runs
-                    // while PLAYING, so it never defers and is unaffected.
-                    let work = if target.subtitle.is_none() {
-                        Some(DeferredTextWork::Park)
-                    } else {
-                        let replacing = {
-                            let applied = self.inner.last_applied_subtitle.lock();
-                            applied.is_some() && *applied != target.subtitle
-                        };
-                        replacing.then_some(DeferredTextWork::Flush)
+                    // A replace normally rides decodebin3's pad swap to free
+                    // the overlay seat. In upstream-selection mode no
+                    // SELECT_STREAMS ever reaches decodebin3, no swap comes,
+                    // and the outgoing branch holds `subtitle_sink` forever
+                    // ("skipping extra text stream",
+                    // `ext-subtitle-regression-2.txt`), so the park does the
+                    // handover. The flush-not-park measurement that shaped the
+                    // normal path was db3-owned gapless, which this mode never
+                    // is. Lever: `FCAST_NO_UPSTREAM_SELECTION_SPLIT` (via the
+                    // mode detection).
+                    let replacing = {
+                        let applied = self.inner.last_applied_subtitle.lock();
+                        applied.is_some() && *applied != target.subtitle
                     };
-                    if let Some(work) = work {
-                        let (_, current, pending) =
-                            self.inner.pipeline.state(gst::ClockTime::ZERO);
-                        // Only the FLUSH is postponed, never the PARK.
+                    // The mode is a TRI-STATE and the third state is not
+                    // "false": a dispatch before the main input's decodebin3
+                    // sink pads link has nobody to send the SELECTABLE query
+                    // to. FREEZE-DIAGN.md section 3 shows that state cannot
+                    // co-occur with a replace (both `last_applied_subtitle`
+                    // setters need the very link that populates the pads), so
+                    // this arm is defense in depth: park rather than flush a
+                    // branch whose feeder might be an adaptive demuxer, whose
+                    // ONE output loop pauses for good on a FLUSHING return.
+                    // Lever: `FCAST_EAGER_FLUSH_ON_UNKNOWN_MODE`.
+                    let mode = self.inner.upstream_selection_mode();
+                    let work = decisions::eager_text_work(
+                        target.subtitle.is_none(),
+                        replacing,
+                        mode,
+                        std::env::var_os("FCAST_EAGER_FLUSH_ON_UNKNOWN_MODE").is_some(),
+                    );
+                    if replacing && mode.is_none() {
+                        debug!(
+                            ?work,
+                            "the upstream-selection mode is not decidable yet for a text replace"
+                        );
+                    }
+                    match work {
+                        // Only the FLUSH leaves the caller, never the PARK.
                         //
                         // The park moves a deselected text stream onto its
                         // parking sink, and leaving it linked into the overlay
                         // for longer is exactly what stops decodebin3
-                        // reconfiguring (see `park_text_streams`). Measured:
-                        // postponing both took `regression_gapless` to 15
-                        // failures in 22 runs against 11 in 22 for the
-                        // unchanged code, with `subtitle_disable_survives_a_
-                        // gapless_transition` twice as likely to fail.
-                        // Postponing only the flush leaves the park's ordering
-                        // untouched, and the flush is the half the field
-                        // deadlock ran through anyway: it was a REPLACE
-                        // between two external subtitle inputs.
-                        if work == DeferredTextWork::Flush
-                            && current == gst::State::Paused
-                            && pending == gst::State::VoidPending
-                            && std::env::var_os("FCAST_NO_TEXT_WORK_DEFERRAL").is_none()
-                        {
-                            debug!(
-                                ?work,
-                                "postponing the eager text-branch work: the pipeline is at rest \
-                                 in PAUSED and the flush could not complete"
-                            );
-                            *self.inner.deferred_text_work.lock() = Some(work);
-                        } else {
-                            Inner::run_text_work(&self.inner, work);
+                        // reconfiguring (see `park_text_streams`). Measured
+                        // when the park was postponed as well,
+                        // `regression_gapless` went to 15 failures in 22 runs
+                        // against 11 in 22 for the unchanged code, with
+                        // `subtitle_disable_survives_a_gapless_transition`
+                        // twice as likely to fail. The park's own blocking
+                        // half (the branch disposal) already routes through
+                        // the deferred-work drain, so what runs inline here is
+                        // the non-blocking surgery.
+                        Some(DeferredTextWork::Park) => {
+                            Inner::run_text_work(&self.inner, DeferredTextWork::Park)
                         }
+                        Some(DeferredTextWork::Flush) => Inner::submit_text_flush(&self.inner),
+                        None => {}
                     }
                     let ids: Vec<&str> = [&target.video, &target.audio, &target.subtitle]
                         .into_iter()
                         .filter_map(|sid| sid.as_deref())
                         .collect();
-                    // The engine never resolves to an empty selection.
-                    if let Err(err) = self.select_streams(&ids, Some(seqnum)) {
+                    // An adaptive main input owns selection (SELECTABLE), and
+                    // decodebin3 defers to it wholesale. That demuxer rejects
+                    // any event naming a stream it does not carry
+                    // ("Unrecognized stream_id", the WHOLE event refused),
+                    // never posts about streams it cannot know, and decodebin3
+                    // posts nothing at all in this mode. So external-input
+                    // streams stay out of the event (the crate routes them
+                    // itself), only a CHANGED upstream-owned part is sent (a
+                    // no-op has no activation edge to confirm it), and an
+                    // unchanged one is confirmed locally.
+                    // Lever: `FCAST_NO_UPSTREAM_SELECTION_SPLIT`.
+                    if self.inner.upstream_owns_selection() {
+                        let external_sids: Vec<&str> = externals
+                            .iter()
+                            .flat_map(|(_, sids)| sids.iter().map(String::as_str))
+                            .collect();
+                        let upstream_ids: Vec<&str> = ids
+                            .iter()
+                            .copied()
+                            .filter(|sid| !external_sids.contains(sid))
+                            .collect();
+                        let changed = {
+                            let mut sorted: Vec<String> =
+                                upstream_ids.iter().map(|s| s.to_string()).collect();
+                            sorted.sort();
+                            let mut last = self.inner.last_upstream_ids.lock();
+                            if *last == sorted {
+                                false
+                            } else {
+                                *last = sorted;
+                                true
+                            }
+                        };
+                        if changed && !upstream_ids.is_empty() {
+                            let main_input = {
+                                let routing = self.inner.routing.lock();
+                                routing
+                                    .inputs
+                                    .iter()
+                                    .find(|input| input.external.is_none())
+                                    .map(|input| input.element.clone())
+                            };
+                            if let Err(err) =
+                                self.select_streams_to(main_input, &upstream_ids, Some(seqnum))
+                            {
+                                warn!(?err, "selection dispatch refused");
+                                self.inner.selection.lock().dispatch_failed(seqnum);
+                                break;
+                            }
+                            // Confirmation arrives from the demuxer with this
+                            // seqnum; the translate arm keeps the crate-owned
+                            // subtitle slot (see MessageView::StreamsSelected).
+                            // Unless it does not, which is what the field
+                            // showed: bounded fallback below.
+                            Inner::arm_upstream_confirm_fallback(
+                                &self.inner,
+                                target.clone(),
+                                seqnum,
+                            );
+                        } else {
+                            self.inner.post_synthetic_streams_selected(&target, seqnum);
+                        }
+                    } else if let Err(err) = self.select_streams(&ids, Some(seqnum)) {
                         warn!(?err, "selection dispatch refused");
                         self.inner.selection.lock().dispatch_failed(seqnum);
                         break;
                     }
                 }
                 Dispatch::Refresh(seqnum) => self.queue_job(Job::RefreshSeek { seqnum }),
+                // No event goes anywhere: the request was already satisfied, so
+                // the pipeline needs nothing and only the CALLER is owed an
+                // answer.
+                Dispatch::ConfirmApplied(target, seqnum) => {
+                    self.inner.post_synthetic_streams_selected(&target, seqnum)
+                }
             }
         }
     }
@@ -2074,6 +2563,17 @@ impl FcastPlaybin {
     /// bus message, and a selection superseded by a core swap before it
     /// sends is silently dropped (it could never confirm anyway).
     pub fn select_streams(&self, stream_ids: &[&str], seqnum: Option<gst::Seqnum>) -> Result<()> {
+        self.select_streams_to(None, stream_ids, seqnum)
+    }
+
+    /// [`Self::select_streams`] with an explicit send target. `None` sends
+    /// to decodebin3; the upstream-selection split passes the main input.
+    fn select_streams_to(
+        &self,
+        target: Option<gst::Element>,
+        stream_ids: &[&str],
+        seqnum: Option<gst::Seqnum>,
+    ) -> Result<()> {
         if stream_ids.is_empty() {
             return Err(anyhow!("refusing an empty stream selection"));
         }
@@ -2087,6 +2587,7 @@ impl FcastPlaybin {
         self.inner
             .select_tx
             .send(SelectJob {
+                target: target.unwrap_or_else(|| db3.clone()),
                 db3,
                 event: builder.build(),
                 stream_ids: stream_ids.iter().map(|s| s.to_string()).collect(),
@@ -2122,6 +2623,142 @@ impl FcastPlaybin {
     /// the next load) and drop the per-load audio sink. The video chain, if
     /// present, follows the pipeline down and is removed by the pad-removed
     /// unroutes or the next load's reset.
+    ///
+    /// # OPEN, AND IT BLOCKS THE CALLER TOO. The highest-value thing left here.
+    ///
+    /// `fuzz_buffering` seeds 1600039 and 1800015 wedge the WORKER (through
+    /// [`Job::Stop`]), deterministic 3 of 3. `fuzz_scenarios` seed 2700007
+    /// (ITERS=4 ACTIONS=22) wedges the CALLER, 3 of 3, on `stop() never
+    /// returned`: `stop` is this function called synchronously, so it strands
+    /// the application thread rather than the worker. All three are ONE call.
+    /// The proof is the A/B on attempt 1 below, which cleared 2700007 3 of 3
+    /// (it falls through to the pre-existing cue-misalignment class) and both
+    /// buffering seeds 3 of 3.
+    ///
+    /// The stacks, captured with gdb. The blocked thread parks in the wake
+    /// below, on a pad stream lock held by a task parked (through a queue) in
+    /// `gst_base_sink_wait_preroll`:
+    ///
+    /// * seed 1600039: `drain_disposals_for_teardown` -> `dispose_text_branch`
+    ///   -> `send_event(FLUSH_STOP)` on the overlay's `subtitle_sink`, which is
+    ///   SERIALIZED, so `gst_pad_send_event_unchecked` waits for that pad's
+    ///   stream lock;
+    /// * seed 1800015: `flush_parked_text_pushes` -> `flush_pads` ->
+    ///   `send_event(FLUSH_START)` into a queue sink pad ->
+    ///   `gst_queue_handle_sink_event` -> `gst_pad_pause_task`.
+    ///
+    /// Below PLAYING that preroll ends only when the SINKS move, which is what
+    /// the `set_state(target)` below does. The worker is the only thread that
+    /// runs [`Job::SetState`], so this is a self-deadlock through the job
+    /// queue, the same shape as the replay seek (see [`ReplayJob`]) and the
+    /// same shape as `Inner::remove_input_or_defer` guards against.
+    ///
+    /// # Four fixes were implemented and MEASURED WRONG. Start past them.
+    ///
+    /// What makes this hard is a SECOND obstacle that releases on the opposite
+    /// thing: a push parked on something a state change does not signal (a
+    /// blocking pad probe, the geometry `tests/deferred_drain.rs` manufactures)
+    /// releases only on a FLUSH_START, and that FLUSH_START has to arrive
+    /// BEFORE the pipeline descends. The descent's `pad-removed` unroutes empty
+    /// `routed`, after which `live_text_downstream_pads` is empty and the flush
+    /// has nothing left to travel down. Any fix has to clear both.
+    ///
+    /// 1. *Move `set_state(target)` ahead of the wake.* Fixed 1600039 and
+    ///    1800015 3 of 3 and broke
+    ///    `deferred_drain::stopping_after_a_paused_subtitle_off_does_not_wedge`
+    ///    (15 s bound, no flush ever sent) and
+    ///    `regression_deadlock::the_teardown_flush_does_not_hold_the_routing_lock`
+    ///    (40 s waiting for a flush that never came), for exactly that reason.
+    /// 2. *Run the wake on a helper thread, joined after the state change.* The
+    ///    gates pass and the race is only sometimes won: 1600039 went to 3
+    ///    failures in 7, twice reporting `pipeline (Paused, Ready)`, a descent
+    ///    that could not finish. `dispose_text_branch_on`'s FLUSH_STOP HOLDS
+    ///    the overlay's `subtitle_sink` stream lock while it forwards, so the
+    ///    helper can hold the very lock the descent needs while waiting for the
+    ///    preroll the descent would release. Concurrency buys a new cycle.
+    /// 3. *Take the crate's own sinks (video chain, audio sink) to READY first,
+    ///    leaving the order otherwise untouched.* No effect: 1600039 and
+    ///    1800015 back to 4 of 4, and 1600058 moved its wedge EARLIER, from
+    ///    `Inner::drop` to a stop-and-reload. So the parked push is not held by
+    ///    the two sinks this crate owns, or the READY itself does not get past
+    ///    them. That is the next thing to establish, with a stack.
+    /// 4. *Attempt 1 plus collecting the wake's TARGETS (the disposals and the
+    ///    pads) before the descent*, on the theory that the post-descent wake
+    ///    failed the two gates only because it had nothing left to send to.
+    ///    Both gates still fail identically, 1 of 1 each, so an empty target
+    ///    list is not the whole reason. `regression_deadlock`'s probe still
+    ///    never fires, which points at the SEND being short-circuited on a pad
+    ///    the descent has already deactivated rather than at the lookup.
+    ///
+    /// # FIXED, by moving the DESCENT rather than the wake
+    ///
+    /// The recorded shape for a fifth attempt was "FLUSH_START before the
+    /// descent from a thread holding no stream lock, the matching FLUSH_STOP
+    /// after". A gdb capture of seed 1800015 says that shape cannot be reached
+    /// by splitting the flush, and says why:
+    ///
+    /// * the worker parks in `gst_pad_pause_task` on the text queue's src
+    ///   stream lock, inside the FLUSH_**START**, not the stop,
+    /// * `queue1:src` holds that lock in `gst_queue_loop`, pushing a STICKY
+    ///   event through `gst_subtitle_overlay_subtitle_sink_event`
+    ///   (gstsubtitleoverlay.c:2259) and blocked acquiring a further stream
+    ///   lock down that chain,
+    /// * `multiqueue7:src` and `fpb-aqueue:src` hold the locks it wants, both
+    ///   parked in `gst_base_sink_wait_preroll`.
+    ///
+    /// So dropping the FLUSH_STOP buys nothing here: it is the FLUSH_START
+    /// that parks, and a pad set flushing does not release a thread already
+    /// blocked on a mutex behind it. The wake and the descent have to run
+    /// CONCURRENTLY, and the only question is which of the two moves.
+    ///
+    /// Moving the wake is attempt 2, and it races: the wake's serialized
+    /// FLUSH_STOP takes `subtitle_sink`'s stream lock and HOLDS it while it
+    /// forwards, so the descent can end up behind the wake. Moving the
+    /// DESCENT does not have that failure mode. When the wake is parked it
+    /// holds nothing at all (it is *acquiring* a stream lock in both captured
+    /// stacks), and `gst_bin_iterate_sorted` takes a bin down "from the most
+    /// downstream elements (sinks) to the sources", so the descent releases
+    /// `wait_preroll` before it needs anything the wake is queued behind.
+    ///
+    /// [`WakeRescue`] is that thread. It is ARMED, not unconditional: it does
+    /// nothing at all unless the wake is still running after
+    /// [`TEARDOWN_WAKE_BUDGET`], so a healthy teardown, and every gate written
+    /// against the inline ordering, keeps byte-for-byte the old behaviour:
+    /// same thread, same order, flush PAIRS intact and issued before the
+    /// descent. Only a teardown that would otherwise have wedged forever sees
+    /// a descent from another thread.
+    ///
+    /// That also answers the open question the fourth attempt left, which was
+    /// whether a post-descent FLUSH_STOP still reaches the sink. It does not:
+    /// `gst_pad_send_event_unchecked` discards a FLUSH_STOP on an INACTIVE pad
+    /// outright (gstpad.c:6258, "we can't accept flush-stop on inactive pads"),
+    /// and a descent to READY or NULL deactivates every pad. Splitting a pair
+    /// around the descent would therefore strand the FLUSH_START at the sink,
+    /// which is exactly the `flush_pairs_matched` violation that
+    /// [`Inner::flush_parked_text_pushes`] records. Keeping the pair on one
+    /// thread keeps it matched; the rescue only ever moves the descent
+    /// underneath a pair that is already stuck.
+    ///
+    /// Lever: `FCAST_NO_TEARDOWN_RESCUE` restores the unrescued teardown.
+    ///
+    /// # RESIDUAL, measured, not closed
+    ///
+    /// A rescued teardown can still report `pipeline (Paused, Ready)`, the
+    /// attempt-2 signature of a descent that could not finish. Measured on
+    /// `fuzz_buffering` seed 1600039, ITERS=4 ACTIONS=22: 0 failures in 15
+    /// runs with only this fix in the tree, 2 in 18 with the `poll_text_policy`
+    /// stomped-subtitle guard in as well (which changes what is linked into
+    /// the overlay at teardown, hence what the wake is parked on), against 3
+    /// of 3 failing before either. The window is the one interval in which the
+    /// wake HOLDS rather than waits for a stream lock: `dispose_text_branch_on`
+    /// acquires `subtitle_sink`'s and keeps it while the FLUSH_STOP forwards,
+    /// and a descent that reaches subtitleoverlay inside that interval queues
+    /// behind it. It is bounded, not a wedge (the failing runs report on the
+    /// driver's 15 s worker bound and then unwind normally, in the same total
+    /// runtime as a passing one), so what is left is a rescue budget that eats
+    /// 5 s of that 15 s rather than a new deadlock. Closing it needs the wake
+    /// to hold no serialized event at all, which is the shape the FLUSH_START
+    /// split could not reach for the reason recorded above.
     fn teardown(&self, target: gst::State) -> Result<()> {
         // A chain parked by a mid-item deselect is state-locked. Unlock it
         // so it follows the pipeline down.
@@ -2132,10 +2769,22 @@ impl FcastPlaybin {
         // the state change, which joins streaming threads.
         self.inner.swap_gate.abort();
         *self.inner.prepared.lock() = None;
+        // Both calls below can park forever on a push that only the descent
+        // releases, and on the worker the descent is a job only this thread
+        // runs. Arm the rescue across them (see the docs above).
+        let rescue = WakeRescue::arm(&self.inner, target);
+        // Postponed branch disposals first. The parked-push flush below
+        // cannot see them, and it wedges on a multiqueue task blocked
+        // mid-push into an undisposed queue (see
+        // `Inner::drain_disposals_for_teardown`).
+        self.inner.drain_disposals_for_teardown();
         // And wake every parked text push, or the downward change
         // deadlocks on the pad locks those pushes hold (see
         // `Inner::flush_parked_text_pushes`).
         self.inner.flush_parked_text_pushes();
+        // Disarmed (and joined) BEFORE the gate below, so the two threads
+        // never contend for it.
+        rescue.disarm();
         {
             let _gate = Inner::gate(&self.inner);
             self.inner
@@ -2146,10 +2795,17 @@ impl FcastPlaybin {
         Inner::remove_all_inputs(&self.inner);
         self.inner.remove_audio_sink();
         // Everything desired/applied/in-flight belonged to the torn-down
-        // item.
+        // item, and so did a still-pending eager flush (running it against
+        // the next item's fresh branch would drop that branch's first
+        // cues). Branch disposals, input removals and replays stay pending.
+        // Their targets outlive the item and their drains no-op when stale.
         self.inner.selection.lock().reset();
         *self.inner.last_applied_subtitle.lock() = None;
+        *self.inner.upstream_selection.lock() = None;
+        self.inner.last_upstream_ids.lock().clear();
+        *self.inner.deferred_text_work.lock() = None;
         *self.inner.intended_timeline.lock() = (1.0, gst::ClockTime::ZERO);
+        self.inner.video_deselected.store(false, Ordering::SeqCst);
         Ok(())
     }
 
@@ -2511,6 +3167,15 @@ impl FcastPlaybin {
         Inner::poll_text_policy(&self.inner);
     }
 
+    /// How many [`Job::DrainTextWork`] jobs the worker has received so far.
+    /// A diagnostic counter for the busy-loop regression test, which pins
+    /// that a caller polling at a pipeline parked below PLAYING does not
+    /// re-queue the drain on every poll. Not part of the public API.
+    #[doc(hidden)]
+    pub fn drain_text_job_count(&self) -> u64 {
+        self.inner.drain_jobs_seen.load(Ordering::SeqCst)
+    }
+
     pub fn dump_dot(&self, name: &str) {
         self.inner
             .pipeline
@@ -2638,10 +3303,246 @@ impl FcastPlaybin {
     }
 }
 
+/// How long [`FcastPlaybin::teardown`]'s pre-descent wake gets before
+/// [`WakeRescue`] performs the pipeline's state change on its behalf.
+///
+/// Both bounds are load-bearing. It is ABOVE the three seconds
+/// `tests/regression_deadlock.rs` deliberately pins the teardown flush for,
+/// so a wake that is merely slow is never rescued and every gate written
+/// against the inline ordering keeps exactly that ordering. It is well BELOW
+/// the fifteen seconds the fuzz drivers give a stop or a graph dump, so a
+/// rescued teardown still answers inside their bound.
+const TEARDOWN_WAKE_BUDGET: Duration = Duration::from_secs(5);
+
+/// Performs the teardown's pipeline descent from a second thread when the
+/// wake ahead of it has parked. See [`FcastPlaybin::teardown`] for the
+/// deadlock and for why the DESCENT is what moves.
+///
+/// Armed, never unconditional. The rescue thread waits on a hangup channel
+/// for [`TEARDOWN_WAKE_BUDGET`]; [`WakeRescue::disarm`] hangs the channel up,
+/// so a wake that completes normally cancels it before it can act and the
+/// teardown is bit-for-bit the one that ran before this existed.
+struct WakeRescue {
+    /// Hanging this up is the cancellation. Dropped by `disarm`.
+    cancel: Option<mpsc::Sender<()>>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl WakeRescue {
+    fn arm(inner: &Arc<Inner>, target: gst::State) -> Self {
+        if std::env::var_os("FCAST_NO_TEARDOWN_RESCUE").is_some() {
+            return WakeRescue {
+                cancel: None,
+                handle: None,
+            };
+        }
+        let (cancel, cancelled) = mpsc::channel();
+        let inner = Arc::clone(inner);
+        let handle = std::thread::Builder::new()
+            .name("fpb-tdrescue".into())
+            .spawn(move || {
+                // Anything but a timeout means the wake finished (or the
+                // teardown thread went away): nothing to rescue.
+                if cancelled.recv_timeout(TEARDOWN_WAKE_BUDGET)
+                    != Err(mpsc::RecvTimeoutError::Timeout)
+                {
+                    return;
+                }
+                warn!(
+                    ?target,
+                    "the teardown wake is still parked after {TEARDOWN_WAKE_BUDGET:?}, \
+                     taking the pipeline down from the rescue thread"
+                );
+                let _gate = Inner::gate(&inner);
+                let _ = inner.pipeline.set_state(target);
+                debug!(?target, "the rescue descent finished");
+            })
+            .ok();
+        WakeRescue {
+            cancel: Some(cancel),
+            handle,
+        }
+    }
+
+    /// Cancel the rescue and JOIN it, so the teardown never runs on past a
+    /// descent that is still in flight.
+    fn disarm(mut self) {
+        drop(self.cancel.take());
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// Everything the blocking half of the teardown needs, in OWNED form. Every
+/// field is a refcounted GStreamer handle, so this keeps the graph alive by
+/// itself once `Inner`'s memory is gone, which is what lets the descent run
+/// somewhere other than the thread that dropped the last reference. See
+/// [`Teardown::run`] and the comment above `impl Drop for Inner`.
+struct Teardown {
+    pipeline: gst::Pipeline,
+    overlay: gst::Element,
+    video_chain: Vec<gst::Element>,
+    inputs: Vec<gst::Element>,
+    disposals: Vec<TextDisposal>,
+    /// Pads of live text branches, plus the decodebin3 sink pads of every
+    /// input. Collected under the routing lock while `Inner` still existed
+    /// (see [`Inner::flush_parked_text_pushes`], which this replaces at the
+    /// teardown boundary).
+    text_pads: Vec<gst::Pad>,
+    db3_sink_pads: Vec<gst::Pad>,
+    /// Carried so the disposals below take the same seat lock the live crate
+    /// does (see [`TextSeat`]). Uncontended by this point, `Inner` is gone and
+    /// nothing can link the seat any more.
+    text_seat: Arc<TextSeat>,
+}
+
+impl Teardown {
+    /// The former body of `Inner::drop` from the disposals onward. Every call
+    /// here can block on a pad stream lock, which is precisely why it is
+    /// separated from the reference count that triggered it.
+    ///
+    /// # The PIPELINE goes down before the inputs do
+    ///
+    /// The input NULL loop used to run first, and wedged the whole process on
+    /// `fuzz_buffering` seed 1600058, deterministic 3 of 3 at the full 600 s
+    /// timeout. Captured with gdb:
+    ///
+    /// * this thread in `element.set_state(Null)` ->
+    ///   `gst_uri_source_bin_change_state` -> `gst_bin_src_pads_activate` ->
+    ///   `activate_mode_internal`, waiting for a pad STREAM LOCK,
+    /// * the input's own `ftestsrc:text` task holding it, blocked in
+    ///   `gst_multi_queue_sink_event` -> `gst_data_queue_push` on decodebin3's
+    ///   FULL multiqueue,
+    /// * that multiqueue's src task parked in `gst_base_sink_wait_preroll`.
+    ///
+    /// This is the campaign-5 wedge (`tests/regression_teardown_flush.rs`,
+    /// seeds 100014, 200030, 300046, 200057). Its window is the flush PAIR:
+    /// the FLUSH_STOP re-arms the pad and an as-fast-as-possible source refills
+    /// the slot and blocks on a serialized event again before the loop reaches
+    /// its NULL. Sending FLUSH_START alone was implemented and MEASURED WRONG,
+    /// so the pairing stays and the input NULLs move BEHIND the pipeline's own
+    /// descent instead. That descent takes the sinks out of `wait_preroll`, the
+    /// multiqueue drains, and the input's push returns before anything asks for
+    /// its stream lock. The explicit NULLs stay, for an input the descent
+    /// cannot reach (one already out of the pipeline).
+    ///
+    /// The wake still runs FIRST here, unlike in [`FcastPlaybin::teardown`].
+    /// It is not what wedged, and a push parked on something the descent does
+    /// not signal still needs it (see that function for the two-obstacle
+    /// argument).
+    ///
+    /// `FCAST_TEARDOWN_INPUTS_BEFORE_PIPELINE` restores the old order.
+    fn run(self) {
+        let inputs_first =
+            std::env::var_os("FCAST_TEARDOWN_INPUTS_BEFORE_PIPELINE").is_some();
+        let Teardown {
+            pipeline,
+            overlay,
+            video_chain,
+            inputs,
+            disposals,
+            text_pads,
+            db3_sink_pads,
+            text_seat,
+        } = self;
+
+        // Postponed branch disposals first, the parked-push flush cannot
+        // see them (see `Inner::drain_disposals_for_teardown`). Then every
+        // parked text push, or the NULLs below deadlock on the pad locks
+        // those pushes hold (see `Inner::flush_parked_text_pushes`).
+        for disposal in disposals {
+            debug!("disposing of a postponed text branch at teardown");
+            Inner::dispose_text_branch_on(&overlay, &pipeline, disposal, &text_seat);
+        }
+        Inner::flush_pads(&text_pads);
+        Inner::flush_db3_sink_pads(&db3_sink_pads);
+        debug!("drop: parked pushes flushed");
+
+        // A state-locked prepared input does not follow the pipeline down, and
+        // its unref at PLAYING trips a CRITICAL. Unlocked BEFORE the descent so
+        // the descent carries it.
+        for element in &inputs {
+            element.set_locked_state(false);
+        }
+        if !inputs_first {
+            let _ = pipeline.set_state(gst::State::Null);
+        }
+        for element in &inputs {
+            let _ = element.set_state(gst::State::Null);
+        }
+        debug!("drop: inputs down");
+        if inputs_first {
+            let _ = pipeline.set_state(gst::State::Null);
+        }
+        debug!("drop: pipeline down");
+        // Between video items the caller sink parks at READY OUTSIDE the
+        // pipeline (`remove_video_chain`), so the NULL above never reaches
+        // it and the final unref would trip GStreamer's dispose-in-READY
+        // CRITICAL. Down any orphaned chain element explicitly.
+        for element in &video_chain {
+            if element.parent().is_none() {
+                let _ = element.set_state(gst::State::Null);
+            }
+        }
+    }
+}
+
 // Teardown lives on `Inner`, NOT on the cloneable handle: a `Drop` on
 // `FcastPlaybin` fires for EVERY dropped clone, including the worker's
 // per-job temporaries. A handle-level Drop once NULLed the pipeline from a
 // streaming thread mid-post and deadlocked a concurrent load's state change.
+//
+// # Which thread this runs on is NOT the caller's choice
+//
+// Every internal callback holds a `Weak` and upgrades for the duration of its
+// work, so ANY of them is the last strong reference whenever the caller drops
+// its final handle inside that window: the bus sync handler, decodebin3's
+// pad-added, an EOS probe. The pipeline's descent to NULL then runs on
+// whatever thread that was, and on a streaming thread it CANNOT work. Captured
+// (`toml_scenarios`, measured here at 2 runs in 42 ending in signal 11):
+//
+//     gst_multi_queue_loop -> sticky push into decodebin3's sink
+//       -> gst_decodebin_input_setup_identity -> gst_element_sync_state_with_parent
+//       -> state-changed -> gst_bus_post -> the crate's bus sync handler
+//       -> Arc<Inner>::drop_slow -> Inner::drop -> set_state(Null)
+//
+// The descent tries to deactivate the pad whose task IS the calling thread
+// ("Trying to join task ... from its thread would deadlock", "Failed to
+// deactivate pad multiqueueN:src_0, very bad"), gives up half-way with the
+// pipeline at READY, and the dispose cascade over the still-live elements
+// segfaults.
+//
+// So the blocking half is COLLECTED into an owned [`Teardown`] and, on a
+// thread this process did not create, handed to one it did. Fixing the
+// callbacks instead was tried FIRST and is not enough: retiring the bus sync
+// handler's reference through a dedicated thread left the crash rate
+// unchanged (1 run in 36 against 1 in 38), because the terminal reference
+// simply lands on the next callback instead, and converting every
+// `Weak::upgrade` in the crate still left the warnings at 1 run in 42. There
+// is no finite set of call sites to fix; the guarantee belongs here, where the
+// thread is known.
+//
+// # This is NOT the whole class, and the numbers say so
+//
+// `tests/regression_teardown_thread.rs` manufactures the race and goes from 3
+// failures in 3 to 3 passes in 3, so the path it walks is closed. The
+// `toml_scenarios` soak did NOT follow: 42 runs per arm, interleaved on one
+// binary, gave 2 signal-11 runs and 2 warning-emitting runs with
+// `FCAST_TEARDOWN_ON_ANY_THREAD=1` against 1 and 1 without it. At that base
+// rate 2 against 1 is noise, so a second route to the same symptom is still
+// open and none of this should be read as closing it.
+//
+// The likeliest remaining one, UNPROVEN and stated so nobody has to rediscover
+// the shape of the search: `Inner`'s OWN fields drop on the calling thread
+// after this function returns, concurrently with the handed-off descent. An
+// element whose last reference happens to be one of them is then disposed
+// from there, and GStreamer's dispose deactivates its pads exactly as the
+// descent would have. `Teardown` holds the pipeline, the video chain and the
+// inputs; it does not hold every element `Inner` owns.
+//
+// `FCAST_TEARDOWN_ON_ANY_THREAD` runs the descent in place again, whatever
+// the thread, for an A/B without a rebuild. It gates the whole change.
 impl Drop for Inner {
     fn drop(&mut self) {
         debug!("dropping the playbin core");
@@ -2653,37 +3554,60 @@ impl Drop for Inner {
         // Wake any prepared-input thread parked on the swap gate before the
         // state change joins streaming threads.
         self.swap_gate.abort();
-        // And every parked text push, or the NULLs below deadlock on the
-        // pad locks those pushes hold (see the helper).
-        self.flush_parked_text_pushes();
-        debug!("drop: parked pushes flushed");
-        // A state-locked prepared input does not follow the pipeline down:
-        // down it explicitly or its unref at PLAYING trips a CRITICAL.
-        // Collected first, because a downward state change joins streaming
-        // threads and those run pad probes that take the routing lock (same
-        // inversion `Inner::live_text_downstream_pads` documents).
-        let inputs: Vec<gst::Element> = self
-            .routing
-            .lock()
-            .inputs
-            .iter()
-            .map(|input| input.element.clone())
-            .collect();
-        for element in inputs {
-            element.set_locked_state(false);
-            let _ = element.set_state(gst::State::Null);
+
+        // Collected BEFORE anything blocks, and each under the routing lock
+        // on its own: a downward state change joins streaming threads, and
+        // those run pad probes that take that lock (the inversion
+        // `Inner::live_text_downstream_pads` documents).
+        let teardown = Teardown {
+            pipeline: self.pipeline.clone(),
+            overlay: self.overlay.clone(),
+            video_chain: self.video_chain.clone(),
+            disposals: std::mem::take(&mut *self.deferred_text_disposal.lock()),
+            text_seat: Arc::clone(&self.text_seat),
+            text_pads: self.live_text_downstream_pads(),
+            db3_sink_pads: {
+                let routing = self.routing.lock();
+                routing
+                    .inputs
+                    .iter()
+                    .flat_map(|input| input.db3_sink_pads.iter().cloned())
+                    .collect()
+            },
+            inputs: self
+                .routing
+                .lock()
+                .inputs
+                .iter()
+                .map(|input| input.element.clone())
+                .collect(),
+        };
+
+        // A thread with no Rust name is one this process never spawned, i.e.
+        // a GStreamer task thread. Every thread that may legitimately carry
+        // the descent has one: the caller's `main` or its test thread, and
+        // the crate's own `fcastplaybin`, `fpb-select`, `fpb-replay`. An
+        // unnamed `std::thread::spawn` in a caller reads as foreign too,
+        // which only costs it an asynchronous teardown.
+        let foreign = std::thread::current().name().is_none()
+            && std::env::var_os("FCAST_TEARDOWN_ON_ANY_THREAD").is_none();
+        if !foreign {
+            teardown.run();
+            return;
         }
-        debug!("drop: inputs down");
-        let _ = self.pipeline.set_state(gst::State::Null);
-        debug!("drop: pipeline down");
-        // Between video items the caller sink parks at READY OUTSIDE the
-        // pipeline (`remove_video_chain`), so the NULL above never reaches
-        // it and the final unref would trip GStreamer's dispose-in-READY
-        // CRITICAL. Down any orphaned chain element explicitly.
-        for element in &self.video_chain {
-            if element.parent().is_none() {
-                let _ = element.set_state(gst::State::Null);
-            }
+        debug!("handing the teardown off a thread the crate does not own");
+        // NOT joined. Joining would wait for the very descent that is about
+        // to join THIS thread's task, which is the deadlock in a new place.
+        // The handles above keep the graph alive without `Inner`, so letting
+        // it run on is safe.
+        if let Err(err) = std::thread::Builder::new()
+            .name("fpb-teardown".to_owned())
+            .spawn(move || teardown.run())
+        {
+            error!(
+                ?err,
+                "could not hand off the teardown; the pipeline stays up"
+            );
         }
     }
 }
@@ -2714,7 +3638,14 @@ impl Inner {
     /// it never keeps the pipeline alive, and exits when every handle is
     /// gone (the channel closes). If a job's temporary upgrade turns out to
     /// be the LAST strong ref, `Inner::drop` (pipeline to NULL) simply runs
-    /// here after the job, a safe thread for it.
+    /// here after the job. THIS thread is a safe one for it, because nothing
+    /// GStreamer owns is waiting on it. That is a property of this thread and
+    /// NOT of temporary upgrades in general: the same reasoning applied to the
+    /// bus sync handler and was false, because that one runs on whichever
+    /// STREAMING thread posted the message, and NULLing the pipeline there
+    /// deadlocks the descent against the caller's own task. See
+    /// [`Inner::retire`], which is how every callback that can run on a
+    /// GStreamer-owned thread must release its reference.
     fn worker_loop(weak: Weak<Inner>, work_rx: mpsc::Receiver<Job>) {
         let span = debug_span!("fcastplaybin");
         let _entered = span.enter();
@@ -2726,6 +3657,36 @@ impl Inner {
         }
 
         debug!("fcastplaybin worker finished");
+    }
+
+    /// The replay-seek sender thread (see [`ReplayJob`] for why the send is
+    /// not on the worker). Same lifetime discipline as `worker_loop`: holds
+    /// only a `Weak` between jobs, exits when the channel closes.
+    fn replay_sender_loop(weak: Weak<Inner>, replay_rx: mpsc::Receiver<ReplayJob>) {
+        let span = debug_span!("fcastplaybin");
+        let _entered = span.enter();
+
+        while let Ok(job) = replay_rx.recv() {
+            let Some(inner) = weak.upgrade() else { break };
+            FcastPlaybin::run_replay_seek(&inner, job);
+        }
+
+        debug!("fcastplaybin replay sender finished");
+    }
+
+    /// The chain-join thread (see [`ChainJoinJob`]). Same lifetime discipline
+    /// as `worker_loop`: holds only a `Weak` between jobs, exits when the
+    /// channel closes.
+    fn chain_join_loop(weak: Weak<Inner>, join_rx: mpsc::Receiver<ChainJoinJob>) {
+        let span = debug_span!("fcastplaybin");
+        let _entered = span.enter();
+
+        while let Ok(job) = join_rx.recv() {
+            let Some(inner) = weak.upgrade() else { break };
+            Inner::run_chain_join(&inner, job);
+        }
+
+        debug!("fcastplaybin chain joiner finished");
     }
 
     /// The SELECT_STREAMS sender thread (see [`SelectJob`] and
@@ -2748,12 +3709,38 @@ impl Inner {
                 continue;
             }
 
+            // Record the selection's video intent BEFORE the send.
+            // decodebin3 can expose pads inline inside send_event, and the
+            // route decision reading this mirror must see the intent THIS
+            // selection carries, not the previous one. Pure intent on
+            // purpose, unlike the park decision after the send, which also
+            // wants a linked chain. An empty collection_video_ids means
+            // kinds are unknowable and never counts as off, matching
+            // `decisions::deselects_video`.
+            {
+                let routing = inner.routing.lock();
+                let video_off = !routing.collection_video_ids.is_empty()
+                    && !routing
+                        .collection_video_ids
+                        .iter()
+                        .any(|vid| job.stream_ids.contains(vid));
+                inner.video_deselected.store(video_off, Ordering::SeqCst);
+            }
+
             // send_event runs decodebin3's selection handling inline on THIS
             // thread. It may stall behind streaming threads, which is the
             // point of this thread (see `select_streams`).
             let seqnum = job.event.seqnum();
-            if !job.db3.send_event(job.event) {
-                warn!("decodebin3 refused the SELECT_STREAMS event");
+            if !job.target.send_event(job.event) {
+                warn!(target = %job.target.name(), "SELECT_STREAMS event refused");
+                // A refused dispatch never confirms; leaving it in flight
+                // starves every later change (`pump` refuses to dispatch over
+                // an unconfirmed selection while playing). Field shape:
+                // `subtitle-regressions.txt`.
+                // Lever: `FCAST_NO_SELECT_REFUSAL_FEEDBACK`.
+                if std::env::var_os("FCAST_NO_SELECT_REFUSAL_FEEDBACK").is_none() {
+                    inner.selection.lock().dispatch_failed(seqnum);
+                }
                 continue;
             }
             debug!(?seqnum, ids = ?job.stream_ids, "sent SELECT_STREAMS");
@@ -2784,6 +3771,176 @@ impl Inner {
         }
 
         debug!("fcastplaybin select sender finished");
+    }
+
+    /// Whether the MAIN input's upstream answers the SELECTABLE query, i.e.
+    /// an adaptive demuxer owns stream selection. Mirrors decodebin3, which
+    /// flips into upstream-selection mode when ANY input answers TRUE (its
+    /// own FIXME: "things might break if there's a mix" — an external
+    /// subtitle IS the mix). Cached per load: the answer cannot change
+    /// mid-item. Lever: `FCAST_NO_UPSTREAM_SELECTION_SPLIT` (set = pretend
+    /// no upstream ever owns selection, the old behaviour).
+    ///
+    /// Reads the tri-state below as "no upstream owner" when the query cannot
+    /// be answered yet, which is what every caller here needs. The one place
+    /// that must tell ignorance from a definite no is `pump_selection`'s eager
+    /// text work, which calls [`Inner::upstream_selection_mode`] instead.
+    fn upstream_owns_selection(&self) -> bool {
+        self.upstream_selection_mode().unwrap_or(false)
+    }
+
+    /// [`Inner::upstream_owns_selection`] as a TRI-STATE: `None` while the
+    /// main input has no decodebin3 sink pad linked, so there is nobody to ask
+    /// and the answer is genuinely unknown rather than false. A definite
+    /// answer is cached (the mode cannot change mid-item), ignorance is not.
+    fn upstream_selection_mode(&self) -> Option<bool> {
+        if std::env::var_os("FCAST_NO_UPSTREAM_SELECTION_SPLIT").is_some() {
+            // A definite answer and not ignorance: the lever exists to make
+            // the crate behave as if no upstream ever owned selection.
+            return Some(false);
+        }
+        if let Some(known) = *self.upstream_selection.lock() {
+            return Some(known);
+        }
+        let pads: Vec<gst::Pad> = {
+            let routing = self.routing.lock();
+            routing
+                .inputs
+                .iter()
+                .filter(|input| input.external.is_none())
+                .flat_map(|input| input.db3_sink_pads.iter().cloned())
+                .collect()
+        };
+        if pads.is_empty() {
+            // Not linked yet: don't cache ignorance.
+            return None;
+        }
+        // An UNHANDLED query is a definite no, not ignorance: SELECTABLE is
+        // answered by adaptive demuxers and forwarded upstream by everything
+        // else, so a plain source leaves it unhandled and `peer_query` returns
+        // false. decodebin3 reads it exactly this way. Treating the refusal as
+        // "not decidable yet" was measured WRONG: every non-adaptive replace
+        // then took the PARK arm, which runs inline, and
+        // `caller_nonblocking.rs` caught the caller blocking behind the text
+        // branch. Only "no pad to ask at all" is ignorance.
+        let owns = pads.iter().any(|pad| {
+            let mut query = gst::query::Selectable::new();
+            pad.peer_query(&mut query) && query.selectable()
+        });
+        debug!(owns, "queried whether upstream owns stream selection");
+        *self.upstream_selection.lock() = Some(owns);
+        Some(owns)
+    }
+
+    /// Post the STREAMS_SELECTED that decodebin3 never posts in
+    /// upstream-selection mode (`is_selection_done` returns early there), for
+    /// a dispatch whose upstream-owned part did not change (an adaptive
+    /// demuxer only confirms an activation edge). Everything downstream of
+    /// the bus arm (engine settle, external hold release, replay) runs off
+    /// the post, unchanged.
+    /// A SENT upstream selection whose confirmation never arrives is confirmed
+    /// locally after a bounded wait.
+    ///
+    /// The split sends only a CHANGED upstream part precisely because an
+    /// adaptive demuxer confirms activation EDGES and a no-op send has none. A
+    /// changed part is supposed to produce one, and the field showed two ways it
+    /// does not:
+    ///
+    /// * The change can be real to the crate and a no-op to the demuxer. The
+    ///   record it compares against (`last_upstream_ids`) is seeded from
+    ///   observed reports (see the `StreamsSelected` arm) AND from what was
+    ///   sent, so an item that never got an initial report compares against an
+    ///   empty set and reads its first dispatch as changed whatever it names.
+    /// * The edge can be real and unable to complete. At a settled PAUSED
+    ///   nothing flows, and a track deactivation that needs its pad to go idle
+    ///   waits for a push parked in a sink's preroll (the same mechanism as
+    ///   `Inner::lift_deselected_video_sink`, one element further upstream where
+    ///   this crate owns nothing to lift).
+    ///
+    /// Either way the caller is left waiting on a seqnum nothing will answer:
+    /// the receiver never relays, never sends SetTrackIds, and the UI keeps
+    /// showing the previous track while the new one is audibly/visibly active.
+    /// So: after [`UPSTREAM_CONFIRM_FALLBACK`], if the engine still awaits this
+    /// exact seqnum, post the confirmation the crate already knows how to build.
+    /// Keyed on the seqnum, so a real confirmation that arrives first (or a
+    /// selection that moved on) makes this a no-op.
+    ///
+    /// One-shot sleeper thread, the pattern `Inner::arm_sub_watchdog` and
+    /// `Inner::arm_replay_verification` already use. Lever:
+    /// `FCAST_NO_UPSTREAM_CONFIRM_FALLBACK`.
+    fn arm_upstream_confirm_fallback(
+        inner: &Arc<Inner>,
+        target: selection::TrackSelection,
+        seqnum: gst::Seqnum,
+    ) {
+        if std::env::var_os("FCAST_NO_UPSTREAM_CONFIRM_FALLBACK").is_some() {
+            return;
+        }
+        let weak = Arc::downgrade(inner);
+        let spawned = std::thread::Builder::new()
+            .name("fpb-confirm-fallback".into())
+            .spawn(move || {
+                std::thread::sleep(UPSTREAM_CONFIRM_FALLBACK);
+                let Some(inner) = weak.upgrade() else { return };
+                if !inner.selection.lock().selection_in_flight(seqnum) {
+                    return;
+                }
+                warn!(
+                    ?seqnum,
+                    "the upstream selection was never confirmed; confirming it locally"
+                );
+                inner.post_synthetic_streams_selected(&target, seqnum);
+            });
+        if let Err(err) = spawned {
+            warn!(?err, "failed to arm the upstream confirmation fallback");
+        }
+    }
+
+    fn post_synthetic_streams_selected(
+        &self,
+        target: &selection::TrackSelection,
+        seqnum: gst::Seqnum,
+    ) {
+        let mut collection = gst::StreamCollection::builder(None);
+        let mut selected = Vec::new();
+        for (sid, kind) in [
+            (&target.video, gst::StreamType::VIDEO),
+            (&target.audio, gst::StreamType::AUDIO),
+            (&target.subtitle, gst::StreamType::TEXT),
+        ] {
+            if let Some(sid) = sid {
+                let stream = gst::Stream::new(Some(sid), None, kind, gst::StreamFlags::empty());
+                selected.push(stream.clone());
+                collection = collection.stream(stream);
+            }
+        }
+        debug!(
+            ?seqnum,
+            "confirming an upstream-owned no-op selection locally"
+        );
+        let message = gst::message::StreamsSelected::builder(&collection.build())
+            .streams(selected)
+            .src(&self.pipeline)
+            .seqnum(seqnum)
+            .build();
+        if self.pipeline.post_message(message).is_err() {
+            warn!("failed to post the local selection confirmation");
+        }
+    }
+
+    /// Queue [`Job::ClearStateFailure`] for an error message this crate
+    /// consumes instead of surfacing. Called from the bus translation, i.e. a
+    /// streaming thread, so it only queues: reading and re-committing the
+    /// pipeline's state belongs on the worker.
+    ///
+    /// Errors that DO reach the caller are deliberately left alone. The caller
+    /// decides what a real error means (a teardown, usually), and unlatching
+    /// under it would hide a pipeline that genuinely cannot run.
+    fn queue_state_unlatch(&self) {
+        if std::env::var_os("FCAST_NO_ERROR_STATE_UNLATCH").is_some() {
+            return;
+        }
+        let _ = self.work_tx.send(Job::ClearStateFailure);
     }
 
     /// Classify a bus message source by the generation-tagged inputs.
@@ -3019,6 +4176,31 @@ impl Inner {
         (pending || behind, pending, behind)
     }
 
+    /// A full-pipeline flushing seek went out. It reset
+    /// streamsynchronizer's per-pad EOS bookkeeping and restarted every
+    /// branch it reached, so the passing-EOS mirror is stale FOR THE LIVE
+    /// BRANCHES. It is cleared only when a live video branch received the
+    /// flush. A video stream deselected at seek time is not restarted by
+    /// the seek, so its drained state stands and the drained-resurrect park
+    /// in `route_db3_pad` must still see the mirror. Gated on that park's
+    /// lever, `FCAST_NO_DRAINED_RESURRECT_PARK` (without the park the
+    /// mirror has no route-time reader and the pre-existing behavior never
+    /// cleared it).
+    fn clear_passing_eos_after_flush(&self) {
+        if std::env::var_os("FCAST_NO_DRAINED_RESURRECT_PARK").is_some() {
+            return;
+        }
+        let video_live = self
+            .routing
+            .lock()
+            .routed
+            .iter()
+            .any(|r| r.kind == StreamKind::Video && r.downstream.is_some());
+        if video_live {
+            *self.passing_eos_group.lock() = None;
+        }
+    }
+
     /// Selection-side activation trigger, run against every
     /// STREAMS_SELECTED: when the selection names (only) the prepared
     /// input's streams, decodebin3 has switched to the next item. Some
@@ -3095,6 +4277,8 @@ impl Inner {
         // (`regression_gapless::subtitle_disable_survives_a_gapless_transition`).
         self.selection.lock().reset_across_gapless();
         *self.last_applied_subtitle.lock() = None;
+        *self.upstream_selection.lock() = None;
+        self.last_upstream_ids.lock().clear();
         *self.intended_timeline.lock() = (1.0, gst::ClockTime::ZERO);
         {
             let mut routing = self.routing.lock();
@@ -3213,6 +4397,9 @@ impl Inner {
                         src = %src.name(),
                         "Dropping error from element no longer in the current pipeline"
                     );
+                    // It was still a child when it posted, so the pipeline
+                    // carries the latch even though the element has left.
+                    self.queue_state_unlatch();
                     return None;
                 }
                 // Live external subtitle inputs are the crate's own to
@@ -3221,6 +4408,7 @@ impl Inner {
                 let origin = match self.classify_error_src(msg.src()) {
                     ErrorSource::External(id) => {
                         self.handle_external_error(id, &error.error(), error.debug());
+                        self.queue_state_unlatch();
                         return None;
                     }
                     ErrorSource::Prepared(generation) => {
@@ -3237,6 +4425,7 @@ impl Inner {
                             "prepared next input failed before activation"
                         );
                         let _ = self.work_tx.send(Job::CancelPrepared { notify: false });
+                        self.queue_state_unlatch();
                         self.emit(PlaybinEvent::PreparedFailed { generation });
                         return None;
                     }
@@ -3278,6 +4467,12 @@ impl Inner {
             MessageView::StateChanged(change) => {
                 if !msg.src().map(|s| s == pipeline_obj).unwrap_or(false) {
                     return None;
+                }
+                // Every pipeline state edge re-attempts the postponed
+                // text-branch work (see [`Job::DrainTextWork`]). On the bus
+                // this only queues. The worker does the blocking part.
+                if self.has_deferred_text_work() {
+                    let _ = self.work_tx.send(Job::DrainTextWork);
                 }
                 PlaybinEvent::StateChanged {
                     old: change.old(),
@@ -3412,15 +4607,66 @@ impl Inner {
                     }
                 }
 
+                // An upstream-selection demuxer reports only its OWN streams,
+                // so its report says nothing about an external input's text:
+                // absence there must not deselect one. Merge the crate-owned
+                // slot back in (cache-only read, this runs on a streaming
+                // thread). Same lever as the dispatch split.
+                if subtitle.is_none() && *self.upstream_selection.lock() == Some(true) {
+                    let kept = self.selection.lock().subtitle_sid();
+                    if let Some(sid) = kept {
+                        let is_external = self.routing.lock().inputs.iter().any(|input| {
+                            input.external.is_some() && input.stream_ids().contains(&sid)
+                        });
+                        if is_external {
+                            debug!(%sid, "keeping the external subtitle an upstream report cannot speak about");
+                            all_ids.push(sid.clone());
+                            subtitle = Some(sid);
+                        }
+                    }
+                }
+
+                // Track the upstream-owned active set (every report, minus
+                // external-input sids) so the dispatch split can tell a real
+                // upstream change from a no-op: an adaptive demuxer only ever
+                // confirms an activation EDGE, so a no-op send would leave the
+                // engine awaiting a confirmation that cannot come.
+                {
+                    let mut upstream_ids: Vec<String> = {
+                        let routing = self.routing.lock();
+                        all_ids
+                            .iter()
+                            .filter(|sid| {
+                                !routing.inputs.iter().any(|input| {
+                                    input.external.is_some()
+                                        && input.stream_ids().contains(sid)
+                                })
+                            })
+                            .cloned()
+                            .collect()
+                    };
+                    upstream_ids.sort();
+                    *self.last_upstream_ids.lock() = upstream_ids;
+                }
+
                 // A selection naming the prepared input's streams IS the
                 // gapless switch: adopt the next item's generation and
                 // deliver its held-back collection first, so this selection
                 // event arrives in a fresh load's order and stamping.
                 self.try_activate_prepared(&all_ids);
 
-                // An external held blocked until selected may flow now
-                // (see `ExternalInput::hold_until_selected`).
-                self.unblock_selected_externals(&all_ids);
+                // The hold release used to sit HERE, ahead of the replay
+                // decision below, and that ordering is what rendered a
+                // just-selected external against the wrong origin. It is now
+                // taken after it, so the release can be made to WAIT for the
+                // realigning seek. See `Inner::release_owed_hold`. The lever
+                // puts the call back in this position, unconditional as it
+                // was, so an A/B compares the orderings too and not just the
+                // owing.
+                let inline_hold_release = std::env::var_os("FCAST_NO_OWED_HOLD_RELEASE").is_some();
+                if inline_hold_release {
+                    self.unblock_selected_externals(&all_ids, None);
+                }
 
                 let seqnum = msg.seqnum();
                 // The previously APPLIED subtitle, for the selection-time
@@ -3454,35 +4700,45 @@ impl Inner {
                 // keeps its join-time replay; a same-sid re-assertion is
                 // skipped so a redundant SELECT_STREAMS cannot blink the
                 // current cue.
+                // The external whose hold release the replay below owes, if
+                // any (see `Inner::release_owed_hold`).
+                let mut owed_release: Option<(ExternalSubId, u32)> = None;
                 if let Some(sid) = &subtitle
                     && previous_subtitle.as_deref() != Some(sid.as_str())
                     // A/B lever for diagnosing switch regressions without a
                     // rebuild, like FCAST_SCALETEMPO.
                     && std::env::var_os("FCAST_NO_SELECTION_REPLAY").is_none()
                 {
-                    let target = {
+                    let (target, branch_live) = {
                         let routing = self.routing.lock();
                         let branch_live = routing
                             .routed
                             .iter()
                             .any(|r| r.kind == StreamKind::Text && r.downstream.is_some());
-                        branch_live
-                            .then(|| {
-                                routing.inputs.iter().find_map(|input| {
-                                    let external = input.external.as_ref()?;
-                                    input.stream_ids().contains(sid).then_some((
-                                        external.id,
-                                        external.epoch,
-                                        external.last_origin,
-                                        external.task_dead,
-                                    ))
-                                })
-                            })
-                            .flatten()
+                        let target = routing.inputs.iter().find_map(|input| {
+                            let external = input.external.as_ref()?;
+                            input.stream_ids().contains(sid).then_some((
+                                external.id,
+                                external.epoch,
+                                external.last_origin,
+                                external.task_dead,
+                            ))
+                        });
+                        (target, branch_live)
                     };
                     if let Some((id, epoch, last_origin, task_dead)) = target {
                         let (_, origin) = self.overlay_timeline();
-                        if task_dead || origin != last_origin {
+                        // With every text branch PARKED there is no pad swap
+                        // to wait on and no join to replay from, and a drained
+                        // external whose multiqueue slot was reclaimed for
+                        // another stream (decodebin3 "Re-using existing unused
+                        // slot") has no pad carrying its sid at all: only this
+                        // re-push brings it back (`ext-subtitle-regression-2.txt`,
+                        // overlay in passthrough + branch on its park sink).
+                        // Lever: `FCAST_NO_PARKED_SELECTION_REPLAY`.
+                        let parked_needs_push = !branch_live
+                            && std::env::var_os("FCAST_NO_PARKED_SELECTION_REPLAY").is_none();
+                        if task_dead || origin != last_origin || parked_needs_push {
                             // The input's cues WILL render shifted: the
                             // destructive flush-replay is justified and must
                             // run before anything wrong reaches the screen.
@@ -3492,10 +4748,21 @@ impl Inner {
                                 %origin,
                                 %last_origin,
                                 task_dead,
-                                "the selection moved onto a dead or differently-timed external; replaying it"
+                                branch_live,
+                                "the selection moved onto a dead, differently-timed or slotless external; replaying it"
                             );
-                            let _ =
-                                self.work_tx.send(Job::ReplaySub { id, epoch, attempt: 0 });
+                            // The release of this input's hold now belongs to
+                            // that replay, and only if the job is really on
+                            // its way: a failed send leaves nothing that could
+                            // ever discharge it.
+                            if self
+                                .work_tx
+                                .send(Job::ReplaySub { id, epoch, attempt: 0 })
+                                .is_ok()
+                                && !inline_hold_release
+                            {
+                                owed_release = Some((id, epoch));
+                            }
                         } else {
                             // Same timeline: a still-alive input (or one
                             // whose slot buffers data) delivers on its own,
@@ -3510,6 +4777,14 @@ impl Inner {
                             self.arm_replay_verification(id, epoch, 0);
                         }
                     }
+                }
+
+                // An external held blocked until selected may flow now (see
+                // `ExternalInput::hold_until_selected`), EXCEPT the one whose
+                // realigning replay was just queued: that one waits for the
+                // seek (see `Inner::release_owed_hold`).
+                if !inline_hold_release {
+                    self.unblock_selected_externals(&all_ids, owed_release);
                 }
 
                 PlaybinEvent::StreamsSelected {
@@ -3527,6 +4802,12 @@ impl Inner {
                 // Settle an in-flight refresh flush (attribution by
                 // exclusivity, see the selection module docs).
                 self.selection.lock().refresh_done();
+                // An async settle is a state edge too (a PAUSED-to-PAUSED
+                // seek posts no state-changed), so it also re-attempts the
+                // postponed text-branch work.
+                if self.has_deferred_text_work() {
+                    let _ = self.work_tx.send(Job::DrainTextWork);
+                }
                 PlaybinEvent::AsyncDone
             }
             MessageView::DurationChanged(_) => {
@@ -3589,7 +4870,39 @@ impl FcastPlaybin {
             Job::SetState { target } => {
                 // Downward transitions take the route gate (a pad routed
                 // into the descending pipeline deadlocks it).
+                //
+                // A change to the state the pipeline is ALREADY in posts NO
+                // `state-changed`: `gst_element_continue_state` guards it with
+                // `old_state != old_next || old_ret == ASYNC` ("don't post silly
+                // messages with the same state"). The caller's machine advances
+                // only on that message, so a no-op dispatch parks it in
+                // `Phase::Changing` for good. Reached routinely, because
+                // `StateMachine::buffering` always redispatches a PLAYING target
+                // and `player.rs` `uri_loaded` has usually driven it there
+                // already (`dash-start-seek-text-join-race.md`).
+                //
+                // Read BEFORE the call: afterwards "already there" and "just
+                // arrived" are indistinguishable. `Ok(Async)` is excluded, that
+                // is the one case GStreamer does post.
+                // Lever: `FCAST_NO_SYNTHETIC_STATE_EDGE`.
+                let (before, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+                let silent = current == target
+                    && pending == gst::State::VoidPending
+                    && !matches!(before, Ok(gst::StateChangeSuccess::Async))
+                    && std::env::var_os("FCAST_NO_SYNTHETIC_STATE_EDGE").is_none();
                 let _ = self.set_pipeline_state(target);
+                if silent {
+                    debug!(
+                        ?target,
+                        "the pipeline was already in the requested state; \
+                         reporting the state edge GStreamer suppresses"
+                    );
+                    inner.emit(PlaybinEvent::StateChanged {
+                        old: target,
+                        current: target,
+                        pending: gst::State::VoidPending,
+                    });
+                }
             }
             Job::Stop { target, done } => {
                 if let Err(err) = self.teardown(target) {
@@ -3628,6 +4941,32 @@ impl FcastPlaybin {
                 if state != gst::State::Paused || pending != gst::State::VoidPending {
                     inner.emit(PlaybinEvent::QueueSeek(seek));
                     let _ = inner.pipeline.set_state(gst::State::Paused);
+                    // An async transition read above can commit between the
+                    // query and the call. The call is then a same-state no-op
+                    // posting nothing, and the real settle edge was emitted
+                    // BEFORE the hand-back (sync bus handler), so the parked
+                    // seek would wait forever for an edge that already
+                    // passed. Report the settle GStreamer will not repeat.
+                    // Lever: `FCAST_NO_SEEK_REFUSAL_EDGE`.
+                    if pending != gst::State::VoidPending
+                        && std::env::var_os("FCAST_NO_SEEK_REFUSAL_EDGE").is_none()
+                    {
+                        let (_, now, now_pending) =
+                            inner.pipeline.state(gst::ClockTime::ZERO);
+                        if now == gst::State::Paused
+                            && now_pending == gst::State::VoidPending
+                        {
+                            debug!(
+                                "the refused seek's PAUSED request was a no-op on an \
+                                 already-settled pipeline; reporting the missed settle"
+                            );
+                            inner.emit(PlaybinEvent::StateChanged {
+                                old: gst::State::Paused,
+                                current: gst::State::Paused,
+                                pending: gst::State::VoidPending,
+                            });
+                        }
+                    }
                     return;
                 }
 
@@ -3656,12 +4995,70 @@ impl FcastPlaybin {
                     error!(?err, "Failed to seek");
                     inner.emit(PlaybinEvent::SeekFailed);
                 } else {
+                    // The seek's flush restarted the LIVE branches, so for
+                    // them "this group's end has entered ssync" no longer
+                    // holds, and a stale mirror would wrongly park the next
+                    // video re-enable (see the drained-resurrect arm in
+                    // `route_db3_pad`, whose lever also gates this clear).
+                    // Only a seek that reached a live video branch clears
+                    // it. A stream DESELECTED at seek time is not restarted
+                    // by the seek (measured on seed 1600058, the source's
+                    // video task stays idle at EOS through the seek), so
+                    // its pre-seek drained state stands and the park must
+                    // still see it.
+                    inner.clear_passing_eos_after_flush();
                     *inner.intended_timeline.lock() = (rate, position);
                     inner.forward_seek_to_live_externals(rate, position);
                     inner.emit(PlaybinEvent::RateChanged(rate));
                 }
             }
             Job::RefreshSeek { seqnum } => {
+                // RE-VALIDATED HERE, not only where it was scheduled.
+                // `SelectionEngine::pump` sampled its gates (the caller's
+                // quiet, seekable, no external subtitle attached) at dispatch
+                // and this job then queued behind SetState/Load/DrainTextWork
+                // and the branch disposals. By the time it runs the pipeline
+                // can be mid-load, mid-buffering, mid-seek or carrying an
+                // external input, and a flushing seek landing there is the
+                // FLUSHING-into-an-adaptive-output-loop hazard
+                // (FREEZE-DIAGN.md 8.2 #2: adaptivedemux2 serves every track
+                // from one task and pauses it for good). `Job::Seek` has such
+                // a guard; this one had none.
+                //
+                // A stale refresh is DROPPED, never re-parked: it is only ever
+                // a nicety (the freshly selected track re-emits at its next
+                // cue either way), and reporting the failure is what clears
+                // the engine's `refreshing` slot, which otherwise blocks every
+                // later dispatch. Lever:
+                // `FCAST_NO_REFRESH_SEEK_REVALIDATION`.
+                if std::env::var_os("FCAST_NO_REFRESH_SEEK_REVALIDATION").is_none() {
+                    let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+                    let settled =
+                        pending == gst::State::VoidPending && current >= gst::State::Paused;
+                    let externals = {
+                        let routing = inner.routing.lock();
+                        routing.inputs.iter().any(|i| i.external.is_some())
+                    };
+                    let seekable = {
+                        let mut query = gst::query::Seeking::new(gst::Format::Time);
+                        inner.pipeline.query(&mut query) && query.result().0
+                    };
+                    let superseded = inner.selection.lock().refresh_superseded(seqnum);
+                    if !settled || externals || !seekable || superseded {
+                        debug!(
+                            ?current,
+                            ?pending,
+                            externals,
+                            seekable,
+                            superseded,
+                            ?seqnum,
+                            "dropping a refresh seek whose preconditions no longer hold"
+                        );
+                        inner.selection.lock().refresh_failed(seqnum);
+                        inner.emit(PlaybinEvent::RefreshSeekFailed { seqnum });
+                        return;
+                    }
+                }
                 let Some(position) = inner.pipeline.query_position::<gst::ClockTime>() else {
                     debug!("Skipping the refresh seek: no position");
                     inner.selection.lock().refresh_failed(seqnum);
@@ -3691,6 +5088,10 @@ impl FcastPlaybin {
                     warn!("Refresh seek failed");
                     inner.selection.lock().refresh_failed(seqnum);
                     inner.emit(PlaybinEvent::RefreshSeekFailed { seqnum });
+                } else {
+                    // Same full-pipeline flush as Job::Seek above, same
+                    // conditional reset of the passing-EOS mirror.
+                    inner.clear_passing_eos_after_flush();
                 }
             }
             Job::RecoverClock => {
@@ -3706,6 +5107,13 @@ impl FcastPlaybin {
             Job::RecalculateLatency => {
                 if let Err(err) = inner.pipeline.recalculate_latency() {
                     warn!(?err, "failed to recalculate pipeline latency");
+                }
+                // Every field freeze so far follows one of these within ~1s;
+                // the value the pipeline settled on is the missing datum.
+                let mut query = gst::query::Latency::new();
+                if inner.pipeline.query(&mut query) {
+                    let (live, min, max) = query.result();
+                    debug!(live, %min, ?max, "pipeline latency recalculated");
                 }
             }
             Job::AttachSub { id, url } => {
@@ -3901,6 +5309,12 @@ impl FcastPlaybin {
                 }
             }
             Job::SyncTextRunningTime => inner.sync_text_running_time(),
+            Job::DrainTextWork => {
+                // Diagnostic only. The busy-loop regression test counts the
+                // drains the worker actually received.
+                inner.drain_jobs_seen.fetch_add(1, Ordering::SeqCst);
+                Inner::run_deferred_text_work(inner)
+            }
             Job::VideoChainGone => {
                 // Text is consumed synchronized against VIDEO buffers, so a
                 // text stream left in the overlay after video stops can never
@@ -3918,17 +5332,107 @@ impl FcastPlaybin {
                 // between the pad-removed callback and this job a new video
                 // stream may already have routed, and tearing the chain down
                 // under it would strand the item with no video at all.
+                // LINKED video only. A parked video entry (the resurrected
+                // pad of a deselected stream) is not a reason to keep the
+                // chain, it is the very thing the deselect is waiting out.
+                // Inert before the resurrect park existed, since every
+                // routed video entry was linked by construction.
                 let video_routed = inner
                     .routing
                     .lock()
                     .routed
                     .iter()
-                    .any(|r| r.kind == StreamKind::Video);
+                    .any(|r| r.kind == StreamKind::Video && r.downstream.is_some());
                 if video_routed {
                     debug!("a video stream routed again before the chain teardown ran; keeping it");
                 } else {
                     inner.remove_video_chain();
                 }
+            }
+            Job::ClearStateFailure => {
+                // `Err(_)` here IS `GST_STATE_RETURN == FAILURE`, so a
+                // pipeline that can still commit is a no-op.
+                let (before, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+                if before.is_ok() {
+                    return;
+                }
+                // Below PAUSED nothing can be stranded, and the next load or
+                // teardown clears the latch itself. Staying out keeps this off
+                // downward transitions.
+                if current < gst::State::Paused {
+                    debug!(?current, "leaving the latch to the next load or teardown");
+                    return;
+                }
+                // `pending == current` non-void is what `bin_handle_async_start`
+                // writes on a lost state. Re-committing it leaves
+                // `old_state == old_next`, so GStreamer posts nothing and the
+                // report below is the caller's only announcement.
+                let lost_state = pending != gst::State::VoidPending && pending == current;
+                // `bin_handle_async_done` owed PENDING, not current. Mid-climb
+                // the two differ (an error during a PAUSED->PLAYING commit reads
+                // `(Paused, Playing)`), and re-committing `current` there
+                // cancels the climb and announces nothing. A void pending means
+                // the bin had arrived, and then `current` is what it arrived at.
+                // Lever: `FCAST_UNLATCH_RECOMMIT_CURRENT`.
+                let owed = if pending == gst::State::VoidPending
+                    || std::env::var_os("FCAST_UNLATCH_RECOMMIT_CURRENT").is_some()
+                {
+                    current
+                } else {
+                    pending
+                };
+                warn!(
+                    ?current,
+                    ?pending,
+                    ?owed,
+                    lost_state,
+                    "the pipeline latched a state-change failure from an error the \
+                     crate consumed; re-committing so it can settle again"
+                );
+                // A pending BELOW paused is a teardown descending (a stop, a
+                // load's reset). It clears the latch with its own `set_state`
+                // and asserting anything here would fight it, which is this
+                // crate's most expensive kind of mistake.
+                if owed < gst::State::Paused {
+                    debug!(?owed, "leaving the latch to the descending transition");
+                    return;
+                }
+                // Re-commit the state the bin had already decided on and was
+                // refused. The TARGET is NOT read back (GStreamer does not
+                // expose it) and does not need to be: the caller's state
+                // machine owns the transport target and re-asserts it from the
+                // edge reported below, which is the same contract every other
+                // correction here uses.
+                let _ = inner.pipeline.set_state(owed);
+                if !lost_state {
+                    // A re-committed climb announces itself (`old_state !=
+                    // old_next`), so nothing to report.
+                    //
+                    // UNCOVERED, deliberately: a latch caught with
+                    // `pending == VoidPending`. Nothing is owed
+                    // (`bin_handle_async_done` takes `nothing_pending` either
+                    // way) and no reproducer was ever built. If one turns up,
+                    // the predicate is `Job::SetState`'s. It is not applied
+                    // here because this job has no target to compare against,
+                    // so it would report on every consumed error against a
+                    // settled pipeline.
+                    return;
+                }
+                // Unannounced settle: re-committing the pipeline's own state
+                // leaves `old_state == old_next`, which both of GStreamer's
+                // "don't post silly messages with the same state" guards refuse
+                // to post on, so this cannot duplicate a real edge. Not
+                // conditioned on reading settled afterwards (measured on 400009
+                // the re-commit returns with `pending` still set).
+                debug!(
+                    ?current,
+                    "reporting the settle the latched pipeline could not post"
+                );
+                inner.emit(PlaybinEvent::StateChanged {
+                    old: current,
+                    current,
+                    pending: gst::State::VoidPending,
+                });
             }
         }
     }
@@ -4058,6 +5562,8 @@ impl FcastPlaybin {
     /// caller ([`MAX_ATTACH_RETRIES`]); a genuinely bad URL exhausts the
     /// retries and the watchdog delivers the verdict.
     fn retry_subtitle(&self, id: ExternalSubId, epoch: u32) {
+        // BEFORE the routing lock below: the check takes it too.
+        let slotless = self.inner.external_stream_slotless(id, epoch);
         {
             let routing = self.inner.routing.lock();
             let Some(input) = routing.inputs.iter().find(|i| {
@@ -4071,7 +5577,12 @@ impl FcastPlaybin {
             // Linked after all (a pad appeared between the error and this
             // job): the join-time replay owns recovery, and a replacement
             // would reintroduce the hazards the retry exists to avoid.
-            if !input.stream_ids().is_empty() || !input.db3_sink_pads.is_empty() {
+            //
+            // A SLOTLESS stream is the exception: it is linked and advertised
+            // and still cannot render, and only a fresh input gets a slot back
+            // (see `Inner::external_stream_slotless`). The replay hands those
+            // over here deliberately.
+            if (!input.stream_ids().is_empty() || !input.db3_sink_pads.is_empty()) && !slotless {
                 debug!(
                     ?id,
                     epoch, "input reached decodebin3 after all; leaving it be"
@@ -4095,8 +5606,9 @@ impl FcastPlaybin {
                     uri: uri.clone(),
                     epoch: epoch + 1,
                     hold_until_selected: true,
-            task_dead: false,
-            last_origin: gst::ClockTime::ZERO,
+                    hold_release_owed: false,
+                    task_dead: false,
+                    last_origin: gst::ClockTime::ZERO,
                 }),
             )
         });
@@ -4148,6 +5660,23 @@ impl FcastPlaybin {
             };
             input.element.src_pads()
         };
+        // A replay CANNOT fix a stream decodebin3 has no slot for, and a
+        // drained external is exactly that (see
+        // `Inner::external_stream_slotless`). Re-attaching is the only way to
+        // get a slot back, so hand over to the retry instead of pushing a seek
+        // into a pad whose multiqueue peer is gone (which kills the source with
+        // "reason not-linked" and, four attempts later, gave up in silence).
+        // Lever: `FCAST_NO_SLOTLESS_EXTERNAL_REATTACH`.
+        if std::env::var_os("FCAST_NO_SLOTLESS_EXTERNAL_REATTACH").is_none()
+            && self.inner.external_stream_slotless(id, epoch)
+        {
+            warn!(
+                ?id,
+                epoch, attempt, "the external's stream has no decodebin3 slot; re-attaching it"
+            );
+            let _ = self.inner.work_tx.send(Job::RetrySub { id, epoch });
+            return;
+        }
         let (rate, origin) = self.inner.overlay_timeline();
         {
             let mut routing = self.inner.routing.lock();
@@ -4171,6 +5700,51 @@ impl FcastPlaybin {
             gst::ClockTime::NONE,
         )
         .build();
+        // HANDED OFF, never sent from here. The source performs a flushing
+        // seek inline on the sending thread and pushes its FLUSH_START down
+        // the live graph from there, where a `queue` parked behind a
+        // prerolling sink blocks the sender in `gst_pad_pause_task`
+        // indefinitely. Only PLAYING ends that preroll, only `Job::SetState`
+        // reaches PLAYING, and only this worker runs jobs, so sending here
+        // makes the worker wait on itself. See [`ReplayJob`], and
+        // `fuzz_buffering` seed 600055 (iters 4, actions 22) for the deterministic
+        // reproducer, which fails 3 of 3 with the seek sent from here.
+        //
+        // The lever sends inline on the worker again, which is the whole of
+        // the change. Both arms run the identical
+        // `FcastPlaybin::run_replay_seek`, so nothing else can differ
+        // between them.
+        let job = ReplayJob {
+            pads,
+            seek,
+            id,
+            epoch,
+            attempt,
+            origin,
+            rate,
+        };
+        if std::env::var_os("FCAST_INLINE_REPLAY_SEEK").is_some() {
+            Self::run_replay_seek(&self.inner, job);
+        } else if self.inner.replay_tx.send(job).is_err() {
+            warn!(?id, "the replay sender is gone, dropping the replay seek");
+        }
+    }
+
+    /// Send one replay's flushing seek and act on the outcome. Runs on the
+    /// replay sender thread (see [`ReplayJob`]), where BLOCKING IS ALLOWED.
+    /// Nothing else waits behind that thread, so a seek parked on a queue's
+    /// stream lock costs only this replay's latency and completes as soon as
+    /// the pipeline flows again.
+    fn run_replay_seek(inner: &Arc<Inner>, job: ReplayJob) {
+        let ReplayJob {
+            pads,
+            seek,
+            id,
+            epoch,
+            attempt,
+            origin,
+            rate,
+        } = job;
         let mut accepted = 0usize;
         for pad in &pads {
             info!(pad = %pad.name(), ?id, ?origin, rate, attempt, "replaying the spent external subtitle input");
@@ -4180,6 +5754,12 @@ impl FcastPlaybin {
                 warn!(pad = %pad.name(), ?id, "the external input refused the replay seek");
             }
         }
+        // The source performs a flushing seek INLINE on this thread, so by
+        // here its segment is the realigned one and a hold this replay owes
+        // can finally come off. Before the loop it could not: the whole point
+        // is that nothing may escape the input until the seek has landed. On
+        // every outcome, including the refusal below (see the helper).
+        Inner::release_owed_hold(inner, id, epoch);
         // Not one pad took it. A pipeline at rest in PAUSED refuses a flushing
         // seek on every pad, every push logging `Failed to push event ...
         // state="paused"`, and the verification then correctly saw the stream
@@ -4193,7 +5773,10 @@ impl FcastPlaybin {
         // seek, where the seek IS accepted, and postponing there left the
         // input unaligned for good.
         if accepted == 0 && !pads.is_empty() {
-            let mut owed = self.inner.deferred_replays.lock();
+            // A new postponed item invalidates the last drain's no-op
+            // verdict (see `Inner::drain_poke_parked`).
+            inner.drain_poke_parked.store(false, Ordering::SeqCst);
+            let mut owed = inner.deferred_replays.lock();
             if !owed
                 .iter()
                 .any(|(oid, oepoch, _)| *oid == id && *oepoch == epoch)
@@ -4207,8 +5790,55 @@ impl FcastPlaybin {
         // re-delivery drains into a slot decodebin3 is still relinking), so
         // check back once: a bounded sleeper, exactly like the sub watchdog.
         if attempt < REPLAY_ATTEMPTS {
-            self.inner.arm_replay_verification(id, epoch, attempt);
+            inner.arm_replay_verification(id, epoch, attempt);
+            return;
         }
+        // Out of attempts. This used to end HERE in silence, which left the
+        // receiver reporting a subtitle track that renders nothing (in
+        // upstream-selection mode the crate's own merged report has already
+        // named this sid, so the caller believes the switch worked).
+        //
+        // It must NOT end in a detach either, which is what the first version
+        // of this escalation did and what the field then punished: exhaustion
+        // on an input that materialized and is DELIVERING into decodebin3 means
+        // "its branch has not joined subtitleoverlay yet", not "the file is
+        // bad". The join runs from `poll_text_policy` on the CALLER's cadence
+        // while these attempts run on a 400ms worker timer, so a slow caller
+        // loses the race and a perfectly servable external got detached and
+        // dropped from the user's track list (`ResourceNotFound` at the
+        // sender).
+        //
+        // So: only the case nothing can serve is failed, i.e. a stream with no
+        // carrier pad at all AFTER a re-attach already had its chance
+        // (`external_stream_slotless` hands the first occurrence to
+        // `Job::RetrySub`, which bumps the epoch). Anything with a carrier is
+        // left ATTACHED and merely reported loudly: the branch can still join
+        // on any later poll, join-time replay included, and the next selection
+        // finds a live input instead of a missing track.
+        // Lever: `FCAST_NO_REPLAY_GIVEUP_ESCALATION` (set = the original
+        // silent give-up, no warning and no failure either way).
+        if std::env::var_os("FCAST_NO_REPLAY_GIVEUP_ESCALATION").is_some() {
+            return;
+        }
+        if inner.external_stream_slotless(id, epoch) && epoch > 0 {
+            warn!(
+                ?id,
+                epoch, attempt, "a re-attached external still has no decodebin3 slot; failing it"
+            );
+            let _ = inner.work_tx.send(Job::FailSub { id, epoch });
+            return;
+        }
+        // Loud, but not fatal: the input stays attached and servable.
+        warn!(
+            ?id,
+            epoch,
+            attempt,
+            "the external subtitle has not rendered after every replay attempt; \
+             leaving it attached for the next join"
+        );
+        // The join is what is missing, so poke the thing that performs it
+        // rather than waiting for the caller's next settle point.
+        Inner::poll_text_policy(inner);
     }
 
 
@@ -4217,10 +5847,50 @@ impl FcastPlaybin {
     /// STREAM_START names it, pad reuse included). If it has not, the
     /// re-delivery was eaten by the racing reconfiguration: replay again,
     /// bounded.
+    ///
+    /// A verdict is only ever reached at a pipeline settled at PLAYING.
+    /// Anywhere below, the check holds itself into
+    /// [`Inner::deferred_verifications`] and the deferred-work drain re-arms
+    /// it later, because a pipeline that is not flowing leaves the stickies
+    /// exactly as the input's previous tenure left them and they prove
+    /// nothing about this one.
     fn verify_replay(&self, id: ExternalSubId, epoch: u32, attempt: u32) {
         // The chain this check belongs to has now run, so the next legitimate
         // arming is allowed. See `arm_replay_verification`.
         self.inner.replay_checks_armed.lock().remove(&(id, epoch));
+        // A verdict needs evidence, and a pipeline below a settled PLAYING
+        // has none. Nothing flows there, so the stickies read below are
+        // leftovers of the input's previous tenure, and a spent input that
+        // will never push another buffer still passes as aligned delivery.
+        // Concluding here is what left the field's overlay linked to a dead
+        // input after rapid switches at a pipeline parked in Buffering. Hold
+        // the verdict instead. The deferred-work drain re-arms it once the
+        // pipeline is settled at PLAYING, where the postponed flush has run
+        // and delivery is observable. Checked before the routing lock so the
+        // state read never nests inside it. The lever restores the old
+        // conclude-anywhere behavior for interleaved A/B measurement and
+        // gates this whole change (the hold here, the drain of held
+        // verdicts, and the drain's selection re-verification).
+        if std::env::var_os("FCAST_NO_REPLAY_VERDICT_DEFERRAL").is_none() {
+            let (_, current, pending) = self.inner.pipeline.state(gst::ClockTime::ZERO);
+            if current != gst::State::Playing || pending != gst::State::VoidPending {
+                // A new postponed item invalidates the last drain's no-op
+                // verdict (see `Inner::drain_poke_parked`).
+                self.inner.drain_poke_parked.store(false, Ordering::SeqCst);
+                let mut held = self.inner.deferred_verifications.lock();
+                if !held
+                    .iter()
+                    .any(|(hid, hepoch, _)| *hid == id && *hepoch == epoch)
+                {
+                    debug!(
+                        ?id,
+                        epoch, attempt, "holding a replay verdict below a settled PLAYING"
+                    );
+                    held.push((id, epoch, attempt));
+                }
+                return;
+            }
+        }
         let delivered = {
             let routing = self.inner.routing.lock();
             let Some(input) = routing.inputs.iter().find(|i| {
@@ -4447,6 +6117,47 @@ impl Inner {
             .with_context(|| format!("linking {} to {}", pad.name(), sinkpad.name()))?;
         debug!(src = %pad.name(), sink = %sinkpad.name(), "linked input pad into decodebin3");
 
+        // Record input-side stream ends for the drained-resurrect park (see
+        // `Inner::input_eos_sids`). EOS marks the stream drained, FLUSH_STOP
+        // marks it restarted. A seek only flushes the streams it actually
+        // restarts (a per-stream source leaves a deselected stream's pad
+        // untouched), so the flag self-maintains across seeks. Installed
+        // only while the park's lever is unset, so the lever restores the
+        // untracked behavior wholesale.
+        if std::env::var_os("FCAST_NO_DRAINED_RESURRECT_PARK").is_none() {
+            pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, {
+                let weak = Arc::downgrade(inner);
+                move |pad, info| {
+                    let Some(gst::PadProbeData::Event(event)) = &info.data else {
+                        return gst::PadProbeReturn::Ok;
+                    };
+                    let drained = match event.view() {
+                        gst::EventView::Eos(_) => true,
+                        gst::EventView::FlushStop(_) => false,
+                        _ => return gst::PadProbeReturn::Ok,
+                    };
+                    let Some(inner) = weak.upgrade() else {
+                        return gst::PadProbeReturn::Ok;
+                    };
+                    let Some(sid) = pad
+                        .sticky_event::<gst::event::StreamStart>(0)
+                        .map(|event| event.stream_id().to_string())
+                    else {
+                        return gst::PadProbeReturn::Ok;
+                    };
+                    let mut drained_sids = inner.input_eos_sids.lock();
+                    if drained {
+                        debug!(%sid, "input stream drained (EOS into decodebin3)");
+                        drained_sids.insert(sid);
+                    } else {
+                        debug!(%sid, "input stream restarted by a flush");
+                        drained_sids.remove(&sid);
+                    }
+                    gst::PadProbeReturn::Ok
+                }
+            });
+        }
+
         if !Inner::record_linked_input_pad(inner, element, pad, sinkpad.clone()) {
             // Only reachable for an input already removed (detach racing a
             // late pad). Release the pad we just took.
@@ -4586,7 +6297,15 @@ impl Inner {
     /// [`ExternalInput::hold_until_selected`]). Once decodebin3 confirmed
     /// the stream selected, the flowing buffers reach the stream's multiqueue
     /// slot, which now has an output, and the subtitle plays.
-    fn unblock_selected_externals(&self, selected_ids: &[String]) {
+    ///
+    /// `owed` names the one input, if any, whose realigning replay was queued
+    /// by the same `STREAMS_SELECTED`. Its hold is NOT released here; the
+    /// replay owes it (see [`Inner::release_owed_hold`]).
+    fn unblock_selected_externals(
+        &self,
+        selected_ids: &[String],
+        owed: Option<(ExternalSubId, u32)>,
+    ) {
         let to_unblock: Vec<(gst::Pad, gst::PadProbeId)> = {
             let mut routing = self.routing.lock();
             let mut probes = Vec::new();
@@ -4599,17 +6318,72 @@ impl Inner {
                     continue;
                 }
                 let sids = input.stream_ids();
-                if sids.iter().any(|sid| selected_ids.iter().any(|s| s == sid)) {
-                    probes.append(&mut input.block_probes);
-                    if let Some(external) = input.external.as_mut() {
-                        external.hold_until_selected = false;
-                    }
+                if !sids.iter().any(|sid| selected_ids.iter().any(|s| s == sid)) {
+                    continue;
                 }
+                let Some(external) = input.external.as_mut() else {
+                    continue;
+                };
+                // Selected, so the hold's own condition is discharged either
+                // way. What the owed replay holds back is only the PROBES.
+                external.hold_until_selected = false;
+                if owed == Some((external.id, external.epoch)) {
+                    external.hold_release_owed = true;
+                    continue;
+                }
+                probes.append(&mut input.block_probes);
             }
             probes
         };
         for (pad, probe) in to_unblock {
             debug!(pad = %pad.name(), "releasing a selected external input's data hold");
+            pad.remove_probe(probe);
+        }
+    }
+
+    /// Release the block probes of an external input whose hold was owed to
+    /// its realigning replay seek (see
+    /// [`ExternalInput::hold_release_owed`]). A no-op for every other input.
+    ///
+    /// This is the whole of the fix for cues rendering against a different
+    /// origin than the video. A held external's `last_origin` stays ZERO,
+    /// because a forwarded seek only reaches inputs with a live branch and a
+    /// held one has none. `STREAMS_SELECTED` then used to release the hold
+    /// SYNCHRONOUSLY while merely QUEUEING the realigning replay, and an
+    /// as-fast-as-possible source needs no more than that gap to push its
+    /// whole file against the stale `[0, ..)` segment: the reproducer's
+    /// external has exactly 60 cues and the failure was exactly 60
+    /// consecutive misaligned ones, released at 44.106355 against a replay
+    /// issued at 44.109360. Ordering the two by MOVING the release later does
+    /// not help, since the replay is queued to another thread either way; the
+    /// release has to be CAUSED BY the replay, which is what this is.
+    ///
+    /// Called from [`FcastPlaybin::run_replay_seek`] on ALL of its outcomes,
+    /// the refusal included. A refused seek is owed again through
+    /// [`Inner::deferred_replays`] and would otherwise leave the input held
+    /// for as long as that owing lasts, which is the liveness half of the
+    /// problem: a held external that never unblocks shows no subtitles at
+    /// all, a strictly worse failure than shifted ones. Nothing is lost by
+    /// releasing there, because the deferred seek is itself FLUSHING and
+    /// wipes whatever escaped.
+    fn release_owed_hold(inner: &Arc<Inner>, id: ExternalSubId, epoch: u32) {
+        let to_unblock: Vec<(gst::Pad, gst::PadProbeId)> = {
+            let mut routing = inner.routing.lock();
+            let Some(input) = routing.inputs.iter_mut().find(|input| {
+                input
+                    .external
+                    .as_ref()
+                    .is_some_and(|e| e.id == id && e.epoch == epoch && e.hold_release_owed)
+            }) else {
+                return;
+            };
+            if let Some(external) = input.external.as_mut() {
+                external.hold_release_owed = false;
+            }
+            std::mem::take(&mut input.block_probes)
+        };
+        for (pad, probe) in to_unblock {
+            debug!(pad = %pad.name(), ?id, "releasing an external input's data hold owed to its replay");
             pad.remove_probe(probe);
         }
     }
@@ -4773,6 +6547,98 @@ impl Inner {
         }
     }
 
+    /// [`Inner::flush_pads`] plus the SEGMENT the pair takes away. decodebin3
+    /// SINK pads at a TEARDOWN only, see SCOPE.
+    ///
+    /// `FLUSH_STOP` deletes the pad's SEGMENT sticky (gstpad.c
+    /// `remove_event_by_type`) and nothing re-arms it: `check_sticky` needs
+    /// `PENDING_EVENTS`, which only `schedule_events` sets and no flush reaches.
+    /// A flush from UPSTREAM costs nothing because it is a seek and the source
+    /// re-segments; an injected pair has no such follow-up, so a straggler
+    /// buffer chains segmentless. Replaying the captured sticky (not a rebuilt
+    /// one, so the timeline is untouched) is the only fix: marking events
+    /// pending cannot work, `push_sticky` skips anything already `received`.
+    /// The pair is unchanged, so `flush_pairs_matched` still holds.
+    ///
+    /// SCOPE: widening this was measured WRONG. Replaying on every flushed pad
+    /// regressed `external_subtitle_lifecycle` to 16 passed / 3 failed in 127 s
+    /// against 19 passed in 8 s, all three on "no FSTA cue reached the overlay":
+    /// a restored segment is stale where a branch is about to be re-linked or
+    /// released. Text pads, `remove_input` and `dispose_text_branch_on` keep the
+    /// bare pair.
+    ///
+    /// Lever: `FCAST_NO_FLUSH_SEGMENT_RESTORE`.
+    fn flush_db3_sink_pads(pads: &[gst::Pad]) {
+        if std::env::var_os("FCAST_NO_FLUSH_SEGMENT_RESTORE").is_some() {
+            Self::flush_pads(pads);
+            return;
+        }
+        for pad in pads {
+            // Read BEFORE the FLUSH_START. After the pair the pad has no
+            // segment left to read.
+            let segment = pad.sticky_event::<gst::event::Segment>(0);
+            let _ = pad.send_event(gst::event::FlushStart::new());
+            let _ = pad.send_event(gst::event::FlushStop::new(true));
+            if let Some(segment) = segment {
+                debug!(pad = %pad.name(), "restoring the segment the flush pair removed");
+                let _ = pad.send_event(segment);
+            }
+        }
+    }
+
+    /// Hand `pump_selection`'s eager REPLACE flush to the worker as a
+    /// coalescing intent.
+    ///
+    /// The flush must never run on the dispatching caller's thread. It
+    /// blocks until the outgoing branch's streaming thread can be paused,
+    /// and whether that can happen right now is not reliably decidable from
+    /// pipeline state. A pipeline resting in PAUSED never releases it (the
+    /// field deadlock, captured with gdb), one held below PLAYING by
+    /// buffering does not either, and the state guard that tried to tell
+    /// the two moments apart over-matched three times. So the caller only
+    /// records the intent and pokes the worker. The worker runs it at a
+    /// settled PLAYING, and every pipeline state edge re-attempts whatever
+    /// is still pending, so the intent cannot gate its own drain condition.
+    /// The intent slot COALESCES. Fifteen rapid switches write it fifteen
+    /// times and the pipeline flushes once.
+    ///
+    /// # A settled PLAYING does NOT make the flush complete by construction
+    ///
+    /// This comment used to claim it did. It does not. Selecting a stream
+    /// puts the sinks back into `gst_base_sink_wait_preroll` while the
+    /// pipeline still reads a settled PLAYING, so a flush dispatched there
+    /// can park on a queue's stream lock just the same. The state check is a
+    /// good filter, never a guarantee, and nothing may be built on it being
+    /// one. What keeps a parked flush from wedging the receiver is a separate
+    /// property. The thread it parks on must not be the only route to the
+    /// state change that would release it. See [`ReplayJob`] for the seek
+    /// that broke exactly that rule and deadlocked the worker.
+    fn submit_text_flush(inner: &Arc<Inner>) {
+        // A new intent invalidates the last drain's no-op verdict, whichever
+        // dispatch path records it below (see `Inner::drain_poke_parked`).
+        inner.drain_poke_parked.store(false, Ordering::SeqCst);
+        // A/B levers, for interleaved regression measurements without a
+        // rebuild. FCAST_INLINE_TEXT_FLUSH restores the previous dispatch
+        // (inline on the caller unless the pipeline rests in PAUSED), and
+        // FCAST_NO_TEXT_WORK_DEFERRAL keeps meaning "never defer anything".
+        let inline_lever = std::env::var_os("FCAST_INLINE_TEXT_FLUSH").is_some();
+        let no_deferral = std::env::var_os("FCAST_NO_TEXT_WORK_DEFERRAL").is_some();
+        if inline_lever || no_deferral {
+            let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+            let resting = current == gst::State::Paused && pending == gst::State::VoidPending;
+            if resting && !no_deferral {
+                debug!("postponing the eager text-branch flush at a pipeline resting in PAUSED");
+                *inner.deferred_text_work.lock() = Some(DeferredTextWork::Flush);
+            } else {
+                Inner::run_text_work(inner, DeferredTextWork::Flush);
+            }
+            return;
+        }
+        debug!("queueing the eager text-branch flush onto the worker");
+        *inner.deferred_text_work.lock() = Some(DeferredTextWork::Flush);
+        let _ = inner.work_tx.send(Job::DrainTextWork);
+    }
+
     /// Carry out one piece of eager text-branch work. Never call this at a
     /// pipeline resting in PAUSED, see the call site in `pump_selection`.
     fn run_text_work(inner: &Arc<Inner>, work: DeferredTextWork) {
@@ -4782,25 +6648,69 @@ impl Inner {
         }
     }
 
-    /// Replay whatever `pump_selection` had to postpone, once the pipeline is
-    /// playing and the flush can actually complete. Driven from
-    /// [`Inner::poll_text_policy`], which the caller already runs at every
-    /// settle point, so resuming playback is enough to drain this.
+    /// Whether ANY postponed text-branch work is pending. One predicate so
+    /// the drain triggers and the drain itself can never disagree about what
+    /// counts as pending. The old inline check tested only the work slot and
+    /// the disposals, so pending replays or input removals with nothing else
+    /// pending were skipped by the very drain that owns them.
+    fn has_deferred_text_work(&self) -> bool {
+        self.deferred_text_work.lock().is_some()
+            || !self.deferred_text_disposal.lock().is_empty()
+            || !self.deferred_replays.lock().is_empty()
+            || !self.deferred_input_removal.lock().is_empty()
+            || !self.deferred_verifications.lock().is_empty()
+    }
+
+    /// Replay whatever had to be postponed, once the pipeline is playing and
+    /// the flush is most likely to complete (only likely, see
+    /// [`Inner::submit_text_flush`]). WORKER-ONLY, through
+    /// [`Job::DrainTextWork`], because everything in here can block behind a
+    /// streaming thread and must therefore stay off the callers. That is a
+    /// statement about the CALLERS and not a licence for the worker. The
+    /// worker also owns [`Job::SetState`], so anything it blocks on that only
+    /// PLAYING can release deadlocks the receiver (see [`ReplayJob`]). The
+    /// flushes below are dispatched here because their pads are unlinked or
+    /// being disposed of, not because blocking here is safe.
+    ///
+    /// The job is queued on every pipeline state edge and at every caller
+    /// settle point, so no postponed work depends on the caller's poll
+    /// cadence and none can gate its own drain condition.
     fn run_deferred_text_work(inner: &Arc<Inner>) {
-        let idle = inner.deferred_text_work.lock().is_none()
-            && inner.deferred_text_disposal.lock().is_empty();
-        if idle {
+        if !inner.has_deferred_text_work() {
             return;
         }
         let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
         if current != gst::State::Playing || pending != gst::State::VoidPending {
+            // A no-op verdict. Until something changes it (a new postponed
+            // item, or a state edge whose unconditional re-queue lands back
+            // here), re-running this drain from the caller's poll can only
+            // reach this same return, so the poll's re-poke is suppressed
+            // (see `Inner::drain_poke_parked`). Recording the verdict AFTER
+            // the state read is what makes a racing edge safe: an edge that
+            // fires in between has already queued its own drain, which runs
+            // after this one and refreshes the verdict.
+            inner.drain_poke_parked.store(true, Ordering::SeqCst);
             return;
         }
+        // The drain proceeds, so the last no-op verdict (if any) is stale.
+        inner.drain_poke_parked.store(false, Ordering::SeqCst);
         // Branches unlinked while paused, now safe to flush and drop.
         let disposals = std::mem::take(&mut *inner.deferred_text_disposal.lock());
+        let disposed = !disposals.is_empty();
         for disposal in disposals {
             debug!("disposing of a text branch postponed while paused");
-            Inner::dispose_text_branch(inner, disposal);
+            inner.dispose_text_branch(disposal);
+        }
+        // A disposal holds the overlay seat while it flushes, and the LINK side
+        // refuses to wait for it (`TextSeat::try_hold`, so the caller thread is
+        // never blocked behind a text branch). Nothing used to retry that
+        // skipped link except the caller's next settle point, whenever that
+        // came: the field showed a switched-to external whose branch never
+        // joined at all while its replays burned out on a 400ms timer. The
+        // thread that caused the skip retries it here instead.
+        // Lever: `FCAST_NO_DRAIN_TEXT_POLICY_POKE`.
+        if disposed && std::env::var_os("FCAST_NO_DRAIN_TEXT_POLICY_POKE").is_none() {
+            Inner::poll_text_policy(inner);
         }
         // Replays that could not be delivered while paused.
         let owed = std::mem::take(&mut *inner.deferred_replays.lock());
@@ -4819,18 +6729,131 @@ impl Inner {
         }
         // Taken only once the pipeline can carry it out, so a postponed piece
         // of work is never dropped by a poll that arrives too early.
-        let Some(work) = inner.deferred_text_work.lock().take() else {
+        if let Some(work) = inner.deferred_text_work.lock().take() {
+            debug!(?work, "running the text-branch work postponed while paused");
+            Inner::run_text_work(inner, work);
+        }
+        // The rest of the drain is the verdict-deferral change, gated whole
+        // by the same lever as its `verify_replay` half.
+        if std::env::var_os("FCAST_NO_REPLAY_VERDICT_DEFERRAL").is_some() {
             return;
-        };
-        debug!(?work, "running the text-branch work postponed while paused");
-        Inner::run_text_work(inner, work);
+        }
+        // Verdicts held while the pipeline could not produce evidence.
+        // Re-armed rather than decided inline, so the check fires one
+        // verification interval AFTER the flush above ran, against a branch
+        // whose delivery is real and not a leftover sticky.
+        let held = std::mem::take(&mut *inner.deferred_verifications.lock());
+        for (id, epoch, attempt) in held {
+            debug!(
+                ?id,
+                epoch, attempt, "re-arming a replay verification whose verdict was held"
+            );
+            inner.arm_replay_verification(id, epoch, attempt);
+        }
+        // The verification arming is edge-triggered by STREAMS_SELECTED, and
+        // a run of switches at a parked pipeline either consumes that edge
+        // below PLAYING or stalls decodebin3 into never posting it. Either
+        // way the settled selection can name an external whose delivery
+        // nothing will ever re-check. This drain runs exactly at the settle
+        // points where delivery becomes provable, so re-verify here instead
+        // of trusting an edge that may never come again. Redundant armings
+        // dedupe in `arm_replay_verification`, and an aligned, delivering
+        // branch concludes its check quietly.
+        let selected = inner.selection.lock().subtitle_sid();
+        if let Some(sid) = selected {
+            let target = {
+                let routing = inner.routing.lock();
+                routing.inputs.iter().find_map(|input| {
+                    let external = input.external.as_ref()?;
+                    input
+                        .stream_ids()
+                        .contains(&sid)
+                        .then_some((external.id, external.epoch))
+                })
+            };
+            if let Some((id, epoch)) = target {
+                inner.arm_replay_verification(id, epoch, 0);
+            }
+        }
     }
 
     fn flush_live_text_branches(&self) {
-        let pads = self.live_text_downstream_pads();
-        Self::flush_pads(&pads);
+        // (feeder, downstream): the decodebin3 output pad and the tqueue sink
+        // it feeds.
+        let branches: Vec<(gst::Pad, gst::Pad)> = {
+            let routing = self.routing.lock();
+            routing
+                .routed
+                .iter()
+                .filter(|routed| routed.kind == StreamKind::Text)
+                .filter_map(|routed| {
+                    routed
+                        .downstream
+                        .clone()
+                        .map(|downstream| (routed.db3_src_pad.clone(), downstream))
+                })
+                .collect()
+        };
+        // The ONE flush injector that logged nothing, which made a field log
+        // ambiguous exactly when it mattered: the adaptivedemux2 carry-patch
+        // discarded a FLUSHING on a dash text track with no crate line anywhere
+        // near it, and nobody could tell whether this pair was the source.
+        debug!(
+            branches = branches.len(),
+            pads = ?branches
+                .iter()
+                .map(|(feeder, downstream)| format!("{} -> {}", feeder.name(), downstream.name()))
+                .collect::<Vec<_>>(),
+            "flushing the live text branches"
+        );
+        for (feeder, downstream) in branches {
+            // A push racing the pair below lands between FLUSH_START and
+            // FLUSH_STOP and returns FLUSHING upstream. An adaptive demuxer
+            // serves EVERY track from ONE output loop and pauses it for good
+            // on any non-OK push (`gstadaptivedemux.c` output loop, a DEBUG
+            // line and `gst_task_pause`), so that one refused text push
+            // freezes video and audio with no error anywhere: the
+            // frozen-at-the-start field class, `output_time` pinned while
+            // input fills to the watermark. The DROP probe makes a racing
+            // push return OK (push probes run before the peer lookup),
+            // losing at most the backlog this flush discards anyway; a
+            // dropped sticky-event push stays pending on the pad and
+            // re-delivers with the next buffer.
+            // Lever: `FCAST_NO_TEXT_FLUSH_FEEDER_HOLD`.
+            let hold = if std::env::var_os("FCAST_NO_TEXT_FLUSH_FEEDER_HOLD").is_none() {
+                feeder.add_probe(
+                    gst::PadProbeType::BUFFER
+                        | gst::PadProbeType::BUFFER_LIST
+                        | gst::PadProbeType::EVENT_DOWNSTREAM,
+                    |_pad, _info| gst::PadProbeReturn::Drop,
+                )
+            } else {
+                None
+            };
+            Self::flush_pads(std::slice::from_ref(&downstream));
+            if let Some(id) = hold {
+                feeder.remove_probe(id);
+            }
+        }
     }
 
+    /// # A FLUSH_START-only variant here is WRONG, and was measured to be
+    ///
+    /// The teardown deadlock this flush sits in the middle of (see
+    /// `tests/regression_teardown_flush.rs`) is caused by the flush PAIR. Its
+    /// FLUSH_STOP re-arms the pad, and a source pushing as fast as it can
+    /// re-blocks under the stream lock before the caller reaches its
+    /// `set_state(Null)`. Sending FLUSH_START alone and leaving the pads
+    /// flushing looks like the obvious answer, and it is not.
+    ///
+    /// `db3_sink_pads` covers EVERY stream of the input rather than just its
+    /// text, so the unmatched FLUSH_START reaches audio and video too, and
+    /// `teardown` also runs at READY for a stop-and-reload where the pipeline
+    /// is reused afterwards. Measured on the `fuzz_scenarios` driver, seeds
+    /// 500001, 500002 and 500010 pass with the pair and fail without it, on
+    /// `flush_pairs_matched: flush-start never matched by a flush-stop` with
+    /// entries still recorded after it. The wedge is real and stays open, but
+    /// its fix has to leave the flush pairing intact.
     fn flush_parked_text_pushes(&self) {
         let pads = self.live_text_downstream_pads();
         let db3_sinks: Vec<gst::Pad> = {
@@ -4842,7 +6865,7 @@ impl Inner {
                 .collect()
         };
         Self::flush_pads(&pads);
-        Self::flush_pads(&db3_sinks);
+        Self::flush_db3_sink_pads(&db3_sinks);
     }
 
     /// The timeline the overlay renders text against: the rate and the
@@ -5534,7 +7557,7 @@ impl Inner {
         let leftover = std::mem::take(&mut inner.routing.lock().routed);
         for mut routed in leftover {
             if routed.kind == StreamKind::Text {
-                Inner::detach_text_from_overlay(inner, &mut routed);
+                Inner::detach_text_from_overlay(inner, &mut routed, false);
             } else if let (Some(ssync_src), Some(downstream)) =
                 (&routed.ssync_src, &routed.downstream)
             {
@@ -5623,29 +7646,58 @@ impl Inner {
     /// chain lives in the pipeline ONLY while the item has video: an absent
     /// chain cannot hang a video-less preroll and never counts in the bin's
     /// EOS/STREAM_START aggregation, by construction.
+    /// The MEMBERSHIP half of [`Inner::ensure_video_chain`]: put the chain in
+    /// the pipeline and link the overlay to the sink. Split out because a
+    /// caller must be able to do this without the state half, which blocks:
+    /// `gst_pad_link` refuses a link whose two pads have no common ancestor
+    /// (`GST_PAD_LINK_CHECK_HIERARCHY`), so the chain has to be IN the
+    /// pipeline before `route_db3_pad` can link a stream into it, even when
+    /// the activation itself is deferred (see [`ChainJoinJob`]).
+    ///
+    /// Nothing here blocks on a state or stream lock: `gst_bin_add` takes the
+    /// bin's object lock and changes no child state, and the link is a caps
+    /// and hierarchy check.
+    ///
+    /// Under `video_chain_membership` because a route and a chain join now run
+    /// concurrently (see [`Inner::join_gate`]): two threads both finding the
+    /// chain out of the pipeline would both add it, and the loser's
+    /// `gst_bin_add` fails, taking its whole route with it.
+    fn attach_video_chain(&self) -> Result<()> {
+        let _membership = self.video_chain_membership.lock();
+        if self.overlay.parent().is_some() {
+            return Ok(());
+        }
+        let elements: Vec<&gst::Element> = self.video_chain.iter().collect();
+        self.pipeline
+            .add_many(elements)
+            .context("adding the video chain")?;
+        // The overlay-to-sink link is made on the first join and persists
+        // across membership changes.
+        let src = self
+            .overlay
+            .static_pad("src")
+            .expect("subtitleoverlay has a src pad");
+        if !src.is_linked() {
+            let sink = self.video_chain.last().expect("chain has a sink");
+            self.overlay
+                .link_pads(Some("src"), sink, None)
+                .context("linking subtitleoverlay to the video sink")?;
+        }
+        Ok(())
+    }
+
     fn ensure_video_chain(&self) -> Result<()> {
+        // A previous deselect's drop probe would silently eat the stream this
+        // join exists to render, so it comes off first (see
+        // `park_video_chain_for_deselect`).
+        self.clear_video_park_probe();
         // A video chain can re-preroll mid-load and needs the deep audio
         // buffer to avoid the demuxer-stall deadlock (see `aqueue` in `new`).
         self.audio_entry
             .set_property("max-size-time", AQUEUE_VIDEO_TIME_NS);
-        if self.overlay.parent().is_none() {
-            let elements: Vec<&gst::Element> = self.video_chain.iter().collect();
-            self.pipeline
-                .add_many(elements)
-                .context("adding the video chain")?;
-            // The overlay-to-sink link is made on the first join and
-            // persists across membership changes.
-            let src = self
-                .overlay
-                .static_pad("src")
-                .expect("subtitleoverlay has a src pad");
-            if !src.is_linked() {
-                let sink = self.video_chain.last().expect("chain has a sink");
-                self.overlay
-                    .link_pads(Some("src"), sink, None)
-                    .context("linking subtitleoverlay to the video sink")?;
-            }
-        }
+        // Idempotent, and already done by a deferred route (see
+        // `attach_video_chain`).
+        self.attach_video_chain()?;
         let join = self.join_state();
         // Joining a steady PLAYING pipeline renders immediately, so stamp
         // the pipeline's current base_time first: the chain missed every
@@ -5680,6 +7732,9 @@ impl Inner {
     /// (`unroute_db3_pad`). Once removed, the bin's EOS aggregation can no
     /// longer wait on a sink that will never see data again.
     fn remove_video_chain(&self) {
+        // The pad the deselect's probe sits on is about to be unlinked and
+        // released; take the probe off while it still exists.
+        self.clear_video_park_probe();
         // No video chain to deadlock: restore the shallow audio-only queue so
         // gapless holds the outgoing EOS near the sink boundary (see `aqueue`
         // in `new`). Unconditional: a load reset removes the chain and re-shallows.
@@ -5729,33 +7784,123 @@ impl Inner {
     /// aborts the clock wait, letting the slot idle and the deactivation
     /// finish.
     ///
-    /// Two constraints shape this:
-    /// - READY rather than a flush: a FLUSH makes basesink post ASYNC_START
-    ///   and the pipeline wedges at pending PAUSED waiting on a re-preroll
-    ///   no data will ever finish. Pushes into a READY chain return FLUSHING
-    ///   upstream, which decodebin3's deactivation tolerates (an unlink here
-    ///   would return NOT_LINKED instead and error the source).
-    /// - The state LOCK covers the window until decodebin3 actually removes
-    ///   the pad: a pipeline state change walking its children in that
-    ///   window would lift the dataless chain back up, and its sink would
-    ///   hold the pipeline async forever. `unroute_db3_pad` then removes the
-    ///   chain from the pipeline entirely (unlocking it), so the EOS
-    ///   aggregation never waits on it either. A re-select routes a fresh
-    ///   pad (video-count 0->1 is never a decodebin3 pad reuse) and
-    ///   `ensure_video_chain` rebuilds.
+    /// Three constraints:
+    /// - NOT a flush: basesink would post ASYNC_START and wedge the pipeline at
+    ///   pending PAUSED on a re-preroll no data will finish.
+    /// - NOT a READY descent, which is what this used to be. It aborts the clock
+    ///   wait of the multiqueue slot task mid-push, and the resulting
+    ///   GST_FLOW_FLUSHING is fatal to `gst_multi_queue_loop`: it parks the
+    ///   demuxer on a FLUSH_STOP nobody will send, so the stream dies with no EOS
+    ///   and no error and a later re-select gets a pad with no data
+    ///   (`fuzz_buffering` 1600031). A DROP probe instead returns GST_FLOW_OK
+    ///   (push probes run before the peer lookup), so the slot drains, the clock
+    ///   keeps advancing and the thread leaves on its own, cutting the
+    ///   backpressure cycle at its source. Buffers only, so ssync grouping and
+    ///   the sink's EOS still work. Lever: `FCAST_READY_PARK_DESELECTED_VIDEO`.
+    /// - The state LOCK holds until decodebin3 removes the pad, or a state change
+    ///   walking its children would lift the dataless chain back up and its sink
+    ///   would hold the pipeline async forever. `unroute_db3_pad` then removes
+    ///   the chain entirely and a re-select rebuilds it.
     fn park_video_chain_for_deselect(&self) {
         if self.overlay.parent().is_none() {
             return;
         }
-        info!("selection drops video, parking the video chain at READY");
         for element in &self.video_chain {
             element.set_locked_state(true);
         }
+        // Two deselect dispatches in a row would otherwise leak the first
+        // probe onto a pad this one is about to stop tracking.
+        self.clear_video_park_probe();
+        let feeding = self
+            .overlay
+            .static_pad("video_sink")
+            .and_then(|pad| pad.peer());
+        if let Some(feeding) = feeding
+            && std::env::var_os("FCAST_READY_PARK_DESELECTED_VIDEO").is_none()
+        {
+            info!(
+                pad = %feeding.name(),
+                "selection drops video, dropping the data feeding the video chain"
+            );
+            let id = feeding.add_probe(
+                gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                |_pad, _info| gst::PadProbeReturn::Drop,
+            );
+            if let Some(id) = id {
+                *self.video_park_probe.lock() = Some((feeding, id));
+            }
+            self.lift_deselected_video_sink();
+            return;
+        }
+        info!("selection drops video, parking the video chain at READY");
         // Sink-first: the sink's READY aborts its clock/preroll wait,
         // unwinding the blocked streaming thread out of the branch before
         // the upstream elements deactivate their pads.
         for element in self.video_chain.iter().rev() {
             let _ = element.set_state(gst::State::Ready);
+        }
+    }
+
+    /// Let the ONE video push already inside the chain finish, so decodebin3
+    /// can complete the deactivation.
+    ///
+    /// The DROP probe above stops NEW data, and no probe can touch a push that
+    /// is already past it. At a pipeline resting in PAUSED that push sits in
+    /// the video sink's `gst_base_sink_wait_preroll`, whose only two exits
+    /// gstbasesink.c:2438 names itself: "waiting in preroll for flush or
+    /// PLAYING". Until it returns, the decodebin3 multiqueue slot's src pad is
+    /// never idle, so the IDLE probe `handle_stream_switch` arms to run
+    /// `mq_slot_unassign` (gstdecodebin3.c:4566) never fires,
+    /// `is_selection_done` keeps bailing out with "Stream from previous
+    /// selection still active" (:3358), and NO `STREAMS_SELECTED` is posted for
+    /// the selection AT ALL. The caller's track change then never confirms:
+    /// FAST `video_disable_while_paused_v4`, 18 s of silence and a receiver
+    /// still waiting.
+    ///
+    /// Of the two exits, the flush is the one this crate must never take: it
+    /// returns FLUSHING into the multiqueue, which latches it, which is exactly
+    /// what the reverted READY descent did. So take the other one and lift the
+    /// SINK to PLAYING. The parked push returns OK, the pad idles between
+    /// pushes, and decodebin3 finishes the deactivation itself and posts the
+    /// REAL message, so no crate bookkeeping is short-circuited.
+    ///
+    /// Only at a PAUSED pipeline: at PLAYING nothing needs preroll, and below
+    /// PAUSED the chain is going down anyway. The audio chain never needed this
+    /// because `fpb-aqueue` absorbs its slot's pushes, which is why only VIDEO
+    /// deselects wedge here.
+    ///
+    /// Cost: the frames already past the probe (the parked one, plus whatever
+    /// subtitleoverlay holds internally) render onto the paused frame just
+    /// before video goes away. Lever:
+    /// `FCAST_NO_PAUSED_DESELECT_SINK_LIFT`.
+    fn lift_deselected_video_sink(&self) {
+        if std::env::var_os("FCAST_NO_PAUSED_DESELECT_SINK_LIFT").is_some() {
+            return;
+        }
+        let (_, current, _) = self.pipeline.state(gst::ClockTime::ZERO);
+        if current != gst::State::Paused {
+            return;
+        }
+        let Some(sink) = self.video_chain.last() else {
+            return;
+        };
+        debug!(
+            sink = %sink.name(),
+            "lifting the deselected video sink to PLAYING so its parked preroll push returns"
+        );
+        if let Err(err) = sink.set_state(gst::State::Playing) {
+            warn!(?err, "failed to lift the deselected video sink");
+        }
+    }
+
+    /// Lift a mid-item video deselect's DROP probe (see
+    /// `park_video_chain_for_deselect`). Called wherever the video chain
+    /// changes hands, so a re-selected video stream can never be dropped by a
+    /// previous deselect's probe. A no-op when nothing is parked.
+    fn clear_video_park_probe(&self) {
+        if let Some((pad, id)) = self.video_park_probe.lock().take() {
+            debug!(pad = %pad.name(), "lifting the deselected video chain's drop probe");
+            pad.remove_probe(id);
         }
     }
 
@@ -5825,12 +7970,14 @@ impl Inner {
     /// Teardown, stop, shutdown and the load reset must NOT come through here.
     /// They cannot postpone anything, and their own state change to READY or
     /// NULL releases the sinks from `wait_preroll`, which is what lets the
-    /// flush complete there.
+    /// flush complete there. That holds only because those paths make the
+    /// state change BEFORE they block; see [`FcastPlaybin::teardown`], where it
+    /// used to come last and wedged the worker for exactly this reason.
     fn remove_input_or_defer(inner: &Arc<Inner>, input: Input) {
-        // The wedge needs a text branch of THIS input actually live in the
-        // overlay. That is what leaves the slot's multiqueue task stuck inside
-        // subtitleoverlay, which is what the flush then cannot pause. Without
-        // one there is nothing to block on and the removal runs inline.
+        // A text branch of THIS input live in the overlay is one way to leave
+        // the slot's multiqueue task stuck inside subtitleoverlay, which is
+        // what the flush then cannot pause. It is not the only way: see the
+        // postponed-disposal case below.
         //
         // Deferring on the pipeline state alone was too broad: a pipeline
         // mid-LOAD also rests at PAUSED, and postponing there left the input
@@ -5848,7 +7995,29 @@ impl Inner {
                         .is_some_and(|sid| sids.contains(&sid.to_string()))
             })
         };
-        if has_live_text
+        // A branch of THIS input is not the only thing that can hold the
+        // block. A POSTPONED DISPOSAL is a text queue whose loop task was
+        // already inside subtitleoverlay when its branch was severed, and it
+        // keeps holding that queue's stream lock until the disposal runs (the
+        // case `Inner::dispose_text_branch_on` describes). decodebin3 shares
+        // one multiqueue across every input, so this input's flush still ends
+        // in a `gst_pad_pause_task` that waits behind that stuck queue.
+        //
+        // Captured with gdb on `fuzz_buffering` seed 1600016, deterministic 3
+        // of 3: the worker parked in `remove_input`'s decodebin3-sink flush
+        // with `branches=0` for the input it was removing, one second after a
+        // "postponing a text branch disposal" at a pipeline resting in PAUSED.
+        // The ownership half of the guard was doing its job and the block was
+        // simply somewhere else.
+        //
+        // The drain is ordered to match: `Inner::run_deferred_text_work` runs
+        // the disposals before the input removals, so by the time this removal
+        // is retried the queue that blocked it is gone.
+        //
+        // `FCAST_NO_DISPOSAL_AWARE_DETACH_DEFERRAL` restores the old predicate.
+        let disposal_pending = !inner.deferred_text_disposal.lock().is_empty()
+            && std::env::var_os("FCAST_NO_DISPOSAL_AWARE_DETACH_DEFERRAL").is_none();
+        if (has_live_text || disposal_pending)
             && Inner::resting_paused(&inner.pipeline)
             && std::env::var_os("FCAST_NO_TEXT_WORK_DEFERRAL").is_none()
         {
@@ -5856,6 +8025,9 @@ impl Inner {
                 generation = input.generation,
                 "postponing an input removal: the pipeline is at rest in PAUSED"
             );
+            // A new postponed item invalidates the last drain's no-op
+            // verdict (see `Inner::drain_poke_parked`).
+            inner.drain_poke_parked.store(false, Ordering::SeqCst);
             inner.deferred_input_removal.lock().push(input);
         } else {
             Inner::remove_input(inner, input);
@@ -5867,6 +8039,37 @@ impl Inner {
         let sids = input.stream_ids();
         if let Some(sig) = input.pad_added_sig {
             input.element.disconnect(sig);
+        }
+        // DROP everything this input still pushes, BEFORE the flush and the
+        // unlink below. Its own chain (a queue inside its urisourcebin, upstream
+        // of the text queue the detach probe guards) keeps pushing into
+        // decodebin3 while this runs, and the first push after the unlink
+        // returns GST_FLOW_NOT_LINKED, on which that queue's loop posts
+        // "Internal data stream error". The causal error classification treats
+        // the source's own task death as a transport race and recovers, but it
+        // cannot eat an error a QUEUE posts, so it reached the caller as
+        // `PlaybinEvent::Error`: a user-visible Media error for a routine
+        // subtitle detach. Pinned on `fuzz_scenarios` seed 500002 iteration 1
+        // step 6 (detach of a SELECTED external right after a seek).
+        //
+        // A push probe returns GST_FLOW_OK before the peer is ever looked up
+        // (gstpad.c runs them first), so from here the input pushes into the
+        // void harmlessly. Nothing is lost: this input is leaving and goes to
+        // NULL a few lines down. Never removed, the pads die with the element.
+        // Buffers only, so the flush pair and EOS below still travel.
+        // Lever: `FCAST_NO_INPUT_DROP_ON_REMOVE`.
+        let guard_pads: Vec<gst::Pad> = input.taps.iter().map(|tap| tap.pad.clone()).collect();
+        if std::env::var_os("FCAST_NO_INPUT_DROP_ON_REMOVE").is_none() {
+            debug!(
+                pads = ?guard_pads.iter().map(|pad| pad.name().to_string()).collect::<Vec<_>>(),
+                "dropping the leaving input's data before its decodebin3 chain is taken apart"
+            );
+            for pad in &guard_pads {
+                pad.add_probe(
+                    gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                    |_pad, _info| gst::PadProbeReturn::Drop,
+                );
+            }
         }
         for mut tap in input.taps {
             if let Some(probe) = tap.probe.take() {
@@ -5919,12 +8122,15 @@ impl Inner {
             "detaching the leaving input's text branches before the decodebin3 flush"
         );
         for (db3_src_pad, downstream, tqueue) in text_parts {
-            Inner::detach_text_parts(inner, &db3_src_pad, &downstream, tqueue);
+            Inner::detach_text_parts(inner, &db3_src_pad, &downstream, tqueue, false);
         }
         // A mid-push input's streaming thread is parked inside its
         // decodebin3 slot HOLDING ITS OWN PAD LOCKS, and the NULL below
         // deadlocks on them (this wedged the worker in the field). Flush
         // the input's decodebin3 chain first to release the parked pushes.
+        // The BARE pair, deliberately. A segment replay here regressed the
+        // external-subtitle reattach path, and this window closes at the NULL
+        // two lines down anyway (see `Inner::flush_db3_sink_pads`).
         for db3_sink in &input.db3_sink_pads {
             let _ = db3_sink.send_event(gst::event::FlushStart::new());
             let _ = db3_sink.send_event(gst::event::FlushStop::new(true));
@@ -6011,7 +8217,7 @@ impl Inner {
         // A pad from a superseded core (the previous load's decodebin3 can
         // still process queued selections while dying) must not be routed:
         // it would occupy the chain entry and wedge the next preroll.
-        let ssync = {
+        let (ssync, ssync_owner) = {
             let core = inner.core.lock();
             let Some(core) = core.as_ref() else {
                 return Ok(());
@@ -6020,7 +8226,7 @@ impl Inner {
                 debug!(pad = %pad.name(), "ignoring pad from a superseded core");
                 return Ok(());
             }
-            core.ssync.clone()
+            (core.ssync.clone(), core.db3.clone())
         };
         // Pads appearing while the pipeline is at/heading to READY are
         // stragglers from a superseded load's teardown. Legitimate pads only
@@ -6034,6 +8240,22 @@ impl Inner {
         }
         let kind = Inner::stream_kind_of(pad)
             .ok_or_else(|| anyhow!("cannot determine stream kind of {}", pad.name()))?;
+        // Runs on a STREAMING THREAD holding decodebin3's SELECTION_LOCK
+        // (pad-added comes from `mq_slot_check_reconfiguration`, which took it),
+        // so an unbounded blocking call here stops every SELECT_STREAMS, every
+        // other slot's reconfiguration and decodebin3's own state changes, i.e.
+        // the teardown that would release it. `ensure_video_chain` /
+        // `ensure_audio_sink` `set_state` on the calling thread, and a
+        // window-bound sink can spend seconds in Ready->Paused.
+        //
+        // So only the ACTIVATION moves, to `fpb-join`, with the stream held at
+        // the ssync src pad meanwhile. The topology stays inline: the selection
+        // dance needs it visible the moment `send_event(SELECT_STREAMS)`
+        // returns, and this function also runs inline on `fpb-select` when
+        // decodebin3 exposes the pad inside that send.
+        //
+        // Lever: `FCAST_INLINE_CHAIN_JOIN`.
+        let deferred_join = std::env::var_os("FCAST_INLINE_CHAIN_JOIN").is_none();
 
         // Request a streamsynchronizer sink/src pair and link `pad` into it.
         // A/V only, TEXT bypasses ssync entirely (see `RoutedStream`).
@@ -6051,31 +8273,146 @@ impl Inner {
             Ok((sink, src))
         };
 
+        // Set by the A/V arms when the chain's activation was deferred. The
+        // job is sent at the very END of this function, once the routing entry
+        // exists: `run_chain_join` refuses a join whose stream is no longer
+        // routed, and the entry is pushed below.
+        let mut queue_join = false;
+        let mut join_hold: Option<(gst::Pad, gst::PadProbeId)> = None;
+
         let (ssync_sink, ssync_src, downstream, park_pad, park_sink) = match kind {
+            // A video pad appearing while the crate's last dispatched
+            // selection turned video OFF is decodebin3's collection-default
+            // auto-select resurrecting the deselected stream (an attach
+            // makes it re-select over the applied state). Rebuilding the
+            // chain for it drops the pipeline into an async re-preroll that
+            // the deselected stream may never feed again, and that
+            // unfinished transition holds the receiver's pump gate closed
+            // forever, so the engine's corrective re-assert can never run
+            // (fuzz_buffering seed 300002, campaign 5). Park the pad the way
+            // text parks instead. The parking sink consumes the stream
+            // without any async element, the pipeline stays settled, the
+            // engine notices the divergence and re-asserts on the next
+            // pump, and decodebin3 drops the pad again. A genuine re-enable
+            // flips the dispatched intent before its selection reaches
+            // decodebin3, so it takes the rebuild arm below. The lever
+            // restores the unconditional rebuild and gates this whole
+            // change (the mirror it reads is inert without this read).
+            StreamKind::Video
+                if inner.video_deselected.load(Ordering::SeqCst)
+                    && std::env::var_os("FCAST_ROUTE_DESELECTED_VIDEO").is_none() =>
+            {
+                info!(
+                    pad = %pad.name(),
+                    "parking a resurrected video pad the dispatched selection has off"
+                );
+                let (sink, park) = inner.park_stream(pad)?;
+                (None, None, None, Some(park), Some(sink))
+            }
+            // A video pad re-routed for a group whose end has already
+            // entered streamsynchronizer cannot preroll a fresh chain. The
+            // stream's own end was consumed before the re-route (its EOS
+            // either passed with the old chain or died with the dropped
+            // slot), so the new branch will never see a buffer or an EOS.
+            // The sink parks in Ready->Paused forever, the async transition
+            // never completes, the receiver's pump gate never opens, and a
+            // sibling EOS arriving after the splice parks its streaming
+            // thread inside gst_stream_synchronizer_wait against the fresh
+            // pad (fuzz_buffering seed 1600058, gdb captured: multiqueue
+            // src in gststreamsynchronizer.c:480 behind the resurrected
+            // pad, the video source task idle at EOS, see the findings
+            // entry on the drained-resurrect park). This also enforces the
+            // invariant the sibling-pass gate below states, that once one
+            // EOS of a group entered ssync the group MUST complete, which a
+            // fresh EOS-less pad makes impossible.
+            //
+            // Parking trades the permanent wedge for a silent video slot on
+            // the drained remainder of the item. A flushing seek restarts
+            // the streams and clears the mirror (see `Job::Seek`), so a
+            // re-enable after a seek still builds the chain normally.
+            // Lever: `FCAST_NO_DRAINED_RESURRECT_PARK` restores the
+            // unconditional rebuild (the seek-side clear is gated on the
+            // same lever).
+            StreamKind::Video
+                if std::env::var_os("FCAST_NO_DRAINED_RESURRECT_PARK").is_none() && {
+                    // Two signals, either one marks the stream drained.
+                    // The group mirror covers a stream whose end reached
+                    // the OUTPUT before the re-route. The input-side set
+                    // covers a stream whose end was consumed invisibly
+                    // (its slot was dropped while deselected, so no output
+                    // probe ever saw it, fuzz_buffering seed 1600008).
+                    let sticky = pad.sticky_event::<gst::event::StreamStart>(0);
+                    let group = sticky.as_ref().and_then(|event| event.group_id());
+                    let group_passing =
+                        group.is_some() && group == *inner.passing_eos_group.lock();
+                    let sid = sticky.map(|event| event.stream_id().to_string());
+                    let input_drained = sid
+                        .as_ref()
+                        .is_some_and(|sid| inner.input_eos_sids.lock().contains(sid));
+                    let rerouted = inner.video_unrouted_once.load(Ordering::SeqCst);
+                    debug!(
+                        pad = %pad.name(),
+                        ?sid,
+                        group_passing,
+                        input_drained,
+                        rerouted,
+                        "drained-resurrect check"
+                    );
+                    (group_passing || input_drained) && rerouted
+                } =>
+            {
+                info!(
+                    pad = %pad.name(),
+                    "parking a re-routed video pad of a drained stream"
+                );
+                let (sink, park) = inner.park_stream(pad)?;
+                (None, None, None, Some(park), Some(sink))
+            }
             StreamKind::Video => {
                 let (ss_sink, ss_src) = attach_ssync()?;
-                // Put the video chain into the pipeline (also the recovery
-                // from a mid-item deselect's parked chain).
-                inner.ensure_video_chain()?;
+                if deferred_join {
+                    // Membership only: the chain has to be in the pipeline for
+                    // the link below to be legal, but its ACTIVATION is what
+                    // blocks, and that goes to `fpb-join`.
+                    inner.attach_video_chain()?;
+                } else {
+                    // Put the video chain into the pipeline (also the recovery
+                    // from a mid-item deselect's parked chain).
+                    inner.ensure_video_chain()?;
+                }
                 let entry = inner
                     .overlay
                     .static_pad("video_sink")
                     .ok_or_else(|| anyhow!("subtitleoverlay video_sink missing"))?;
                 ss_src.link(&entry).context("linking video chain")?;
-                inner.finish_preroll_token();
+                if deferred_join {
+                    // AFTER the link, which cannot race: the only thread that
+                    // ever pushes on `ss_src` is the one inside this call.
+                    join_hold = Inner::hold_chain_entry(&ss_src);
+                    queue_join = true;
+                } else {
+                    inner.finish_preroll_token();
+                }
                 (Some(ss_sink), Some(ss_src), Some(entry), None, None)
             }
             StreamKind::Audio => {
                 let (ss_sink, ss_src) = attach_ssync()?;
-                // Build this load's fresh audio sink (see
-                // `Inner::audio`). The prefix is already active.
-                inner.ensure_audio_sink()?;
+                if !deferred_join {
+                    // Build this load's fresh audio sink (see
+                    // `Inner::audio`). The prefix is already active.
+                    inner.ensure_audio_sink()?;
+                }
                 let entry = inner
                     .audio_entry
                     .static_pad("sink")
                     .ok_or_else(|| anyhow!("fpb-aqueue sink missing"))?;
                 ss_src.link(&entry).context("linking audio chain")?;
-                inner.finish_preroll_token();
+                if deferred_join {
+                    join_hold = Inner::hold_chain_entry(&ss_src);
+                    queue_join = true;
+                } else {
+                    inner.finish_preroll_token();
+                }
                 (Some(ss_sink), Some(ss_src), Some(entry), None, None)
             }
             StreamKind::Text => {
@@ -6246,16 +8583,152 @@ impl Inner {
             park_sink,
             tqueue: None,
             group,
+            seat_evicted: false,
             kind,
         });
         drop(routing);
 
         // A new text stream may be linkable right away, and a (re)arriving video
-        // stream may unblock a parked one.
-        if matches!(kind, StreamKind::Text | StreamKind::Video) {
+        // stream may unblock a parked one. A DEFERRED video join runs it on
+        // `fpb-join` instead, after the chain is up: text must not be spliced
+        // into an overlay that is still parked at READY, and this call is
+        // itself pipeline surgery that has no business on a streaming thread.
+        let poll_here = match kind {
+            StreamKind::Text => true,
+            StreamKind::Video => !deferred_join,
+            StreamKind::Audio => false,
+        };
+        if poll_here {
             Inner::poll_text_policy(inner);
         }
+        // Last, so the routing entry above is already visible: the join
+        // re-validates against it. The joiner would block on the route gate
+        // this function still holds anyway, but nothing here should depend on
+        // that.
+        if queue_join {
+            Inner::queue_chain_join(inner, &ssync_owner, pad, kind, join_hold);
+        }
         Ok(())
+    }
+
+    /// Hold a routed stream at the streamsynchronizer src pad until its chain
+    /// is activated (see [`ChainJoinJob`]).
+    ///
+    /// A BLOCKING probe, not a DROP one: no buffer may be lost, and the pad
+    /// this blocks is DOWNSTREAM of decodebin3, so the streaming thread parked
+    /// here holds no decodebin3 lock at all (`mq_slot_handle_stream_start`
+    /// releases SELECTION_LOCK before the push continues, gstdecodebin3.c
+    /// `beach:`). It holds the multiqueue src pad's and the ssync sink pad's
+    /// stream locks, and nothing the join does needs either.
+    ///
+    /// Three independent things release it, so the postponed work cannot
+    /// outlive its drain: the join itself, any flush (`FLUSH_START` broadcasts
+    /// the block cond and is never itself blocked, gstpad.c
+    /// `gst_pad_push_event_unchecked`), and any deactivation of the pad (a
+    /// downward transition, or `release_request_pad`, which streamsynchronizer
+    /// deliberately does src-pad-first for exactly this reason).
+    fn hold_chain_entry(ss_src: &gst::Pad) -> Option<(gst::Pad, gst::PadProbeId)> {
+        let id = ss_src.add_probe(gst::PadProbeType::BLOCK_DOWNSTREAM, |_pad, _info| {
+            gst::PadProbeReturn::Ok
+        })?;
+        debug!(pad = %ss_src.name(), "holding a routed stream until its chain joins");
+        Some((ss_src.clone(), id))
+    }
+
+    /// Queue the blocking half of a route (see [`ChainJoinJob`]). A failed
+    /// send means the crate is going away, so the hold comes off here instead:
+    /// nothing would ever release it.
+    fn queue_chain_join(
+        inner: &Arc<Inner>,
+        db3: &gst::Element,
+        pad: &gst::Pad,
+        kind: StreamKind,
+        hold: Option<(gst::Pad, gst::PadProbeId)>,
+    ) {
+        let job = ChainJoinJob {
+            db3: db3.clone(),
+            pad: pad.clone(),
+            kind,
+            hold,
+        };
+        if let Err(err) = inner.join_tx.send(job) {
+            warn!("the chain joiner is gone; joining inline");
+            let ChainJoinJob { hold, kind, .. } = err.0;
+            let joined = match kind {
+                StreamKind::Video => inner.ensure_video_chain(),
+                StreamKind::Audio => inner.ensure_audio_sink(),
+                StreamKind::Text => Ok(()),
+            };
+            if let Err(err) = joined {
+                warn!(?err, ?kind, "failed to join a chain after a lost join job");
+            }
+            if let Some((pad, id)) = hold {
+                pad.remove_probe(id);
+            }
+        }
+    }
+
+    /// Activate a routed stream's chain and let it flow (see
+    /// [`ChainJoinJob`]). Runs on `fpb-join`, where BLOCKING IS ALLOWED.
+    fn run_chain_join(inner: &Arc<Inner>, job: ChainJoinJob) {
+        let ChainJoinJob {
+            db3,
+            pad,
+            kind,
+            hold,
+        } = job;
+        {
+            // NOT the route gate (see `Inner::join_gate`): a chain must not
+            // be activated into a descending pipeline, but a route must never
+            // have to wait for a join. Blocking here is what this thread is
+            // for.
+            let _gate = Inner::join_hold(inner);
+            // Re-checked UNDER the gate, because between the route and this
+            // join the core can have been swapped, the stream deselected
+            // again, or the pipeline taken down. Activating a chain for any of
+            // those strands a sink in the pipeline with nothing to feed it,
+            // which is the async-forever wedge `remove_video_chain` exists to
+            // avoid. The hold still comes off below either way.
+            let current_core = inner.core.lock().as_ref().is_some_and(|c| c.db3 == db3);
+            let still_routed = inner
+                .routing
+                .lock()
+                .routed
+                .iter()
+                .any(|r| r.db3_src_pad == pad);
+            let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+            let accepting = decisions::pad_accepting(current, pending);
+            if !current_core || !still_routed || !accepting {
+                debug!(
+                    pad = %pad.name(), ?kind, current_core, still_routed, ?current, ?pending,
+                    "dropping a stale chain join"
+                );
+            } else {
+                let joined = match kind {
+                    StreamKind::Video => inner.ensure_video_chain(),
+                    StreamKind::Audio => inner.ensure_audio_sink(),
+                    StreamKind::Text => Ok(()),
+                };
+                match joined {
+                    // The load's preroll is carried by a real sink from here
+                    // on, exactly as it was when this ran inline.
+                    Ok(()) => inner.finish_preroll_token(),
+                    Err(err) => warn!(?err, ?kind, pad = %pad.name(), "failed to join a chain"),
+                }
+            }
+            // Under the gate, so the chain is up and flowing as one step as
+            // far as any teardown is concerned.
+            if let Some((pad, id)) = hold {
+                debug!(pad = %pad.name(), "releasing a joined stream");
+                pad.remove_probe(id);
+            }
+            // The overlay is only now out of its parked state, so this is
+            // where a re-arriving video stream can take text back (see the
+            // tail of `route_db3_pad`).
+            if kind == StreamKind::Video {
+                Inner::poll_text_policy(inner);
+            }
+        }
     }
 
     /// A decodebin3 output pad went away (stream deselected or input
@@ -6270,7 +8743,13 @@ impl Inner {
 
         let mut routed = routed;
         if routed.kind == StreamKind::Text {
-            Inner::detach_text_from_overlay(inner, &mut routed);
+            // This callback runs on a streaming thread, where the disposal's
+            // blocking flush is forbidden, so it is handed to the worker.
+            // The unlink itself still happens here and does not block. The
+            // lever restores the previous inline dispatch for interleaved
+            // A/B measurement and gates this whole change.
+            let defer_disposal = std::env::var_os("FCAST_INLINE_UNROUTE_DISPOSAL").is_none();
+            Inner::detach_text_from_overlay(inner, &mut routed, defer_disposal);
         } else if let (Some(ssync_src), Some(downstream)) = (&routed.ssync_src, &routed.downstream)
         {
             let _ = ssync_src.unlink(downstream);
@@ -6294,6 +8773,8 @@ impl Inner {
         // flush. Park overlay-linked text when video unroutes, and the policy
         // brings it back once a video stream is routed again.
         if routed.kind == StreamKind::Video {
+            // Read by the drained-resurrect park in `route_db3_pad`.
+            inner.video_unrouted_once.store(true, Ordering::SeqCst);
             // Both halves are pipeline surgery and this runs on decodebin3's
             // pad-removed callback, so they go to the worker. See
             // [`Job::VideoChainGone`] for the wedge that taught us.
@@ -6320,12 +8801,22 @@ impl Inner {
     /// flush pair travels through the queue into the overlay, wakes the
     /// push (FLUSHING is fine, the stream is leaving) and clears the
     /// lingering cue.
-    fn detach_text_from_overlay(inner: &Arc<Inner>, routed: &mut RoutedStream) {
+    fn detach_text_from_overlay(
+        inner: &Arc<Inner>,
+        routed: &mut RoutedStream,
+        defer_disposal: bool,
+    ) {
         let Some(downstream) = routed.downstream.take() else {
             return;
         };
         let tqueue = routed.tqueue.take();
-        Inner::detach_text_parts(inner, &routed.db3_src_pad, &downstream, tqueue);
+        Inner::detach_text_parts(
+            inner,
+            &routed.db3_src_pad,
+            &downstream,
+            tqueue,
+            defer_disposal,
+        );
     }
 
     /// The teardown half of [`Inner::detach_text_from_overlay`], split out so
@@ -6335,11 +8826,18 @@ impl Inner {
     /// It must not run under that lock. The flush and the NULL both block on
     /// pad stream locks held by streaming threads that are themselves waiting
     /// on routing (see [`Inner::live_text_downstream_pads`]).
+    /// `defer_disposal` forces the blocking disposal onto the worker no
+    /// matter the pipeline state. Passed by the pad-removed path, which runs
+    /// on a streaming thread where the disposal's flush is forbidden (the
+    /// crate rule stated on [`Job::FinishActivation`]). Every other caller
+    /// passes false and keeps the resting-PAUSED postponement exactly as it
+    /// was.
     fn detach_text_parts(
         inner: &Arc<Inner>,
         db3_src_pad: &gst::Pad,
         downstream: &gst::Pad,
         tqueue: Option<gst::Element>,
+        defer_disposal: bool,
     ) {
         // UNLINKING FIRST, and it does not block. `gst_pad_unlink` needs only
         // the two pads' object locks, never a stream lock, so it works even
@@ -6349,6 +8847,91 @@ impl Inner {
         // regressed it (15 failures in 22 runs against 11 in 22, see
         // fuzz-campaign-findings.md).
         //
+        // WHAT THE BRANCH'S OWN QUEUE DOES WHILE IT IS BEING TAKEN APART. The
+        // unlink below leaves `tqueue`'s src pad without a peer, and the next
+        // `gst_queue_loop` push into it returns GST_FLOW_NOT_LINKED, on which
+        // the queue posts "Internal data stream error" and the run fails
+        // (`fuzz_buffering` seed 600009, iteration 1 step 5, measured at 5 runs
+        // in 20). The waking flush only reaches it later, in
+        // `dispose_text_branch`, and can be postponed to a state edge, so
+        // there is a window of arbitrary length where the queue is running
+        // into a hole.
+        //
+        // A DROP probe closes it. gstpad.c runs push probes BEFORE the peer
+        // lookup, so a dropped buffer returns GST_FLOW_OK and the queue never
+        // sees NOT_LINKED. Nothing is lost: everything this queue still holds
+        // belongs to a branch that is being disposed of, and the disposal
+        // flushes it away regardless.
+        //
+        // NOT the flush the older note in `park_video_chain_for_deselect`
+        // implies. Sending FLUSH_START to `downstream` ahead of the unlink
+        // would work through `gst_queue_handle_sink_event`, which forwards the
+        // event and then calls `gst_pad_pause_task` on the src pad, waiting for
+        // a stream lock the queue's own blocked push holds. That is the exact
+        // deadlock `tests/teardown_races.rs` is built around, and it would put
+        // it at the one call site whose non-blocking property the gapless
+        // transition depends on. `gst_pad_add_probe` takes only the pad's
+        // object lock and returns at once, so this keeps that property. It also
+        // avoids the hazard a flush here would create, of leaving the overlay's
+        // `subtitle_sink` (still linked at this instant) flushing until a
+        // disposal that a resting PAUSED can defer indefinitely.
+        // WHAT THE DROP PROBE CANNOT COVER: a push ALREADY blocked inside the
+        // tqueue's CHAIN function, waiting for room. The probe sits on the
+        // queue's src pad and the flush that eventually lands on its sink pad
+        // sets `srcresult = FLUSHING` and wakes that chain call, which then
+        // returns GST_FLOW_FLUSHING (`gstqueue.c` `out_flushing`) into
+        // decodebin3's multiqueue loop. That latches the single-queue for good
+        // and adaptivedemux2's ONE output task pauses with nothing posted:
+        // FREEZE-DIAGN.md sections 1 and 5. No probe can help, the push is
+        // past every probe point by then.
+        //
+        // Raising the limit DOES help, and it is the documented purpose of the
+        // signal: `gst_queue_set_property` -> `queue_capacity_change` signals
+        // `item_del` precisely so "the _chain function ... might have more room
+        // now". So the blocked chain wakes with `srcresult` still OK, enqueues,
+        // and returns GST_FLOW_OK.
+        //
+        // ONLY max-size-TIME, which is the dimension that actually blocks here:
+        // this queue reports itself full on dead air between sparse cues
+        // (`gst_queue_apply_gap` advances the time level off GAP events) while
+        // holding zero buffers and zero bytes, which is the whole reason the
+        // push is parked. Lifting all three instead was a real defect: the queue
+        // then accepts unboundedly, materially more of the external's data is
+        // pulled through its own chain inside the detach window, and that
+        // exposes an unguarded NOT_LINKED there. `fuzz_scenarios` seed 500002
+        // iteration 1 step 6 (detach of a SELECTED external right after a seek)
+        // failed 8 of 11 runs with all three lifted and 0 of 7 without, on "the
+        // pipeline posted an error: Internal data stream error" attributed to
+        // the external's own uri. The buffer and byte caps stay at their
+        // defaults, so the data volume in flight is unchanged from before this
+        // wake existed. Lever: `FCAST_NO_TQUEUE_UNCAP_ON_DETACH`.
+        //
+        // And only on an ADAPTIVE main input, which is where the hazard this
+        // wake exists for lives: adaptivedemux2 serves every track from ONE
+        // output loop and pauses it for good on a FLUSHING return, killing the
+        // whole item (UPSTREAM-GSTREAMER-ISSUES.md D4). A non-adaptive demuxer
+        // loses only the flushing stream to the multiqueue latch (D3), which is
+        // the status quo this wake never had to change, and time-only still cost
+        // seed 500002 one failure in seven there.
+        if let Some(tqueue) = &tqueue
+            && inner.upstream_owns_selection()
+            && std::env::var_os("FCAST_NO_TQUEUE_UNCAP_ON_DETACH").is_none()
+        {
+            debug!(tqueue = %tqueue.name(), "lifting the text queue's time cap to wake a parked push");
+            tqueue.set_property("max-size-time", 0u64);
+        }
+
+        if let Some(tqueue) = &tqueue
+            && std::env::var_os("FCAST_NO_DETACH_DROP_PROBE").is_none()
+            && let Some(qsrc) = tqueue.static_pad("src")
+        {
+            // Never removed: this pad goes to NULL and leaves the pipeline
+            // with its queue in `dispose_text_branch`.
+            qsrc.add_probe(gst::PadProbeType::DATA_DOWNSTREAM, |_pad, _info| {
+                gst::PadProbeReturn::Drop
+            });
+        }
+
         // Text bypasses ssync, so its source is the decodebin3 pad itself.
         let _ = db3_src_pad.unlink(downstream);
         if let Some(tqueue) = &tqueue {
@@ -6378,14 +8961,81 @@ impl Inner {
             downstream: downstream.clone(),
             tqueue,
         };
-        if Inner::resting_paused(&inner.pipeline)
+        if (defer_disposal || Inner::resting_paused(&inner.pipeline))
             && std::env::var_os("FCAST_NO_TEXT_WORK_DEFERRAL").is_none()
         {
-            debug!("postponing a text branch disposal: the pipeline is at rest in PAUSED");
+            debug!(
+                defer_disposal,
+                "postponing a text branch disposal off the calling thread"
+            );
+            // A new postponed item invalidates the last drain's no-op
+            // verdict (see `Inner::drain_poke_parked`).
+            inner.drain_poke_parked.store(false, Ordering::SeqCst);
             inner.deferred_text_disposal.lock().push(disposal);
+            // The resting-PAUSED postponement waits for a state edge by
+            // design (the drain cannot complete below PLAYING anyway). A
+            // disposal handed over by the pad-removed path has no edge
+            // coming, so poke the worker the way the flush intent does.
+            if defer_disposal {
+                let _ = inner.work_tx.send(Job::DrainTextWork);
+            }
         } else {
-            Inner::dispose_text_branch(inner, disposal);
+            // The last silent FLUSHING injector: this runs at settled PLAYING,
+            // i.e. on every mid-play park or replace, and it sends flush pairs
+            // to the overlay's subtitle_sink and to the branch queue. The
+            // deferred paths above log; this one did not, which made a field
+            // log ambiguous when an adaptive demuxer discarded a FLUSHING on a
+            // dash text track with no crate line anywhere near it.
+            debug!(
+                downstream = %disposal.downstream.name(),
+                tqueue = ?disposal.tqueue.as_ref().map(|q| q.name().to_string()),
+                "disposing of a text branch inline"
+            );
+            inner.dispose_text_branch(disposal);
         }
+    }
+
+    /// Whether this external's stream is advertised but has NO decodebin3
+    /// output slot, which no amount of replaying can change.
+    ///
+    /// decodebin3 REMOVES a multiqueue slot when the input feeding it drains:
+    /// `remove_slot_from_streaming_thread` on EOS at the slot's src pad
+    /// (gstdecodebin3.c:3717, whose own FIXME notes the removal is async), and
+    /// slot creation only ever happens from a parsebin `pad-added`. An external
+    /// subtitle's stream reaches EOS as soon as its last cue is parsed, which
+    /// for a subtitle file is minutes into a feature-length item, and its
+    /// parsebin pad never appears again. From then on the stream is in the
+    /// collection, selectable by the caller, and SLOTLESS: a replay's data
+    /// arrives at a pad whose multiqueue peer is gone and the source dies
+    /// "streaming stopped, reason not-linked".
+    ///
+    /// Detected from two crate-side facts, no decodebin3 internals: none of the
+    /// routed streams carries one of this input's text sids, and the crate's own
+    /// EOS probe recorded that sid as drained.
+    /// Never holds `input_eos_sids` and `routing` at the same time: the EOS
+    /// probe that writes the first runs on streaming threads.
+    fn external_stream_slotless(&self, id: ExternalSubId, epoch: u32) -> bool {
+        let drained = self.input_eos_sids.lock().clone();
+        let routing = self.routing.lock();
+        let Some(input) = routing.inputs.iter().find(|i| {
+            i.external
+                .as_ref()
+                .is_some_and(|e| e.id == id && e.epoch == epoch)
+        }) else {
+            return false;
+        };
+        let sids = input.text_stream_ids();
+        if sids.is_empty() {
+            // Nothing advertised yet: the materialization watchdog owns this.
+            return false;
+        }
+        sids.iter().all(|sid| {
+            drained.contains(sid)
+                && !routing
+                    .routed
+                    .iter()
+                    .any(|routed| routed.db3_src_pad.stream_id().as_deref() == Some(sid.as_str()))
+        })
     }
 
     /// Whether the pipeline has come to rest at PAUSED, where a flush of the
@@ -6397,7 +9047,45 @@ impl Inner {
 
     /// The blocking half of a text detach: wake anything parked in the branch
     /// and drop its queue.
-    fn dispose_text_branch(inner: &Arc<Inner>, disposal: TextDisposal) {
+    fn dispose_text_branch(&self, disposal: TextDisposal) {
+        Self::dispose_text_branch_on(&self.overlay, &self.pipeline, disposal, &self.text_seat);
+    }
+
+    /// [`Inner::dispose_text_branch`] against handles rather than `&self`, so
+    /// the teardown boundary can run it after `Inner` is gone (see
+    /// [`Teardown`]).
+    fn dispose_text_branch_on(
+        overlay: &gst::Element,
+        pipeline: &gst::Pipeline,
+        disposal: TextDisposal,
+        seat: &TextSeat,
+    ) {
+        // A cue push that was already parked inside textoverlay when the
+        // branch was severed cannot be reached THROUGH the branch any more
+        // (both ends are unlinked), and it holds the queue's stream lock,
+        // so the queue flush below would wait on it forever. The overlay's
+        // own subtitle_sink static pad is the one remaining path to that
+        // push, and its FLUSH_START needs no stream lock. Only while the
+        // pad is unlinked, a linked pad belongs to a LIVE branch (a replace
+        // already relinked) and flushing it would drop the new track's
+        // data.
+        //
+        // The check and the pair are ONE critical section against the link
+        // that can make the pad linked between them (see [`Inner::text_seat`]
+        // for what losing that race costs). The seat lock is safe to hold
+        // across the pair: FLUSH_START is not serialized, so it takes no
+        // stream lock and wakes the parked push, and the wake path (an
+        // orphaned queue's loop task returning FLUSHING through a DROP probe)
+        // takes no crate lock at all. Lever: `FCAST_NO_TEXT_SEAT_LOCK`.
+        {
+            let _seat = seat.hold();
+            if let Some(pad) = overlay.static_pad("subtitle_sink")
+                && !pad.is_linked()
+            {
+                let _ = pad.send_event(gst::event::FlushStart::new());
+                let _ = pad.send_event(gst::event::FlushStop::new(true));
+            }
+        }
         let _ = disposal
             .downstream
             .send_event(gst::event::FlushStart::new());
@@ -6406,7 +9094,24 @@ impl Inner {
             .send_event(gst::event::FlushStop::new(true));
         if let Some(tqueue) = disposal.tqueue {
             let _ = tqueue.set_state(gst::State::Null);
-            let _ = inner.pipeline.remove(&tqueue);
+            let _ = pipeline.remove(&tqueue);
+        }
+    }
+
+    /// Run every pending branch disposal NOW, whatever the pipeline state.
+    /// For the teardown boundaries only (stop and drop), which run
+    /// [`Inner::flush_parked_text_pushes`] next. A postponed branch is
+    /// invisible to that flush (its pads live only in the disposal list),
+    /// and the decodebin3-sink flush there pauses a multiqueue task that
+    /// may be blocked mid-push into the orphaned full queue, so the
+    /// disposals MUST drain first or the teardown wedges on work it cannot
+    /// see. Captured with gdb from the field sequence pause, subtitles
+    /// off, stop.
+    fn drain_disposals_for_teardown(&self) {
+        let disposals = std::mem::take(&mut *self.deferred_text_disposal.lock());
+        for disposal in disposals {
+            debug!("disposing of a postponed text branch at teardown");
+            self.dispose_text_branch(disposal);
         }
     }
 
@@ -6432,7 +9137,7 @@ impl Inner {
                 .collect()
         };
         for (db3_src_pad, downstream, tqueue) in detached {
-            Inner::detach_text_parts(inner, &db3_src_pad, &downstream, tqueue);
+            Inner::detach_text_parts(inner, &db3_src_pad, &downstream, tqueue, false);
             let parked = inner.park_stream(&db3_src_pad);
             let orphaned = {
                 let mut routing = inner.routing.lock();
@@ -6481,9 +9186,30 @@ impl Inner {
     /// resume. The idle-video-block gst patch is what makes the branch
     /// reconfiguration reliable at steady PAUSED.
     fn poll_text_policy(inner: &Arc<Inner>) {
-        // Anything `pump_selection` postponed because the pipeline was at rest
-        // in PAUSED runs here, at the first settle point where it can.
-        Inner::run_deferred_text_work(inner);
+        // A settle point is a drain point too, but the drain EXECUTES only on
+        // the worker. This poll runs on the caller's event loop, and the
+        // drain's flush blocks until the branch's streaming thread can be
+        // paused, which is the caller wedge this whole mechanism exists to
+        // prevent.
+        //
+        // The poke is skipped while the last drain's no-op verdict stands
+        // (see `Inner::drain_poke_parked`). Without that, a caller polling
+        // every 5ms at a pipeline parked below PLAYING re-queued this job on
+        // every poll, indefinitely, and the worker spent the whole park
+        // spinning on drains that could only early-return (measured at 5099
+        // jobs over one 39-second Buffering park on the fuzz driver's seed
+        // 400009). The pipeline state edges still queue the drain
+        // unconditionally on the bus, so a settled PLAYING still drains
+        // promptly with no poll at all. The lever restores the
+        // poke-on-every-poll behavior for interleaved A/B measurement and
+        // gates this whole change, since the flag it ignores is written
+        // nowhere else that behavior can reach.
+        if inner.has_deferred_text_work()
+            && (!inner.drain_poke_parked.load(Ordering::SeqCst)
+                || std::env::var_os("FCAST_NO_DRAIN_POKE_SUPPRESS").is_some())
+        {
+            let _ = inner.work_tx.send(Job::DrainTextWork);
+        }
         let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
         if !decisions::text_may_link(current, pending) {
             return;
@@ -6495,11 +9221,173 @@ impl Inner {
         // when its pad appears. A branch already live across the boundary never
         // comes through here; that one is trigger #2, the `video_sink` probe.
         inner.sync_text_running_time();
+        // A re-attached external can materialize under the very stream id
+        // the engine already has applied (stream ids are URI-derived, so
+        // detaching a URL and attaching it again reuses the id). The engine
+        // then has nothing to dispatch, no SELECT_STREAMS confirmation ever
+        // arrives, and the confirmation-time hold release never runs. The
+        // input's data stayed blocked at its source pads for good while the
+        // selection reported success. Lift the hold here instead whenever
+        // the held stream IS the confirmed subtitle (a cheap no-op when
+        // nothing is held).
+        let confirmed = inner.last_applied_subtitle.lock().clone();
+        if let Some(confirmed) = confirmed {
+            // Nothing is owed here: this path exists precisely because no
+            // `STREAMS_SELECTED` arrived, so no replay was queued against it.
+            inner.unblock_selected_externals(std::slice::from_ref(&confirmed), None);
+        }
+        // Upstream-selection mode has NO confirmation channel for an
+        // external's sid at all (decodebin3 never posts there, the demuxer
+        // cannot name a foreign stream), so the confirmed release above can
+        // never fire for one. The engine's applied slot is the same authority
+        // that gates the join below; it drives the hold too, adopted as the
+        // confirmed slot, with the realigning replay the confirmation path
+        // would have queued. Lever: `FCAST_NO_UPSTREAM_SELECTION_SPLIT`.
+        if inner.upstream_owns_selection() {
+            let applied = inner.selection.lock().subtitle_sid();
+            let held = applied.and_then(|sid| {
+                let routing = inner.routing.lock();
+                routing.inputs.iter().find_map(|input| {
+                    input.external.as_ref().and_then(|external| {
+                        (external.hold_until_selected && input.stream_ids().contains(&sid))
+                            .then(|| (external.id, external.epoch, sid.clone()))
+                    })
+                })
+            });
+            if let Some((id, epoch, sid)) = held {
+                debug!(
+                    ?id,
+                    %sid,
+                    "upstream owns selection; releasing the held external the applied slot names"
+                );
+                *inner.last_applied_subtitle.lock() = Some(sid.clone());
+                let owed = inner
+                    .work_tx
+                    .send(Job::ReplaySub {
+                        id,
+                        epoch,
+                        attempt: 0,
+                    })
+                    .is_ok()
+                    .then_some((id, epoch));
+                inner.unblock_selected_externals(std::slice::from_ref(&sid), owed);
+            }
+        }
         // Only the selected subtitle stream may relink. A disabled stream
         // stays routed until decodebin3 removes its pad, and relinking it
         // here would resurrect the cue the eager detach just cleared.
         // Snapshot before taking the routing lock.
-        let allowed_sid = inner.selection.lock().subtitle_sid();
+        //
+        // A stream the applied selection names while the DESIRED state is an
+        // explicit subtitle-off is decodebin3's collection-default
+        // auto-select stomping that off (an attach makes it re-select over
+        // the applied state), the TEXT twin of the video resurrect
+        // `route_db3_pad` guards against. Splicing it into subtitleoverlay
+        // adds a reconfiguration to whatever transition is in flight, that
+        // transition never completes, and the receiver's pump gate
+        // (`quiet = running && !has_async_transition()`) then holds the
+        // engine's corrective re-assert back forever, so the only thing that
+        // would undo the stomp is postponed behind the stall the stomp
+        // caused. Leaving the stream parked keeps the pipeline settled, and
+        // the re-assert dispatches on the next pump and makes decodebin3 drop
+        // the pad. `fuzz_buffering` seed 400009, whose schedule ends
+        // `disable_subtitles` then `attach_external`. The lever restores the
+        // unconditional relink and gates this whole change.
+        let allowed_sid = {
+            let selection = inner.selection.lock();
+            if selection.subtitle_explicitly_off()
+                && std::env::var_os("FCAST_LINK_STOMPED_SUBTITLE").is_none()
+            {
+                None
+            } else {
+                selection.subtitle_sid()
+            }
+        };
+        // The overlay's one subtitle seat may still be held by a DEAD
+        // branch. A detached input's decodebin3 output pad can linger
+        // linked into the overlay past `remove_input` (the id stays in the
+        // collection while a same-id stream re-materializes, so no
+        // pad-removed fires), its sticky segment wiped by the removal's
+        // flush with nothing upstream left to ever send another one. Left
+        // alone it holds the seat forever and the occupied-seat check in
+        // the link loop below refuses every later text stream with no error
+        // surfaced anywhere. A branch that will render again always gets a
+        // segment re-sent by its own reconfigure, so a seat holder WITHOUT
+        // one, while a parked stream of the selected sid is waiting, is
+        // beyond recovery and gets evicted. The pads come out of the entry
+        // under the lock and the detach runs with the lock released, like
+        // every other text detach.
+        let reclaim = {
+            let mut routing = inner.routing.lock();
+            let waiting = allowed_sid.as_deref().is_some_and(|allowed| {
+                routing.routed.iter().any(|routed| {
+                    routed.kind == StreamKind::Text
+                        && routed.downstream.is_none()
+                        && routed.db3_src_pad.stream_id().as_deref() == Some(allowed)
+                })
+            });
+            if waiting {
+                routing
+                    .routed
+                    .iter_mut()
+                    .find(|routed| {
+                        routed.kind == StreamKind::Text
+                            && routed.downstream.is_some()
+                            && routed
+                                .db3_src_pad
+                                .sticky_event::<gst::event::Segment>(0)
+                                .is_none()
+                    })
+                    .map(|routed| {
+                        routed.seat_evicted = true;
+                        (
+                            routed.db3_src_pad.clone(),
+                            routed.downstream.take().expect("filtered on Some above"),
+                            routed.tqueue.take(),
+                        )
+                    })
+            } else {
+                None
+            }
+        };
+        if let Some((db3_src_pad, downstream, tqueue)) = reclaim {
+            warn!(
+                pad = %db3_src_pad.name(),
+                "reclaiming the overlay seat from a dead text branch"
+            );
+            Inner::detach_text_parts(inner, &db3_src_pad, &downstream, tqueue, false);
+            // Parked rather than left dangling, exactly like
+            // `park_text_streams`. Should the pad live on, decodebin3 must
+            // be able to drain it.
+            let parked = inner.park_stream(&db3_src_pad);
+            let orphaned = {
+                let mut routing = inner.routing.lock();
+                match routing
+                    .routed
+                    .iter_mut()
+                    .find(|routed| routed.db3_src_pad == db3_src_pad)
+                {
+                    Some(routed) => {
+                        match parked {
+                            Ok((sink, park)) => {
+                                routed.park_sink = Some(sink);
+                                routed.park_pad = Some(park);
+                            }
+                            Err(err) => warn!(?err, "failed to park the evicted text branch"),
+                        }
+                        None
+                    }
+                    // The stream unrouted while the lock was down, so its
+                    // parking sink has nothing left to belong to.
+                    None => parked.ok(),
+                }
+            };
+            if let Some((sink, park)) = orphaned {
+                let _ = db3_src_pad.unlink(&park);
+                let _ = sink.set_state(gst::State::Null);
+                let _ = inner.pipeline.remove(&sink);
+            }
+        }
         let mut routing = inner.routing.lock();
         if !routing
             .routed
@@ -6509,6 +9397,8 @@ impl Inner {
             return;
         }
         let mut joined: Option<String> = None;
+        // Why each candidate was refused, reported below when nothing joined.
+        let mut refusals: Vec<String> = Vec::new();
         for routed in routing
             .routed
             .iter_mut()
@@ -6517,20 +9407,75 @@ impl Inner {
             // No stream id yet means wait for a later poll.
             let sid = routed.db3_src_pad.stream_id();
             if sid.is_none() || sid.as_deref() != allowed_sid.as_deref() {
+                // Silent until a field log needed it: a switched-to external
+                // whose branch never joined left no trace of WHY, and every
+                // refusal in this loop is a `continue`.
+                refusals.push(format!(
+                    "{}: sid {:?} is not the allowed {:?}",
+                    routed.db3_src_pad.name(),
+                    sid.as_deref(),
+                    allowed_sid.as_deref()
+                ));
                 continue;
+            }
+            // An entry the seat reclaim evicted stays out of contention
+            // while its pad remains segmentless. Relinked, it would only
+            // win the seat back from the same-sid stream that can render
+            // (routed order is stable, and the evicted pad comes first). A
+            // segment on the pad means the branch revived and may compete
+            // again.
+            if routed.seat_evicted {
+                if routed
+                    .db3_src_pad
+                    .sticky_event::<gst::event::Segment>(0)
+                    .is_none()
+                {
+                    refusals.push(format!(
+                        "{}: seat-evicted and still segmentless",
+                        routed.db3_src_pad.name()
+                    ));
+                    continue;
+                }
+                routed.seat_evicted = false;
             }
             let Some(overlay_entry) = inner.overlay.static_pad("subtitle_sink") else {
                 warn!("subtitleoverlay has no subtitle_sink pad");
                 continue;
             };
+            // Held from the occupancy check through the link, so a disposal
+            // running concurrently cannot decide the seat is free and flush it
+            // out from under the branch joining here (see [`TextSeat`]).
+            // Everything inside is pad and bin surgery, which blocks on
+            // nothing. A busy seat is not waited out, see `TextSeat::try_hold`.
+            let Ok(_seat) = inner.text_seat.try_hold() else {
+                refusals.push(format!(
+                    "{}: a branch disposal holds the overlay seat",
+                    routed.db3_src_pad.name()
+                ));
+                // Not the caller's next settle point: the worker pokes this
+                // poll when it drains, see `Inner::run_deferred_text_work`.
+                continue;
+            };
             if overlay_entry.is_linked() {
                 warn!("subtitle_sink already linked; skipping extra text stream");
+                refusals.push(format!(
+                    "{}: subtitle_sink already linked",
+                    routed.db3_src_pad.name()
+                ));
                 continue;
             }
             // Build the per-stream queue (see `RoutedStream::tqueue`) and
             // wire db3-text-pad -> queue -> overlay. The upstream link comes
             // last so data only flows once the chain is complete.
+            // NAMED after the decodebin3 pad it serves. This is the only plain
+            // `queue` the crate leaves unnamed anywhere in the pipeline, so
+            // GStreamer auto-named it `queueN` and a field log reporting
+            // "queue5: Failed to push event" took a source audit to attribute
+            // (see `dash-start-seek-text-join-race.md`, which had to establish
+            // it by exhaustion). A name costs nothing and makes the next such
+            // log self-describing.
             let tqueue = match gst::ElementFactory::make("queue")
+                .name(format!("fpb-tqueue-{}", routed.db3_src_pad.name()))
                 .property("silent", true)
                 .build()
             {
@@ -6582,6 +9527,59 @@ impl Inner {
                 }
             }
         }
+        // A wanted sid nothing carries is otherwise a SILENT wedge (every
+        // mismatch above just `continue`s): name the parked inventory so a
+        // field log identifies the blocker, e.g. a drained external whose
+        // multiqueue slot decodebin3 reclaimed for another stream
+        // (`ext-subtitle-regression-2.txt`).
+        if joined.is_none()
+            && let Some(allowed) = allowed_sid.as_deref()
+            && !routing.routed.iter().any(|r| {
+                r.kind == StreamKind::Text
+                    && r.db3_src_pad.stream_id().as_deref() == Some(allowed)
+            })
+        {
+            let text_pads: Vec<String> = routing
+                .routed
+                .iter()
+                .filter(|r| r.kind == StreamKind::Text)
+                .map(|r| {
+                    format!(
+                        "{}={:?} linked={}",
+                        r.db3_src_pad.name(),
+                        r.db3_src_pad.stream_id().as_deref(),
+                        r.downstream.is_some()
+                    )
+                })
+                .collect();
+            debug!(allowed, ?text_pads, "no routed text pad carries the allowed sid");
+        }
+        // The OTHER silent shape, and the one the field hit: a carrier pad
+        // exists, its input delivers, and the branch still did not join, so
+        // every candidate was refused for one of the reasons above. Without
+        // this the log shows a selection that confirmed and simply never
+        // rendered, with nothing to point at.
+        // NOT when the allowed sid is already on the overlay. The link loop
+        // only considers entries with `downstream: None`, so a branch that
+        // joined on an EARLIER poll is invisible to it and every other text
+        // entry lands in `refusals`: the first version of this line fired twice
+        // on a field log where the wanted stream was joined and rendering, which
+        // is worse than no diagnostic. `joined` means "linked by THIS call",
+        // which is not the same question.
+        let already_joined = allowed_sid.as_deref().is_some_and(|allowed| {
+            routing.routed.iter().any(|r| {
+                r.kind == StreamKind::Text
+                    && r.downstream.is_some()
+                    && r.db3_src_pad.stream_id().as_deref() == Some(allowed)
+            })
+        });
+        if joined.is_none() && !refusals.is_empty() && allowed_sid.is_some() && !already_joined {
+            debug!(
+                allowed = ?allowed_sid.as_deref(),
+                ?refusals,
+                "no text branch joined subtitleoverlay"
+            );
+        }
         // EVERY join of an external stream replays its input: by join
         // time anything may have drained its data beyond reach (deselect
         // drains, the deselect-race death, auto-select releasing the hold
@@ -6627,7 +9625,46 @@ impl Inner {
 /// The pure routing decisions, separated from the pipeline calls that act on
 /// them so the invariants are unit-testable without a live pipeline.
 mod decisions {
-    use super::StreamKind;
+    use super::{DeferredTextWork, StreamKind};
+
+    /// The eager text-branch work a subtitle transition needs before its
+    /// `SELECT_STREAMS` goes out (see `pump_selection`).
+    ///
+    /// `upstream_owns` is the tri-state from `Inner::upstream_selection_mode`:
+    /// `None` means the main input has no decodebin3 sink pad linked yet, so
+    /// the SELECTABLE query has nobody to ask. An unknown mode takes the PARK,
+    /// not the flush: the pair would land on a text branch that may be fed by
+    /// an adaptive demuxer, and one push racing it returns FLUSHING into a
+    /// single output loop serving every track, which then pauses for good with
+    /// no error posted at all (FREEZE-DIAGN.md section 1). That state cannot
+    /// co-occur with a replace today (section 3 proves both
+    /// `last_applied_subtitle` setters need the very link that populates the
+    /// pads), so this arm is defense in depth and nothing rests on it.
+    ///
+    /// `eager_flush_on_unknown` is the lever
+    /// `FCAST_EAGER_FLUSH_ON_UNKNOWN_MODE` (set = the old behaviour, where an
+    /// unknown mode read as a definite false).
+    pub(crate) fn eager_text_work(
+        subtitle_off: bool,
+        replacing: bool,
+        upstream_owns: Option<bool>,
+        eager_flush_on_unknown: bool,
+    ) -> Option<DeferredTextWork> {
+        if subtitle_off {
+            return Some(DeferredTextWork::Park);
+        }
+        if !replacing {
+            return None;
+        }
+        match upstream_owns {
+            // Upstream owns selection: no pad swap is coming to free the
+            // overlay seat, so the park does the handover.
+            Some(true) => Some(DeferredTextWork::Park),
+            Some(false) => Some(DeferredTextWork::Flush),
+            None if eager_flush_on_unknown => Some(DeferredTextWork::Flush),
+            None => Some(DeferredTextWork::Park),
+        }
+    }
 
     /// Whether applying `selected_ids` drops video ENTIRELY (the video-chain
     /// deactivation case), as opposed to a video-to-video switch, whose new
@@ -6723,11 +9760,65 @@ mod decisions {
 
 #[cfg(test)]
 mod tests {
-    use super::{StreamKind, SwapState, decisions::*};
+    use super::{DeferredTextWork, StreamKind, SwapState, decisions::*};
 
     fn ids(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
     }
+
+    /// An unanswerable upstream-selection mode is not a "no": the old code
+    /// read that ignorance as "nobody upstream owns selection" and chose the
+    /// FLUSH, whose pair on a demuxer-fed text branch can return FLUSHING into
+    /// the one output loop serving every track and pause it for good. Defense
+    /// in depth, see `decisions::eager_text_work`.
+    #[test]
+    fn an_unknown_upstream_mode_never_chooses_the_eager_flush() {
+        assert_eq!(
+            eager_text_work(false, true, None, false),
+            Some(DeferredTextWork::Park)
+        );
+        // The lever restores the old, freezing choice.
+        assert_eq!(
+            eager_text_work(false, true, None, true),
+            Some(DeferredTextWork::Flush)
+        );
+        // Both DEFINITE answers keep their pre-existing arm.
+        assert_eq!(
+            eager_text_work(false, true, Some(true), false),
+            Some(DeferredTextWork::Park)
+        );
+        assert_eq!(
+            eager_text_work(false, true, Some(false), false),
+            Some(DeferredTextWork::Flush)
+        );
+    }
+
+    /// The other two arms of the same decision are mode-independent: turning
+    /// subtitles off always parks (that IS the handover), and a selection that
+    /// replaces nothing has no outgoing branch to wake.
+    #[test]
+    fn eager_text_work_off_parks_and_a_non_replace_does_nothing() {
+        for mode in [None, Some(true), Some(false)] {
+            assert_eq!(
+                eager_text_work(true, false, mode, false),
+                Some(DeferredTextWork::Park),
+                "subtitle-off with mode {mode:?}"
+            );
+            // A subtitle-off still parks even when it also replaces: the
+            // off arm is checked first because there is no incoming track.
+            assert_eq!(
+                eager_text_work(true, true, mode, false),
+                Some(DeferredTextWork::Park),
+                "subtitle-off replace with mode {mode:?}"
+            );
+            assert_eq!(
+                eager_text_work(false, false, mode, false),
+                None,
+                "non-replace with mode {mode:?}"
+            );
+        }
+    }
+
 
     /// The gapless activation window is `swapped` AND `pending`, nothing
     /// looser. Two callers depend on exactly this shape: the cancel refusal

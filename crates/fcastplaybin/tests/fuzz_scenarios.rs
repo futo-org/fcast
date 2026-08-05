@@ -687,6 +687,31 @@ impl fmt::Display for Coverage {
     }
 }
 
+/// Whether the driver drops load-scoped events from a superseded load the way
+/// `application.rs` `handle_player_event` does. Set the lever to restore the
+/// old generation-blind behaviour for an A/B.
+fn generation_gate_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("FCAST_FUZZ_NO_GENERATION_GATE").is_err())
+}
+
+/// Mirror of `application.rs` `player_event_is_load_scoped`: everything except
+/// the control-plane events belongs to one load and must be dropped when its
+/// generation is not the current one.
+fn event_is_load_scoped(event: &PlaybinEvent) -> bool {
+    !matches!(
+        event,
+        PlaybinEvent::VolumeChanged(_)
+            | PlaybinEvent::RequestState(_)
+            | PlaybinEvent::ClockLost
+            // Stamped with the PREPARED (future) generation by design, and
+            // validated against the pre-arm bookkeeping, not the current load.
+            | PlaybinEvent::PreparedActivated
+            | PlaybinEvent::PreparedCancelled { .. }
+            | PlaybinEvent::PreparedCancelDeclined { .. }
+    )
+}
+
 struct Runner {
     playbin: FcastPlaybin,
     events: mpsc::Receiver<(PlaybinEvent, u64)>,
@@ -701,6 +726,11 @@ struct Runner {
     /// the sweep drops it once a second load happened (a swap's teardown legally
     /// leaves the log ending mid-flush).
     loads: Cell<u32>,
+    /// The generation of the load this driver expects events for, exactly as
+    /// `player.rs` keeps it. `None` while stopped. Load-scoped events from any
+    /// other generation are a superseded load's stragglers and are dropped in
+    /// [`Runner::admit`], the way `application.rs` drops them.
+    expected_generation: Cell<Option<u64>>,
     step: Cell<usize>,
     coverage: Cell<Coverage>,
     /// One entry per cue that crossed subtitleoverlay: the video's timeline
@@ -746,6 +776,7 @@ impl Runner {
             paused: Cell::new(false),
             attached: RefCell::new([None; EXTERNALS]),
             loads: Cell::new(0),
+            expected_generation: Cell::new(None),
             step: Cell::new(0),
             coverage: Cell::new(Coverage::default()),
             alignment: Arc::new(Mutex::new(Vec::new())),
@@ -808,6 +839,32 @@ impl Runner {
         }
     }
 
+    /// `application.rs` `handle_player_event`: a load-scoped event from a
+    /// superseded (or stopped) load is a straggler and is dropped in one
+    /// place, before any handler sees it. Without this the dying item's EOS,
+    /// error or state edge is acted on as if it belonged to the item now
+    /// playing, which the receiver never does.
+    ///
+    /// Returns whether the event may be handled at all.
+    fn admit(&self, event: &PlaybinEvent, generation: u64) -> bool {
+        if !generation_gate_enabled()
+            || !event_is_load_scoped(event)
+            || self.expected_generation.get() == Some(generation)
+        {
+            return true;
+        }
+        // Named on stderr because the gate makes the driver LESS sensitive: a
+        // genuine crate bug that manifests as a wrongly stamped event is now
+        // dropped, and a triage has to be able to see that it was.
+        eprintln!(
+            "fuzz_scenarios: step {} dropped {event:?} from a superseded load \
+             (generation {generation}, expected {:?})",
+            self.step.get(),
+            self.expected_generation.get()
+        );
+        false
+    }
+
     /// Moves every pending event into the log. Returns whether `pred` matched one
     /// of them, plus the first problem it saw.
     fn drain_matching(
@@ -817,7 +874,10 @@ impl Runner {
         let mut hit = false;
         let mut problem = None;
         let mut log = self.log.lock().expect("event log");
-        while let Ok((event, _generation)) = self.events.try_recv() {
+        while let Ok((event, generation)) = self.events.try_recv() {
+            if !self.admit(&event, generation) {
+                continue;
+            }
             if problem.is_none() {
                 problem = Self::problem(&event);
             }
@@ -1097,7 +1157,10 @@ impl Runner {
             }
             self.settle_pump();
             match self.events.recv_timeout(Duration::from_millis(20)) {
-                Ok((event, _generation)) => {
+                Ok((event, generation)) => {
+                    if !self.admit(&event, generation) {
+                        continue;
+                    }
                     let problem = Self::problem(&event);
                     let hit = pred(&event);
                     self.log.lock().expect("event log").push(event);
@@ -1174,13 +1237,16 @@ impl Runner {
         self.alignment.lock().expect("alignment tap").clear();
         self.alignment_cursor.set(0);
         *self.tapped.borrow_mut() = None;
-        self.playbin.load_async(
+        // `player.rs` `set_source`: the returned generation is what the
+        // application scopes every following load-scoped event to.
+        let generation = self.playbin.load_async(
             MediaInput::Uri(uri.to_owned()),
             StartPoint::Seek {
                 position: gst::ClockTime::ZERO,
                 rate: 1.0,
             },
         );
+        self.expected_generation.set(Some(generation));
         self.wait_for("Loaded", |event| {
             matches!(event, PlaybinEvent::Loaded { .. })
         })?;
@@ -1206,6 +1272,13 @@ impl Runner {
 
     /// stop() on a helper thread, so a wedge is a failure and not a hung suite.
     fn stop_bounded(&self, case: &Case) -> Checked {
+        // `player.rs` `go_to_stopped_state` clears the expected generation as
+        // part of the same call that issues the stop, so nothing is loaded and
+        // no load-scoped event belongs to this player until the next load. The
+        // events already sitting in the queue are dropped too, exactly as the
+        // application drops them: it tests currency when it HANDLES an event,
+        // which for anything queued behind the stop is after the clear.
+        self.expected_generation.set(None);
         let playbin = self.playbin.clone();
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {

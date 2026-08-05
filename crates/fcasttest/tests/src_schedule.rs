@@ -10,7 +10,7 @@ use std::{
 
 use fcasttest::{
     caps, registry,
-    spec::{CueSpec, Fault, MediaSpec, StreamSpec},
+    spec::{CueSpec, Fault, FlowStopReason, MediaSpec, StreamSpec},
 };
 use gst::prelude::*;
 
@@ -603,6 +603,38 @@ fn error_fault_stops_the_stream() {
         "unexpected error debug: {debug}"
     );
     assert_eq!(harness.log_of("video_0")["video_0"].buffers.len(), 4);
+}
+
+/// The fault must be byte-identical to a real source giving up: fcastplaybin
+/// reads "reason not-linked" / "reason flushing" out of the debug string and
+/// recovers in place, treating anything else as a genuine failure. Asserting
+/// less would let the text drift and the fault would come to mean the opposite.
+#[test]
+fn flow_stop_fault_posts_the_flow_error_shape() {
+    for (reason, key) in [
+        (FlowStopReason::NotLinked, "schedflownl"),
+        (FlowStopReason::Flushing, "schedflowfl"),
+    ] {
+        let spec = MediaSpec::new(11).with_stream(
+            StreamSpec::video("video_0")
+                .with_duration(TEN_FRAMES)
+                .with_bytes_per_buffer(32)
+                .with_fault(Fault::FlowStoppedAt {
+                    buffer_index: 3,
+                    reason,
+                }),
+        );
+        let (harness, _scenario) = Harness::new(key, spec);
+        harness.play();
+
+        let debug = harness.wait_for_error();
+        assert!(
+            debug.contains(reason.debug_text()),
+            "the debug text must carry GST_ELEMENT_FLOW_ERROR's {:?} verbatim, got: {debug}",
+            reason.debug_text()
+        );
+        assert_eq!(harness.log_of("video_0")["video_0"].buffers.len(), 3);
+    }
 }
 
 #[test]

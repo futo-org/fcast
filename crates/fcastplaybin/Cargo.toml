@@ -5,7 +5,7 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
-gst = { workspace = true }
+gst = { workspace = true, features = ["v1_22"] }
 anyhow = { workspace = true }
 tracing = { workspace = true }
 parking_lot = { workspace = true }

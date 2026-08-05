@@ -138,6 +138,9 @@ pub struct StateMachine {
     phase: Phase,
     target: gst::State,
     slot: SeekSlot,
+    /// Re-assert PAUSED when a tracked seek sees the pipeline settle at
+    /// PLAYING. Lever: `FCAST_NO_PARKED_SEEK_RESCUE` (set = off).
+    rescue: bool,
 }
 
 impl Default for StateMachine {
@@ -155,6 +158,7 @@ impl StateMachine {
             phase: Phase::Stopped,
             target: gst::State::Paused,
             slot: SeekSlot::None,
+            rescue: std::env::var_os("FCAST_NO_PARKED_SEEK_RESCUE").is_none(),
         }
     }
 
@@ -416,11 +420,28 @@ impl StateMachine {
         }
 
         // Seek edges take precedence over the phase while a seek is tracked.
+        //
+        // A tracked seek waits for a settled-Paused EDGE, so a pipeline that
+        // settles at PLAYING instead has provably skipped it (a retargeting
+        // `set_state` makes `bin_handle_async_done` continue to TARGET, and
+        // the intermediate Paused commit carries `pending = Playing`). Left
+        // alone the slot never clears and `running()` reads `None` forever:
+        // the `seek-leads-to-freeze.txt` receiver wedge. Re-asserting PAUSED
+        // manufactures the missing settle; the slot machinery then converges
+        // and restores `target` as usual.
+        let stranded = self.rescue
+            && new == gst::State::Playing
+            && pending == gst::State::VoidPending;
+        if stranded && self.slot != SeekSlot::None {
+            debug!(slot = ?self.slot, "the pipeline settled at PLAYING past a tracked seek; re-asserting PAUSED");
+        }
         match self.slot {
             SeekSlot::Parked(seek) => {
                 return if settled_paused {
                     self.slot = SeekSlot::InFlight;
                     StateChangeResult::Seek(seek)
+                } else if stranded {
+                    StateChangeResult::ChangeState(gst::State::Paused)
                 } else {
                     StateChangeResult::Waiting
                 };
@@ -432,6 +453,8 @@ impl StateMachine {
                     debug!(?seek, "Dispatching the parked seek");
                     self.slot = SeekSlot::InFlight;
                     StateChangeResult::Seek(seek)
+                } else if stranded {
+                    StateChangeResult::ChangeState(gst::State::Paused)
                 } else {
                     StateChangeResult::Waiting
                 };
@@ -447,6 +470,8 @@ impl StateMachine {
                         self.phase = Phase::Running(RunningState::Paused);
                         StateChangeResult::NewPlaybackState(PlaybackState::Paused)
                     }
+                } else if stranded {
+                    StateChangeResult::ChangeState(gst::State::Paused)
                 } else {
                     StateChangeResult::Waiting
                 };
@@ -611,6 +636,18 @@ impl StateMachine {
     fn probe(&self) -> (Phase, gst::State, SeekSlot) {
         (self.phase, self.target, self.slot)
     }
+
+    /// The whole internal model in one string, for a test's failure message.
+    /// Drivers used to print only the PIPELINE state, which left the
+    /// `unsettled []` class untriaged for three campaigns. This named it on the
+    /// first failing run: `phase=Running(Playing) slot=InFlight current=Paused`,
+    /// a dispatched seek whose settle edge can never arrive.
+    pub fn debug_model(&self) -> String {
+        format!(
+            "phase={:?} target={:?} slot={:?} current={:?}",
+            self.phase, self.target, self.slot, self.current_state
+        )
+    }
 }
 
 #[cfg(test)]
@@ -675,7 +712,7 @@ mod tests {
         assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
         assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
-        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Paused)));
         sm.queue_seek(Seek::new(Some(CTZ), Some(1.0)));
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(CTZ), Some(1.0))));
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting);
@@ -695,7 +732,7 @@ mod tests {
         assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
         assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
-        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Paused)));
         sm.queue_seek(Seek::new(Some(CTZ), Some(1.0)));
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(CTZ), Some(1.0))));
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting);
@@ -711,7 +748,7 @@ mod tests {
         assert_eq!(sm.seek_internal(Seek::new(Some(sixty), None), None), Some(Seek::new(Some(sixty), Some(1.0))));
         assert_eq!(sm.set_playback_state(RunningState::Playing), None);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
-        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Paused)));
         sm.queue_seek(Seek::new(Some(sixty), Some(1.0)));
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(sixty), Some(1.0))));
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting);
@@ -734,7 +771,7 @@ mod tests {
         assert_eq!(sm.buffering(1), BufferingStateResult::Started(gs!(Paused)));
         assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek);
         assert_eq!(sm.state_changed(gs!(Ready), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
-        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Paused)));
         sm.queue_seek(Seek { position: Some(CTZ), rate: Some(1.0) });
         assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(CTZ), Some(1.0))));
         assert_eq!(sm.state_changed(gs!(Paused), gs!(Paused), gs!(Paused)), StateChangeResult::Waiting);
@@ -772,7 +809,7 @@ mod tests {
         assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
         assert_eq!(sm.buffering(100), BufferingStateResult::FinishedButWaitingSeek);
         assert_eq!(sm.state_changed(gs!(Null), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
-        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting);
+        assert_eq!(sm.state_changed(gs!(Null), gs!(Playing), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Paused)));
         sm.queue_seek(Seek::new(Some(CTZ), Some(1.0)));
         assert_eq!(sm.probe(), (Phase::Changing, gs!(Playing), SeekSlot::Parked(Seek::new(Some(CTZ), Some(1.0)))));
         assert_eq!(sm.buffering(0), BufferingStateResult::Started(gs!(Paused)));
@@ -1029,8 +1066,10 @@ mod tests {
         // Reached Paused but still transitioning (pending != VoidPending): parked.
         assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(Playing)), StateChangeResult::Waiting);
         assert!(matches!(sm.probe().2, SeekSlot::Parked(_)), "must stay parked while still transitioning");
-        // Settled at a non-Paused state: still parked (fires only on Paused).
-        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), StateChangeResult::Waiting);
+        // Settled at PLAYING: stays parked, but the machine re-asserts PAUSED
+        // (a settled pipeline posts no further edges, so waiting here is the
+        // `seek-leads-to-freeze.txt` wedge).
+        assert_eq!(sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)), StateChangeResult::ChangeState(gs!(Paused)));
         assert!(matches!(sm.probe().2, SeekSlot::Parked(_)));
         // Settled at Paused/VoidPending: the queued seek is finally dispatched.
         assert_eq!(sm.state_changed(gs!(Playing), gs!(Paused), gs!(VoidPending)), StateChangeResult::Seek(Seek::new(Some(TEN), Some(1.0))));

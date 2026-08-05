@@ -40,6 +40,13 @@ pub struct MediaSpec {
     pub streams: Vec<StreamSpec>,
     /// Root of every jitter draw. All PRNGs derive from it, see [`crate::prng`].
     pub seed: u64,
+    /// Scheduled buffering messages over the whole media, see [`BufferingSpec`].
+    pub buffering: Option<BufferingSpec>,
+    /// Model an adaptive demuxer (DASH/HLS): answer the SELECTABLE query with
+    /// TRUE, which makes decodebin3 defer ALL stream selection upstream, and
+    /// handle SELECT_STREAMS with adaptivedemux2's semantics (one unknown id
+    /// rejects the whole event; a post only on an actual selection change).
+    pub upstream_selection: bool,
 }
 
 impl MediaSpec {
@@ -47,11 +54,18 @@ impl MediaSpec {
         Self {
             streams: Vec::new(),
             seed,
+            buffering: None,
+            upstream_selection: false,
         }
     }
 
     pub fn with_stream(mut self, stream: StreamSpec) -> Self {
         self.streams.push(stream);
+        self
+    }
+
+    pub fn with_buffering(mut self, buffering: BufferingSpec) -> Self {
+        self.buffering = Some(buffering);
         self
     }
 
@@ -243,9 +257,125 @@ pub enum Fault {
     ErrorAt {
         buffer_index: u64,
     },
+    /// `GST_ELEMENT_FLOW_ERROR`'s exact shape: "Internal data stream error."
+    /// with [`FlowStopReason::debug_text`] as debug info. NOT interchangeable
+    /// with [`Fault::ErrorAt`]: fcastplaybin classifies on that debug text
+    /// (`decisions::external_error_action`) and recovers in place.
+    FlowStoppedAt {
+        buffer_index: u64,
+        reason: FlowStopReason,
+    },
     EosAt {
         buffer_index: u64,
     },
+}
+
+/// The flow return a [`Fault::FlowStoppedAt`] blames: a deselect unlinked the
+/// branch, or a flush caught the push.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlowStopReason {
+    NotLinked,
+    Flushing,
+}
+
+impl FlowStopReason {
+    /// `GST_ELEMENT_FLOW_ERROR`'s debug text, byte for byte: `gstelement.h:505`
+    /// formats `"streaming stopped, reason %s (%d)"` over `gst_flow_get_name`
+    /// (`gstpad.c:237-238`) and the enum value (`gstpad.h:172-173`). Consumers
+    /// match on this text, so it must not differ from a real give-up.
+    pub fn debug_text(self) -> &'static str {
+        match self {
+            Self::NotLinked => "streaming stopped, reason not-linked (-1)",
+            Self::Flushing => "streaming stopped, reason flushing (-2)",
+        }
+    }
+}
+
+/// Scheduled `GST_MESSAGE_BUFFERING` posts covering the whole media.
+///
+/// `ftest://` media has no buffering element, and a consumer reacts to the bus
+/// message rather than to flow control, so ftestsrc posts the messages itself
+/// and keeps serving data throughout. Every dip posts [`low_percent`] exactly
+/// once at its start and 100 exactly once at its end, and dips run one after
+/// another, so a consumer can always leave its buffering state.
+///
+/// [`low_percent`]: Self::low_percent
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct BufferingSpec {
+    /// Percent carried by the low post of every dip. Clamped to 0..=99 at post
+    /// time, so a dip can never claim the buffer is already full.
+    pub low_percent: i32,
+    /// A buffering period that begins with the source itself, before any media
+    /// flows. The low percent is posted as soon as the element starts and 100
+    /// follows after this many milliseconds.
+    pub initial_ms: Option<u64>,
+    /// Wall-clock dips to low and back to 100, repeating for the life of the
+    /// element.
+    pub periodic: Option<PeriodicBuffering>,
+    /// Dips anchored to a stream's schedule, so a test can time one
+    /// deterministically.
+    pub dips: Vec<BufferingDip>,
+}
+
+impl BufferingSpec {
+    pub fn new(low_percent: i32) -> Self {
+        Self {
+            low_percent,
+            initial_ms: None,
+            periodic: None,
+            dips: Vec::new(),
+        }
+    }
+
+    pub fn with_initial_ms(mut self, ms: u64) -> Self {
+        self.initial_ms = Some(ms);
+        self
+    }
+
+    pub fn with_periodic(mut self, period_ms: u64, low_ms: u64) -> Self {
+        self.periodic = Some(PeriodicBuffering { period_ms, low_ms });
+        self
+    }
+
+    pub fn with_dip(mut self, dip: BufferingDip) -> Self {
+        self.dips.push(dip);
+        self
+    }
+}
+
+/// One wall-clock buffering dip per period, see [`BufferingSpec::periodic`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeriodicBuffering {
+    /// Time from one dip's start to the next dip's start.
+    pub period_ms: u64,
+    /// How long each dip holds the low percent before 100 is posted.
+    pub low_ms: u64,
+}
+
+/// One buffering dip anchored to a stream's schedule. It fires when the named
+/// stream DELIVERS the buffer at `buffer_index`, so the low post always trails
+/// that buffer downstream. A schedule restarted behind the index by a flushing
+/// seek delivers the buffer again and fires the dip again, exactly like
+/// [`Fault`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BufferingDip {
+    /// Stream-id suffix of the stream whose schedule anchors the dip.
+    pub stream: String,
+    /// Buffer number within that stream, the same numbering [`Fault`] uses.
+    pub buffer_index: u64,
+    pub recovery: BufferingRecovery,
+}
+
+/// How an anchored dip's 100 post is scheduled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BufferingRecovery {
+    /// 100 is posted this many milliseconds after the low post.
+    AfterMs(u64),
+    /// 100 is posted once the test releases the named sync point, so a test
+    /// can hold a consumer in its buffering state for as long as it wants. A
+    /// gate stays released once released, which makes a dip that refires
+    /// after a schedule restart recover immediately.
+    OnSyncPoint(String),
 }
 
 /// Decoder behaviour. Autoplugged elements cannot be configured by the test, so

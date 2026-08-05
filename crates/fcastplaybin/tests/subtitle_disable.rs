@@ -151,6 +151,11 @@ struct Harness {
     /// Transport state for the [`SelectionGate`]. Tests flip it around
     /// `pause()`/`play()`.
     paused: std::cell::Cell<bool>,
+    /// Set by a lost-state edge, cleared by the settle that follows it or by
+    /// reaching PLAYING. See [`Harness::redrive_transport`].
+    lost_state: std::cell::Cell<bool>,
+    /// A seek the crate refused and parked. See [`Harness::redrive_transport`].
+    parked_seek: std::cell::Cell<Option<Seek>>,
 }
 
 impl Harness {
@@ -174,7 +179,82 @@ impl Harness {
             events,
             log: std::cell::RefCell::new(Vec::new()),
             paused: std::cell::Cell::new(false),
+            lost_state: std::cell::Cell::new(false),
+            parked_seek: std::cell::Cell::new(None),
         }
+    }
+
+    /// Put back the transport the crate parked, which is the one thing a real
+    /// caller does that this harness skipped.
+    ///
+    /// Two crate jobs hand work back to the caller rather than completing it,
+    /// and both announce it:
+    ///
+    /// * A pipeline that loses state (anything added while PLAYING that has a
+    ///   preroll to do: the text branch this file relinks on a resume, a late
+    ///   audio branch) drops ITSELF to PAUSED and, per `gst_element_lost_state`,
+    ///   "will also not automatically go to PLAYING but let the
+    ///   parent/application set us to PLAYING explicitly". The edge is
+    ///   `Paused` with pending `Paused`, and `StateMachine`'s `Phase::Running`
+    ///   dip arm (`src/state_machine.rs:541`) is what keeps the PLAYING target
+    ///   across it in production.
+    /// * `Job::Seek` (`src/lib.rs:4415`) refuses a seek that does not arrive at
+    ///   a settled PAUSED, posts `QueueSeek` and commits PAUSED, expecting the
+    ///   caller to re-issue it from the settle (`SeekSlot::Parked`).
+    ///
+    /// Without either, a resume that grows a branch leaves the pipeline in
+    /// PAUSED for good: no video buffer is produced, so no cue can be tapped,
+    /// which is exactly the `no rendered cue reappeared` report. Whether the
+    /// branch surgery lands before or after the pipeline settles PLAYING is a
+    /// race, which is why it is rare and load-dependent.
+    ///
+    /// Only an ACTUAL lost-state edge arms the PLAYING re-commit, so a load's
+    /// own preroll settle (which never carries a non-void pending) cannot start
+    /// playback behind a test's back.
+    ///
+    /// Lever: `FCAST_TEST_NO_TRANSPORT_REDRIVE`.
+    fn redrive_transport(&self, event: &PlaybinEvent) {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *OFF.get_or_init(|| std::env::var_os("FCAST_TEST_NO_TRANSPORT_REDRIVE").is_some()) {
+            return;
+        }
+        match event {
+            PlaybinEvent::QueueSeek(seek) => self.parked_seek.set(Some(*seek)),
+            PlaybinEvent::StateChanged {
+                current: gst::State::Paused,
+                pending: gst::State::Paused,
+                ..
+            } => self.lost_state.set(true),
+            PlaybinEvent::StateChanged {
+                current: gst::State::Paused,
+                pending: gst::State::VoidPending,
+                ..
+            } => {
+                if let Some(seek) = self.parked_seek.take() {
+                    self.playbin.seek_async(seek);
+                } else if self.lost_state.replace(false) && !self.paused.get() {
+                    let _ = self.playbin.play();
+                }
+            }
+            PlaybinEvent::StateChanged {
+                current: gst::State::Playing,
+                ..
+            } => self.lost_state.set(false),
+            _ => {}
+        }
+    }
+
+    /// Whether a lost-state edge is outstanding, plus the pipeline's state, for
+    /// a timeout to name WHY nothing is flowing.
+    fn transport_diagnosis(&self) -> String {
+        let (ret, current, pending) = self.playbin.pipeline().state(gst::ClockTime::ZERO);
+        format!(
+            "pipeline state={current:?} pending={pending:?} ret={ret:?}, \
+             lost_state_outstanding={}, parked_seek={:?}, harness_paused={}",
+            self.lost_state.get(),
+            self.parked_seek.get(),
+            self.paused.get(),
+        )
     }
 
     /// Settled gate with `seekable: false` so the engine never schedules
@@ -203,6 +283,7 @@ impl Harness {
     /// the operation whose outcome the next wait attributes.
     fn drain_events(&self) {
         while let Ok((event, _generation)) = self.events.try_recv() {
+            self.redrive_transport(&event);
             self.log.borrow_mut().push(event);
         }
     }
@@ -227,6 +308,7 @@ impl Harness {
                             self.log.borrow()
                         );
                     }
+                    self.redrive_transport(&event);
                     let hit = pred(&event);
                     self.log.borrow_mut().push(event);
                     if hit {
@@ -446,16 +528,40 @@ fn wait_cue_visible(harness: &Harness, seen: &TextSeen) {
 /// confirmed while no data, not even caps, ever flowed again.
 fn wait_cue_visible_after(harness: &Harness, seen: &TextSeen, after: Instant, what: &str) {
     let deadline = Instant::now() + EVENT_TIMEOUT;
-    while !seen
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|(at, _, text)| *text && *at > after)
-    {
-        assert!(
-            Instant::now() < deadline,
-            "no rendered cue reappeared after the {what}"
-        );
+    loop {
+        // Drain, so a lost state that lands during THIS wait is both recorded
+        // and re-driven. Without the drain the events sat unread in the channel
+        // and the panic below could not say anything about them, which is why
+        // the one field report of this failure was undiagnosable.
+        harness.drain_events();
+        if seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(at, _, text)| *text && *at > after)
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            // Name the cause rather than only the symptom. The two shapes worth
+            // telling apart: nothing is FLOWING (the pipeline is not PLAYING,
+            // typically a lost state nobody re-committed, so there is no video
+            // buffer for a cue to ride on) versus buffers flowing with no cue
+            // on them (a text-path problem). Counting the tapped buffers since
+            // `after` decides it.
+            let flowed = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(at, _, _)| *at > after)
+                .count();
+            panic!(
+                "no rendered cue reappeared after the {what}; \
+                 {flowed} tapped video buffers since then, {}; log: {:#?}",
+                harness.transport_diagnosis(),
+                harness.log.borrow()
+            );
+        }
         harness.settle_pump();
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -1154,7 +1260,29 @@ fn paused_external_toggle_shows_after_resume() {
     });
     harness.paused.set(true);
 
-    harness.disable_subtitles_and_measure();
+    // Disable while paused. The paused detach unlinks the branch eagerly
+    // but postpones its blocking flush until playback resumes (see
+    // `detach_text_parts` in the crate), and a flooded external slot keeps
+    // decodebin3 mid-push until that flush runs, so the deselect cannot
+    // confirm while the pipeline rests. Assert the eager unlink and the
+    // hold here, and leave every confirmation to the resume below.
+    harness
+        .playbin
+        .request_track(TrackSlot::Subtitle, TrackTarget::Stream(None));
+    harness.playbin.pump_selection(harness.gate());
+    harness.wait_subtitle_branch(false, DISABLE_BOUND, "paused disable");
+    // The disable must hold while settle calls keep coming.
+    let hold = Instant::now() + Duration::from_millis(500);
+    let pad = harness.overlay_subtitle_pad();
+    while Instant::now() < hold {
+        harness.settle_pump();
+        assert!(
+            !pad.is_linked(),
+            "the link policy relinked a disabled subtitle stream"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
     harness
         .playbin
         .request_track(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(id));

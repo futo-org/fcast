@@ -31,11 +31,14 @@ use crate::message;
 use crate::{
     AppState, FCAST_TCP_PORT, GCastUpdateSender, GuiPlaybackState, MediaItemId, MessageSender,
     SenderId, UiMediaTrack, UiMediaTrackType, UiPlayerVariant,
+    external_subtitles::{self, ExternalSubtitle, is_external_track_id},
     fcast::{
         self, CompanionContext, InitialV4State, Operation, ReceiverToSenderMessage, SessionDriver,
         TranslatableMessage, WrappedPlayMessage,
     },
-    fcompsrc, fwebrtcsrc, gcast,
+    fcompsrc,
+    freeze_watchdog::{self, FreezeAction, FreezeSample},
+    fwebrtcsrc, gcast,
     gui::{self, GuiController, ToastType},
     image,
     media_formats::SupportedFormats,
@@ -418,32 +421,6 @@ impl PacketOrigin {
     }
 }
 
-/// Track ids at or above this value denote external subtitles (see
-/// `ExternalSubtitle::id`) rather than indices into `Player::streams`. Real
-/// stream indices are small, so the high base namespace never collides.
-const EXTERNAL_TRACK_ID_BASE: u32 = 0x1000_0000;
-
-struct ExternalSubtitle {
-    /// Stable id, advertised as this track's `MediaTrack.id`
-    /// (>= `EXTERNAL_TRACK_ID_BASE`). Persists across reloads.
-    id: u32,
-    url: String,
-    name: Option<SmolStr>,
-    requested_by: PacketOrigin,
-    /// The live input attached for this entry (every catalog external is
-    /// attached simultaneously, selection is pure SELECT_STREAMS). The id
-    /// is stable for the entry's whole life: fcastplaybin re-arms a dead
-    /// deselected input internally under the same id, and a genuine
-    /// failure comes back as `PlayerEvent::ExternalSubtitleFailed`, which
-    /// removes the entry.
-    handle: fcastplaybin::ExternalSubId,
-    /// The entry's GStreamer stream id, learned when its stream first
-    /// materializes in a collection. URI-derived, so it stays valid across
-    /// fcastplaybin's internal input replacements. All id/index mapping
-    /// goes through this, never through the live handle.
-    stream_sid: Option<String>,
-}
-
 /// An `AddSubtitleSource` that arrived before the receiver could act on it: either while the load
 /// it targets is still in flight, or after the load but before the pipeline could answer the
 /// seekability query.
@@ -470,10 +447,9 @@ struct MediaSourceState {
     image_id: Option<image::ImageId>,
     pending_thumbnail: Option<image::ImageId>,
     pending_thumbnail_download: Option<image::ImageDownloadId>,
-    /// The external subtitle catalog for the current item.
-    external_subtitles: Vec<ExternalSubtitle>,
-    /// Monotonic id source for `ExternalSubtitle::id` within this item.
-    next_external_id: u32,
+    /// The external subtitle catalog for the current item, which owns their
+    /// STABLE advertised track ids (see [`external_subtitles`]).
+    externals: external_subtitles::Catalog,
 }
 
 impl MediaSourceState {
@@ -484,15 +460,15 @@ impl MediaSourceState {
             image_id: None,
             pending_thumbnail: None,
             pending_thumbnail_download: None,
-            external_subtitles: Vec::new(),
-            next_external_id: 0,
+            externals: external_subtitles::Catalog::default(),
         }
     }
 
-    /// Drop every external subtitle (external subtitles are per-item). The id counter keeps
-    /// advancing so a stale id from the previous item can never alias a new one.
+    /// Drop every external subtitle (external subtitles are per-item). The
+    /// catalog's id counter keeps advancing so a stale id from the previous
+    /// item can never alias a new one.
     fn clear_external_subtitles(&mut self) {
-        self.external_subtitles.clear();
+        self.externals.clear();
     }
 }
 
@@ -545,6 +521,10 @@ pub struct Application {
     /// DIAGNOSTIC (load-stall investigation): bumped per pipeline load so a
     /// stale `LoadStallCheck` watchdog no-ops.
     load_watchdog_epoch: u64,
+    /// Detects a silently wedged pipeline (position pinned while the receiver
+    /// believes it is playing) and drives the staged recovery. Lever:
+    /// `FCAST_NO_FREEZE_WATCHDOG`.
+    freeze_watchdog: freeze_watchdog::FreezeWatchdog,
     current_image_id: image::ImageId,
     current_image_download_id: image::ImageDownloadId,
     /// True while the current load is an image routed through the player
@@ -868,6 +848,7 @@ impl Application {
             seek_quiet_epoch: 0,
             gui_seek_hold: None,
             load_watchdog_epoch: 0,
+            freeze_watchdog: freeze_watchdog::FreezeWatchdog::new(),
             current_image_id: 0,
             image_via_player: false,
             have_audio_track_cover: false,
@@ -2106,7 +2087,7 @@ impl Application {
         if self
             .current_media
             .as_ref()
-            .is_some_and(|m| !m.external_subtitles.is_empty())
+            .is_some_and(|m| !m.externals.is_empty())
         {
             return;
         }
@@ -2158,6 +2139,143 @@ impl Application {
             url: next_item.url,
             cancelling: false,
         });
+    }
+
+    /// One tick of the freeze watchdog (see the [`freeze_watchdog`] module for
+    /// the wedge it recovers from and the ladder it walks): sample what the
+    /// receiver believes about playback plus the position the user sees, then
+    /// perform whatever recovery the detector asks for.
+    ///
+    /// Runs on EVERY progress tick, including while paused, loading or stopped,
+    /// because the detector owns every exclusion. Calling it only while playing
+    /// would let the time spent excluded (a pause holding a pinned position, a
+    /// load) count as pinned playback on the first resumed tick.
+    fn poll_freeze_watchdog(&mut self) -> Result<()> {
+        if !self.freeze_watchdog.enabled() {
+            return Ok(());
+        }
+
+        let playing = self.player.player_state() == PlayerState::Playing;
+        let sample = FreezeSample {
+            now: Instant::now(),
+            item: self.current_media_item_id,
+            playing,
+            // Asked of the pipeline, not predicted: a flushing seek re-prerolls
+            // with `pending` still VoidPending, so only the async query sees
+            // it. Only sampled while playing (the detector ignores it
+            // otherwise), so the tick costs nothing while idle.
+            pipeline_settled: playing && !self.player.has_async_transition(),
+            have_media_info: self.player.have_media_info(),
+            loading: self.is_loading_media,
+            image: self.image_via_player,
+            live: self.player.is_live(),
+            seekable: self.player.seekable,
+            // Every shape of "a seek is outstanding": in flight or parked in
+            // the state machine, the optimistic scrub hold, a seek parked
+            // until seekability resolves, and an operation parked on a gapless
+            // cancel round-trip (which reaches the pipeline as a seek).
+            seek_pending: self.player.is_seeking()
+                || self.gui_seek_hold.is_some()
+                || self.pending_seek_op.is_some()
+                || self.gapless_parked_op.is_some(),
+            rate: self.player.rate(),
+            position: playing.then(|| self.player.get_position()).flatten(),
+            duration: self.current_duration,
+        };
+
+        let action = self.freeze_watchdog.poll(&sample);
+        let pinned_for = match action {
+            FreezeAction::None => return Ok(()),
+            FreezeAction::Seek { pinned_for }
+            | FreezeAction::Reload { pinned_for }
+            | FreezeAction::GiveUp { pinned_for } => pinned_for,
+        };
+        // The detector only acts on a sample it could judge, which required a
+        // position.
+        let position = sample.position.unwrap_or(gst::ClockTime::ZERO);
+        self.log_freeze_diagnostics(action, position, pinned_for);
+
+        match action {
+            FreezeAction::None => (),
+            FreezeAction::Seek { .. } => {
+                let seqnum = self.player.freeze_recovery_seek();
+                self.freeze_watchdog.note_recovery_seek(seqnum);
+            }
+            FreezeAction::Reload { .. } => {
+                // Same mechanism a declined gapless cancel uses: the start
+                // point rides the load, applied while the pipeline is still in
+                // PAUSED.
+                let rate = self.player.rate() as f32;
+                self.reload_current_item_at(position, rate);
+                // The reload's own load bumped the item id. Adopt it WITHOUT
+                // resetting the per-item cap, or a permanently wedging stream
+                // would alternate seek and reload forever.
+                self.freeze_watchdog
+                    .note_recovery_reload(self.current_media_item_id);
+            }
+            FreezeAction::GiveUp { .. } => {
+                self.media_error("Playback froze and could not be recovered".to_owned())?;
+            }
+        }
+
+        Ok(())
+    }
+
+    /// The loud line a field log needs to be diagnostic on its own
+    /// (FREEZE-DIAGN.md section 9): what the receiver believed, what the
+    /// pipeline reports, and the queue/sink state that separates a starved
+    /// pipeline from a stopped one. The `.dot` dump only writes when
+    /// `GST_DEBUG_DUMP_DOT_DIR` is set.
+    fn log_freeze_diagnostics(
+        &self,
+        action: FreezeAction,
+        position: gst::ClockTime,
+        pinned_for: Duration,
+    ) {
+        let (current, pending) = self.player.dbg_state_summary();
+        let buffering = self.player.dbg_buffering();
+        warn!(
+            recovery = ?action,
+            stage = self.freeze_watchdog.stage_name(),
+            item = self.current_media_item_id,
+            source = self.current_source_kind(),
+            image = self.image_via_player,
+            pinned_for_ms = pinned_for.as_millis(),
+            position_s = position.seconds_f64(),
+            duration_s = self.current_duration.map(|d| d.seconds_f64()),
+            rate = self.player.rate(),
+            player_state = ?self.player.player_state(),
+            gst_state = ?current,
+            gst_pending = ?pending,
+            seekable = self.player.seekable,
+            seekable_known = self.player.seekable_known,
+            live = self.player.is_live(),
+            buffering_percent = buffering.as_ref().map(|b| b.percent),
+            buffering_busy = buffering.as_ref().map(|b| b.busy),
+            buffering_mode = ?buffering.as_ref().map(|b| b.mode),
+            // Queues drained empty while the downloads park at the input
+            // watermark is the wedge's signature.
+            buffered_ahead_ms = self.player.buffered_ahead().map(|t| t.mseconds()),
+            routed = ?self.player.dbg_routed_summary(),
+            unsettled = ?self.player.dbg_unsettled_elements(),
+            sources = ?self.player.dbg_sources(),
+            video_sink = ?self.player.dbg_video_sink_stats(),
+            "FREEZE WATCHDOG: playback position pinned while the receiver believes it is playing"
+        );
+        self.player
+            .dump_dot(&format!("freeze-item{}", self.current_media_item_id));
+    }
+
+    /// Coarse identity of what is playing, for diagnostics.
+    fn current_source_kind(&self) -> &'static str {
+        match self.current_media.as_ref().map(|m| &m.source) {
+            Some(MediaSource::Single(_)) => "single",
+            Some(MediaSource::Playlist { .. }) => "playlist",
+            Some(MediaSource::Queue(_)) => "queue",
+            Some(MediaSource::Raop) => "raop",
+            Some(MediaSource::AirPlayMirror { .. }) => "airplay-mirror",
+            None => "none",
+        }
     }
 
     /// Like [`build_media_source`](Self::build_media_source) but for a
@@ -3103,12 +3221,16 @@ impl Application {
     /// matches `TracksAvailable`), otherwise the stream's advertised index.
     fn advertised_subtitle_id(&self, subtitle_sid: Option<&str>) -> Option<u32> {
         let sid = subtitle_sid?;
-        if let Some(media) = self.current_media.as_ref() {
-            for entry in &media.external_subtitles {
-                if entry.stream_sid.as_deref() == Some(sid) {
-                    return Some(entry.id);
-                }
-            }
+        // An external's own stream is advertised under its STABLE catalog id,
+        // never under its list position, so the reverse mapping has to consult
+        // the catalog first or a relayed selection would name an id no
+        // TracksAvailable ever carried.
+        if let Some(id) = self
+            .current_media
+            .as_ref()
+            .and_then(|m| m.externals.id_of_stream(sid))
+        {
+            return Some(id);
         }
         self.player.stream_idx_by_id(sid)
     }
@@ -3226,16 +3348,8 @@ impl Application {
             self.send_error(origin, ErrorKind::InvalidState);
             return Ok(false);
         };
-        let id = EXTERNAL_TRACK_ID_BASE + media.next_external_id;
-        media.next_external_id += 1;
-        media.external_subtitles.push(ExternalSubtitle {
-            id,
-            url: source_url,
-            name,
-            requested_by: origin,
-            handle,
-            stream_sid: None,
-        });
+        // One assignment site, one id per entry, for the life of the item.
+        let id = media.externals.attach(source_url, name, origin, handle);
         if select {
             // The engine parks the desire until the input's stream
             // materializes, then selects it and re-asserts it against
@@ -3367,11 +3481,11 @@ impl Application {
         let Some(id) = id else {
             return Ok(SubtitleTarget::Stream(None));
         };
-        if id >= EXTERNAL_TRACK_ID_BASE {
+        if is_external_track_id(id) {
             let entry_sid = match self
                 .current_media
                 .as_ref()
-                .and_then(|m| m.external_subtitles.iter().find(|s| s.id == id))
+                .and_then(|m| m.externals.by_id(id))
             {
                 Some(entry) => self.advertised_external_sid(entry),
                 None => return Err(ErrorKind::MalformedBody),
@@ -3440,7 +3554,7 @@ impl Application {
                 let handle = self
                     .current_media
                     .as_ref()
-                    .and_then(|m| m.external_subtitles.iter().find(|s| s.id == ext_id))
+                    .and_then(|m| m.externals.by_id(ext_id))
                     .map(|s| s.handle);
                 match handle {
                     Some(handle) => {
@@ -3495,13 +3609,11 @@ impl Application {
         let Some(media) = self.current_media.as_mut() else {
             return;
         };
-        for entry in media.external_subtitles.iter_mut() {
-            if entry.stream_sid.is_none()
-                && let Some(sid) = self.player.external_stream_sid_of(entry.handle)
-            {
-                debug!(id = entry.id, sid, "external subtitle stream materialized");
-                entry.stream_sid = Some(sid);
-            }
+        let learned = media
+            .externals
+            .learn_stream_sids(|handle| self.player.external_stream_sid_of(handle));
+        for (id, sid) in learned {
+            debug!(id, sid, "external subtitle stream materialized");
         }
     }
 
@@ -3515,10 +3627,12 @@ impl Application {
         let Some(media) = self.current_media.as_mut() else {
             return;
         };
-        let Some(pos) = media.external_subtitles.iter().position(|s| s.id == ext_id) else {
+        // The survivors keep their advertised ids and this one stays retired
+        // (it resolves to nothing, which is the honest answer for a track that
+        // no longer exists).
+        let Some(failed) = media.externals.remove(ext_id) else {
             return;
         };
-        let failed = media.external_subtitles.remove(pos);
         warn!(url = failed.url, "External subtitle failed; removing it");
         self.send_error(failed.requested_by, ErrorKind::ResourceNotFound);
         self.update_tracks(true);
@@ -3539,13 +3653,9 @@ impl Application {
             .current_media
             .as_ref()
             .map(|m| {
-                m.external_subtitles
-                    .iter()
-                    .filter_map(|s| {
-                        s.stream_sid
-                            .as_deref()
-                            .and_then(|sid| self.player.stream_idx_by_id(sid))
-                    })
+                m.externals
+                    .materialized_sids()
+                    .filter_map(|sid| self.player.stream_idx_by_id(sid))
                     .collect()
             })
             .unwrap_or_default();
@@ -3553,12 +3663,7 @@ impl Application {
         let externals: Vec<(u32, Option<SmolStr>)> = self
             .current_media
             .as_ref()
-            .map(|m| {
-                m.external_subtitles
-                    .iter()
-                    .map(|s| (s.id, s.name.clone()))
-                    .collect()
-            })
+            .map(|m| m.externals.iter().map(|s| (s.id, s.name.clone())).collect())
             .unwrap_or_default();
 
         if self.should_broadcast() {
@@ -4007,6 +4112,13 @@ impl Application {
             player::PlayerEvent::RequestState(state) => self.player.request_state(state),
             player::PlayerEvent::QueueSeek(seek) => self.player.queue_seek(seek),
             player::PlayerEvent::SubtitleRefreshFailed { seqnum } => {
+                // The freeze watchdog's recovery seek rides the same job. A
+                // refusal there is the interesting case for the field log: the
+                // demuxer drops a seek whose scheduler loop is already stopped,
+                // and only the escalation can recover from that.
+                if self.freeze_watchdog.is_recovery_seek(seqnum) {
+                    warn!("FREEZE WATCHDOG: the recovery seek was refused by the pipeline");
+                }
                 self.player.subtitle_refresh_failed(seqnum)
             }
             player::PlayerEvent::StreamsSelected {
@@ -4108,12 +4220,10 @@ impl Application {
                 // bus error while its stream was shown, or no stream within
                 // its watchdog); what is left is the protocol side: drop the
                 // catalog entry and report ResourceNotFound.
-                let ext_id = self.current_media.as_ref().and_then(|m| {
-                    m.external_subtitles
-                        .iter()
-                        .find(|s| s.handle == id)
-                        .map(|s| s.id)
-                });
+                let ext_id = self
+                    .current_media
+                    .as_ref()
+                    .and_then(|m| m.externals.id_of_handle(id));
                 match ext_id {
                     Some(ext_id) => self.fail_fcast_external_subtitle(ext_id),
                     // The catalog entry is already gone (the item was
@@ -5025,7 +5135,7 @@ impl Application {
             lines.push(format!("unsettled: {}", unsettled.join(", ")));
         }
         if let Some(media) = self.current_media.as_ref() {
-            for ext in &media.external_subtitles {
+            for ext in media.externals.iter() {
                 lines.push(format!(
                     "external sub [{}] {}: {}",
                     ext.id,
@@ -5602,6 +5712,12 @@ impl Application {
                             }
                             self.send_v4_progress_updates();
                             self.maybe_prearm_gapless();
+                        }
+                        // Deliberately outside the Playing gate: the detector
+                        // owns its exclusions, and it must see the excluded
+                        // ticks to keep them from counting as pinned playback.
+                        if let Err(err) = self.poll_freeze_watchdog() {
+                            error!(?err, "Freeze watchdog recovery failed");
                         }
                     }
                     session = listener_stream.select_next_some() => {

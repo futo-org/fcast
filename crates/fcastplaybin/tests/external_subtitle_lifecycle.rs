@@ -20,23 +20,24 @@
 //! what neither does: the transport states other than mid-play, the
 //! degenerate sources, and the duplicate attach.
 //!
-//! FOUR TESTS HERE FAIL AGAINST THE CURRENT CRATE, deterministically (three
-//! full suite runs, identical set each time, on the PATCHED playback plugin).
-//! They are kept red rather than ignored: each states a contract the crate
-//! does not meet, and each carries its diagnosis in its own doc comment.
+//! The whole suite passes against the current crate (on the PATCHED
+//! playback plugin). Four defects were pinned red here before being fixed,
+//! and their tests remain as the regression guards:
 //!
 //! * `attach_select_and_detach_while_paused_never_wedges_the_caller`
-//!   detaching an external whose text branch is linked into subtitleoverlay,
-//!   with the pipeline at rest in PAUSED, deadlocks in `Inner::remove_input`.
-//! * `two_external_inputs_never_share_a_stream_id` and
-//!   `detaching_one_of_two_identical_attaches_leaves_the_other_rendering`
-//!   the same URI attached twice collides on one stream id, and the fallout
-//!   is a subtitle path that is dead for the rest of the item.
+//!   detaching an external whose text branch was linked into
+//!   subtitleoverlay, with the pipeline at rest in PAUSED, deadlocked in
+//!   `Inner::remove_input` (fixed by deferring the removal).
+//! * `attaching_the_same_uri_twice_is_refused_and_the_first_keeps_rendering`
+//!   the same URI attached twice collided on one URI-derived stream id and
+//!   the fallout was a subtitle path dead for the rest of the item. The
+//!   duplicate attach is refused now, and the two re-attach tests
+//!   (`reattaching_the_same_url_after_a_detach_renders_again`,
+//!   `reattaching_the_same_url_while_paused_renders_after_resume`) pin the
+//!   recovery mechanics the collision exposed, a data hold nothing lifted
+//!   and an overlay seat held by a dead branch.
 //! * `an_external_without_a_text_stream_is_reported_as_failed`
-//!   a source carrying no text at all is never reported as failed.
-//!
-//! Everything else passes, the whole seek and timeline group included, so
-//! this is a working suite with four pinned defects rather than a broken one.
+//!   a source carrying no text at all was never reported as failed.
 
 use std::{
     cell::{Cell, RefCell},
@@ -89,6 +90,38 @@ fn init() {
         fcast_gst_elements::fcastaudiostretch::plugin_init()
             .expect("registering fcastaudiostretch");
     });
+}
+
+/// Names a `StreamsSelected` that left the video or the audio slot empty on an
+/// item that carries both, which means the crate decided from an INCOMPLETE
+/// decodebin3 collection. `ftestsrc` exposes its elementary streams on separate
+/// pads, so urisourcebin parses each one in its own parsebin and decodebin3
+/// aggregates their collections one at a time. Which of them arrives first is a
+/// race, and the incomplete-first case is the recurring signature ahead of the
+/// load-time wedges this suite shows when several pipelines run at once.
+///
+/// Set `FCAST_TEST_TRACE_SELECT=1` (and pass `--nocapture` to see it on a
+/// passing test) to turn it on. Off it costs one env read per event.
+fn note_partial_selection(event: &PlaybinEvent) {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if !ON.get_or_init(|| std::env::var_os("FCAST_TEST_TRACE_SELECT").is_some()) {
+        return;
+    }
+    let PlaybinEvent::StreamsSelected {
+        video,
+        audio,
+        subtitle,
+        ..
+    } = event
+    else {
+        return;
+    };
+    if video.is_some() && audio.is_some() {
+        return;
+    }
+    eprintln!(
+        "PARTIAL-SELECTION video={video:?} audio={audio:?} subtitle={subtitle:?}"
+    );
 }
 
 /// Cues with a distinguishing payload prefix, so the overlay tap can tell
@@ -154,6 +187,14 @@ struct Harness {
     events: mpsc::Receiver<(PlaybinEvent, u64)>,
     log: RefCell<Vec<PlaybinEvent>>,
     paused: Cell<bool>,
+    /// Whether a `play()` has been asked for and not yet withdrawn. What the
+    /// re-drive in [`Harness::redrive_transport`] needs to tell a load's own
+    /// preroll (settled PAUSED, nothing asked for yet) from a PLAYING target
+    /// the pipeline dropped underneath us.
+    wants_playing: Cell<bool>,
+    /// A seek the crate REFUSED and parked, waiting to be re-driven from the
+    /// next settled-PAUSED edge. See [`Harness::redrive_transport`].
+    parked_seek: Cell<Option<Seek>>,
     video: Recording,
     /// One entry per load. Held so the sinks the factory builds stay
     /// reachable, never read: the video log alone answers "is the item still
@@ -188,8 +229,63 @@ impl Harness {
             events,
             log: RefCell::new(Vec::new()),
             paused: Cell::new(false),
+            wants_playing: Cell::new(false),
+            parked_seek: Cell::new(None),
             video,
             _audio: audio,
+        }
+    }
+
+    /// The one thing a real caller does that this harness used to skip: put
+    /// back the transport the crate parked.
+    ///
+    /// The crate does NOT own the transport target. Two of its jobs hand work
+    /// back to the caller instead of completing it, and both say so in an
+    /// event:
+    ///
+    /// * `Job::Seek` (`src/lib.rs:4415`) refuses a seek that does not arrive at
+    ///   a settled PAUSED, posts `QueueSeek` and commits PAUSED. The caller
+    ///   re-issues the seek from the settle. `StateMachine`'s
+    ///   `SeekSlot::Parked` arm (`src/state_machine.rs:420`) is that.
+    /// * A pipeline that loses state (any element added while PLAYING has a
+    ///   preroll to do: a late audio branch, an external subtitle branch) drops
+    ///   ITSELF to PAUSED and, in `gst_element_lost_state`'s own words, "will
+    ///   also not automatically go to PLAYING but let the parent/application set
+    ///   us to PLAYING explicitly". The edge is `Paused`/pending `Paused`.
+    ///   `StateMachine`'s `Phase::Running` dip arm
+    ///   (`src/state_machine.rs:541`) keeps the PLAYING target across it and
+    ///   `Phase::Changing` re-commits it once the dip settles.
+    ///
+    /// Neither had anything to re-drive them here, so a load that grew a branch
+    /// after reaching PLAYING simply stopped, and a parked seek never happened.
+    /// Both are timing races against the pipeline settling, which is why this
+    /// only bit when several pipelines ran at once, and why it landed on a
+    /// different test every time.
+    ///
+    /// Seek first, then the target, in `StateMachine`'s order: its seek slot
+    /// takes precedence over the phase and the target correction waits for the
+    /// seek's own settle.
+    ///
+    /// Lever: `FCAST_TEST_NO_TRANSPORT_REDRIVE`.
+    fn redrive_transport(&self, event: &PlaybinEvent) {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *OFF.get_or_init(|| std::env::var_os("FCAST_TEST_NO_TRANSPORT_REDRIVE").is_some()) {
+            return;
+        }
+        match event {
+            PlaybinEvent::QueueSeek(seek) => self.parked_seek.set(Some(*seek)),
+            PlaybinEvent::StateChanged {
+                current: gst::State::Paused,
+                pending: gst::State::VoidPending,
+                ..
+            } => {
+                if let Some(seek) = self.parked_seek.take() {
+                    self.playbin.seek_async(seek);
+                } else if self.wants_playing.get() {
+                    let _ = self.playbin.play();
+                }
+            }
+            _ => {}
         }
     }
 
@@ -209,6 +305,8 @@ impl Harness {
 
     fn drain_events(&self) {
         while let Ok((event, _generation)) = self.events.try_recv() {
+            note_partial_selection(&event);
+            self.redrive_transport(&event);
             self.log.borrow_mut().push(event);
         }
     }
@@ -262,6 +360,8 @@ impl Harness {
                             self.log.borrow()
                         );
                     }
+                    note_partial_selection(&event);
+                    self.redrive_transport(&event);
                     let hit = pred(&event);
                     self.log.borrow_mut().push(event);
                     if hit {
@@ -302,6 +402,10 @@ impl Harness {
     fn load_at(&self, uri: &str, position: gst::ClockTime) {
         self.drain_events();
         self.log.borrow_mut().clear();
+        // A load owns the transport until the test asks for one, and it
+        // supersedes anything the previous item parked.
+        self.wants_playing.set(false);
+        self.parked_seek.set(None);
         self.playbin.load_async(
             MediaInput::Uri(uri.to_owned()),
             StartPoint::Seek {
@@ -322,6 +426,7 @@ impl Harness {
     fn play(&self) {
         self.playbin.play().expect("play");
         self.paused.set(false);
+        self.wants_playing.set(true);
         self.wait_for("settled PLAYING", |event| {
             matches!(
                 event,
@@ -337,6 +442,7 @@ impl Harness {
     fn pause(&self) {
         self.playbin.pause().expect("pause");
         self.paused.set(true);
+        self.wants_playing.set(false);
         self.wait_for("settled PAUSED", |event| {
             matches!(
                 event,
@@ -629,6 +735,10 @@ impl Harness {
     }
 
     fn shutdown(&self) {
+        // No transport survives a teardown, so the re-drive must not chase the
+        // descent's edges back up.
+        self.wants_playing.set(false);
+        self.parked_seek.set(None);
         let (tx, rx) = mpsc::channel();
         self.playbin.shutdown_async(Box::new(move || {
             let _ = tx.send(());
@@ -1058,54 +1168,89 @@ fn detaching_a_never_selected_external_is_clean() {
     other.unregister();
 }
 
-/// Two external inputs must never be reported under the SAME stream id.
+/// Attaching a URI that is ALREADY attached is refused, on both entry
+/// points, and the refusal leaves the original input untouched.
 ///
-/// Everything downstream of `subtitle_stream_ids` is a stream-id lookup, and
-/// every one of them takes the first or any match: the selection engine's
-/// external mapping, `unblock_selected_externals`, `poll_text_policy`'s
-/// join-time replay, `verify_replay`'s still-selected check, and, in the
-/// receiver, `Player::external_stream_sid_of` and
-/// `advertised_subtitle_id`. Two inputs under one id makes every one of
-/// those answer about the wrong input.
+/// Two inputs on one URI cannot be told apart. With no upstream stream-id
+/// to inherit, GStreamer's `gst_pad_create_stream_id` derives one by
+/// querying the element's URI and hashing it, so two `urisourcebin`s on the
+/// same URL report the SAME stream id, in production as much as here. And
+/// everything downstream of `subtitle_stream_ids` is a stream-id lookup
+/// that takes the first or any match (the selection engine's external
+/// mapping, `unblock_selected_externals`, `poll_text_policy`'s join-time
+/// replay, `verify_replay`'s still-selected check, and, in the receiver,
+/// `Player::external_stream_sid_of`). Twins under one id made every one of
+/// those answer about the wrong input, and the observed end state was a
+/// subtitle path dead for the rest of the item. The crate now refuses to
+/// create the second twin, which is the only place the ambiguity is still
+/// representable.
 ///
-/// This is not a fake-media artefact. With no upstream stream-id to inherit,
-/// GStreamer's `gst_pad_create_stream_id` derives one by querying the
-/// element's URI and hashing it, so two `urisourcebin`s on the same URL
-/// collide in production too. The receiver's own doc on
-/// `external_stream_sid_of` states the id is "URI-derived and therefore
-/// STABLE", and nothing in `AddSubtitleSource` deduplicates URLs.
-///
-/// Fast and pipeline-free on purpose: no timing, just the two ids.
+/// The synchronous refusal is an `Err`. The receiver's asynchronous path
+/// must see it as `ExternalSubtitleFailed` for the duplicate id, which its
+/// catalog handling already turns into a dropped entry and a
+/// ResourceNotFound verdict for the sender.
 #[test]
-fn two_external_inputs_never_share_a_stream_id() {
+fn attaching_the_same_uri_twice_is_refused_and_the_first_keeps_rendering() {
     init();
     let main = main_item("extlifesamesidmain");
     let subs = sub_item("extlifesamesidsubs", "SSID");
 
     let harness = Harness::new();
     harness.load_and_play(&main.uri());
+    let tap = harness.tap_overlay_text();
 
     let (first, first_sid) = harness.attach_and_materialize(&subs.uri());
-    let (second, second_sid) = harness.attach_and_materialize(&subs.uri());
-    assert_ne!(first, second, "the two attaches must get distinct ids");
+
+    // Synchronous entry point.
+    assert!(
+        harness.playbin.attach_subtitle(&subs.uri()).is_err(),
+        "a second attach of an already-attached URI must be refused, the \
+         duplicate would share the first input's URI-derived stream id"
+    );
+
+    // Asynchronous entry point, the receiver's path. The id is reserved up
+    // front and the refusal has to come back as an event.
+    let dup = harness.playbin.allocate_subtitle_id();
+    harness.playbin.attach_subtitle_async(dup, subs.uri());
+    harness.wait_until(
+        "ExternalSubtitleFailed for the duplicate attach",
+        EVENT_TIMEOUT,
+        || harness.failed(dup),
+    );
+
+    // The refusal must not have disturbed the original input.
+    harness.select_and_confirm(first, &first_sid);
+    harness.wait_for_cue(&tap, "SSID", 0, "after the duplicate was refused");
+    harness.assert_video_advances("after the duplicate was refused");
+    harness.assert_worker_alive("after the duplicate was refused");
+    harness.assert_no_error("after the duplicate was refused");
 
     harness.shutdown();
     main.unregister();
     subs.unregister();
-
-    assert_ne!(
-        first_sid, second_sid,
-        "attaching the same URI twice reported both inputs under one stream \
-         id, so no caller (nor the crate itself) can tell them apart"
-    );
 }
 
-/// The SAME URI attached twice, then one of them detached. The survivor must
-/// keep rendering.
+/// Detach the rendering external, then immediately re-attach the SAME URL
+/// and select it again. The re-attach must render.
 ///
-/// This is the observable end of the stream-id collision above, and it is a
-/// hard wedge rather than a cosmetic mix-up. Captured topology from a failing
-/// run, six seconds after the detach:
+/// This is the receiver's remove-then-add sequence for a subtitle the user
+/// toggles, and it is the legitimate twin of the stream-id collision the
+/// refusal test above pins. Stream ids are URI-derived, so the re-attach
+/// materializes under the very sid the selection engine still has APPLIED,
+/// and two defects used to leave that subtitle dead for the rest of the
+/// item while the selection reported success:
+///
+/// * the engine dispatches nothing for a desire that equals the applied
+///   selection, and the data hold (`hold_until_selected`) was only ever
+///   lifted by a SELECT_STREAMS confirmation, so the re-attached input's
+///   buffers stayed blocked at its source pads forever, and
+/// * when decodebin3 exposes a fresh output pad for the re-attached stream
+///   while the detached input's pad still holds subtitleoverlay's ONE
+///   subtitle seat (its sticky segment wiped by `remove_input`'s flush,
+///   nothing upstream ever feeding it again), the link policy answered
+///   every later text stream with "subtitle_sink already linked; skipping
+///   extra text stream", forever. Captured topology from a failing run,
+///   six seconds after such a detach:
 ///
 /// ```text
 /// subtitle_sink: queue0 fed by fpb-decodebin:text_0 stream_id=".. -text_0" origin=None
@@ -1114,15 +1259,12 @@ fn two_external_inputs_never_share_a_stream_id() {
 ///   fpb-decodebin:text_1 stream_id=".. -text_0" origin=Some(0:00:00)   -> fakesink1:sink
 /// ```
 ///
-/// decodebin3 keeps the detached input's output pad (the id is still in the
-/// collection, the twin supplies it), its sticky segment wiped by the flush
-/// `remove_input` sends. The routed entry for it still holds subtitleoverlay's
-/// ONE subtitle seat, so the link policy answers every later text stream with
-/// "subtitle_sink already linked; skipping extra text stream" and the survivor
-/// stays parked in the fakesink for the rest of the item. No error is raised,
-/// the selection reports success, and the subtitle is simply gone.
+/// The hold is now lifted at the policy's settle points whenever the held
+/// input's stream IS the applied subtitle, and a seat held by a branch
+/// whose decodebin3 pad has no sticky segment is reclaimed for the stream
+/// that can actually render.
 #[test]
-fn detaching_one_of_two_identical_attaches_leaves_the_other_rendering() {
+fn reattaching_the_same_url_after_a_detach_renders_again() {
     init();
     let main = main_item("extlifedupmain");
     let subs = sub_item("extlifedupsubs", "DUPE");
@@ -1131,31 +1273,121 @@ fn detaching_one_of_two_identical_attaches_leaves_the_other_rendering() {
     harness.load_and_play(&main.uri());
     let tap = harness.tap_overlay_text();
 
-    let (first, _first_sid) = harness.attach_and_materialize(&subs.uri());
-    let (second, second_sid) = harness.attach_and_materialize(&subs.uri());
-    harness.select_and_confirm(second, &second_sid);
-    harness.wait_for_cue(&tap, "DUPE", 0, "with the second of two identical attaches");
+    let (first, _first_sid) = harness.attach_and_select(&subs.uri());
+    harness.wait_for_cue(&tap, "DUPE", 0, "before the detach");
 
-    // Detaching ONE of the two must not take the other's stream with it.
     assert_returns_within(
         &harness.playbin,
         Duration::from_secs(10),
-        "detaching one of two identical attaches",
+        "detaching the rendering external",
         {
             let playbin = harness.playbin.clone();
             move || playbin.detach_subtitle(first).expect("detaching the first")
         },
     );
-    harness.assert_video_advances("after detaching one of two identical attaches");
-    harness.assert_worker_alive("after detaching one of two identical attaches");
 
-    // The survivor must still render. `wait_for_cue` reports the overlay seat
-    // and every decodebin3 text pad on failure, which is where the wedge is
-    // visible.
+    // Re-attach STRAIGHT AWAY, no wait for the collection to drop the old
+    // stream. The receiver's remove+add lands in exactly this window, and
+    // it is the window where the old sid is still applied (and possibly
+    // still advertised) when the new input materializes under it.
+    let (second, second_sid) = harness.attach_and_materialize(&subs.uri());
+    harness.select_and_confirm(second, &second_sid);
+    harness.assert_video_advances("after re-attaching the same URL");
+    harness.assert_worker_alive("after re-attaching the same URL");
+
+    // The re-attach must render NEW cues. `wait_for_cue` reports the
+    // overlay seat and every decodebin3 text pad on failure, which is where
+    // a dead seat holder is visible.
     let before = tapped_with_prefix(&tap, "DUPE").len();
-    harness.wait_for_cue(&tap, "DUPE", before, "after detaching the twin");
+    harness.wait_for_cue(&tap, "DUPE", before, "after re-attaching the same URL");
 
-    harness.assert_no_error("after the duplicate-URI cycle");
+    harness.assert_no_error("after the detach and re-attach cycle");
+    harness.shutdown();
+    main.unregister();
+    subs.unregister();
+}
+
+/// The PAUSED variant of the re-attach: detach the rendering external at
+/// rest in PAUSED, re-attach the same URL still paused, select it, resume.
+/// The re-attach must render after the resume.
+///
+/// This pins the data-hold defect on its own, deterministically. A detach
+/// at rest in PAUSED DEFERS the input's removal (`remove_input_or_defer`,
+/// the inline flush would wedge the caller), so the old input keeps its
+/// decodebin3 pads and its stream id never leaves the collection, which
+/// means the engine's applied subtitle survives the detach. The re-attach
+/// then materializes under that very sid, the selection has nothing to
+/// dispatch, and no SELECT_STREAMS confirmation ever runs the
+/// confirmation-time hold release (`unblock_selected_externals`) for the
+/// new input. Its buffers stayed blocked at its source pads forever while
+/// the selection reported success. The mid-play re-attach test above does
+/// not reach this defect because a mid-play detach releases the request
+/// pads inline and decodebin3 posts the shrunk collection synchronously
+/// inside the detach, so the engine always re-dispatches there.
+///
+/// The link policy now lifts the hold at its settle points whenever the
+/// held input's stream IS the confirmed applied subtitle.
+#[test]
+fn reattaching_the_same_url_while_paused_renders_after_resume() {
+    init();
+    let main = main_item("extlifepausedredomain");
+    let subs = sub_item("extlifepausedredosubs", "PRDO");
+
+    let harness = Harness::new();
+    harness.load_and_play(&main.uri());
+    let tap = harness.tap_overlay_text();
+
+    let (first, _first_sid) = harness.attach_and_select(&subs.uri());
+    harness.wait_for_cue(&tap, "PRDO", 0, "before pausing");
+    harness.pause();
+
+    assert_returns_within(
+        &harness.playbin,
+        Duration::from_secs(15),
+        "detaching while paused",
+        {
+            let playbin = harness.playbin.clone();
+            move || playbin.detach_subtitle(first).expect("detach while paused")
+        },
+    );
+
+    // Re-attach the same URL while still paused, on its own thread like
+    // every other paused-state call here.
+    let second = {
+        let playbin = harness.playbin.clone();
+        let uri = subs.uri();
+        let slot: Arc<Mutex<Option<ExternalSubId>>> = Arc::new(Mutex::new(None));
+        let out = slot.clone();
+        assert_returns_within(
+            &harness.playbin,
+            Duration::from_secs(15),
+            "re-attaching while paused",
+            move || {
+                let id = playbin
+                    .attach_subtitle(&uri)
+                    .expect("re-attach while paused");
+                *out.lock().expect("id slot") = Some(id);
+            },
+        );
+        let id = slot.lock().expect("id slot").expect("the attach ran");
+        id
+    };
+    let second_sid = harness.materialized(second);
+    harness.select_and_confirm(second, &second_sid);
+
+    harness.play();
+    harness.assert_video_advances("after resuming with the re-attached subtitle");
+
+    let before = tapped_with_prefix(&tap, "PRDO").len();
+    harness.wait_for_cue(
+        &tap,
+        "PRDO",
+        before,
+        "after resuming with the re-attached subtitle",
+    );
+
+    harness.assert_worker_alive("after the paused re-attach cycle");
+    harness.assert_no_error("after the paused re-attach cycle");
     harness.shutdown();
     main.unregister();
     subs.unregister();
