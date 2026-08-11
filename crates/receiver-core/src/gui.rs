@@ -116,6 +116,15 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
                     win.set_cursor_visible(!hidden);
                 });
             }
+
+            #[cfg(target_os = "macos")]
+            {
+                let _ = &ui;
+                // Callback runs on the Slint event loop, i.e. the main thread.
+                unsafe {
+                    objc2_app_kit::NSCursor::setHiddenUntilMouseMoves(hidden);
+                }
+            }
         }
     });
 

@@ -7851,6 +7851,7 @@ dependencies = [
  "mdns-sd",
  "mime",
  "nom 7.1.3",
+ "objc2-app-kit 0.3.2",
  "oneshot",
  "pango",
  "parking_lot",

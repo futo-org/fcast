@@ -105,6 +105,7 @@ inhibit-screensaver.path = "../inhibit-screensaver"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 image = { workspace = true, features = ["encode"] }
+objc2-app-kit = { version = "0.3.2", features = ["NSCursor"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin_egl_sys = { version = "0.7.1" }
