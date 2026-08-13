@@ -3,6 +3,10 @@ import { Bridge, GuiPlaybackState } from "globals.slint";
 import { FCastPalette } from "../../../ui-components/styling.slint";
 
 export component PositionScrubber inherits Slider {
+    // No keyboard stepping (value is in seconds, so arrows would nudge by 1s
+    // and fight the live progress updates): rejected arrow keys bubble up to
+    // the global handler, which does the real 10s seek.
+    step: 0;
     hide-thumb: true;
     maximum: Bridge.duration-secs;
     minimum: 0.0;
@@ -146,6 +150,9 @@ export component VolumePreview {
             alignment: space-between;
 
             bar := Slider {
+                // Display-only: keep arrow keys bubbling to the global
+                // volume handler instead of nudging a value nothing reads.
+                step: 0;
                 maximum: 1.0;
                 minimum: 0.0;
                 value: Bridge.volume;

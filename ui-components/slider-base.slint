@@ -99,7 +99,9 @@ export component SliderBase {
         }
 
         key-released(event) => {
-            if (!self.enabled) {
+            // Mirror key-pressed: step <= 0 turns keyboard stepping off
+            // entirely, so key-up must not fire a stray `released` either.
+            if (!self.enabled || root.step <= 0) {
                 return reject;
             }
             if (!vertical && event.text == Key.RightArrow) || (vertical && event.text == Key.DownArrow)
