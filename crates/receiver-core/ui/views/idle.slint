@@ -77,10 +77,11 @@ export component IdleView inherits Rectangle {
         }
 
         HorizontalLayout {
-            alignment: space-between;
+            spacing: 20px;
 
             Rectangle {
                 max-width: 500px;
+                horizontal-stretch: 1;
 
                 VerticalLayout {
                     padding: 10px;
@@ -212,11 +213,14 @@ export component IdleView inherits Rectangle {
                 }
             }
 
-            VerticalLayout{
-                alignment: center;
+            qr-cell := Rectangle {
+                min-width: 0px;
+                preferred-width: 350px;
+                horizontal-stretch: 1;
 
                 Rectangle {
-                    width: 350px;
+                    x: parent.width - self.width;
+                    width: min(350px, parent.width, parent.height);
                     height: self.width;
                     border-radius: 8px;
                     clip: true;
