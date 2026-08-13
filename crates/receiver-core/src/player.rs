@@ -3,7 +3,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use anyhow::Result;
 use fcast_protocol::PlaybackState;
 use gst::{glib::object::ObjectExt, prelude::*};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, error, instrument, warn};
 
 use crate::MessageSender;
 use fcastplaybin::state_machine::{

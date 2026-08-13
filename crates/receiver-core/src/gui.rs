@@ -121,9 +121,7 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
             {
                 let _ = &ui;
                 // Callback runs on the Slint event loop, i.e. the main thread.
-                unsafe {
-                    objc2_app_kit::NSCursor::setHiddenUntilMouseMoves(hidden);
-                }
+                objc2_app_kit::NSCursor::setHiddenUntilMouseMoves(hidden);
             }
         }
     });
