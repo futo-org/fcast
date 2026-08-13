@@ -260,6 +260,9 @@ component PlaybackControls inherits Rectangle {
 
     changed obstructing => {
         Bridge.controls-overlay-visible = self.obstructing;
+        if (!self.obstructing && !Bridge.show-settings) {
+            focus.focus();
+        }
     }
 
     changed pointer-inside-window => {
@@ -326,6 +329,8 @@ component PlaybackControls inherits Rectangle {
         clicked => {
             current-settings-page = SettingsPage.Start;
             show-settings = false;
+            // Closing the side bar destroys any list/slider holding focus.
+            focus.focus();
         }
 
         pointer-event(pe) => {
@@ -334,9 +339,10 @@ component PlaybackControls inherits Rectangle {
             }
         }
 
+        // No key handler here: unhandled keys bubble up to the global
+        // FocusScope in main.slint. This scope exists to anchor focus while
+        // the video scene is up and to react to window activation.
         focus := FocusScope {
-            capture-key-pressed(event) => Bridge.capture-key-pressed(event);
-
             focus-changed-event(event) => {
                 if (event == FocusReason.window-activation && is-visible) {
                     root.close();

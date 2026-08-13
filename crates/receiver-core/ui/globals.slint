@@ -249,7 +249,10 @@ export global Bridge {
         connected_devices = max(connected_devices - 1, 0);
     }
 
-    public function capture-key-pressed(event: KeyEvent) -> EventResult {
+    // Global shortcut handler. Called from the bubble-phase `key-pressed` of
+    // the window-spanning FocusScope in main.slint, so it only sees keys the
+    // focused widget (text input, list, slider, ...) rejected.
+    public function global-key-pressed(event: KeyEvent) -> EventResult {
         if event.modifiers.control && event.modifiers.shift && (event.text == "i" || event.text == "I") {
             show-inspector = !show-inspector;
             return accept;

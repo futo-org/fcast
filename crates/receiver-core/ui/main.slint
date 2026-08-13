@@ -15,6 +15,7 @@ import {
     GuiPlaybackState,
     AppState,
     UiPlayerVariant,
+    UiUpdaterState,
 } from "globals.slint";
 import { IdleView } from "views/idle.slint";
 import { LoadingMediaView } from "views/loading-media.slint";
@@ -56,53 +57,96 @@ export component MainWindow inherits Window {
         && !idle-view.visible && !loading-view.visible && !startup-view.visible;
 
     property <bool> show-inspector: Bridge.show-inspector;
-    changed show-inspector => Bridge.inspector-toggled(self.show-inspector);
+    changed show-inspector => {
+        Bridge.inspector-toggled(self.show-inspector);
+        if (!self.show-inspector) {
+            fs.focus();
+        }
+    }
+
+    // Key events are only delivered along the focused element's ancestor
+    // chain, and are dropped entirely once the focused element is hidden or
+    // destroyed (the window then has no focus item at all). `fs` wraps every
+    // view so unhandled keys from any focused widget bubble up into the
+    // global handler, and the watchers below reclaim focus whenever the
+    // subtree that held it goes away.
+    property <bool> settings-open: Bridge.show-settings;
+    changed settings-open => {
+        if (!self.settings-open) {
+            fs.focus();
+        }
+    }
+
+    property <bool> starting-up: Bridge.starting-up;
+    changed starting-up => {
+        if (!self.starting-up) {
+            fs.focus();
+        }
+    }
+
+    property <AppState> app-state: Bridge.app-state;
+    changed app-state => {
+        // On entry into Playing the video player's own scope focuses itself.
+        if (self.app-state != AppState.Playing) {
+            fs.focus();
+        }
+    }
+
+    property <UiPlayerVariant> player-variant: Bridge.player-variant;
+    changed player-variant => {
+        if (self.player-variant != UiPlayerVariant.Video) {
+            fs.focus();
+        }
+    }
+
+    property <UiUpdaterState> updater-state: Bridge.updater-state;
+    changed updater-state => fs.focus();
 
     forward-focus: fs;
 
     fs := FocusScope {
-        capture-key-pressed(event) => Bridge.capture-key-pressed(event);
-    }
+        key-pressed(event) => Bridge.global-key-pressed(event);
 
-    if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Video: VideoPlayerView { }
+        if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Video: VideoPlayerView { }
 
-    if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Image: ImageView { }
+        if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Image: ImageView { }
 
-    if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
+        if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
 
-    if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Raop: RaopView { }
+        if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Raop: RaopView { }
 
-    idle-view := IdleView {
-        opacity: Bridge.app-state == AppState.Idle ? 100% : 0%;
-        visible: self.opacity > 0%;
+        idle-view := IdleView {
+            opacity: Bridge.app-state == AppState.Idle ? 100% : 0%;
+            visible: self.opacity > 0%;
 
-        animate opacity {
-            duration: 100ms;
+            animate opacity {
+                duration: 100ms;
+            }
         }
-    }
 
-    loading-view := LoadingMediaView {
-        opacity: Bridge.app-state == AppState.LoadingMedia ? 100% : 0%;
-        visible: self.opacity > 0%;
+        loading-view := LoadingMediaView {
+            opacity: Bridge.app-state == AppState.LoadingMedia ? 100% : 0%;
+            visible: self.opacity > 0%;
 
-        animate opacity {
-            duration: 100ms;
+            animate opacity {
+                duration: 100ms;
+            }
         }
-    }
 
-    if Bridge.should-show-toast-overlay(): ToastOverlay { }
+        if Bridge.should-show-toast-overlay(): ToastOverlay { }
 
-    if Bridge.show-inspector: Inspector { }
+        if Bridge.show-inspector: Inspector { }
 
-    SettingsDrawer { }
+        SettingsDrawer { }
 
-    startup-view := StartupView {
-        opacity: Bridge.starting-up ? 100% : 0%;
-        visible: self.opacity > 0%;
+        startup-view := StartupView {
+            opacity: Bridge.starting-up ? 100% : 0%;
+            visible: self.opacity > 0%;
 
-        animate opacity {
-            duration: 250ms;
-            easing: ease-in-out;
+            animate opacity {
+                duration: 250ms;
+                easing: ease-in-out;
+            }
         }
     }
 }
