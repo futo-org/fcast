@@ -10,7 +10,8 @@ use crate::error::{SabrError, SabrResult};
 /// incrementally by the UMP reader as they arrive off the wire.
 pub type SabrBody = Pin<Box<dyn Stream<Item = io::Result<Bytes>> + Send>>;
 
-/// Handle to a canned transport's recorded request bodies (for test assertions).
+/// Handle to a canned transport's recorded request bodies (for test
+/// assertions).
 pub type RecordedRequests = Arc<Mutex<Vec<Vec<u8>>>>;
 
 /// How the session sends SABR requests.

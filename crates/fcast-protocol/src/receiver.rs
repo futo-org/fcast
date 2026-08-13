@@ -126,11 +126,13 @@ impl NetworkStream {
         self.upgrade_with_prefix(acceptor, &[], timeout).await
     }
 
-    /// Upgrade a plaintext TCP stream to TLS, replaying `prefix` ahead of the socket.
+    /// Upgrade a plaintext TCP stream to TLS, replaying `prefix` ahead of the
+    /// socket.
     ///
-    /// `prefix` carries any bytes already read past the plaintext handshake that belong to the TLS
-    /// handshake (e.g. a ClientHello coalesced into the same read as the `Version` packet); they
-    /// are replayed ahead of the socket so the acceptor sees a complete handshake.
+    /// `prefix` carries any bytes already read past the plaintext handshake
+    /// that belong to the TLS handshake (e.g. a ClientHello coalesced into
+    /// the same read as the `Version` packet). They are replayed ahead of
+    /// the socket so the acceptor sees a complete handshake.
     pub async fn upgrade_with_prefix(
         &mut self,
         acceptor: &TlsAcceptor,

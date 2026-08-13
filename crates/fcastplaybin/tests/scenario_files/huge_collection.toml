@@ -1,0 +1,131 @@
+# Twenty-four streams in one collection: 2 video, 13 audio, 9 text. wide_collection
+# .toml already stresses the selection engine's id handling at eleven; this is the
+# same pressure at more than twice the width, which is where the cost stops being
+# linear.
+#
+# Width is not just "more of the same" for this pipeline. Every stream is a src pad
+# with its own streaming task, its own typefind and parser inside parsebin, and its
+# own multiqueue slot inside decodebin3, so twenty-four streams means twenty-four
+# concurrent tasks racing to have their pad exposed. The collection is therefore
+# assembled from a lot of small increments arriving out of order, and the settle
+# that decides "the collection is complete" has the largest window here to conclude
+# too early. That is exactly the failure merge_streams_stable was written for, and a
+# reorder that is invisible at three streams is likely at twenty-four.
+#
+# It is also a real shape, not a stress toy: a concert or documentary Blu-ray rip
+# with a dozen dub tracks and a subtitle track per territory looks like this, and so
+# does a broadcast mux.
+#
+# The duration is 300 ms because the cost here is per STREAM, not per second, and
+# the width is the whole point. Only text_0 carries cues, for the same reason: the
+# other eight text streams exist to fill the id space, and cues on streams nothing
+# selects would buy nothing but run time.
+key = "hugecollection"
+duration_ms = 300
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "video_0"
+kind = "video"
+fps = 25
+keyframe_interval = 25
+
+[[stream]]
+id = "video_1"
+kind = "video"
+fps = 25
+keyframe_interval = 25
+
+[[stream]]
+id = "audio_0"
+kind = "audio"
+
+[[stream]]
+id = "audio_1"
+kind = "audio"
+
+[[stream]]
+id = "audio_2"
+kind = "audio"
+
+[[stream]]
+id = "audio_3"
+kind = "audio"
+
+[[stream]]
+id = "audio_4"
+kind = "audio"
+
+[[stream]]
+id = "audio_5"
+kind = "audio"
+
+[[stream]]
+id = "audio_6"
+kind = "audio"
+
+[[stream]]
+id = "audio_7"
+kind = "audio"
+
+[[stream]]
+id = "audio_8"
+kind = "audio"
+
+[[stream]]
+id = "audio_9"
+kind = "audio"
+
+[[stream]]
+id = "audio_10"
+kind = "audio"
+
+[[stream]]
+id = "audio_11"
+kind = "audio"
+
+[[stream]]
+id = "audio_12"
+kind = "audio"
+
+[[stream]]
+id = "text_0"
+kind = "text"
+
+[[stream.cue]]
+start_ms = 80
+end_ms = 200
+text = "HUGE00"
+
+[[stream]]
+id = "text_1"
+kind = "text"
+
+[[stream]]
+id = "text_2"
+kind = "text"
+
+[[stream]]
+id = "text_3"
+kind = "text"
+
+[[stream]]
+id = "text_4"
+kind = "text"
+
+[[stream]]
+id = "text_5"
+kind = "text"
+
+[[stream]]
+id = "text_6"
+kind = "text"
+
+[[stream]]
+id = "text_7"
+kind = "text"
+
+[[stream]]
+id = "text_8"
+kind = "text"

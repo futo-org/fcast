@@ -1,21 +1,18 @@
 //! H.264 framing for the mirror stream: convert Apple's length-prefixed NAL
-//! units (avcC-style) into Annex-B byte-stream that a GStreamer `h264parse` +
-//! decoder accepts.
+//! units (avcC-style) into the Annex-B byte-stream `h264parse` accepts.
 //!
-//! Two payload shapes occur (`raop_rtp_mirror.c`):
-//! - **Video** (`0x00`/`0x10`, decrypted): a sequence of NAL units each prefixed
-//!   by a 4-byte big-endian length. We replace every length prefix with the
-//!   `00 00 00 01` start code in place.
+//! Two payload shapes occur:
+//! - **Video** (`0x00`/`0x10`, decrypted): NAL units each prefixed by a 4-byte
+//!   big-endian length.
 //! - **Config** (`0x01`, unencrypted): an avcC-like record holding one SPS and
-//!   one PPS. We emit them as two Annex-B NAL units. These are sent in their own
-//!   packet and must be prepended to the next (IDR) video frame.
+//!   one PPS, sent in its own packet and to be prepended to the next IDR frame.
 
 /// Annex-B NAL unit start code.
 const START_CODE: [u8; 4] = [0x00, 0x00, 0x00, 0x01];
 
-/// Rewrite a decrypted video payload's 4-byte big-endian NAL length prefixes
-/// into Annex-B start codes, in place. Returns `false` (leaving `buf` partially
-/// rewritten) if the length fields don't tile the buffer exactly.
+/// Rewrite a video payload's NAL length prefixes into Annex-B start codes, in
+/// place. `false` (leaving `buf` partially rewritten) if the lengths don't tile
+/// the buffer exactly.
 pub fn length_prefixed_to_annex_b(buf: &mut [u8]) -> bool {
     let len = buf.len();
     let mut i = 0;
@@ -30,16 +27,12 @@ pub fn length_prefixed_to_annex_b(buf: &mut [u8]) -> bool {
     i == len
 }
 
-/// Parse an H.264 config (`0x01`) payload - an avcC-style SPS/PPS record - into
-/// Annex-B (`start_code || SPS || start_code || PPS`). Returns `None` if the record
-/// is malformed or too short (e.g. an H.265 `hvc1` payload, which we don't
-/// support).
-///
-/// Layout (`raop_rtp_mirror.c`): `sps_size = BE16(payload[6])`, SPS at
-/// `payload[8]`; `pps_size = BE16(payload[sps_size + 9])`, PPS at
-/// `payload[sps_size + 11]`.
+/// Parse an avcC-style config (`0x01`) payload into Annex-B, or `None` if it is
+/// malformed or too short (e.g. an unsupported H.265 `hvc1` payload). Layout:
+/// `sps_size = BE16(payload[6])`, SPS at `payload[8]`;
+/// `pps_size = BE16(payload[sps_size + 9])`, PPS at `payload[sps_size + 11]`.
 pub fn config_to_annex_b(payload: &[u8]) -> Option<Vec<u8>> {
-    // Need at least the avcC header + the SPS length field.
+    // At least the avcC header plus the SPS length field.
     if payload.len() < 8 {
         return None;
     }
@@ -68,7 +61,6 @@ pub fn config_to_annex_b(payload: &[u8]) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
 
-    /// Build a length-prefixed payload from NAL unit bodies.
     fn length_prefixed(nals: &[&[u8]]) -> Vec<u8> {
         let mut v = Vec::new();
         for nal in nals {
@@ -117,8 +109,6 @@ mod tests {
     fn parses_config_sps_pps() {
         let sps = [0x67, 0x42, 0x00, 0x0a];
         let pps = [0x68, 0xce, 0x3c, 0x80];
-        // avcC-style header: 6 bytes, then BE16 sps_size, SPS, num_pps byte,
-        // BE16 pps_size, PPS.
         let mut payload = vec![0x01, 0x42, 0x00, 0x0a, 0xff, 0xe1];
         payload.extend_from_slice(&(sps.len() as u16).to_be_bytes());
         payload.extend_from_slice(&sps);

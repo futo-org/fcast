@@ -11,6 +11,10 @@ use fcastplaybin::{
 };
 use gst::prelude::*;
 
+#[path = "support/text_arm.rs"]
+mod text_arm;
+use text_arm::{TextSeen, text_branch_linked};
+
 /// Generous bound for real-time playback on a busy CI box.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(20);
 
@@ -23,6 +27,13 @@ const DISABLE_BOUND: Duration = Duration::from_secs(2);
 /// removal, which waits out the current cue (~400-450ms here). An eager
 /// detach clears within a frame or two.
 const CUE_CLEAR_BOUND: Duration = Duration::from_millis(250);
+
+/// How long a cue redelivered by a track change at a settled PAUSED may take
+/// to reach the renderer. Only has to be finite: a paused pipeline cannot
+/// deliver a cue by playing, so a generous bound cannot turn a v1-shaped
+/// failure into a pass. The LATENCY claim (200ms) is
+/// `sink_subtitles::a_paused_cue_covers_the_frozen_frame_without_resuming`'s.
+const PAUSED_CUE_BOUND: Duration = Duration::from_secs(5);
 
 /// Dense back-to-back cues (every 500ms from 0.5s on). Density matters:
 /// decodebin3 holds sparse text until the interleave covers the cue gap,
@@ -54,6 +65,10 @@ fn init() {
                 .try_init();
         }
         gst::init().unwrap();
+        // The receiver's part of the pipeline: fcastaudiostretch is built by
+        // the fcastplaybin constructor but registered by the application.
+        fcast_gst_elements::fcastaudiostretch::plugin_init()
+            .expect("registering fcastaudiostretch");
     });
 }
 
@@ -66,8 +81,6 @@ fn plugins_available() -> bool {
         "matroskamux",
         "matroskademux",
         "subparse",
-        "textoverlay",
-        "subtitleoverlay",
         "decodebin3",
     ]
     .iter()
@@ -147,6 +160,11 @@ struct Harness {
     /// Transport state for the [`SelectionGate`]. Tests flip it around
     /// `pause()`/`play()`.
     paused: std::cell::Cell<bool>,
+    /// Set by a lost-state edge, cleared by the settle that follows it or by
+    /// reaching PLAYING. See [`Harness::redrive_transport`].
+    lost_state: std::cell::Cell<bool>,
+    /// A seek the crate refused and parked. See [`Harness::redrive_transport`].
+    parked_seek: std::cell::Cell<Option<Seek>>,
 }
 
 impl Harness {
@@ -165,12 +183,93 @@ impl Harness {
         playbin.set_event_handler(None, move |event, generation| {
             let _ = tx.send((event, generation));
         });
+        // The cue feed is established HERE, not at the first
+        // `install_text_probe`: on the consumer arm an unsynced text branch
+        // hands over a whole external subtitle file within milliseconds of
+        // linking, and a feed armed later would have missed it (see
+        // `support/text_arm.rs`).
+        text_arm::arm(&playbin);
         Self {
             playbin,
             events,
             log: std::cell::RefCell::new(Vec::new()),
             paused: std::cell::Cell::new(false),
+            lost_state: std::cell::Cell::new(false),
+            parked_seek: std::cell::Cell::new(None),
         }
+    }
+
+    /// Put back the transport the crate parked, which is the one thing a real
+    /// caller does that this harness skipped.
+    ///
+    /// Two crate jobs hand work back to the caller rather than completing it,
+    /// and both announce it:
+    ///
+    /// * A pipeline that loses state (anything added while PLAYING that has a
+    ///   preroll to do: the text branch this file relinks on a resume, a late
+    ///   audio branch) drops ITSELF to PAUSED and, per
+    ///   `gst_element_lost_state`, "will also not automatically go to PLAYING
+    ///   but let the parent/application set us to PLAYING explicitly". The edge
+    ///   is `Paused` with pending `Paused`, and `StateMachine`'s
+    ///   `Phase::Running` dip arm (`src/state_machine.rs:541`) is what keeps
+    ///   the PLAYING target across it in production.
+    /// * `Job::Seek` (`src/lib.rs:4415`) refuses a seek that does not arrive at
+    ///   a settled PAUSED, posts `QueueSeek` and commits PAUSED, expecting the
+    ///   caller to re-issue it from the settle (`SeekSlot::Parked`).
+    ///
+    /// Without either, a resume that grows a branch leaves the pipeline in
+    /// PAUSED for good: no video buffer is produced, so no cue can be tapped,
+    /// which is exactly the `no rendered cue reappeared` report. Whether the
+    /// branch surgery lands before or after the pipeline settles PLAYING is a
+    /// race, which is why it is rare and load-dependent.
+    ///
+    /// Only an ACTUAL lost-state edge arms the PLAYING re-commit, so a load's
+    /// own preroll settle (which never carries a non-void pending) cannot start
+    /// playback behind a test's back.
+    ///
+    /// Lever: `FCAST_TEST_NO_TRANSPORT_REDRIVE`.
+    fn redrive_transport(&self, event: &PlaybinEvent) {
+        static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        if *OFF.get_or_init(|| std::env::var_os("FCAST_TEST_NO_TRANSPORT_REDRIVE").is_some()) {
+            return;
+        }
+        match event {
+            PlaybinEvent::QueueSeek(seek) => self.parked_seek.set(Some(*seek)),
+            PlaybinEvent::StateChanged {
+                current: gst::State::Paused,
+                pending: gst::State::Paused,
+                ..
+            } => self.lost_state.set(true),
+            PlaybinEvent::StateChanged {
+                current: gst::State::Paused,
+                pending: gst::State::VoidPending,
+                ..
+            } => {
+                if let Some(seek) = self.parked_seek.take() {
+                    self.playbin.seek_async(seek);
+                } else if self.lost_state.replace(false) && !self.paused.get() {
+                    let _ = self.playbin.play();
+                }
+            }
+            PlaybinEvent::StateChanged {
+                current: gst::State::Playing,
+                ..
+            } => self.lost_state.set(false),
+            _ => {}
+        }
+    }
+
+    /// Whether a lost-state edge is outstanding, plus the pipeline's state, for
+    /// a timeout to name WHY nothing is flowing.
+    fn transport_diagnosis(&self) -> String {
+        let (ret, current, pending) = self.playbin.pipeline().state(gst::ClockTime::ZERO);
+        format!(
+            "pipeline state={current:?} pending={pending:?} ret={ret:?}, \
+             lost_state_outstanding={}, parked_seek={:?}, harness_paused={}",
+            self.lost_state.get(),
+            self.parked_seek.get(),
+            self.paused.get(),
+        )
     }
 
     /// Settled gate with `seekable: false` so the engine never schedules
@@ -199,6 +298,7 @@ impl Harness {
     /// the operation whose outcome the next wait attributes.
     fn drain_events(&self) {
         while let Ok((event, _generation)) = self.events.try_recv() {
+            self.redrive_transport(&event);
             self.log.borrow_mut().push(event);
         }
     }
@@ -223,6 +323,7 @@ impl Harness {
                             self.log.borrow()
                         );
                     }
+                    self.redrive_transport(&event);
                     let hit = pred(&event);
                     self.log.borrow_mut().push(event);
                     if hit {
@@ -274,10 +375,18 @@ impl Harness {
 
     /// Load `uri`, start playback and wait for the settled PLAYING.
     fn load_and_play(&self, uri: &str) {
+        self.load_and_play_at(uri, gst::ClockTime::ZERO);
+    }
+
+    /// Load `uri` starting at `position` (the receiver's resume path) and
+    /// wait for the settled PLAYING. A non-zero start point is the second
+    /// way, next to a user seek, for the pipeline's running-time origin to
+    /// sit above zero.
+    fn load_and_play_at(&self, uri: &str, position: gst::ClockTime) {
         self.playbin.load_async(
             MediaInput::Uri(uri.to_owned()),
             StartPoint::Seek {
-                position: gst::ClockTime::ZERO,
+                position,
                 rate: 1.0,
             },
         );
@@ -297,23 +406,11 @@ impl Harness {
         });
     }
 
-    /// The overlay's subtitle input pad. Always present, only its peer
-    /// comes and goes.
-    fn overlay_subtitle_pad(&self) -> gst::Pad {
-        self.playbin
-            .pipeline()
-            .by_name("fpb-suboverlay")
-            .expect("subtitleoverlay in the pipeline")
-            .static_pad("subtitle_sink")
-            .expect("subtitleoverlay has a subtitle_sink pad")
-    }
-
     /// Wait (pumping) until the overlay's subtitle input is linked/unlinked,
     /// returning how long it took. Panics after `bound`.
     fn wait_subtitle_branch(&self, want_linked: bool, bound: Duration, what: &str) -> Duration {
-        let pad = self.overlay_subtitle_pad();
         let start = Instant::now();
-        while pad.is_linked() != want_linked {
+        while text_branch_linked(&self.playbin) != want_linked {
             if start.elapsed() >= bound {
                 panic!(
                     "subtitle branch did not become {} within {bound:?} ({what})",
@@ -326,41 +423,23 @@ impl Harness {
         start.elapsed()
     }
 
-    /// Probe on subtitleoverlay's src pad recording, per video buffer,
-    /// whether it carries a rendered cue. Topology checks alone can pass
-    /// while frames still carry the cue. Attach mode rides as a
-    /// `GstVideoOverlayCompositionMeta`, blend mode as white glyphs in the
-    /// black video's luma plane.
+    /// Per video buffer at the video sink: when it went past, and whether a
+    /// cue was being SHOWN on it. Topology checks alone can pass while a cue
+    /// is still on screen, which is why every assertion here reads this and
+    /// not the graph.
+    ///
+    /// It stopped being a PIXEL instrument when subtitleoverlay was deleted. Nothing is
+    /// composited inside the crate any more, so there is no
+    /// `GstVideoOverlayCompositionMeta` to find and no white glyphs in the
+    /// luma plane to count: `text_arm` rejoins the buffer's running time
+    /// against the cue feed instead, and answers the same question.
     fn install_text_probe(&self) -> TextSeen {
-        let src = self
-            .playbin
-            .pipeline()
-            .by_name("fpb-suboverlay")
-            .expect("subtitleoverlay in the pipeline")
-            .static_pad("src")
-            .expect("subtitleoverlay has a src pad");
-        let seen: TextSeen = Default::default();
-        let seen_cb = seen.clone();
-        src.add_probe(gst::PadProbeType::BUFFER, move |_, info| {
-            if let Some(buffer) = info.buffer() {
-                let has_meta = buffer
-                    .iter_meta::<gst::Meta>()
-                    .any(|meta| meta.api().name().contains("VideoOverlayComposition"));
-                // Blend mode: white glyphs in the otherwise black luma
-                // plane (stays well under 100 through vp8).
-                let has_pixels = !has_meta
-                    && buffer.map_readable().is_ok_and(|map| {
-                        let luma = &map[..map.len().min(640 * 480)];
-                        luma.iter().filter(|&&y| y > 128).count() >= 10
-                    });
-                seen_cb
-                    .lock()
-                    .unwrap()
-                    .push((Instant::now(), has_meta || has_pixels));
-            }
-            gst::PadProbeReturn::Ok
-        });
-        seen
+        // BOTH TRANSPORTS, one log. See `support/text_arm.rs`: the video
+        // buffers say when and whether anything is flowing, and on the
+        // consumer arm the cue feed says which cue covers them. Every
+        // assertion below reads the same `(when, where, was a cue showing)`
+        // triple it always did.
+        text_arm::TextTap::install(&self.playbin).seen()
     }
 
     /// Wait (pumping) until playback position reaches `target`.
@@ -395,11 +474,10 @@ impl Harness {
         // The disable must hold while settle calls keep coming. The routed
         // pad outlives the detach and must not be relinked.
         let hold = Instant::now() + Duration::from_millis(500);
-        let pad = self.overlay_subtitle_pad();
         while Instant::now() < hold {
             self.settle_pump();
             assert!(
-                !pad.is_linked(),
+                !text_branch_linked(&self.playbin),
                 "the link policy relinked a disabled subtitle stream"
             );
             std::thread::sleep(Duration::from_millis(5));
@@ -408,15 +486,11 @@ impl Harness {
     }
 }
 
-/// Per-buffer record from [`Harness::install_text_probe`]: arrival time and
-/// whether the buffer carried a rendered cue.
-type TextSeen = std::sync::Arc<std::sync::Mutex<Vec<(Instant, bool)>>>;
-
 /// The cue must be visible on buffers before a disable can claim to have
 /// removed it.
 fn wait_cue_visible(harness: &Harness, seen: &TextSeen) {
     let deadline = Instant::now() + EVENT_TIMEOUT;
-    while !seen.lock().unwrap().iter().any(|(_, text)| *text) {
+    while !seen.lock().unwrap().iter().any(|(_, _, text)| *text) {
         assert!(
             Instant::now() < deadline,
             "the rendered cue never appeared in the video buffers"
@@ -432,16 +506,40 @@ fn wait_cue_visible(harness: &Harness, seen: &TextSeen) {
 /// confirmed while no data, not even caps, ever flowed again.
 fn wait_cue_visible_after(harness: &Harness, seen: &TextSeen, after: Instant, what: &str) {
     let deadline = Instant::now() + EVENT_TIMEOUT;
-    while !seen
-        .lock()
-        .unwrap()
-        .iter()
-        .any(|(at, text)| *text && *at > after)
-    {
-        assert!(
-            Instant::now() < deadline,
-            "no rendered cue reappeared after the {what}"
-        );
+    loop {
+        // Drain, so a lost state that lands during THIS wait is both recorded
+        // and re-driven. Without the drain the events sat unread in the channel
+        // and the panic below could not say anything about them, which is why
+        // the one field report of this failure was undiagnosable.
+        harness.drain_events();
+        if seen
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|(at, _, text)| *text && *at > after)
+        {
+            return;
+        }
+        if Instant::now() >= deadline {
+            // Name the cause rather than only the symptom. The two shapes worth
+            // telling apart: nothing is FLOWING (the pipeline is not PLAYING,
+            // typically a lost state nobody re-committed, so there is no video
+            // buffer for a cue to ride on) versus buffers flowing with no cue
+            // on them (a text-path problem). Counting the tapped buffers since
+            // `after` decides it.
+            let flowed = seen
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|(at, _, _)| *at > after)
+                .count();
+            panic!(
+                "no rendered cue reappeared after the {what}; \
+                 {flowed} tapped video buffers since then, {}; log: {:#?}",
+                harness.transport_diagnosis(),
+                harness.log.borrow()
+            );
+        }
         harness.settle_pump();
         std::thread::sleep(Duration::from_millis(10));
     }
@@ -453,11 +551,14 @@ fn assert_cue_cleared(harness: &Harness, seen: &TextSeen, t_disable: Instant, wh
     let deadline = Instant::now() + EVENT_TIMEOUT;
     loop {
         let log = seen.lock().unwrap();
-        if log.iter().any(|(at, _)| *at > t_disable + CUE_CLEAR_BOUND) {
+        if log
+            .iter()
+            .any(|(at, _, _)| *at > t_disable + CUE_CLEAR_BOUND)
+        {
             let last_text = log
                 .iter()
-                .filter(|(_, text)| *text)
-                .map(|(at, _)| *at)
+                .filter(|(_, _, text)| *text)
+                .map(|(at, _, _)| *at)
                 .max();
             if let Some(last) = last_text {
                 let after = last.saturating_duration_since(t_disable);
@@ -566,7 +667,7 @@ fn embedded_subtitle_disable_is_immediate() {
     eprintln!("embedded: unlink after {unlink:?}, deselect confirmed after {confirm:?}");
     assert!(
         unlink <= DISABLE_BOUND,
-        "subtitle branch stayed in the overlay for {unlink:?} after the disable"
+        "subtitle branch stayed wired for {unlink:?} after the disable"
     );
     assert!(
         confirm <= DISABLE_BOUND,
@@ -574,7 +675,15 @@ fn embedded_subtitle_disable_is_immediate() {
     );
     assert_cue_cleared(&harness, &text_seen, t_disable, "embedded");
 
-    // Round trip: the same track must come back on request.
+    // Round trip: the same track must come back on request, and RENDER.
+    // Topology plus a confirmed selection is not enough here for the same
+    // reason it is not enough for the external twin
+    // (`external_subtitle_reenable_renders_again`): the regression class is a
+    // re-select that confirms against a drained decodebin3 slot with the
+    // branch linked while not one buffer, not even caps, ever reaches the
+    // overlay again. Before this wait was added, this leg asserted only
+    // "linked" and would have passed straight through that.
+    let t_reenable = Instant::now();
     harness
         .playbin
         .request_track(TrackSlot::Subtitle, TrackTarget::Stream(Some(sid)));
@@ -589,6 +698,7 @@ fn embedded_subtitle_disable_is_immediate() {
         )
     });
     harness.wait_subtitle_branch(true, EVENT_TIMEOUT, "re-enable");
+    wait_cue_visible_after(&harness, &text_seen, t_reenable, "embedded re-enable");
 
     harness.wait_for("EndOfStream", |event| {
         matches!(event, PlaybinEvent::EndOfStream)
@@ -615,7 +725,7 @@ fn external_subtitle_disable_is_immediate() {
     eprintln!("external: unlink after {unlink:?}, deselect confirmed after {confirm:?}");
     assert!(
         unlink <= DISABLE_BOUND,
-        "subtitle branch stayed in the overlay for {unlink:?} after the disable"
+        "subtitle branch stayed wired for {unlink:?} after the disable"
     );
     assert!(
         confirm <= DISABLE_BOUND,
@@ -684,7 +794,7 @@ fn paused_subtitle_disable_is_immediate() {
     });
     // The disable must hold across the resume.
     assert!(
-        !harness.overlay_subtitle_pad().is_linked(),
+        !text_branch_linked(&harness.playbin),
         "the subtitle branch came back on resume"
     );
     assert_cue_cleared(&harness, &text_seen, t_resume, "paused");
@@ -694,8 +804,14 @@ fn paused_subtitle_disable_is_immediate() {
     });
 }
 
-/// Disable and re-enable back to back. The branch must end up linked and
-/// playback must survive to EOS.
+/// Disable and re-enable an EMBEDDED track back to back. The branch must end
+/// up linked, must RENDER again, and playback must survive to EOS.
+///
+/// The rendering requirement is the point: the external twin
+/// (`rapid_external_subtitle_toggle_renders_again`) has always had it, and
+/// this one did not, so the embedded side of the "linked but dead" class was
+/// unguarded, a relink that reattaches a drained slot passes every topology
+/// and event assertion in this test.
 #[test]
 fn rapid_subtitle_toggle_recovers() {
     init();
@@ -707,7 +823,11 @@ fn rapid_subtitle_toggle_recovers() {
     let harness = Harness::new();
     harness.load_and_play(&uri);
     let sid = enable_and_await_subtitles(&harness);
+    let text_seen = harness.install_text_probe();
     harness.wait_position(gst::ClockTime::from_mseconds(2000));
+    // Not vacuous: the track is genuinely on screen before the toggle.
+    wait_cue_visible(&harness, &text_seen);
+    let t_toggle = Instant::now();
 
     harness
         .playbin
@@ -723,15 +843,15 @@ fn rapid_subtitle_toggle_recovers() {
     harness.wait_subtitle_branch(false, EVENT_TIMEOUT, "rapid toggle detach");
     harness.wait_subtitle_branch(true, EVENT_TIMEOUT, "rapid toggle relink");
     let hold = Instant::now() + Duration::from_millis(500);
-    let pad = harness.overlay_subtitle_pad();
     while Instant::now() < hold {
         harness.settle_pump();
         assert!(
-            pad.is_linked(),
+            text_branch_linked(&harness.playbin),
             "the re-enabled subtitle branch was torn down again"
         );
         std::thread::sleep(Duration::from_millis(5));
     }
+    wait_cue_visible_after(&harness, &text_seen, t_toggle, "embedded rapid toggle");
 
     harness.wait_for("EndOfStream", |event| {
         matches!(event, PlaybinEvent::EndOfStream)
@@ -1088,11 +1208,49 @@ fn second_external_switch_and_return_renders() {
     });
 }
 
-/// Disable and re-enable the external while PAUSED, then resume: the
-/// reconfiguration must neither wedge the paused pipeline nor lose the
-/// track, and cues must render after the resume.
+/// T9. Disable and re-enable the external while PAUSED: the cue is at the
+/// renderer BEFORE anything resumes.
+///
+/// This is the contract the flip buys, and the reason it is worth a whole
+/// phase. It was written the other way round -- `paused_external_toggle_
+/// shows_after_resume`, which required rendering only AFTER the resume --
+/// because subtitleoverlay's architecture cannot express this one: it
+/// prefetch-blocks the text push until video reaches the cue, and at a
+/// settled PAUSED video reaches nothing. The consumer branch is unsynced and
+/// its appsink is wait-free (`sync=false`, `async=false`), so a cue
+/// redelivered by the re-select is handed to the renderer at once, with the
+/// frame still frozen. `fcast-video`'s cue engine then repaints without a new
+/// frame (`fcast_video::cue::a_paused_cue_covering_the_frozen_frame_reaches_
+/// the_screen`), which is the other half of the same claim.
+///
+/// The OLD contract is kept as the tail rather than dropped: the resume must
+/// still render. The new one is strictly stronger, and a build that satisfied
+/// it while breaking the resume would be no better than v1.
+///
+/// # Verification
+///
+/// * Green: no env vars.
+/// * There is no other arm to check now. While the v1 lever existed
+///   this test reported NO VERDICT under it -- the F5 precedent, a printed skip
+///   rather than an inverted assertion, because the overlay's answer was not a
+///   different value but an absent mechanism. That RED was MEASURED rather than
+///   asserted: with the skip removed, the overlay arm did not even reach the
+///   cue wait, failing 20s earlier at `wait_subtitle_branch(true, ...)`,
+///   because a re-selected branch never relinked while the pipeline rested (the
+///   paused detach's flush is postponed and the deselect cannot confirm until
+///   data moves again, which is what the old test's own comment recorded). The
+///   consumer arm links and delivers in ~15s of wall clock for the whole test,
+///   cue included. That contrast IS the phase's claim; it is recorded here
+///   rather than run every time, because a test that must fail on one arm
+///   cannot also be part of that arm's parity battery.
+///
+/// LATENCY is not this test's subject. The 200ms paused-delivery bound and
+/// the covers-the-frozen-frame comparison live in `sink_subtitles::
+/// a_paused_cue_covers_the_frozen_frame_without_resuming`, on synthetic media
+/// that can measure them; the bound here only has to be finite, because a
+/// paused pipeline cannot deliver a cue by playing.
 #[test]
-fn paused_external_toggle_shows_after_resume() {
+fn paused_external_toggle_shows_while_paused() {
     init();
     if !plugins_available() {
         eprintln!("skipping: required GStreamer plugins missing");
@@ -1117,14 +1275,67 @@ fn paused_external_toggle_shows_after_resume() {
     });
     harness.paused.set(true);
 
-    harness.disable_subtitles_and_measure();
+    // Disable while paused. The detach unlinks the branch eagerly and, since
+    // the subtitleoverlay deletion, disposes of it inline too (`detach_text_parts` only
+    // postpones for the pad-removed path now). A flooded external slot can
+    // still keep decodebin3 mid-push, so the deselect is not required to
+    // CONFIRM while the pipeline rests: assert the eager unlink and the hold
+    // here, and leave every confirmation to the resume below.
+    harness
+        .playbin
+        .request_track(TrackSlot::Subtitle, TrackTarget::Stream(None));
+    harness.playbin.pump_selection(harness.gate());
+    harness.wait_subtitle_branch(false, DISABLE_BOUND, "paused disable");
+    // The disable must hold while settle calls keep coming.
+    let hold = Instant::now() + Duration::from_millis(500);
+    while Instant::now() < hold {
+        harness.settle_pump();
+        assert!(
+            !text_branch_linked(&harness.playbin),
+            "the link policy relinked a disabled subtitle stream"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    }
+
+    // THE RE-SELECT, with the pipeline still at rest. Nothing below this line
+    // resumes anything until the paused contract has been measured.
+    let arrivals = text_arm::count_text_arrivals(&harness.playbin);
+    let t_reselect = Instant::now();
     harness
         .playbin
         .request_track(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(id));
     harness.playbin.pump_selection(harness.gate());
 
-    // A paused re-select may only confirm once data flows again, so don't
-    // insist on ordering: resume and require rendering.
+    harness.wait_subtitle_branch(true, EVENT_TIMEOUT, "paused re-enable");
+    {
+        let deadline = Instant::now() + PAUSED_CUE_BOUND;
+        loop {
+            harness.drain_events();
+            if arrivals.since(t_reselect) > 0 {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "no cue reached the renderer within {PAUSED_CUE_BOUND:?} of a re-select at a \
+                 settled PAUSED, with the branch linked: the paused switch is showing \
+                 nothing until something resumes, which is the v1 behaviour this phase \
+                 exists to replace. {}",
+                harness.transport_diagnosis(),
+            );
+            harness.settle_pump();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+    // ...and it happened at REST. A pump that had resumed the pipeline would
+    // have satisfied the wait above the old way.
+    assert_eq!(
+        harness.playbin.state_summary(),
+        (gst::State::Paused, gst::State::VoidPending),
+        "the pipeline left PAUSED before the cue arrived, so the delivery above was not a \
+         paused one"
+    );
+
+    // The OLD contract, kept: the resume still renders.
     harness.playbin.play().expect("resume");
     harness.paused.set(false);
     harness.wait_for("settled PLAYING after resume", |event| {
@@ -1541,4 +1752,246 @@ fn load_replaces_media_under_midpush_external() {
     harness.wait_for("EndOfStream", |event| {
         matches!(event, PlaybinEvent::EndOfStream)
     });
+}
+
+/// An SRT with exactly the given cue spans (milliseconds). Cue-free
+/// stretches are what makes a cue's position identify it: the dense
+/// `srt_content` has a cue live at every instant, which hides a replay
+/// from the start of the file behind a plausible-looking render.
+fn write_sparse_srt(name: &str, spans: &[(u32, u32)]) -> std::path::PathBuf {
+    let path = tmp_path(name);
+    let stamp = |ms: u32| {
+        format!(
+            "{:02}:{:02}:{:02},{:03}",
+            ms / 3_600_000,
+            (ms / 60_000) % 60,
+            (ms / 1000) % 60,
+            ms % 1000
+        )
+    };
+    let mut srt = String::new();
+    for (i, (start, end)) in spans.iter().enumerate() {
+        srt.push_str(&format!(
+            "{}\n{} --> {}\nCUE{i:02}XXXXXXXX\n\n",
+            i + 1,
+            stamp(*start),
+            stamp(*end),
+        ));
+    }
+    std::fs::write(&path, srt).expect("writing the srt file");
+    path
+}
+
+/// The playback positions of every cue-bearing buffer after `after`, in
+/// arrival order. An unstamped buffer still counts as a hit.
+fn cue_hits_after(seen: &TextSeen, after: Instant) -> Vec<Option<gst::ClockTime>> {
+    seen.lock()
+        .unwrap()
+        .iter()
+        .filter(|(at, _, text)| *text && *at > after)
+        .map(|(_, pts, _)| *pts)
+        .collect()
+}
+
+/// Playback must reach `until` without one cue rendering after `after`:
+/// the probe staying dark IS the pass. Buffers must have flowed, or the
+/// assert would pass vacuously on a dead branch.
+fn assert_dark_until(
+    harness: &Harness,
+    seen: &TextSeen,
+    after: Instant,
+    until: gst::ClockTime,
+    what: &str,
+) {
+    let deadline = Instant::now() + EVENT_TIMEOUT;
+    loop {
+        let hits = cue_hits_after(seen, after);
+        assert!(
+            hits.is_empty(),
+            "cues rendered at {hits:?}, before {until} is reached ({what})"
+        );
+        if harness.playbin.position().is_some_and(|pos| pos >= until) {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "position never reached {until} ({what})"
+        );
+        harness.settle_pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    let flowed = seen
+        .lock()
+        .unwrap()
+        .iter()
+        .filter(|(at, _, _)| *at > after)
+        .count();
+    assert!(flowed > 0, "no video buffers flowed at all ({what})");
+}
+
+/// The position of the first cue-bearing buffer after `after`, waiting up
+/// to `bound`.
+fn first_cue_position_after(
+    harness: &Harness,
+    seen: &TextSeen,
+    after: Instant,
+    bound: Duration,
+    what: &str,
+) -> gst::ClockTime {
+    let deadline = Instant::now() + bound;
+    loop {
+        if let Some(hit) = cue_hits_after(seen, after).first() {
+            return hit.expect("a rendered video buffer carries a position");
+        }
+        assert!(
+            Instant::now() < deadline,
+            "no cue rendered within {bound:?} ({what}); position {:?}",
+            harness.playbin.position()
+        );
+        harness.settle_pump();
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
+/// Re-enabling an external must not replay the file from its start. The
+/// join-time replay seek that revives decodebin3's spent slot has to land
+/// on the pipeline's running-time ORIGIN, which every flushing seek moves
+/// to its target. Replaying from zero instead gives the branch a segment
+/// starting at zero while the video's starts at the seek target, so every
+/// replayed cue renders shifted by that target and the subtitles play
+/// again from cue one (the field report). The seek here is what creates
+/// the non-zero origin; at origin zero the replay is already correct.
+#[test]
+fn external_reenable_does_not_replay_stale_cues() {
+    init();
+    if !plugins_available() {
+        eprintln!("skipping: required GStreamer plugins missing");
+        return;
+    }
+    let uri = encode_video_mkv("stale-replay.mkv", 20);
+    // The first cue is over before the re-enable, the second is still due:
+    // a render before 13s can only be the replayed first one.
+    let srt = write_sparse_srt("stale-replay.srt", &[(200, 6_000), (13_000, 19_000)]);
+    let harness = Harness::new();
+    harness.load_and_play(&uri);
+    let (id, text_seen) = attach_and_show_external(&harness, &srt);
+
+    // Origin 9s. Nothing may render there: 6s < 9s < 13s.
+    seek_to(&harness, gst::ClockTime::from_seconds(9));
+    harness.disable_subtitles_and_measure();
+    let before = harness.playbin.position().expect("a position");
+
+    let t_reenable = Instant::now();
+    harness
+        .playbin
+        .request_track(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(id));
+    harness.playbin.pump_selection(harness.gate());
+    harness.wait_subtitle_branch(true, EVENT_TIMEOUT, "stale-replay re-enable link");
+
+    // The replay must not drag playback backwards either (the report reads
+    // both ways: replayed cues, or a rewound position).
+    let after = harness.playbin.position().expect("a position");
+    assert!(
+        after >= before,
+        "the re-enable moved playback backwards, from {before} to {after}"
+    );
+
+    assert_dark_until(
+        &harness,
+        &text_seen,
+        t_reenable,
+        gst::ClockTime::from_mseconds(12_500),
+        "after the re-enable",
+    );
+    // Not vacuous: the re-enabled track still renders, on time.
+    let at = first_cue_position_after(
+        &harness,
+        &text_seen,
+        t_reenable,
+        Duration::from_secs(5),
+        "the cue due after the re-enable",
+    );
+    assert!(
+        (12_900..13_600).contains(&at.mseconds()),
+        "the re-enabled track's next cue rendered at {at} instead of its 13s span"
+    );
+    assert_worker_alive(&harness, "after the re-enable");
+
+    // No EOS wait: the second cue ends at 19s and the replay behaviour is
+    // already settled here.
+}
+
+/// Enabling an external late must show the cue due at the CURRENT
+/// position, and nothing else. Same alignment as the re-enable, reached
+/// without any disable: a load that starts mid-file also puts the origin
+/// above zero, and a freshly attached input always pushes from the file's
+/// start.
+#[test]
+fn external_enable_late_shows_position_correct_cue() {
+    init();
+    if !plugins_available() {
+        eprintln!("skipping: required GStreamer plugins missing");
+        return;
+    }
+    let uri = encode_video_mkv("late-enable.mkv", 24);
+    // The early cue is over before the load's start point; the second
+    // spans the enable and the re-enable.
+    let srt = write_sparse_srt("late-enable.srt", &[(200, 2_000), (9_000, 16_000)]);
+    let harness = Harness::new();
+    harness.load_and_play_at(&uri, gst::ClockTime::from_seconds(6));
+    let text_seen = harness.install_text_probe();
+    harness.wait_position(gst::ClockTime::from_seconds(7));
+
+    let id = harness
+        .playbin
+        .attach_subtitle(&format!("file://{}", srt.display()))
+        .expect("attaching the external subtitle");
+    let sid = external_sid(&harness, id);
+    let t_attach = switch_subtitle(
+        &harness,
+        TrackTarget::ExternalSubtitle(id),
+        &sid,
+        "fresh attach past the early cue",
+    );
+
+    assert_dark_until(
+        &harness,
+        &text_seen,
+        t_attach,
+        gst::ClockTime::from_mseconds(8_500),
+        "after the fresh attach",
+    );
+    let at = first_cue_position_after(
+        &harness,
+        &text_seen,
+        t_attach,
+        Duration::from_secs(5),
+        "the 9s cue after a fresh attach",
+    );
+    assert!(
+        (8_900..9_700).contains(&at.mseconds()),
+        "the fresh attach rendered a cue at {at} instead of the 9s one"
+    );
+
+    // Now mid-cue: a re-enable must bring THAT cue back at once, not the
+    // file's first one, and not this one shifted into the future.
+    harness.disable_subtitles_and_measure();
+    let t_reenable = Instant::now();
+    harness
+        .playbin
+        .request_track(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(id));
+    harness.playbin.pump_selection(harness.gate());
+    harness.wait_subtitle_branch(true, EVENT_TIMEOUT, "late-enable re-enable link");
+    let at = first_cue_position_after(
+        &harness,
+        &text_seen,
+        t_reenable,
+        Duration::from_secs(3),
+        "the spanning cue after the re-enable",
+    );
+    assert!(
+        (9_000..14_000).contains(&at.mseconds()),
+        "the re-enable rendered a cue at {at}, outside the 9-16s cue that spans it"
+    );
+    assert_worker_alive(&harness, "after the mid-cue re-enable");
 }

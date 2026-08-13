@@ -154,7 +154,8 @@ mod imp {
                 .emit_by_name::<bool>("session-ended", &[&id.as_str()])
             {
                 //do nothing
-                // FIXME: revisit once the return values are changed in webrtcsink/imp.rs and webrtcsrc/imp.rs
+                // FIXME: revisit once the return values are changed in
+                // webrtcsink/imp.rs and webrtcsrc/imp.rs
             }
 
             debug!(id, "Ended session");
@@ -240,8 +241,9 @@ mod imp {
                 }
             };
 
-            // Note: including the ETag in the original "201 Created" response is only REQUIRED
-            // if the WHEP resource supports ICE restarts and OPTIONAL otherwise.
+            // Note: including the ETag in the original "201 Created" response is only
+            // REQUIRED if the WHEP resource supports ICE restarts and OPTIONAL
+            // otherwise.
 
             let ans_text: Result<String, String>;
             if let Some(sdp) = answer {

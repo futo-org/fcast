@@ -342,7 +342,8 @@ async fn run_server(
     }
 
     loop {
-        // We create 2 separate select blocks because the select! macro does not allow adding cfg attributes on branch arms
+        // We create 2 separate select blocks because the select! macro does not allow
+        // adding cfg attributes on branch arms
         #[cfg(not(target_os = "windows"))]
         tokio::select! {
             conn = listener.accept() => handle_connection(&files, conn).await,

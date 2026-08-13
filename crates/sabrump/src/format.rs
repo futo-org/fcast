@@ -55,7 +55,8 @@ impl SabrFormat {
         self.mime_type.starts_with("audio/")
     }
 
-    /// The container mime type, e.g. `video/mp4`, with any `;codecs=...` stripped.
+    /// The container mime type, e.g. `video/mp4`, with any `;codecs=...`
+    /// stripped.
     pub fn container_mime_type(&self) -> String {
         self.mime_type
             .split(';')

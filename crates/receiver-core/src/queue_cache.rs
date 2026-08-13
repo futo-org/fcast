@@ -1,29 +1,9 @@
-//! Prefetch cache for queue items.
+//! Prefetch cache for queue items: background HEAD downloads of the items
+//! around the current index, so selecting a neighbor starts from memory.
 //!
-//! When a v4 queue is playing, the receiver downloads the first bytes of the
-//! items around the current index in the background, so selecting the next or
-//! previous item starts from memory instead of paying the network round-trips
-//! at load time. This matters most for fcomp companion items, whose gst
-//! source pulls one ~64K chunk per request at play time, and for image
-//! slideshows flipping through a queue.
-//!
-//! Only the HEAD of each item is fetched (16M): small items (photos, gifs,
-//! clips) end up fully resident and play via `media_source::build_bytes_source`,
-//! larger ones keep a partial head that gets injected into the per-load
-//! source element (`media_source::build_uri_source_with_head`), which serves
-//! it from memory and streams the remainder.
-//!
-//! Design:
-//! - The application recomputes the DESIRED window (neighbors of the current
-//!   index, the current item itself is excluded since the pipeline is already
-//!   streaming it) after every queue mutation and calls [`Cache::sync`].
-//!   Entries outside the window are evicted, missing ones are fetched.
-//! - Fetches are fire-and-forget tokio tasks ([`Prefetcher`]) delivering a
-//!   [`Event`] back through the application's message loop. Epoch stamps make
-//!   results from superseded syncs harmless.
-//! - A cache miss (still in flight, too big, failed, disabled) is never an
-//!   error: the load falls back to the live network path it always used.
-//! - Kill switch: FCAST_NO_QUEUE_CACHE=1 disables everything.
+//! Fetches are fire-and-forget tokio tasks; epoch stamps make results from
+//! superseded syncs harmless. A cache miss is never an error, the load falls
+//! back to the live network path. Kill switch: FCAST_NO_QUEUE_CACHE=1.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,25 +13,23 @@ use tracing::{debug, warn};
 
 use crate::fcast::CompanionContext;
 
-/// Bound on one whole prefetch transfer. A hung transfer would otherwise pin
-/// its in-flight slot forever and block every retry for that url.
+/// Bound on one whole prefetch transfer; a hung one would otherwise pin its
+/// in-flight slot forever and block every retry for that url.
 const FETCH_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// How much of each item to prefetch. Items at most this big become COMPLETE
-/// entries, bigger ones keep a partial head (start-from-memory, stream the
-/// rest).
+/// entries, bigger ones keep a partial head.
 const HEAD_MAX_BYTES: usize = 16 * 1024 * 1024;
 /// Ceiling for the sum of all cached entries.
 const TOTAL_MAX_BYTES: usize = 128 * 1024 * 1024;
-/// Window shape around the current index. Ahead is deeper than behind since
-/// queues mostly advance forward.
+/// Window shape around the current index (ahead is deeper: queues mostly
+/// advance forward).
 const BEHIND: usize = 1;
 const AHEAD: usize = 2;
 
-/// The queue-item indices worth prefetching for `current` in a queue of
-/// `len` items: the window around the current index, clamped to the queue
-/// bounds, excluding the current item itself. Ordered nearest-first so the
-/// most likely flip target starts downloading first.
+/// The queue-item indices worth prefetching for `current` in a queue of `len`
+/// items: the window around it, clamped to the bounds, excluding the current
+/// item, ordered nearest-first.
 pub fn window_indices(len: usize, current: usize) -> Vec<usize> {
     let mut out = Vec::new();
     for step in 1..=AHEAD.max(BEHIND) {
@@ -67,14 +45,11 @@ pub fn window_indices(len: usize, current: usize) -> Vec<usize> {
     out
 }
 
-/// Whether a queue item's declared container may be prefetched and served
-/// from memory. Only progressive media and images qualify. Adaptive
-/// streaming manifests (HLS, DASH) must stream live: served from an appsrc
-/// they lose the upstream URI context their demuxers rely on (base-URI
-/// resolution of relative fragment references, live playlist reloads), and
-/// a cached manifest head is useless anyway. HLS playlists commonly ride on
-/// audio/video mime types (audio/mpegurl and friends), so those are
-/// filtered before the progressive allowlist.
+/// Whether a queue item's declared container may be prefetched and served from
+/// memory. Adaptive manifests (HLS, DASH) must stream live: from an appsrc they
+/// lose the upstream URI context their demuxers rely on (base-URI resolution,
+/// playlist reloads). HLS playlists commonly ride on audio/video mime types, so
+/// those are filtered before the progressive allowlist.
 pub fn cacheable_container(container: &str) -> bool {
     let c = container.trim().to_ascii_lowercase();
     if c.contains("mpegurl") {
@@ -96,8 +71,8 @@ pub struct CachedItem {
     pub bytes: Bytes,
     /// The whole resource is resident (it fit within [`HEAD_MAX_BYTES`]).
     pub complete: bool,
-    /// Total resource size when the transport reported one. Partial http
-    /// heads are only injectable with a known total.
+    /// Total resource size when the transport reported one; a partial http
+    /// head is only injectable with a known total.
     pub total: Option<u64>,
 }
 
@@ -113,9 +88,8 @@ pub enum Event {
 
 #[derive(Debug)]
 pub enum FetchError {
-    /// The server ignores range requests and the item is bigger than the
-    /// head cap, so a partial head would be unusable: expected, not a
-    /// failure.
+    /// The server ignores range requests and the item exceeds the head cap:
+    /// expected, not a failure.
     HeadUnusable,
     Other(String),
 }
@@ -134,8 +108,8 @@ impl std::fmt::Display for FetchError {
 #[derive(Default)]
 pub struct Cache {
     entries: HashMap<String, CachedItem>,
-    /// URL -> epoch of the sync that started the fetch. A result with a
-    /// stale epoch is discarded (the fetch was superseded).
+    /// URL -> epoch of the sync that started the fetch; a stale-epoch result
+    /// is discarded.
     in_flight: HashMap<String, u64>,
     desired: HashSet<String>,
     epoch: u64,
@@ -154,9 +128,8 @@ impl Cache {
         }
     }
 
-    /// Cached entry for `url` (complete item or partial head). The entry
-    /// stays cached (re-selecting the same neighbor again stays instant),
-    /// eviction is window-driven via [`sync`](Self::sync).
+    /// Cached entry for `url` (complete item or partial head). Eviction is
+    /// window-driven via [`sync`](Self::sync).
     pub fn get(&self, url: &str) -> Option<CachedItem> {
         self.entries.get(url).cloned()
     }
@@ -167,15 +140,12 @@ impl Cache {
         self.desired.clear();
     }
 
-    /// Reconcile the cache against the desired window: evict entries that
-    /// left the window and start fetches (via `fetch`) for missing ones.
-    /// `fetch` receives the spec and the epoch to stamp on the result.
+    /// Reconcile the cache against the desired window: evict entries that left
+    /// it and start fetches for missing ones. `fetch` receives the spec and the
+    /// epoch to stamp on the result.
     ///
     /// `retain` lists urls that stay resident WITHOUT being fetched when
-    /// absent: the current item. Its bytes are already playing (fetching
-    /// would double-download next to the pipeline), but evicting it at
-    /// selection time would throw away a warm entry only to re-download it
-    /// the moment it becomes a neighbor again on the next flip.
+    /// absent: the current item, whose bytes are already playing.
     pub fn sync(
         &mut self,
         desired: Vec<PrefetchSpec>,
@@ -199,8 +169,8 @@ impl Cache {
             }
             keep
         });
-        // In-flight fetches for evicted urls cannot be cancelled, but their
-        // results arrive with an old epoch and get discarded.
+        // Uncancellable in-flight fetches land with an old epoch, so they are
+        // discarded on arrival.
         self.in_flight.retain(|url, _| self.desired.contains(url));
 
         for spec in desired {
@@ -250,17 +220,16 @@ impl Cache {
                 );
             }
             Err(err) => {
-                // Non-fatal: the live load path will report a real error if
-                // the item is actually selected and still unreachable.
+                // Non-fatal: the live load path reports a real error if the
+                // item is actually selected and still unreachable.
                 debug!(url, %err, "Queue item prefetch failed");
             }
         }
     }
 }
 
-/// Spawns the background downloads. Mirrors `image::Downloader`'s two
-/// transports (http via reqwest, fcomp via the companion channels) but
-/// delivers raw size-capped bytes.
+/// Spawns the background downloads over both transports (http via reqwest,
+/// fcomp via the companion channels), delivering raw size-capped bytes.
 pub struct Prefetcher {
     msg_tx: crate::MessageSender,
     client: reqwest::Client,
@@ -348,11 +317,9 @@ async fn fetch_http(
     if !did_set_user_agent {
         request = request.header(reqwest::header::USER_AGENT, random_user_agent);
     }
-    // Ask for the head only. A range-capable server answers 206 with the
-    // total in Content-Range; one that ignores ranges answers 200 with the
-    // whole body, which is only kept when it fits the cap anyway. Applied
-    // after the sender headers so a sender-supplied Range cannot replace
-    // the head bound (reqwest's headers() overwrites same-name keys).
+    // Ask for the head only. Applied AFTER the sender headers so a
+    // sender-supplied Range cannot replace the head bound (reqwest's
+    // headers() overwrites same-name keys).
     let request = request.header(
         reqwest::header::RANGE,
         format!("bytes=0-{}", HEAD_MAX_BYTES - 1),
@@ -364,8 +331,7 @@ async fn fetch_http(
     }
 
     let ranged = resp.status() == reqwest::StatusCode::PARTIAL_CONTENT;
-    // "bytes 0-x/total" (a 206 without a parsable total counts as unranged,
-    // a partial head would be unusable without the size).
+    // "bytes 0-x/total".
     let total = resp
         .headers()
         .get(reqwest::header::CONTENT_RANGE)
@@ -376,8 +342,7 @@ async fn fetch_http(
     let mut buf: Vec<u8> = Vec::new();
     while let Some(chunk) = resp.chunk().await.map_err(|e| other(e.to_string()))? {
         if buf.len() + chunk.len() > HEAD_MAX_BYTES {
-            // Only possible on a 200 from a server that ignored the range
-            // request: without a usable head, drop the transfer.
+            // Only reachable on a 200 that ignored the range request.
             return Err(FetchError::HeadUnusable);
         }
         buf.extend_from_slice(&chunk);
@@ -389,9 +354,8 @@ async fn fetch_http(
         (true, Some(total)) => len >= total,
         // 200 that fit within the cap: the body IS the whole resource.
         (false, _) => true,
-        // 206 without a parsable total: a body short of the requested
-        // range means the resource ended (complete). A full-cap body is
-        // ambiguous and gets rejected below.
+        // 206 without a parsable total: a body short of the requested range
+        // means the resource ended; a full-cap body is rejected below.
         (true, None) => (len as usize) < HEAD_MAX_BYTES,
     };
     if !complete && total.is_none() {
@@ -430,9 +394,8 @@ async fn fetch_comp(ctx: &CompanionContext, url: &url::Url) -> Result<CachedItem
         }
     };
 
-    // Companion read heads are inclusive ranges. With a known size read
-    // exactly what is wanted, otherwise read up to the cap and keep the
-    // partial head (fcompsrc learns the size itself, no total needed).
+    // Companion read heads are INCLUSIVE ranges; without a known size read up
+    // to the cap and keep the partial head (fcompsrc learns the size itself).
     let read_end = match total {
         Some(total) => total.min(HEAD_MAX_BYTES as u64),
         None => HEAD_MAX_BYTES as u64,
@@ -463,14 +426,13 @@ async fn fetch_comp(ctx: &CompanionContext, url: &url::Url) -> Result<CachedItem
     }
     if buf.is_empty() {
         // A closed channel with no data is a failed transfer, not an empty
-        // resource (the sender may have disconnected).
+        // resource.
         return Err(other("companion transfer produced no data"));
     }
     let len = buf.len() as u64;
     let complete = match total {
         Some(total) => len >= total,
-        // Unknown size: complete only when the provider stopped short of the
-        // requested head (it ran out of data).
+        // Unknown size: complete only when the provider stopped short.
         None => (len as usize) < HEAD_MAX_BYTES,
     };
     Ok(CachedItem {
@@ -583,8 +545,7 @@ mod tests {
         cache.sync(vec![spec("a")], &[], |s, e| fetched.push((s.url, e)));
         let (url, old_epoch) = fetched[0].clone();
 
-        // "a" leaves the window and comes back: a NEW fetch starts with a
-        // newer epoch.
+        // "a" leaves the window and comes back: a NEW fetch, newer epoch.
         cache.sync(vec![spec("b")], &[], |_, _| {});
         fetched.clear();
         cache.sync(vec![spec("a")], &[], |s, e| fetched.push((s.url, e)));
@@ -628,9 +589,6 @@ mod tests {
         assert_eq!(fetched.len(), 1);
     }
 
-    /// The current item is retained across syncs without being fetched:
-    /// selecting a cached neighbor must not evict-then-redownload it when
-    /// flipping back (the image-viewer slideshow pattern).
     #[test]
     fn retained_current_survives_without_fetch() {
         let mut cache = enabled_cache();

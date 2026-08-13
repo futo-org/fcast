@@ -1,4 +1,6 @@
-use gst::glib;
+use std::sync::Arc;
+
+use gst::{glib, subclass::prelude::ObjectSubclassIsExt};
 use gst_video::prelude::*;
 use smallvec::SmallVec;
 
@@ -71,6 +73,9 @@ pub struct Coordinate {
 }
 
 impl Coordinate {
+    // The only libplacebo touch point outside the renderer modules; `placebo.rs`
+    // is its sole caller.
+    #[cfg(feature = "render")]
     pub(crate) fn as_pl_cie_xy(&self) -> libplacebo::libplacebo_sys::pl_cie_xy {
         libplacebo::libplacebo_sys::pl_cie_xy {
             x: self.x,
@@ -139,33 +144,53 @@ pub struct Frame {
     pub rotation: Rotation,
 }
 
+/// The coordinate space an [`Overlay`]'s render rectangle is expressed in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum OverlaySpace {
+    /// Source-frame (video) pixels: the overlay is scaled and rotated with the
+    /// video, which is what upstream composition metas expect.
+    #[default]
+    SrcFrame,
+    /// Window (display) pixels: the overlay is composited onto the destination
+    /// at native resolution, unscaled and upright.
+    Window,
+}
+
 #[derive(Debug)]
 pub struct Overlay {
-    /// RGBA8 pixel data (tightly packed), `width * height * 4` bytes.
-    pub pixels: Vec<u8>,
+    /// RGBA8 pixel data (tightly packed), `width * height * 4` bytes, straight
+    /// (non-premultiplied) alpha.
+    ///
+    /// Refcount-shared rather than owned: a cue strip is megabytes and an
+    /// `Overlay` is built per displayed frame, so the buffer is cloned by
+    /// pointer. The upload path only reads `&pixels[..]`, which derefs
+    /// identically to a `Vec`.
+    pub pixels: Arc<Vec<u8>>,
     /// Texture dimensions of `pixels`.
     pub width: u32,
     pub height: u32,
-    /// Render rectangle in source-frame (video) pixels.
+    /// Render rectangle, in the pixels of [`Overlay::space`].
     pub x: i32,
     pub y: i32,
     pub render_width: u32,
     pub render_height: u32,
+    /// Which coordinate space `x`/`y`/`render_*` are in.
+    pub space: OverlaySpace,
 }
 
 pub mod imp {
-    use std::sync::{
-        Arc, LazyLock,
-        atomic::{self, AtomicBool},
-    };
+    use std::sync::{Arc, LazyLock};
 
     use gst::{glib, prelude::*, subclass::prelude::*};
-    use gst_base::{prelude::*, subclass::prelude::*};
+    use gst_base::subclass::prelude::*;
     use gst_video::{prelude::*, subclass::prelude::*};
     use parking_lot::Mutex;
     use smallvec::SmallVec;
 
-    use crate::video::Overlay;
+    use crate::{
+        cue::CueEngine,
+        video::{Overlay, OverlaySpace},
+    };
 
     fn get_caps() -> gst::Caps {
         let mut caps = gst::Caps::new_empty();
@@ -335,7 +360,6 @@ pub mod imp {
         video_info: Option<VideoInfo>,
         mastering_display_info: Option<super::MasteringDisplayInfo>,
         content_light_level: Option<super::ContentLightLevel>,
-        has_overlay: bool,
         rotation: super::Rotation,
     }
 
@@ -357,9 +381,14 @@ pub mod imp {
     pub struct FSink {
         config: Mutex<Config>,
         cached_caps: Mutex<Option<gst::Caps>>,
-        window_resolution: Mutex<Option<WindowResolution>>,
-        window_resized: AtomicBool,
         payload_handle: VideoPayloadHandle,
+        /// Sink-side subtitle cue state, and since the v2 flip the ONLY cue
+        /// state there is: `receiver-core`'s subtitle consumer
+        /// (`player.rs`, `set_subtitle_consumer`) submits each cue here;
+        /// `show_frame` merges `overlays_for(frame_running_time)` with whatever
+        /// overlay-composition meta a bitmap source attached upstream, and a
+        /// repaint with no new frame reads `current_overlays()`.
+        pub(super) engine: CueEngine,
     }
 
     #[glib::object_subclass]
@@ -409,16 +438,29 @@ pub mod imp {
                 }
                 "window-resolution" => {
                     let resolution: WindowResolution = value.get().expect("type checked upstream");
-                    *self.window_resolution.lock() = Some(resolution);
-                    self.window_resized.store(true, atomic::Ordering::SeqCst);
+                    // Cues are laid out against the real display size (the one
+                    // thing subtitleoverlay never had); a zero dimension is
+                    // ignored on the way in. The engine is the only consumer:
+                    // the sink no longer keeps a copy to advertise upstream,
+                    // because no upstream renderer negotiates window space any
+                    // more.
+                    self.engine.set_canvas(resolution.width, resolution.height);
                 }
                 _ => unreachable!(),
             }
         }
 
         fn signals() -> &'static [glib::subclass::Signal] {
-            static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> =
-                LazyLock::new(|| vec![glib::subclass::Signal::builder("frame-available").build()]);
+            static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> = LazyLock::new(|| {
+                vec![
+                    glib::subclass::Signal::builder("frame-available").build(),
+                    // The overlay set changed without a new frame: a cue became
+                    // active, expired, finished rasterizing or was cleared. The
+                    // consumer repaints its cached frame with the engine's
+                    // current overlays.
+                    glib::subclass::Signal::builder("overlays-changed").build(),
+                ]
+            });
 
             SIGNALS.as_ref()
         }
@@ -453,7 +495,6 @@ pub mod imp {
                     config.video_info.take();
                     config.mastering_display_info.take();
                     config.content_light_level.take();
-                    config.has_overlay = false;
                     config.rotation = super::Rotation::Rotate0;
                     self.payload_handle.0.lock().replace(None);
                     self.obj().emit_by_name::<()>("frame-available", &[]);
@@ -544,10 +585,21 @@ pub mod imp {
                 })
                 .ok();
 
-            config.has_overlay = caps
-                .features(0)
-                .unwrap()
-                .contains(gst_video::CAPS_FEATURE_META_GST_VIDEO_OVERLAY_COMPOSITION);
+            let coded = match config.video_info.as_ref().expect("set just above") {
+                #[cfg(target_os = "linux")]
+                VideoInfo::DmaDrm(info) => (info.width(), info.height()),
+                #[cfg(target_os = "macos")]
+                VideoInfo::IOSurface(info) => (info.width(), info.height()),
+                VideoInfo::Normal(info) => (info.width(), info.height()),
+            };
+            // The engine needs the CODED size (not the window size, which
+            // arrives through `window-resolution`): bitmap subtitle regions are
+            // composited in source-frame space, so their decoders scale from
+            // the format's own display grid onto these pixels. Outside the
+            // config lock: `show_frame` reads the engine before taking it, and
+            // this is the only other place the two meet.
+            drop(config);
+            self.engine.set_video_size(coded.0, coded.1);
 
             Ok(())
         }
@@ -558,38 +610,46 @@ pub mod imp {
         ) -> Result<(), gst::LoggableError> {
             query.add_allocation_meta::<gst_video::VideoMeta>(None);
 
-            let overlay_meta = if let Some(win) = self.window_resolution.lock().as_ref() {
-                gst::debug!(
-                    CAT,
-                    imp = self,
-                    "Setting window width and height for overlay meta {win:?}"
-                );
-                Some(
-                    gst::Structure::builder("GstVideoOverlayCompositionMeta")
-                        .field("width", win.width)
-                        .field("height", win.height)
-                        .build(),
-                )
-            } else {
-                None
-            };
-
-            query.add_allocation_meta::<gst_video::VideoOverlayCompositionMeta>(
-                overlay_meta.as_deref(),
-            );
+            // Overlay-composition meta is still ACCEPTED (show_frame
+            // composites whatever arrives, and a bitmap renderer such as
+            // dvbsuboverlay/dvdspu/assrender is what would attach it) but no
+            // window size is advertised with it any more. Today nothing
+            // upstream does attach one: a subpicture or raw-ASS stream parks its
+            // branch and surfaces as SubtitleTrackUnsupported. The parameters
+            // existed for basetextoverlay, which laid its text out in window
+            // space and asserted on a zero dimension
+            // (`gstbasetextoverlay.c:966`). The window-size structure plus the
+            // RECONFIGURE push that re-triggered this query were that
+            // assertion's fuse and its clamp. The text path never reaches a
+            // video-space renderer now (cues are rasterized by the sink's own
+            // engine against the display size, `window-resolution`) so the
+            // whole negotiation is dead. Bitmap subtitle sources ignore these
+            // params.
+            query.add_allocation_meta::<gst_video::VideoOverlayCompositionMeta>(None);
 
             Ok(())
         }
 
         fn event(&self, event: gst::Event) -> bool {
-            if let gst::EventView::Tag(ev) = event.view()
-                && let Some(rotation) = rotation_from_tags(ev.tag())
-            {
-                let mut config = self.config.lock();
-                if config.rotation != rotation {
-                    gst::info!(CAT, imp = self, "image-orientation: {rotation:?}");
-                    config.rotation = rotation;
+            match event.view() {
+                gst::EventView::Tag(ev) => {
+                    if let Some(rotation) = rotation_from_tags(ev.tag()) {
+                        let mut config = self.config.lock();
+                        if config.rotation != rotation {
+                            gst::info!(CAT, imp = self, "image-orientation: {rotation:?}");
+                            config.rotation = rotation;
+                        }
+                    }
                 }
+                // The cue engine schedules in running time, so it needs the
+                // same segment the frames are timestamped against.
+                gst::EventView::Segment(ev) => {
+                    gst::debug!(CAT, imp = self, "video segment: {:?}", ev.segment());
+                    self.engine.set_video_segment(ev.segment());
+                }
+                gst::EventView::FlushStop(_) => self.engine.flush(),
+                gst::EventView::StreamStart(_) => self.engine.reset_timeline(),
+                _ => (),
             }
 
             self.parent_event(event)
@@ -598,15 +658,6 @@ pub mod imp {
 
     impl VideoSinkImpl for FSink {
         fn show_frame(&self, buffer: &gst::Buffer) -> Result<gst::FlowSuccess, gst::FlowError> {
-            let reconfigure = self.window_resized.swap(false, atomic::Ordering::SeqCst)
-                && self.config.lock().has_overlay;
-            if reconfigure {
-                gst::info!(CAT, imp = self, "Window size changed, needs to reconfigure");
-                let obj = self.obj();
-                obj.sink_pad()
-                    .push_event(gst::event::Reconfigure::builder().build());
-            }
-
             if buffer.n_memory() == 0 {
                 gst::trace!(
                     CAT,
@@ -616,9 +667,10 @@ pub mod imp {
                 return Ok(gst::FlowSuccess::Ok);
             };
 
+            let frame_running_time = self.engine.video_running_time(buffer.pts());
             let buffer = buffer.clone();
 
-            let overlays: SmallVec<[Overlay; 3]> = buffer
+            let mut overlays: SmallVec<[Overlay; 3]> = buffer
                 .iter_meta::<gst_video::VideoOverlayCompositionMeta>()
                 .flat_map(|meta| {
                     meta.overlay()
@@ -664,18 +716,27 @@ pub mod imp {
                             }
 
                             Some(Overlay {
-                                pixels,
+                                pixels: Arc::new(pixels),
                                 width,
                                 height,
                                 x,
                                 y,
                                 render_width,
                                 render_height,
+                                // Composition metas are addressed in the
+                                // video's own pixels.
+                                space: OverlaySpace::SrcFrame,
                             })
                         })
                         .collect::<SmallVec<[_; 3]>>()
                 })
                 .collect();
+
+            // Sink-side cues, on top of whatever an upstream composition meta
+            // carried. The two coexist by design: text comes from the engine,
+            // and the meta path is kept for a bitmap renderer that no current
+            // pipeline autoplugs.
+            overlays.extend(self.engine.overlays_for(frame_running_time));
 
             let config = self.config.lock();
             let mdi = config.mastering_display_info;
@@ -732,6 +793,28 @@ glib::wrapper! {
 
 impl FSink {
     pub fn new() -> Self {
-        gst::Object::builder().build().unwrap()
+        let sink: Self = gst::Object::builder().build().unwrap();
+
+        // The engine reports every change that is not carried by a frame; the
+        // sink republishes it as a signal, beside "frame-available". Weak, so
+        // the callback never keeps the sink alive.
+        let weak = sink.downgrade();
+        sink.imp().engine.set_on_change(move || {
+            if let Some(sink) = weak.upgrade() {
+                sink.emit_by_name::<()>("overlays-changed", &[]);
+            }
+        });
+
+        // Pay the fontconfig/fontmap first-use cost here, on the raster thread,
+        // instead of inside the first cue.
+        sink.imp().engine.warm();
+
+        sink
+    }
+
+    /// Handle on the sink's subtitle cue state, for whoever feeds it cues and
+    /// whoever repaints when they change.
+    pub fn cue_engine(&self) -> crate::cue::CueEngine {
+        self.imp().engine.clone()
     }
 }

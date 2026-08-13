@@ -26,7 +26,8 @@ fn main() -> anyhow::Result<()> {
         rcore::tracing::warn!(?err, "Failed to set XDG app id");
     }
 
-    // Opt into the experimental Wayland subsurface sink with FCAST_VIDEO_SINK=wayland-subsurface.
+    // Opt into the experimental Wayland subsurface sink with
+    // FCAST_VIDEO_SINK=wayland-subsurface.
     #[cfg(target_os = "linux")]
     if std::env::var("FCAST_VIDEO_SINK").as_deref() == Ok("wayland-subsurface") {
         let sink = rcore::WaylandSubsurfaceSink::new(

@@ -3,13 +3,13 @@ use std::collections::{HashMap, HashSet};
 use bytes::Bytes;
 use fcast_protocol::companion;
 use image as imagelib;
+// Re-exported so the UI layer can name a decoded frame without depending on
+// `image`.
+pub use imagelib::RgbaImage;
 use imagelib::{DynamicImage, ImageFormat, ImageReader, metadata};
 use tracing::{debug, debug_span, error, info};
 
-use crate::{
-    CompoundImage, MessageSender, SlintRgba8Pixbuf, fcast::CompanionContext, media_formats,
-    utils::map_to_header_map,
-};
+use crate::{MessageSender, fcast::CompanionContext, media_formats, utils::map_to_header_map};
 
 pub type ImageId = u32;
 pub type ImageDownloadId = u32;
@@ -57,23 +57,6 @@ pub fn orientation_to_degs(orientation: metadata::Orientation) -> f32 {
     }
 }
 
-impl crate::CompoundImage {
-    pub fn new(pixels: SlintRgba8Pixbuf, orientation: metadata::Orientation) -> Self {
-        Self {
-            img: slint::Image::from_rgba8(pixels),
-            rotation: orientation_to_degs(orientation),
-        }
-    }
-}
-
-fn to_slint_pixbuf(img: &imagelib::RgbaImage) -> SlintRgba8Pixbuf {
-    slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
-        img.as_raw(),
-        img.width(),
-        img.height(),
-    )
-}
-
 #[derive(Debug)]
 pub struct DecodedImage {
     pub id: ImageId,
@@ -81,12 +64,6 @@ pub struct DecodedImage {
     pub orientation: metadata::Orientation,
     /// Source format short name (see `media_formats::Image::to_str`).
     pub format: &'static str,
-}
-
-impl DecodedImage {
-    pub fn as_compound(&self) -> CompoundImage {
-        CompoundImage::new(to_slint_pixbuf(&self.image), self.orientation)
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -244,11 +221,8 @@ impl<'a> DecoderContext<'a> {
 
         match format {
             media_formats::Image::ImageLib(format) => {
-                // Animations are decoded and looped by the player pipeline
-                // (fimagedec), so anything reaching this legacy decoder is
-                // shown as a still. GIF/APNG/animated WebP only land here as
-                // audio cover art or an odd mime, where the first frame is the
-                // right thing to show.
+                // Animations are decoded and looped by the player pipeline;
+                // anything reaching here (cover art, odd mime) shows as a still.
                 let decoder = match ImageReader::with_format(img_data, format).into_decoder() {
                     Ok(d) => d,
                     Err(err) => {
@@ -260,11 +234,6 @@ impl<'a> DecoderContext<'a> {
             }
             media_formats::Image::JpegXl => {
                 // TODO: handle animations
-                // let image = jxl_oxide::JxlImage::builder().read(img_data).unwrap();
-                // let header = image.image_header();
-                // if let Some(anim) = &header.metadata.animation {
-                // } else {
-                // }
                 let decoder =
                     non_fatal!(jxl_oxide::integration::JxlDecoder::new(img_data), "JPEG XL");
                 self.handle_still(decoder, format_str)?;
@@ -460,10 +429,8 @@ impl Downloader {
     pub fn queue_download(&self, id: u32, url: String, headers: Option<HashMap<String, String>>) {
         let tx = self.msg_tx.clone();
 
-        // `url` is a sender-supplied string (`MediaItem::url` /
-        // `thumbnail_url`) that nothing validates on the way in, so both the
-        // parse and the scheme dispatch have to report rather than panic. The
-        // caller already handles `DownloadResult`'s error arm.
+        // `url` is sender-supplied and unvalidated, so the parse and the scheme
+        // dispatch must report rather than panic.
         let url = match url::Url::parse(&url) {
             Ok(url) => url,
             Err(err) => {
@@ -537,7 +504,6 @@ mod tests {
     type Events = tokio::sync::mpsc::UnboundedReceiver<crate::message::Message>;
 
     fn downloader() -> (Downloader, Events) {
-        // The application installs this at startup (see `lib.rs`);
         // `reqwest::Client::new()` panics without a process-wide provider on
         // the `rustls-no-provider` build. Idempotent, so racing tests are fine.
         let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
@@ -552,9 +518,7 @@ mod tests {
     }
 
     /// Pull the single expected `DownloadResult` and unwrap its error.
-    ///
-    /// `try_recv` is deliberate: both rejection paths post synchronously, so a
-    /// pending channel means the code took a `tokio::spawn` branch instead.
+    /// `try_recv` is deliberate: both rejection paths post synchronously.
     fn download_error(events: &mut Events, expected_id: ImageDownloadId) -> DownloadImageError {
         match events.try_recv().expect("no image event was posted") {
             crate::message::Message::Image(Event::DownloadResult { id, res }) => {
@@ -569,8 +533,6 @@ mod tests {
     fn unparseable_url_is_reported_not_panicked() {
         let (downloader, mut events) = downloader();
 
-        // `MediaItem::url` / `thumbnail_url` are sender-supplied and nothing
-        // validates them on the way in; this used to be `Url::parse(..).unwrap()`.
         downloader.queue_download(7, "not a url".to_owned(), None);
 
         let err = download_error(&mut events, 7);
@@ -584,7 +546,6 @@ mod tests {
     fn unsupported_url_scheme_is_reported_not_panicked() {
         let (downloader, mut events) = downloader();
 
-        // Anything outside http/https/fcomp used to reach `todo!()`.
         downloader.queue_download(9, "ftp://example.invalid/cover.png".to_owned(), None);
 
         let err = download_error(&mut events, 9);

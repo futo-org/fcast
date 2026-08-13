@@ -1,10 +1,10 @@
 //! Port of [PlayFair](https://github.com/EstebanKubata/playfair) `sap_hash.c` and `hand_garble.c`.
 //!
-//! `garble` is a deobfuscated block of FairPlay byte arithmetic. Every C operand here is `unsigned
-//! char` (promoted to `int`) or an `unsigned int` temporary, so the faithful model is: read bytes
-//! zero-extended to `u32`, do all arithmetic with 32-bit wrapping, and truncate to `u8` on
-//! store. Validated byte-exact against the C reference by the `STAGE_saphash` test. Do not "clean
-//! up" - the exact operations and precedence are load-bearing.
+//! `garble` is a deobfuscated block of FairPlay byte arithmetic. Bytes are read
+//! zero-extended to `u32`, all arithmetic is 32-bit wrapping, and stores
+//! truncate to `u8`, matching the C reference byte-exactly (verified by the
+//! `STAGE_saphash` test). Do not "clean up". The exact operations and
+//! precedence are load-bearing.
 
 #![allow(clippy::needless_range_loop)]
 
@@ -362,7 +362,8 @@ pub fn garble(b0: &mut [u8], b1: &mut [u8], b2: &mut [u8], b3: &mut [u8], b4: &m
     let _ = (jj, m, ff, g, h, k, r, s, t, u, v, w, x, y, z, tmp, tmp2, tmp3, b, c, d, e, a);
 }
 
-/// Port of `sap_hash`. `block_in` is 64 bytes, `key_out` is 16 bytes (also an input seed).
+/// Port of `sap_hash`. `block_in` is 64 bytes, `key_out` is 16 bytes (also an
+/// input seed).
 pub fn sap_hash(block_in: &[u8], key_out: &mut [u8]) {
     let mut buffer0: [u8; 20] = [
         0x96, 0x5F, 0xC6, 0x53, 0xF8, 0x46, 0xCC, 0x18, 0xDF, 0xBE, 0xB2, 0xF8, 0x38, 0xD7, 0xEC,

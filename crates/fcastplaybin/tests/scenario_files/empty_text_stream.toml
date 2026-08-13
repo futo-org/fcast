@@ -1,0 +1,83 @@
+# A text stream that carries NO data at all, next to streams that do. text_1 has no
+# cues and a duration of 0, so build_schedule produces an empty item list: ftestsrc
+# pushes STREAM_START, CAPS and SEGMENT and then goes straight to EOS, without even
+# the one GAP a cue-less sparse stream normally covers its duration with.
+#
+# The stream is still fully advertised. fcasttest caps are sticky and typefind
+# classifies from the CAPS event alone, so parsebin exposes a stream that never
+# produced a byte, and the collection fcastplaybin selects from contains a text
+# stream that was already finished before selection ran.
+#
+# Only a TEXT stream can be this empty. The document parser refuses a dense (video
+# or audio) stream whose duration holds no whole buffer, because that is a silent
+# stream pretending to be media; a sparse stream with nothing in it is a real
+# container's empty subtitle track (cues stripped by a remux, a track header with no
+# packets behind it) and stays expressible on purpose.
+#
+# This is the sharpest version of the half-ended-group shape ragged_durations.toml
+# describes. There, an early EOS ends part of a synchronising group partway through;
+# here it ends part of the group at time zero, concurrently with the collection
+# settling and the selection being made. What must hold: the empty stream appears in
+# the collection anyway (a selection engine that only learns about streams from data
+# would silently lose it), an EOS on a stream nobody selected must not be taken for
+# the input's EOS, and text_0 must still be the stream that reaches the overlay.
+#
+# NOTE: no top-level duration_ms - it is applied to every stream at registration
+# whatever the entries say, so it would give text_1 a GAP to cover and erase the
+# case, see ragged_durations.toml.
+#
+# GREEN SINCE 2026-08-13, and the regression test for a carried workaround rather
+# than for anything this crate does natively. `Inner::link_input_pad` seeds one
+# zero-duration GAP for an input stream that reaches EOS having pushed no data,
+# because decodebin3 slots a stream on a BUFFER or a GAP and nothing else (its EOS
+# arm only sets `saw_eos`). Without it text_1 never gets a multiqueue slot, so no
+# collection containing it is ever `all_streams_present`, the output collection
+# never advances past the one decodebin3 formed first, and audio and video are
+# reported "Not selected, not creating any output" for the whole item while every
+# SELECT_STREAMS naming them returns TRUE and posts nothing. Full chain in
+# UPSTREAM-GSTREAMER-ISSUES.md C15.
+#
+# `FCAST_NO_EMPTY_STREAM_SLOT_SEED=1` restores that wedge exactly, which is the
+# A/B that keeps this file honest. Proven one variable at a time, text_1's
+# duration_ms from 0 to 800 emits one GAP and nothing else, and the same file goes
+# from a 12 s wedge to a 0.02 s pass.
+#
+# Iterate with tests/empty_text_stream_probe.rs (FCAST_PROBE_SCENARIO takes a name
+# or a path) rather than the whole sweep. Red on both lever arms means the
+# workaround broke, red only without it means upstream changed the shape.
+key = "emptytext"
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "video_0"
+kind = "video"
+fps = 25
+keyframe_interval = 25
+duration_ms = 800
+
+[[stream]]
+id = "audio_0"
+kind = "audio"
+duration_ms = 800
+
+[[stream]]
+id = "text_0"
+kind = "text"
+duration_ms = 800
+
+[[stream.cue]]
+start_ms = 200
+end_ms = 500
+text = "REAL00"
+
+# No cues and no duration to gap over: this branch's schedule is completely empty.
+#
+# duration_ms = 800 here instead of 0 gives the branch a single GAP covering the
+# clip, and the file PASSES. It is the empty schedule specifically - not the second
+# text stream, and not the absence of cues - that wedges the load, which is why the
+# 0 is load bearing.
+[[stream]]
+id = "text_1"
+kind = "text"
+duration_ms = 0

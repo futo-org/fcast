@@ -1,12 +1,10 @@
-/// Port of [textoverlay] to forward text as metadata instead of rendering to a bitmap.
+/// Port of [textoverlay] to forward text as metadata instead of rendering to a
+/// bitmap.
 ///
 /// [textoverlay]: https://gstreamer.freedesktop.org/documentation/pango/textoverlay.html
 use std::mem;
 
 use gst::glib::{self, types::StaticType};
-
-// Unused
-// pub const CAPS_FEATURE_FCAST_TEXT_OVERLAY: &str = "meta:FCastTextOverlay";
 
 pub(crate) mod meta_imp {
     use gst::glib::{self, translate::*};
@@ -1125,12 +1123,11 @@ mod tests {
         harness.play();
         text_harness.play();
 
-        // 100ms video frames; subtitles cover only some intervals.
+        // 100ms video frames. Subtitles cover only some intervals.
         let frame_dur = gst::ClockTime::from_mseconds(100);
 
-        // Subtitle "One" covers [0ms, 300ms). Only one text buffer can be queued at
-        // a time, so we push it, then drain every video frame inside its window
-        // before the next subtitle.
+        // Only one text buffer can be queued at a time, so push "One" ([0ms, 300ms))
+        // and drain every video frame inside its window before the next subtitle.
         text_harness
             .push(new_text_buffer(
                 "One",
@@ -1149,8 +1146,8 @@ mod tests {
             assert_subtitle(&out, "One");
         }
 
-        // Frame at exactly 300ms is at the end boundary: "One" no longer applies and
-        // gets popped, so this frame carries no meta.
+        // At exactly 300ms "One" no longer applies and gets popped, so this
+        // frame carries no meta.
         let out = harness
             .push_and_pull(new_video_buffer_with_duration(
                 gst::ClockTime::from_mseconds(300),
@@ -1187,8 +1184,8 @@ mod tests {
             assert_subtitle(&out, "Two");
         }
 
-        // No further subtitles: signal text EOS so the video chain does not block
-        // waiting for a future text buffer once "Two" expires.
+        // Text EOS, or the video chain blocks waiting for a future text buffer once
+        // "Two" expires.
         text_harness.push_event(gst::event::Eos::new());
 
         // Frame at 600ms: "Two" window ended -> no meta.

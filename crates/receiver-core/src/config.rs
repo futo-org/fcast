@@ -6,10 +6,9 @@ use tracing::{debug, error, info, warn};
 
 /// Root of the on-disk receiver configuration, mirrored 1:1 to `config.toml`.
 ///
-/// Every field maps to a TOML table. Sections are their own structs so the file
-/// stays organised as it grows. Deserialization is lenient: missing
-/// sections/keys fall back to their defaults and unknown keys are ignored, so
-/// older and newer config files both load without error.
+/// Deserialization is lenient: missing sections/keys fall back to their
+/// defaults and unknown keys are ignored, so older and newer config files both
+/// load.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
@@ -35,9 +34,7 @@ pub struct Config {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DiscoveryConfig {
-    /// A regex for excluding network interface names from being broadcast to.
-    ///
-    /// `None` (the key being absent) means no interfaces are excluded.
+    /// Regex of network interface names to exclude; absent excludes none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub exclude_interfaces: Option<String>,
 }
@@ -46,11 +43,9 @@ pub struct DiscoveryConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FcastConfig {
-    /// Whether to advertise and serve FCast. When false the receiver does not
-    /// bind or announce the `_fcast._tcp` service.
+    /// Whether to bind and announce the `_fcast._tcp` service.
     pub enabled: bool,
-    /// Broadcast name shown to senders. The `{hostname}` variable is replaced
-    /// with the local hostname. Defaults to `FCast-{hostname}`.
+    /// Broadcast name; `{hostname}` expands. Defaults to `FCast-{hostname}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -70,8 +65,7 @@ impl Default for FcastConfig {
 pub struct RaopConfig {
     /// Whether to advertise and serve RAOP.
     pub enabled: bool,
-    /// Broadcast name. The `{hostname}` variable is replaced with the local
-    /// hostname. Defaults to `FCast-{hostname}`.
+    /// Broadcast name; `{hostname}` expands. Defaults to `FCast-{hostname}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -91,8 +85,8 @@ impl Default for RaopConfig {
 pub struct ChromecastConfig {
     /// Whether to advertise and serve Google Cast.
     pub enabled: bool,
-    /// Broadcast name. The `{hostname}` variable is replaced with the local
-    /// hostname. Defaults to `Chromecast-{hostname}`.
+    /// Broadcast name; `{hostname}` expands. Defaults to
+    /// `Chromecast-{hostname}`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
 }
@@ -110,8 +104,8 @@ impl Default for ChromecastConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AirplayConfig {
-    /// Whether to advertise and serve AirPlay mirroring. Only has an effect on
-    /// builds compiled with the `airplay` feature.
+    /// Whether to advertise and serve AirPlay mirroring (needs the `airplay`
+    /// feature).
     pub enabled: bool,
 }
 
@@ -155,9 +149,8 @@ impl Default for InterfaceConfig {
 pub struct VideoConfig {
     /// Allow HDR passthrough. False tone-maps HDR content to SDR.
     pub hdr_output: bool,
-    /// Frame render profile: `fast`, `balanced` or `high-quality`. Absent uses
-    /// the built-in default. Stored as a string so an unrecognised value warns
-    /// and falls back rather than discarding the rest of the file.
+    /// Frame render profile: `fast`, `balanced` or `high-quality`. Stored as a
+    /// string so an unrecognised value warns instead of discarding the file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render_profile: Option<String>,
 }
@@ -176,15 +169,13 @@ impl Default for VideoConfig {
 #[serde(default)]
 pub struct LogConfig {
     /// Log verbosity: `off`, `error`, `warn`, `info`, `debug` or `trace`.
-    /// Absent uses the built-in default.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub level: Option<String>,
 }
 
 impl Config {
-    /// Apply a boolean setting identified by a dotted `section.key`, as sent from
-    /// the settings UI. Returns false for an unknown key so the caller can log it
-    /// instead of silently doing nothing.
+    /// Apply a boolean setting by dotted `section.key`. False for an unknown
+    /// key.
     pub fn set_bool(&mut self, key: &str, value: bool) -> bool {
         match key {
             "fcast.enabled" => self.fcast.enabled = value,
@@ -202,11 +193,9 @@ impl Config {
         true
     }
 
-    /// Apply a string setting identified by a dotted `section.key`, as sent from
-    /// the settings UI. An empty value clears the setting back to its default.
-    /// Dropdown settings additionally treat the `"Default"` sentinel as unset,
-    /// while free-text names keep it as a literal value. Returns false for an
-    /// unknown key.
+    /// Apply a string setting by dotted `section.key`. An empty value clears
+    /// it; dropdowns also treat `"Default"` as unset while free-text names
+    /// keep it literal. False for an unknown key.
     pub fn set_string(&mut self, key: &str, value: &str) -> bool {
         let trimmed = value.trim();
         let text = (!trimmed.is_empty()).then(|| trimmed.to_owned());
@@ -224,40 +213,24 @@ impl Config {
     }
 }
 
-/// Owns the receiver's persisted [`Config`]: loads it, hands out a typed view,
-/// applies programmatic edits, and writes them back while preserving the
-/// existing file's comments and layout.
-///
-/// The in-memory [`Config`] is the source of truth for reads. On save it is
-/// merged into the parsed on-disk document ([`apply`]) so untouched keys,
-/// comments and formatting survive round-trips.
+/// Owns the receiver's persisted [`Config`]. The in-memory copy is the source
+/// of truth for reads; on save it is merged into the parsed on-disk document so
+/// untouched keys, comments and formatting survive round-trips.
 #[derive(Debug)]
 pub struct ConfigStore {
-    /// Where edits are persisted. `None` when no writable location could be
-    /// resolved (e.g. no home directory). The store then behaves read-only and
-    /// keeps edits in memory.
+    /// `None` when no writable location resolved; the store then keeps edits in
+    /// memory.
     path: Option<PathBuf>,
     /// Typed, in-memory view, the source of truth for reads.
     config: Config,
-    /// The parsed on-disk document for the write target, kept so saves preserve
-    /// its comments and formatting. Empty when the target file does not exist.
+    /// Parsed write target, kept so saves preserve its comments and formatting.
     doc: DocumentMut,
 }
 
 impl ConfigStore {
-    /// Load the receiver config.
-    ///
-    /// `explicit_path` is the optional `--settings-file-path` override. The read
-    /// precedence (first existing, parseable file wins) is:
-    ///
-    /// 1. `explicit_path`, if given.
-    /// 2. `$XDG_CONFIG_HOME/fcast-receiver.toml`
-    /// 3. `$XDG_CONFIG_HOME/fcast-receiver/config.toml`
-    /// 4. (Linux) `/etc/fcast-receiver.toml`
-    /// 5. (Linux) `/etc/fcast-receiver/config.toml`
-    ///
-    /// This never fails: any read/parse error is logged and the next candidate
-    /// (or, ultimately, [`Config::default`]) is used.
+    /// Load the receiver config from the first existing, parseable candidate
+    /// (see [`read_candidate_paths`]). Never fails: errors log and fall
+    /// through, down to [`Config::default`].
     pub fn load(explicit_path: Option<&str>) -> Self {
         let mut loaded: Option<(PathBuf, Config)> = None;
         for path in read_candidate_paths(explicit_path) {
@@ -272,9 +245,7 @@ impl ConfigStore {
                         break;
                     }
                     Err(err) => {
-                        // Logging may not be initialised yet at startup, so also
-                        // surface a broken config on stderr rather than silently
-                        // falling back to defaults.
+                        // Logging may not be initialised yet, so also use stderr.
                         eprintln!("fcast-receiver: ignoring invalid config at {path:?}: {err}");
                         error!(?err, ?path, "Failed to parse config, trying next candidate");
                     }
@@ -293,10 +264,7 @@ impl ConfigStore {
 
         let path = writable_path(explicit_path, loaded_from.as_deref());
 
-        // Merge edits into the write target's current content so its comments
-        // are preserved. When writing to a fresh location (no file yet, or
-        // migrating away from a read-only system path) we start from an empty
-        // document.
+        // Start from the write target's current content so its comments survive.
         let doc = match &path {
             Some(path) => load_document(path).unwrap_or_default(),
             None => {
@@ -308,8 +276,7 @@ impl ConfigStore {
         Self { path, config, doc }
     }
 
-    /// Build an in-memory store around an explicit file path. Intended for tests
-    /// and callers that manage their own path resolution.
+    /// Build a store around an explicit file path, bypassing path resolution.
     #[allow(dead_code)]
     pub fn open(path: PathBuf) -> Self {
         let doc = load_document(&path).unwrap_or_default();
@@ -321,7 +288,7 @@ impl ConfigStore {
         }
     }
 
-    /// The current, typed configuration. This is the read path for all settings.
+    /// The current, typed configuration.
     pub fn get(&self) -> &Config {
         &self.config
     }
@@ -332,13 +299,8 @@ impl ConfigStore {
         self.path.as_deref()
     }
 
-    /// Apply an in-memory edit and persist it, preserving the file's existing
-    /// comments and formatting.
-    ///
-    /// The edit is applied to the in-memory config unconditionally. The returned
-    /// `Result` only reflects whether persisting to disk succeeded. If no
-    /// writable location exists the edit stays in memory and `Ok(())` is
-    /// returned.
+    /// Apply an in-memory edit and persist it. The edit always applies; the
+    /// `Result` only reflects the disk write, and no writable location is `Ok`.
     #[allow(dead_code)]
     pub fn update<F>(&mut self, edit: F) -> std::io::Result<()>
     where
@@ -348,8 +310,7 @@ impl ConfigStore {
         self.persist()
     }
 
-    /// Write the current config to disk. Rarely needed directly. Prefer
-    /// [`ConfigStore::update`], which edits and persists together.
+    /// Write the current config to disk; prefer [`ConfigStore::update`].
     #[allow(dead_code)]
     pub fn save(&mut self) -> std::io::Result<()> {
         self.persist()
@@ -364,8 +325,7 @@ impl ConfigStore {
         let merged = apply(&self.doc, &self.config)
             .map_err(|err| std::io::Error::other(format!("failed to serialize config: {err}")))?;
         write_atomic(&path, merged.to_string().as_bytes())?;
-        // Keep the cached document in sync with what is now on disk so the next
-        // save merges into the latest content.
+        // Keep the cached document in sync with disk for the next merge.
         self.doc = merged;
         info!(?path, "Saved receiver config");
         Ok(())
@@ -395,12 +355,9 @@ fn read_candidate_paths(explicit_path: Option<&str>) -> Vec<PathBuf> {
     paths
 }
 
-/// Where edits should be written back to.
-///
-/// An explicit `--settings-file-path` always wins. Otherwise, if the config was
-/// loaded from a user-writable file we keep writing there. A config loaded from
-/// a read-only system path (e.g. `/etc`) is migrated to the per-user config dir
-/// so user edits don't need root and take precedence on the next load.
+/// Where edits are written back to: the explicit path, else the file it was
+/// loaded from. A config loaded from a read-only system path (e.g. `/etc`) is
+/// migrated to the per-user dir so edits don't need root.
 fn writable_path(explicit_path: Option<&str>, loaded_from: Option<&Path>) -> Option<PathBuf> {
     if let Some(explicit) = explicit_path {
         return Some(PathBuf::from(explicit));
@@ -438,39 +395,29 @@ fn load_document(path: &Path) -> Option<DocumentMut> {
     }
 }
 
-/// Produce the document to write: the serialized `config` merged into `doc`,
-/// preserving `doc`'s comments and formatting.
-///
-/// This is the piece that makes adding a setting a one-field change: the config
-/// is serialized generically and merged key-by-key, so there is no hand-written
-/// per-key write logic to maintain.
+/// The document to write: the serialized `config` merged into `doc`, preserving
+/// `doc`'s comments and formatting.
 fn apply(doc: &DocumentMut, config: &Config) -> Result<DocumentMut, toml_edit::ser::Error> {
     let serialized = toml_edit::ser::to_string(config)?;
-    // A freshly serialized `Config` is always valid TOML.
     let mut src: DocumentMut = serialized
         .parse()
         .expect("serialized config is always valid TOML");
-    // `toml_edit` serializes nested structs as inline tables (`x = { .. }`).
-    // Expand them to standard `[section]` tables so freshly written files read
-    // naturally. Existing files keep whatever style they already use (the merge
-    // below never rewrites a table's container, only its leaves).
+    // `toml_edit` serializes nested structs as inline tables; expand them to
+    // `[section]` tables so fresh files read naturally. Existing files keep their
+    // own style, since the merge below only rewrites leaves.
     for (_, item) in src.as_table_mut().iter_mut() {
         expand_inline_tables(item);
     }
     let mut out = doc.clone();
     merge_table_like(out.as_table_mut(), src.as_table());
-    // The merge only ever writes keys present in `src`; a cleared optional
-    // setting is absent there (serde skips `None`), so its stale value would
-    // otherwise linger on disk. Drop those so clearing a value in the UI truly
-    // reverts the file to the default.
+    // The merge only writes keys present in `src`, and serde skips `None`, so a
+    // cleared optional would otherwise linger on disk.
     prune_cleared_keys(out.as_table_mut(), src.as_table());
     Ok(out)
 }
 
-/// Dotted paths of the optional settings that can be cleared back to their
-/// default. These are exactly the `Option` fields serialized with
-/// `skip_serializing_if = "Option::is_none"` and handled by
-/// [`Config::set_string`]; keep the two lists in sync when adding one.
+/// The optional settings that can be cleared: exactly the `Option` fields with
+/// `skip_serializing_if` handled by [`Config::set_string`]. Keep both in sync.
 const CLEARABLE_KEYS: &[&[&str]] = &[
     &["discovery", "exclude_interfaces"],
     &["fcast", "name"],
@@ -480,10 +427,8 @@ const CLEARABLE_KEYS: &[&[&str]] = &[
     &["log", "level"],
 ];
 
-/// Remove every [`CLEARABLE_KEYS`] path that is absent from the freshly
-/// serialized config (i.e. was reset to `None`) from `dst`. Foreign keys and
-/// still-set values are left untouched, since only these known paths are
-/// considered.
+/// Remove from `dst` every [`CLEARABLE_KEYS`] path absent from `src`; foreign
+/// keys and still-set values are untouched.
 fn prune_cleared_keys(dst: &mut dyn TableLike, src: &dyn TableLike) {
     for path in CLEARABLE_KEYS {
         if !path_present(src, path) {
@@ -504,8 +449,8 @@ fn path_present(table: &dyn TableLike, path: &[&str]) -> bool {
     }
 }
 
-/// Remove the leaf named by the nested `path` from `table`, if present. Empty
-/// parent sections are left in place (harmless, and preserves their decor).
+/// Remove the leaf named by `path`, if present. Empty parent sections stay, so
+/// their decor is preserved.
 fn remove_path(table: &mut dyn TableLike, path: &[&str]) {
     match path {
         [] => {}
@@ -520,10 +465,8 @@ fn remove_path(table: &mut dyn TableLike, path: &[&str]) {
     }
 }
 
-/// Recursively copy every key from `src` into `dst`. Table-like values (standard
-/// or inline tables) are merged in place. Leaf values are replaced while keeping
-/// `dst`'s surrounding decor (comments/whitespace). Keys present only in `dst`
-/// (foreign keys, or fields serialized as absent) are left untouched.
+/// Recursively copy every key from `src` into `dst`, keeping `dst`'s decor.
+/// Keys present only in `dst` are left untouched.
 fn merge_table_like(dst: &mut dyn TableLike, src: &dyn TableLike) {
     for (key, src_item) in src.iter() {
         if let Some(dst_item) = dst.get_mut(key) {
@@ -544,8 +487,7 @@ fn merge_item(dst: &mut Item, src: &Item) {
     }
 }
 
-/// Convert inline-table values (`x = { .. }`) into standard `[table]` items,
-/// recursively. Used to normalize freshly serialized config before merging.
+/// Convert inline-table values (`x = { .. }`) into standard `[table]` items.
 fn expand_inline_tables(item: &mut Item) {
     if let Some(inline) = item.as_inline_table().cloned() {
         let mut table = inline.into_table();
@@ -560,8 +502,8 @@ fn expand_inline_tables(item: &mut Item) {
     }
 }
 
-/// Overwrite `dst` with `src`'s value, keeping `dst`'s existing decor (the
-/// surrounding whitespace and any inline comment) when both are scalar values.
+/// Overwrite `dst` with `src`'s value, keeping `dst`'s decor (surrounding
+/// whitespace and any inline comment) when both are scalar values.
 fn replace_preserving_decor(dst: &mut Item, src: &Item) {
     let Some(src_value) = src.as_value() else {
         *dst = src.clone();
@@ -575,8 +517,8 @@ fn replace_preserving_decor(dst: &mut Item, src: &Item) {
     *dst = Item::Value(new_value);
 }
 
-/// Write `bytes` to `path` atomically: create parent dirs, write a sibling temp
-/// file, then rename it over the target so readers never observe a partial file.
+/// Write `bytes` to `path` atomically (temp file plus rename), so readers never
+/// observe a partial file.
 fn write_atomic(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)?;
@@ -605,8 +547,7 @@ fn tmp_path(path: &Path) -> PathBuf {
 mod tests {
     use super::*;
 
-    /// The shipped, fully-commented example. Kept next to this crate so packagers
-    /// can install it, and embedded here only so the test below can guard it.
+    /// The shipped example, embedded only so the test below can guard it.
     const EXAMPLE_CONFIG: &str = include_str!("../config.example.toml");
 
     fn parse_config(text: &str) -> Config {
@@ -615,11 +556,8 @@ mod tests {
 
     #[test]
     fn example_config_is_valid_and_all_defaults() {
-        // Guards two properties of the shipped example:
-        //   1. It is valid TOML that deserializes into `Config`.
-        //   2. A copied-but-unedited copy behaves exactly like having no config,
-        //      i.e. every setting is commented out or left at its default.
-        // Comparing serialized forms canonicalises away comments and layout.
+        // The example must be valid TOML and, unedited, behave exactly like having
+        // no config at all. Serializing canonicalises away comments and layout.
         let parsed: Config =
             toml_edit::de::from_str(EXAMPLE_CONFIG).expect("example is valid TOML");
         assert_eq!(
@@ -689,8 +627,7 @@ mod tests {
         assert!(config.set_string("video.render_profile", "Default"));
         assert!(config.video.render_profile.is_none());
 
-        // A free-text name of "Default" stays literal (only dropdowns treat it
-        // as unset).
+        // A free-text name of "Default" stays literal.
         assert!(config.set_string("chromecast.name", "Default"));
         assert_eq!(config.chromecast.name.as_deref(), Some("Default"));
 
@@ -766,13 +703,12 @@ exclude_interfaces = \"old\" # trailing note
 
     #[test]
     fn clearing_a_value_reverts_the_file_to_default() {
-        // A previously-set name that the user clears in the UI (name -> None)
-        // must be removed from disk, not left behind to reappear on reload.
+        // A cleared name must be removed from disk, not reappear on reload.
         let existing = "[raop]\nname = \"Old Name\"\n";
         let mut config = parse_config(existing);
         assert_eq!(config.raop.name.as_deref(), Some("Old Name"));
 
-        config.raop.name = None; // what set_string does for an empty value
+        config.raop.name = None;
 
         let out = render(existing, &config);
         assert!(!out.contains("Old Name"), "cleared value removed: {out}");

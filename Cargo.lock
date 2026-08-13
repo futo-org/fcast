@@ -1253,6 +1253,29 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ae3f5d315924270530207e2a68396c3cc547f6dca3fbdca317cfb1a51edb593"
 
 [[package]]
+name = "cairo-rs"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cc8d9aa793480744cd9a0524fef1a2e197d9eaa0f739cde19d16aba530dcb95"
+dependencies = [
+ "bitflags 2.13.0",
+ "cairo-sys-rs",
+ "glib",
+ "libc",
+]
+
+[[package]]
+name = "cairo-sys-rs"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8b4985713047f5faee02b8db6a6ef32bbb50269ff53c1aee716d1d195b76d54"
+dependencies = [
+ "glib-sys",
+ "libc",
+ "system-deps",
+]
+
+[[package]]
 name = "calloop"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1533,6 +1556,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
 dependencies = [
  "cc",
+]
+
+[[package]]
+name = "color"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2ec7c5eb7a16992b1904d76c517d170ab353b0e0b3d5a0c81a8a0cd1037893cf"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
@@ -2102,7 +2134,7 @@ version = "3.0.3"
 dependencies = [
  "anyhow",
  "enable-ansi-support",
- "receiver-core",
+ "receiver-ui",
  "winresource",
 ]
 
@@ -2570,6 +2602,7 @@ dependencies = [
  "base64",
  "bytes",
  "ctor 0.2.9",
+ "fcast-protocol",
  "fcast-runtime",
  "futures",
  "gst-plugin-webrtc",
@@ -2579,9 +2612,13 @@ dependencies = [
  "gstreamer-base",
  "gstreamer-check",
  "gstreamer-video",
+ "gstreamer-webrtc",
+ "hayro-jpeg2000",
  "headers",
  "http-body-util",
  "hyper",
+ "image",
+ "jxl-oxide",
  "libc",
  "libspa",
  "mime",
@@ -2590,6 +2627,7 @@ dependencies = [
  "pipewire",
  "reqwest",
  "sabrump",
+ "self_cell",
  "serde_json",
  "tokio",
  "tokio-rustls",
@@ -2602,6 +2640,7 @@ name = "fcast-protocol"
 version = "0.1.5"
 dependencies = [
  "base64",
+ "bytes",
  "flatbuffers",
  "paste",
  "rcgen",
@@ -2667,13 +2706,16 @@ name = "fcast-video"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "cairo-rs",
  "clap",
  "drm-fourcc",
  "egl-sys",
  "glow",
  "glutin_egl_sys",
+ "gst-subparse",
  "gstreamer",
  "gstreamer-allocators",
+ "gstreamer-app",
  "gstreamer-base",
  "gstreamer-gl-egl",
  "gstreamer-video",
@@ -2681,12 +2723,17 @@ dependencies = [
  "libplacebo",
  "libplacebo-vulkan",
  "objc2-app-kit 0.3.2",
+ "pango",
+ "pangocairo",
  "parking_lot",
+ "parley 0.11.0",
+ "peniko",
  "raw-window-handle",
  "slint",
  "smallvec",
  "thiserror 2.0.18",
  "tracing",
+ "vello_cpu",
  "wayland-backend",
  "wayland-client",
  "wayland-protocols",
@@ -2697,10 +2744,30 @@ name = "fcastplaybin"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "fcast-gst-elements",
+ "fcasttest",
+ "gst-subparse",
  "gstreamer",
+ "gstreamer-app",
+ "loom",
  "parking_lot",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "fcasttest"
+version = "0.1.0"
+dependencies = [
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-video",
+ "parking_lot",
+ "serde",
+ "toml 1.1.2+spec-1.1.0",
+ "tracing",
 ]
 
 [[package]]
@@ -2745,7 +2812,7 @@ dependencies = [
  "anyhow",
  "fiatlux",
  "mimalloc",
- "receiver-core",
+ "receiver-ui",
 ]
 
 [[package]]
@@ -2951,6 +3018,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "font-types"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0a7299a780854a6d391be2ae1c8521c9368471b559dbfd6a8dbd9f407eaff100"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "fontdb"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2976,7 +3052,29 @@ dependencies = [
  "objc2-core-text",
  "objc2-foundation 0.3.2",
  "parlance",
- "read-fonts",
+ "read-fonts 0.39.2",
+ "roxmltree",
+ "smallvec",
+ "windows",
+ "windows-core",
+ "yeslogic-fontconfig-sys",
+]
+
+[[package]]
+name = "fontique"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1e04c4750a17111ebd77c3e0aea00476ce33f59235bc4d9e7f0aded5033ad3fc"
+dependencies = [
+ "hashbrown 0.17.1",
+ "linebender_resource_handle",
+ "memmap2",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-text",
+ "objc2-foundation 0.3.2",
+ "parlance",
+ "read-fonts 0.40.2",
  "roxmltree",
  "smallvec",
  "windows",
@@ -3618,6 +3716,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-subparse"
+version = "0.1.0"
+source = "git+https://github.com/MAlba124/gst-subparse-rs.git?rev=0cdf26b#0cdf26b4e75520c964150b715479277188545d3c"
+dependencies = [
+ "encoding_rs",
+ "gst-plugin-version-helper",
+ "gstreamer",
+ "gstreamer-base",
+ "subparse-formats",
+]
+
+[[package]]
 name = "gstreamer"
 version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4043,6 +4153,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "guillotiere"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6b17e70c989c36bad147b27a58d148c0741c51448aa5653436547323e524d0ab"
+dependencies = [
+ "euclid",
+]
+
+[[package]]
 name = "h2"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4080,7 +4199,19 @@ checksum = "d12c7c642d4ce8c2e784b4751a6634bd89583912265add4a679a8882d123fbcd"
 dependencies = [
  "bitflags 2.13.0",
  "bytemuck",
- "read-fonts",
+ "read-fonts 0.39.2",
+ "smallvec",
+]
+
+[[package]]
+name = "harfrust"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f0589ddd0d2935dd2845827ac606b4081c266225d613b268ed2910f832889cab"
+dependencies = [
+ "bitflags 2.13.0",
+ "bytemuck",
+ "read-fonts 0.40.2",
  "smallvec",
 ]
 
@@ -4460,14 +4591,14 @@ version = "1.17.1"
 source = "git+https://gitlab.futo.org/fcast/slint.git?rev=1ed1f81eb9a0aed7dd07851f59097dee80283753#1ed1f81eb9a0aed7dd07851f59097dee80283753"
 dependencies = [
  "derive_more",
- "fontique",
+ "fontique 0.10.0",
  "htmlparser",
  "icu_decimal",
  "icu_locale_core",
  "icu_provider",
  "pulldown-cmark",
  "resvg",
- "skrifa",
+ "skrifa 0.42.1",
 ]
 
 [[package]]
@@ -4493,7 +4624,7 @@ dependencies = [
  "resvg",
  "rowan",
  "rspolib",
- "skrifa",
+ "skrifa 0.42.1",
  "smol_str 0.3.6",
  "strum",
  "swash",
@@ -4530,7 +4661,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "once_cell",
- "parley",
+ "parley 0.10.0",
  "pin-project",
  "pin-weak",
  "portable-atomic",
@@ -4538,7 +4669,7 @@ dependencies = [
  "resvg",
  "rgb",
  "scopeguard",
- "skrifa",
+ "skrifa 0.42.1",
  "slab",
  "strum",
  "swash",
@@ -4611,7 +4742,7 @@ dependencies = [
  "pin-weak",
  "raw-window-handle",
  "raw-window-metal",
- "read-fonts",
+ "read-fonts 0.39.2",
  "scoped-tls-hkt",
  "skia-safe",
  "softbuffer",
@@ -4635,7 +4766,7 @@ dependencies = [
  "integer-sqrt",
  "lyon_path",
  "num-traits",
- "skrifa",
+ "skrifa 0.42.1",
  "swash",
  "zeno",
 ]
@@ -6939,6 +7070,31 @@ dependencies = [
 ]
 
 [[package]]
+name = "pangocairo"
+version = "0.22.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "738a2ef690f51487814ff7172e0417c8e4fa2d7567571e5eb299d38b47b543ab"
+dependencies = [
+ "cairo-rs",
+ "glib",
+ "pango",
+ "pangocairo-sys",
+]
+
+[[package]]
+name = "pangocairo-sys"
+version = "0.22.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d95cb73468373b9e568abb1afbaf5b42fe6ab9128fc41b5f2adbf69451c3c77f"
+dependencies = [
+ "cairo-sys-rs",
+ "glib-sys",
+ "libc",
+ "pango-sys",
+ "system-deps",
+]
+
+[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6979,16 +7135,34 @@ version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6b1cfcf399c774719fb1fa51bc6b91e86bdf003b03202a0902f1827ba6750746"
 dependencies = [
- "fontique",
- "harfrust",
+ "fontique 0.10.0",
+ "harfrust 0.8.4",
  "hashbrown 0.17.1",
  "icu_normalizer",
  "icu_properties",
  "icu_segmenter",
  "linebender_resource_handle",
  "parlance",
- "parley_data",
- "skrifa",
+ "parley_data 0.10.0",
+ "skrifa 0.42.1",
+]
+
+[[package]]
+name = "parley"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e0478b47dd9885a5e0a4f1c0782ffc42bf6ee8c41dea0917d7a9bcee3e6585fc"
+dependencies = [
+ "fontique 0.11.0",
+ "harfrust 0.10.0",
+ "hashbrown 0.17.1",
+ "icu_normalizer",
+ "icu_properties",
+ "icu_segmenter",
+ "linebender_resource_handle",
+ "parlance",
+ "parley_data 0.11.0",
+ "skrifa 0.43.2",
 ]
 
 [[package]]
@@ -6996,6 +7170,15 @@ name = "parley_data"
 version = "0.10.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d1d3755e2cc12c0625b0cd2f2773c6a37dd11d1531940c945ade4aeb78f2b145"
+dependencies = [
+ "icu_properties",
+]
+
+[[package]]
+name = "parley_data"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a649e01a1acc917247ee147b56b8a1fa91824acf7117bd003b4204306d601255"
 dependencies = [
  "icu_properties",
 ]
@@ -7047,6 +7230,19 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88b39c9bfcfc231068454382784bb460aae594343fb030d46e9f50a645418412"
 dependencies = [
  "base64ct",
+]
+
+[[package]]
+name = "peniko"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "839c8299360d2e998bdb106dc0a6cd71dcc5f4df51df1b620361bf50e283cca6"
+dependencies = [
+ "bytemuck",
+ "color",
+ "kurbo",
+ "linebender_resource_handle",
+ "smallvec",
 ]
 
 [[package]]
@@ -7767,12 +7963,33 @@ dependencies = [
 
 [[package]]
 name = "read-fonts"
+version = "0.37.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7b634fabf032fab15307ffd272149b622260f55974d9fad689292a5d33df02e5"
+dependencies = [
+ "bytemuck",
+ "font-types 0.11.3",
+]
+
+[[package]]
+name = "read-fonts"
 version = "0.39.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c4ed38b89c2c77ff968c524145ad65fb010f38af5c7a224b53b81d47ac2daa81"
 dependencies = [
  "bytemuck",
- "font-types",
+ "font-types 0.11.3",
+]
+
+[[package]]
+name = "read-fonts"
+version = "0.40.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "487889119a5f19ff7c0a20637196bdc76b9f54ebec17e3588b5d75e4999f8773"
+dependencies = [
+ "bytemuck",
+ "font-types 0.12.2",
+ "once_cell",
 ]
 
 [[package]]
@@ -7786,7 +8003,7 @@ dependencies = [
  "log",
  "log-panics",
  "parking_lot",
- "receiver-core",
+ "receiver-ui",
  "tokio",
 ]
 
@@ -7796,6 +8013,7 @@ version = "3.0.3"
 dependencies = [
  "aes",
  "alac",
+ "android-activity 0.6.1",
  "anyhow",
  "app-updater",
  "apple-fairplay",
@@ -7814,6 +8032,7 @@ dependencies = [
  "fcast-runtime",
  "fcast-video",
  "fcastplaybin",
+ "fcasttest",
  "futures",
  "gethostname",
  "glow",
@@ -7822,6 +8041,7 @@ dependencies = [
  "gst-plugin-dav1d",
  "gst-plugin-rtp",
  "gst-plugin-webrtc",
+ "gst-subparse",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-audio",
@@ -7831,12 +8051,10 @@ dependencies = [
  "gstreamer-pbutils",
  "gstreamer-tag",
  "gstreamer-video",
- "gstreamer-webrtc",
  "hayro-jpeg2000",
  "headers",
  "http-body-util",
  "hyper",
- "i-slint-backend-winit",
  "if-addrs",
  "image",
  "inhibit-screensaver",
@@ -7851,7 +8069,6 @@ dependencies = [
  "mdns-sd",
  "mime",
  "nom 7.1.3",
- "objc2-app-kit 0.3.2",
  "oneshot",
  "pango",
  "parking_lot",
@@ -7874,8 +8091,6 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.11.0",
- "slint",
- "slint-build",
  "smallvec",
  "smol_str 0.3.6",
  "thiserror 2.0.18",
@@ -7895,6 +8110,32 @@ dependencies = [
 [[package]]
 name = "receiver-resources"
 version = "0.1.0"
+
+[[package]]
+name = "receiver-ui"
+version = "3.0.3"
+dependencies = [
+ "anyhow",
+ "fcast-protocol",
+ "fcast-runtime",
+ "fcast-video",
+ "glow",
+ "glutin_egl_sys",
+ "gstreamer",
+ "gstreamer-base",
+ "gstreamer-video",
+ "i-slint-backend-winit",
+ "libplacebo",
+ "objc2-app-kit 0.3.2",
+ "oneshot",
+ "parking_lot",
+ "receiver-core",
+ "slint",
+ "slint-build",
+ "tokio",
+ "tokio-rustls",
+ "tracing",
+]
 
 [[package]]
 name = "redox_syscall"
@@ -8681,12 +8922,32 @@ dependencies = [
 
 [[package]]
 name = "skrifa"
+version = "0.40.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7fbdfe3d2475fbd7ddd1f3e5cf8288a30eb3e5f95832829570cd88115a7434ac"
+dependencies = [
+ "bytemuck",
+ "read-fonts 0.37.0",
+]
+
+[[package]]
+name = "skrifa"
 version = "0.42.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0c34617370ae968efb7161bb2beb517d9084659aae19e24b89e3db25b46e4564"
 dependencies = [
  "bytemuck",
- "read-fonts",
+ "read-fonts 0.39.2",
+]
+
+[[package]]
+name = "skrifa"
+version = "0.43.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4cbe997d0f2480442d727488fbe2150779114cbe480ecdbadef58b33e0318ffb"
+dependencies = [
+ "bytemuck",
+ "read-fonts 0.40.2",
 ]
 
 [[package]]
@@ -8723,7 +8984,7 @@ version = "1.17.1"
 source = "git+https://gitlab.futo.org/fcast/slint.git?rev=1ed1f81eb9a0aed7dd07851f59097dee80283753#1ed1f81eb9a0aed7dd07851f59097dee80283753"
 dependencies = [
  "derive_more",
- "fontique",
+ "fontique 0.10.0",
  "i-slint-compiler",
  "spin_on",
  "toml_edit",
@@ -8997,6 +9258,11 @@ dependencies = [
 ]
 
 [[package]]
+name = "subparse-formats"
+version = "0.1.0"
+source = "git+https://github.com/MAlba124/gst-subparse-rs.git?rev=0cdf26b#0cdf26b4e75520c964150b715479277188545d3c"
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9018,7 +9284,7 @@ version = "0.2.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0811b01ca2c4e8718760713911feaf4675c24f94e50530a015ec646cfb622f7c"
 dependencies = [
- "skrifa",
+ "skrifa 0.42.1",
  "yazi",
  "zeno",
 ]
@@ -10067,6 +10333,43 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426"
 
 [[package]]
+name = "vello_api"
+version = "0.0.7"
+source = "git+https://github.com/linebender/vello.git?rev=5796226#5796226bfafd75fb121e938536ff74bb80a6114f"
+dependencies = [
+ "bytemuck",
+ "peniko",
+]
+
+[[package]]
+name = "vello_common"
+version = "0.0.7"
+source = "git+https://github.com/linebender/vello.git?rev=5796226#5796226bfafd75fb121e938536ff74bb80a6114f"
+dependencies = [
+ "bytemuck",
+ "fearless_simd",
+ "guillotiere",
+ "hashbrown 0.16.1",
+ "log",
+ "peniko",
+ "png",
+ "skrifa 0.40.0",
+ "smallvec",
+ "thiserror 2.0.18",
+]
+
+[[package]]
+name = "vello_cpu"
+version = "0.0.7"
+source = "git+https://github.com/linebender/vello.git?rev=5796226#5796226bfafd75fb121e938536ff74bb80a6114f"
+dependencies = [
+ "bytemuck",
+ "hashbrown 0.16.1",
+ "vello_api",
+ "vello_common",
+]
+
+[[package]]
 name = "version-compare"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10934,11 +11237,11 @@ version = "0.48.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb731d4c4d93eacc69a1ad2f270f905788a98e4a3438267bcafbe08d3431c8d8"
 dependencies = [
- "font-types",
+ "font-types 0.11.3",
  "indexmap",
  "kurbo",
  "log",
- "read-fonts",
+ "read-fonts 0.39.2",
 ]
 
 [[package]]

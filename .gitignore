@@ -8,6 +8,7 @@
 .secure_files/
 
 /target
+/target-tsan
 /ios-bindings
 /ios-build
 /.idea

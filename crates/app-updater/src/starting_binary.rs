@@ -9,7 +9,8 @@ use std::{
     path::{Path, PathBuf},
 };
 
-/// A cached version of the current binary using [`ctor`] to cache it before even `main` runs.
+/// A cached version of the current binary using [`ctor`] to cache it before
+/// even `main` runs.
 #[ctor]
 #[used]
 pub static STARTING_BINARY: StartingBinary = StartingBinary::new();
@@ -26,7 +27,8 @@ impl StartingBinary {
             error @ Err(_) => return Self(error),
         };
 
-        // note: this only checks symlinks on problematic platforms, see implementation below
+        // note: this only checks symlinks on problematic platforms, see implementation
+        // below
         if let Some(symlink) = Self::has_symlink(&dangerous_path) {
             return Self(Err(Error::new(
                 ErrorKind::InvalidData,
@@ -58,7 +60,8 @@ impl StartingBinary {
         None
     }
 
-    /// We only care about checking this on macOS currently, as it has the least symlink protections.
+    /// We only care about checking this on macOS currently, as it has the least
+    /// symlink protections.
     #[cfg(target_os = "macos")]
     fn has_symlink(path: &Path) -> Option<&Path> {
         path.ancestors().find(|ancestor| {

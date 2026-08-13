@@ -10,6 +10,7 @@ gst-base.workspace = true
 gst-app.workspace = true
 gst-video.workspace = true
 gst-audio = { package = "gstreamer-audio", version = "0.25" }
+gst-webrtc.workspace = true
 gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
 tokio.workspace = true
 futures.workspace = true
@@ -19,10 +20,21 @@ base64.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 fcast-runtime = { path = "../fcast-runtime" }
+fcast-protocol = { path = "../fcast-protocol", features = ["tokio-receiver"] }
+self_cell.workspace = true
 url = "2"
 mime = "0.3"
 headers = "0.4"
 sabrump = { path = "../sabrump", features = ["serde"] }
+
+# fimagedec's still/animation decoders.
+image = { workspace = true, features = [
+    "decode",
+    "avif-native", "bmp", "dds", "ff", "gif", "ico",
+    "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
+] }
+jxl-oxide = { version = "0.12", features = ["image"] }
+hayro-jpeg2000 = "0.3"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = { version = "0.10", features = ["v0_3_50"] }
@@ -46,3 +58,6 @@ pin-project-lite = "0.2"
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
 gst-check = { package = "gstreamer-check", version = "0.25" }
 ctor = "0.2"
+# Encoders are excluded from shipping builds (binary size); fimagedec's tests
+# encode their own image fixtures.
+image = { workspace = true, features = ["encode"] }

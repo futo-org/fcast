@@ -54,6 +54,7 @@ impl Texture {
         }
     }
 
+    #[cfg(feature = "slint")]
     pub fn to_borrowed_slint_image(&self) -> slint::Image {
         unsafe {
             slint::BorrowedOpenGLTextureBuilder::new_gl_2d_rgba_texture(

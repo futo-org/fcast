@@ -126,7 +126,8 @@ pub fn size_of(first_byte: u8) -> usize {
 /// Decode a varint from `bytes` starting at `offset`.
 ///
 /// Returns `(value, next_offset)`. On truncation, returns `(-1, ..)` mirroring
-/// the reference implementation so callers can defensively handle short buffers.
+/// the reference implementation so callers can defensively handle short
+/// buffers.
 pub fn decode_varint(bytes: &[u8], offset: usize) -> (i64, usize) {
     if offset >= bytes.len() {
         return (-1, offset);

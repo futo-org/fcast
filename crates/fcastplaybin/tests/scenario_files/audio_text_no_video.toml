@@ -1,0 +1,30 @@
+# Text alongside audio with NO video stream. Cues are composited onto
+# video frames, so there is nothing here for the text branch to render onto: the
+# crate's text-without-video guard is what has to keep this playable.
+#
+# Distinct from audio_only.toml, which carries no text at all and therefore never
+# reaches the guard. A failure here looks like a load that never prerolls (the
+# overlay waiting for a video chain that is never built) rather than a wrong
+# picture.
+key = "audiotext"
+duration_ms = 1200
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "audio_0"
+kind = "audio"
+
+[[stream]]
+id = "text_0"
+kind = "text"
+
+[[stream.cue]]
+start_ms = 200
+end_ms = 400
+text = "NOVIDEO00"
+
+[[stream.cue]]
+start_ms = 600
+end_ms = 800
+text = "NOVIDEO01"

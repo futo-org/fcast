@@ -39,7 +39,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt},
     sync::mpsc::{Sender, UnboundedReceiver, UnboundedSender, channel},
 };
-use tracing::{Instrument, debug, error, level_filters::LevelFilter, warn};
+use tracing::{Instrument, debug, error, level_filters::LevelFilter, trace, warn};
 use tracing_subscriber::{
     Layer, prelude::__tracing_subscriber_SubscriberExt, util::SubscriberInitExt,
 };
@@ -574,8 +574,8 @@ async fn spawn_video_source_fetcher(event_tx: UnboundedSender<Event>) -> Sender<
 //         || matches!(v6.segments(), [0x64, 0xff9b, 1, _, _, _, _, _])
 //         || matches!(v6.segments(), [0x100, 0, 0, 0, _, _, _, _])
 //         || (matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b < 0x200)
-//             && !(u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0001
-//                 || u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0002
+//             && !(u128::from_be_bytes(v6.octets()) ==
+// 0x2001_0001_0000_0000_0000_0000_0000_0001                 || u128::from_be_bytes(v6.octets()) == 0x2001_0001_0000_0000_0000_0000_0000_0002
 //                 || matches!(v6.segments(), [0x2001, 3, _, _, _, _, _, _])
 //                 || matches!(v6.segments(), [0x2001, 4, 0x112, _, _, _, _, _])
 //                 || matches!(v6.segments(), [0x2001, b, _, _, _, _, _, _] if b >= 0x20 && b <= 0x3F)))
@@ -614,7 +614,8 @@ impl Application {
                 if let Err(err) = device.stop_playback() {
                     error!(?err, "Failed to stop playback");
                 }
-                // NOTE: Instead of waiting for the PlaybackState::Idle event in the main loop we just sleep here
+                // NOTE: Instead of waiting for the PlaybackState::Idle event in the main loop
+                // we just sleep here
                 tokio::time::sleep(std::time::Duration::from_millis(100)).await;
             }
             if let Err(err) = device.disconnect() {
@@ -649,8 +650,9 @@ impl Application {
     /// Playback stopped on the receiver.
     async fn handle_playback_stopped(&mut self) -> Result<()> {
         let Some(session) = self.session_state.as_mut() else {
-            // Disconnecting: end_session() takes the session before the stop it sent comes back,
-            // and the UI is already on its way to Disconnected. Nothing to wind back.
+            // Disconnecting: end_session() takes the session before the stop it sent comes
+            // back, and the UI is already on its way to Disconnected. Nothing
+            // to wind back.
             return Ok(());
         };
 
@@ -658,9 +660,10 @@ impl Application {
         session.time = 0.0;
         session.duration = 0.0;
 
-        // Mirroring cannot outlive the receiver dropping the stream, so tear the capture side
-        // down and leave the view, like the local Stop button. A browsing session keeps its view
-        // and only stops marking an item as playing, like clicking the playing entry again.
+        // Mirroring cannot outlive the receiver dropping the stream, so tear the
+        // capture side down and leave the view, like the local Stop button. A
+        // browsing session keeps its view and only stops marking an item as
+        // playing, like clicking the playing entry again.
         let was_mirroring = if let SessionSpecificState::Mirroring {
             tx_sink,
             video_source_fetcher_tx,
@@ -825,7 +828,14 @@ impl Application {
             let mut track_selected = None;
             match event {
                 mcore::DeviceEvent::VolumeChanged(new_volume) => session.volume = new_volume,
-                mcore::DeviceEvent::TimeChanged(new_time) => session.time = new_time,
+                // Position arrives at the receiver's progress cadence (500ms by default), so it
+                // logs at trace. Without this the arm was silent, and a log capture showing track
+                // events but no progress read as "the sender gets no position updates" when the
+                // updates were in fact arriving and driving the UI.
+                mcore::DeviceEvent::TimeChanged(new_time) => {
+                    trace!(new_time, "Time changed");
+                    session.time = new_time;
+                }
                 mcore::DeviceEvent::PlaybackStateChanged(new_playback_state) => {
                     session.playback_state = match new_playback_state {
                         device::PlaybackState::Idle => UiPlaybackState::Idle,
@@ -837,8 +847,11 @@ impl Application {
                         }
                     };
                 }
+                // Duration changes once per item, so debug is not noisy here and its presence in a
+                // debug capture is the cheap proof that the progress path is alive.
                 mcore::DeviceEvent::DurationChanged(new_duration) => {
-                    session.duration = new_duration
+                    debug!(new_duration, "Duration changed");
+                    session.duration = new_duration;
                 }
                 mcore::DeviceEvent::SpeedChanged(new_speed) => session.speed = new_speed,
                 mcore::DeviceEvent::TracksAvailable(new_tracks) => {
@@ -2377,9 +2390,9 @@ impl Application {
 
     async fn write_default_settings_file(&mut self, path: PathBuf) {
         // From https://docs.rs/toml_edit/0.24.0+spec-1.1.0/toml_edit/ser/fn.to_string.html:
-        // Serialization can fail if T’s implementation of Serialize decides to fail, if T contains a map
-        // with non-string keys, or if T attempts to serialize an unsupported datatype such as an enum, tuple,
-        // or tuple struct.
+        // Serialization can fail if T’s implementation of Serialize decides to fail, if
+        // T contains a map with non-string keys, or if T attempts to serialize
+        // an unsupported datatype such as an enum, tuple, or tuple struct.
         let settings_str =
             toml_edit::ser::to_string(&self.settings).expect("failed to serialize settings");
 

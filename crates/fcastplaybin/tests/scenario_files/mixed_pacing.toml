@@ -1,0 +1,50 @@
+# Three streams of one media arriving at three different rates: video paced in
+# realtime, audio at a jittery 5-15 ms per packet, text dumped as fast as the branch
+# will take it.
+#
+# A demuxer never delivers its streams evenly. It reads interleaved chunks, so one
+# branch runs ahead by whatever the file's interleave is while another waits, and a
+# jittery source (network, spinning disk, a busy box) turns that into a per-buffer
+# variation rather than a constant offset. Every other file here pushes every stream
+# with the same pacing, which is the one thing real containers do not do.
+#
+# The audio jitter draw is seeded from the scenario key (see stable_seed), so the
+# unevenness is identical on every run: this is a fixed awkward interleave, not a
+# flake generator. base_ms 5 + up to 10 ms of jitter averages 10 ms per 20 ms packet,
+# so audio still outruns realtime and the audio branch stays ahead of video rather
+# than starving the clip.
+#
+# NOTE: there is no top-level `pacing` on purpose. The top-level key is applied to
+# every stream at registration whatever the individual entries say, so setting it
+# here would flatten exactly the unevenness this file exists to describe. Compare
+# ragged_durations.toml, which omits top-level duration_ms for the same reason.
+key = "mixedpacing"
+duration_ms = 800
+bytes_per_buffer = 64
+
+[[stream]]
+id = "video_0"
+kind = "video"
+fps = 25
+keyframe_interval = 25
+pacing = "realtime"
+
+[[stream]]
+id = "audio_0"
+kind = "audio"
+pacing = { jitter = { base_ms = 5, jitter_ms = 10 } }
+
+[[stream]]
+id = "text_0"
+kind = "text"
+pacing = "as_fast_as_possible"
+
+[[stream.cue]]
+start_ms = 150
+end_ms = 350
+text = "MIX00"
+
+[[stream.cue]]
+start_ms = 450
+end_ms = 650
+text = "MIX01"

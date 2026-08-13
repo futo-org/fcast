@@ -1,0 +1,74 @@
+adaptivedemux2: do not permanently pause all output on a transient FLUSHING
+
+A single FLUSHING push freezes video AND audio here, silently. The output loop
+serves every track from one task, so any non-OK push (flow-combined) hits
+`goto pause` and stops that one task for good, and FLUSHING posts nothing at
+all: only GST_FLOW_NOT_LINKED and <= GST_FLOW_EOS do. Field freezes on DASH
+with a subtitle track show exactly that shape, output_time pinned AT the
+watermark with the downloads parked, element still PLAYING, position stopped,
+indistinguishable from a network stall. Nothing recovers it: of the three
+gst_task_start sites, two re-pause instantly on the flow combiner's stored
+FLUSHING and only a flushing seek resets it.
+
+Recover instead, when the element is not itself flushing: clear that pad in
+the flow combiner (gst_flow_combiner_update_pad_flow with GST_FLOW_OK, which
+also refreshes last_ret, or the very next push of ANY pad recombines the
+stored FLUSHING and re-pauses), mark the track discont, and keep draining the
+track. Discarding rather than skipping is load-bearing: the track's
+next_position has to keep advancing or global_output_position pins at its
+minimum, the input wakeup never fires, and the freeze survives the patch.
+Real flushing (priv->flushing, re-checked after the warning drops the lock)
+and the NOT_LINKED/EOS/ERROR paths stay byte-identical.
+
+This restores A/V only. When the FLUSHING came from a downstream multiqueue,
+that single-queue is independently latched and clears only on a FLUSH_STOP at
+its sink pad, so the affected track stays dead until a flushing seek. D3 and
+D4 are one bug in two elements.
+
+--- a/subprojects/gst-plugins-good/ext/adaptivedemux2/gstadaptivedemux.c
++++ b/subprojects/gst-plugins-good/ext/adaptivedemux2/gstadaptivedemux.c
+@@ -190,6 +190,10 @@
+   /* Pending track (which will replace track) */
+   GstAdaptiveDemuxTrack *pending_track;
+ 
++  /* TRUE once a transient FLUSHING push was reported for this slot, so the
++   * warning is posted once per slot instead of once per racing buffer. */
++  gboolean warned_transient_flushing;
++
+   /* TRUE if a buffer or a gap event was pushed through this slot. */
+   gboolean pushed_timed_data;
+ } OutputSlot;
+@@ -3681,6 +3685,33 @@
+       TRACKS_LOCK (demux);
+       gst_adaptive_demux_track_update_next_position (track);
+ 
++      /* FLUSHING while this element is not itself flushing is transient:
++       * something downstream flushed and that buffer was doomed either way.
++       * Pausing here stops output for EVERY track for good with nothing
++       * posted. Clear the pad in the flow combiner (which stores FLUSHING and
++       * short-circuits on it) and keep draining this track: its next_position
++       * must advance or global_output_position pins here and the input wakeup
++       * below never fires. Any other pad's real failure still pauses. */
++      if (ret == GST_FLOW_FLUSHING && !demux->priv->flushing) {
++        slot->flow_ret = GST_FLOW_OK;
++        ret = gst_flow_combiner_update_pad_flow (demux->priv->flowcombiner,
++            slot->pad, GST_FLOW_OK);
++        track->output_discont = TRUE;
++        if (!slot->warned_transient_flushing) {
++          slot->warned_transient_flushing = TRUE;
++          TRACKS_UNLOCK (demux);
++          GST_ELEMENT_WARNING (demux, STREAM, FAILED, (NULL),
++              ("Discarding data on %s: downstream returned FLUSHING while this "
++                  "element is not flushing", GST_PAD_NAME (slot->pad)));
++          TRACKS_LOCK (demux);
++          /* A real flush can have started while the lock was dropped. */
++          if (demux->priv->flushing) {
++            ret = GST_FLOW_FLUSHING;
++            goto pause;
++          }
++        }
++      }
++
+       if (ret != GST_FLOW_OK)
+         goto pause;
+     }

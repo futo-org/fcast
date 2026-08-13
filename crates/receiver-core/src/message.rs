@@ -5,7 +5,7 @@ use tracing::error;
 
 #[cfg(feature = "airplay")]
 use crate::airplay;
-use crate::{MediaItemId, SenderId, UiMediaTrackType, application::PacketOrigin, player, raop};
+use crate::{MediaItemId, SenderId, application::PacketOrigin, player, raop};
 
 #[derive(Clone, Debug)]
 pub struct MessageSender(UnboundedSender<Message>);
@@ -34,9 +34,9 @@ impl MessageSender {
         self.send(Message::AirPlay(msg));
     }
 
-    /// Forward a player event. `generation` is the load generation the event belongs to (`None` for
-    /// app-internal events not tied to a load); the application drops load-scoped events from
-    /// superseded generations.
+    /// Forward a player event. `generation` is the load generation it belongs
+    /// to (`None` for app-internal events); load-scoped events from
+    /// superseded generations are dropped.
     pub fn player(&self, msg: crate::player::PlayerEvent, generation: Option<u64>) {
         self.send(Message::NewPlayerEvent {
             event: msg,
@@ -76,29 +76,25 @@ pub enum Mdns {
 pub enum AirPlay {
     ConfigAvailable(airplay::Configuration),
     SenderConnected(tokio::net::TcpStream),
-    /// A mirror video stream was set up, the receiver should start playing the
-    /// `airplay://mirror/<id>` source.
+    /// A mirror video stream was set up; play the `airplay://mirror/<id>`
+    /// source.
     MirrorStarted {
         stream_connection_id: u64,
     },
-    /// A mirror session ended (TEARDOWN or sender disconnect), the receiver
-    /// should stop playback if this is the session currently playing.
+    /// A mirror session ended (TEARDOWN or sender disconnect).
     MirrorStopped {
         stream_connection_id: u64,
     },
-    /// The client stopped sending video (screen locked/asleep), the receiver
-    /// should pause playback of this session.
+    /// The client stopped sending video (screen locked/asleep).
     MirrorPaused {
         stream_connection_id: u64,
     },
-    /// The client resumed sending video after a pause, the receiver should
-    /// resume playback of this session.
+    /// The client resumed sending video after a pause.
     MirrorResumed {
         stream_connection_id: u64,
     },
-    /// The client changed the volume (SET_PARAMETER). `volume` is the linear
-    /// GStreamer gain (`0.0`..=`1.0`). Applied to the shared player, which now
-    /// decodes the mirror audio.
+    /// SET_PARAMETER volume change; `volume` is the linear GStreamer gain
+    /// (`0.0`..=`1.0`).
     VolumeChanged {
         stream_connection_id: u64,
         volume: f32,
@@ -127,13 +123,12 @@ pub enum AppUpdate {
     RestartApp,
 }
 
-/// User's choice from the port-conflict dialog. `Quit` is not represented here:
-/// the Quit button ends the Slint loop, which drives the normal `Message::Quit`
+/// User's choice from the port-conflict dialog. No `Quit` variant: the Quit
+/// button ends the Slint loop, which drives the normal `Message::Quit`
 /// shutdown.
 #[derive(Debug, Clone, Copy)]
 pub enum PortConflictChoice {
-    /// Re-attempt binding the default FCast port (after the user closes the
-    /// other instance).
+    /// Re-attempt binding the default FCast port.
     Retry,
     /// Bind an ephemeral port instead and re-advertise it over mDNS.
     UseDifferentPort,
@@ -142,16 +137,16 @@ pub enum PortConflictChoice {
 #[derive(Debug)]
 pub enum Message {
     Quit,
-    /// Sent by the port-conflict dialog while the receiver is still trying to
-    /// acquire its listening port (see `Application::resolve_listen_port`).
+    /// Sent by the port-conflict dialog while the listening port is still being
+    /// acquired.
     PortConflictChoice(PortConflictChoice),
     SessionFinished,
     SeekPercent(f32),
     ToggleDebug,
     NewPlayerEvent {
         event: player::PlayerEvent,
-        /// The load generation the event belongs to (see `fcastplaybin::FcastPlaybin::load_async`);
-        /// `None` for app-internal events not tied to a load.
+        /// The load generation the event belongs to; `None` for app-internal
+        /// events.
         generation: Option<u64>,
     },
     Op {
@@ -167,46 +162,39 @@ pub enum Message {
     MediaItemFinish(MediaItemId),
     SelectTrack {
         id: i32,
-        variant: UiMediaTrackType,
+        variant: player::TrackKind,
     },
-    /// A boolean setting was toggled in the settings drawer. `key` is a dotted
-    /// `section.key` (see `Config::set_bool`). Autosaved to the config file.
+    /// A boolean setting was toggled in the settings drawer; `key` is a dotted
+    /// `section.key`.
     SetConfigBool {
         key: String,
         value: bool,
     },
-    /// A string setting was committed in the settings drawer (see
-    /// `Config::set_string`). Autosaved to the config file.
+    /// A string setting was committed in the settings drawer; `key` is a dotted
+    /// `section.key`.
     SetConfigString {
         key: String,
         value: String,
     },
     ShouldSetLoadingStatus(MediaItemId),
-    /// Bounded wait for a parked `AddSubtitleSource`: the op arrived while the
-    /// load it targets was still in flight (`Application::is_loading_media`,
-    /// a sender may send `Load` and `AddSubtitleSource` back to back), or
-    /// after the load but before the pipeline could answer the seekability
-    /// query (`Player::seekable_known`). If neither has settled when this
-    /// fires, the parked adds are rejected with `InvalidState`.
+    /// Bounded wait for `AddSubtitleSource` parked on an in-flight load or
+    /// unresolved seekability; on expiry the parked adds are rejected with
+    /// `InvalidState`.
     PendingSubtitleAddCheck {
         item: MediaItemId,
         epoch: u64,
     },
-    /// Bounded wait for a parked `Seek` (the unresolved-seekability window
-    /// `PendingSubtitleAddCheck` also covers). If still unresolved when this
-    /// fires, the parked seek is dropped (matching the old silent behavior
-    /// for unseekable streams).
+    /// Bounded wait for a `Seek` parked on unresolved seekability; on expiry it
+    /// is dropped.
     PendingSeekCheck {
         epoch: u64,
     },
-    /// The seek broadcast debounce expired (see `Application::seek_quiet`).
+    /// The seek broadcast debounce expired.
     SeekQuietTimeout {
         epoch: u64,
     },
-    /// DIAGNOSTIC (load-stall investigation): a bounded wait after a pipeline
-    /// load. If the pipeline still has not reached a steady PAUSED when this
-    /// fires (a selected stream's pad never routed), dump why (see
-    /// `Player::log_load_stall_diagnostics`). Diagnostics only, no recovery.
+    /// Diagnostics only, no recovery: bounded wait after a load, dumping why
+    /// the pipeline never reached a steady PAUSED.
     LoadStallCheck {
         item: MediaItemId,
         epoch: u64,
@@ -214,8 +202,8 @@ pub enum Message {
     Raop(Raop),
     #[cfg(feature = "airplay")]
     AirPlay(AirPlay),
-    /// The inspector was opened or closed. Gates inspector work and resets its
-    /// per-session sampling state on close.
+    /// The inspector was opened or closed; closing resets its per-session
+    /// sampling state.
     InspectorActive(bool),
     InspectorRefresh,
     /// One bitrate sample while the inspector is open (driven by its timer).
@@ -226,7 +214,7 @@ pub enum Message {
     FCastSenderDisconnect(SenderId),
 }
 
-pub(crate) enum ReceiverToFCastSender {
+pub enum ReceiverToFCastSender {
     Error {
         kind: fcast_protocol::v4::flat::ErrorKind,
         packet_num: Option<u32>,

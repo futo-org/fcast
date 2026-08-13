@@ -1,12 +1,11 @@
 //! Minimal HTTP/1.1 + RTSP/1.0 request parser and response writer.
 //!
-//! AirPlay mirroring speaks a hybrid protocol over a single TCP connection: some
-//! requests use the `RTSP/1.0` protocol token (OPTIONS, SETUP, RECORD, ...) and
-//! others use `HTTP/1.1` (GET /info, POST /feedback, ...). Both share the same
-//! request-line + headers + Content-Length body framing, so one small parser
-//! handles both. The RAOP module uses `rtsp-types`, but that crate is strict
-//! about the `RTSP/` version token and rejects `HTTP/1.1`, which is why this
-//! hand-rolled parser exists.
+//! AirPlay mirroring mixes both protocol tokens over one TCP connection -
+//! `RTSP/1.0` for OPTIONS/SETUP/RECORD, `HTTP/1.1` for GET /info, POST
+//! /feedback
+//! - with identical request-line + headers + Content-Length framing.
+//!   Hand-rolled
+//! because `rtsp-types` (used by RAOP) rejects the `HTTP/1.1` version token.
 
 use std::fmt::Write as _;
 
@@ -127,8 +126,8 @@ impl Connection {
     }
 }
 
-/// Attempt to parse a single request from `buf`. On success consumes the request
-/// bytes from `buf`. Returns `Ok(None)` when more data is needed.
+/// Attempt to parse a single request from `buf`. On success consumes the
+/// request bytes from `buf`. Returns `Ok(None)` when more data is needed.
 fn parse_request(buf: &mut BytesMut) -> Result<Option<Request>> {
     let Some(header_end) = find_subslice(buf, b"\r\n\r\n") else {
         return Ok(None);
@@ -164,7 +163,6 @@ fn parse_request(buf: &mut BytesMut) -> Result<Option<Request>> {
 
     let body_start = header_end + 4;
     if buf.len() < body_start + content_length {
-        // Body not fully received yet.
         return Ok(None);
     }
 
@@ -209,7 +207,6 @@ mod tests {
     fn waits_for_full_body() {
         let mut buf =
             BytesMut::from(&b"POST /fp-setup RTSP/1.0\r\nContent-Length: 4\r\n\r\nAB"[..]);
-        // Body incomplete -> None, nothing consumed.
         assert!(parse_request(&mut buf).unwrap().is_none());
         buf.extend_from_slice(b"CD");
         let req = parse_request(&mut buf).unwrap().unwrap();

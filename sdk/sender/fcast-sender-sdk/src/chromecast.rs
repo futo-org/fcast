@@ -957,8 +957,8 @@ impl CastingDevice for ChromecastDevice {
             LoadRequest::Queue { .. } => Err(CastingDeviceError::UnsupportedFeature),
         };
         if result.is_ok() {
-            // Queued after the load command so the status-poll rate changes together with the new
-            // media.
+            // Queued after the load command so the status-poll rate changes together with
+            // the new media.
             if let Some(interval_millis) = progress_update_interval_millis {
                 self.set_progress_update_interval(interval_millis)?;
             }

@@ -87,6 +87,15 @@ impl Audio {
     }
 }
 
+/// The subtitle formats this receiver advertises to senders.
+///
+/// `Dvd`, `Dvb` and `Pgs` are the bitmap ones, and they used to be
+/// advertised on the strength of a demuxer being installed while the player
+/// refused the tracks outright (`SubtitleTrackUnsupported`). They are decoded
+/// and drawn now (`fcast_video::subpic`) so the advertisement is a claim the
+/// receiver keeps. `FCAST_NO_BITMAP_SUBS=1` takes the rendering away without
+/// taking the advertisement with it, which is deliberate: the lever is a
+/// rollback for one machine's playback, not a protocol change.
 #[derive(Debug, Hash, PartialEq, Eq)]
 pub enum Subtitle {
     Dvd,

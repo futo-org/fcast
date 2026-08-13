@@ -95,7 +95,8 @@ impl AndroidArgs {
                 sh.create_dir(NDK_PATH)?;
                 cmd!(sh, "unzip -o {zip} -d thirdparty/").run()?;
                 sh.remove_path(&zip)?;
-                // TODO: find android-ndk-r25c/ -type f -exec sed -i '1{/^#!\/bin\/bash$/s//#!\/usr\/bin\/env bash/}' {} +
+                // TODO: find android-ndk-r25c/ -type f -exec sed -i
+                // '1{/^#!\/bin\/bash$/s//#!\/usr\/bin\/env bash/}' {} +
             }
         }
 

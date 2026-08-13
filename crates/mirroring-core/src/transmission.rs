@@ -293,8 +293,8 @@ fn add_bus_handler(
         let bus = pipeline
             .bus()
             .ok_or(anyhow::anyhow!("Pipeline without bus"))?;
-        // We keep weak pipeline ref because the thread does not receive a finish signal,
-        // therefore when we can't upgrade the ref, we know to quit
+        // The task gets no finish signal. A failed upgrade of the weak
+        // pipeline ref is the cue to quit.
         let pipeline_weak = pipeline.downgrade();
 
         async move {
@@ -346,8 +346,8 @@ fn configure_webrtcsink(sink: &gstrswebrtc::webrtcsink::BaseWebRTCSink) {
     sink.set_property("max-bitrate", WHEP_MAX_BITRATE);
     sink.set_property_from_str("enable-mitigation-modes", "downsampled");
     sink.set_property_from_str("stun-server", ""); // We don't care about internet connections
-    // NOTE: we ask for VP8 only because it's widely available and having few possible formats
-    //       reduces the startup time before streaming
+    // VP8 only. It is widely available, and offering fewer formats reduces
+    // startup time before streaming.
     sink.set_property("video-caps", gst::Caps::builder("video/x-vp8").build());
 }
 
@@ -499,7 +499,8 @@ fn sink_from_preview(
 
         let capsfilter_src_pad = elems.capsfilter.static_pad("src").unwrap();
 
-        // TODO: it seems that all sources are fine to be set to ready, do we still need to block upstream?
+        // TODO: it seems that all sources are fine to be set to ready, do we still need
+        // to block upstream?
         let needs_ready = {
             let name = elems
                 .src
@@ -603,8 +604,7 @@ fn sink_from_preview(
 pub struct WhepSink {
     // pub pipeline: gst::Pipeline,
     pub pipeline: Pipeline,
-    /// Used to keep connections and similar stuff alive for later use or for keeping RAII guards
-    /// from not prematurely terminating stream sources
+    /// Keeps RAII guards alive so stream sources are not prematurely torn down
     #[cfg(not(target_os = "android"))]
     _extra_audio: Option<ExtraAudioContext>,
 }
@@ -699,8 +699,7 @@ pub struct FSink {
     // pub pipeline: gst::Pipeline,
     pub pipeline: Pipeline,
     pub signaller: crate::fsignaller::FSignaller,
-    /// Used to keep connections and similar stuff alive for later use or for keeping RAII guards
-    /// from not prematurely terminating stream sources
+    /// Keeps RAII guards alive so stream sources are not prematurely torn down
     #[cfg(not(target_os = "android"))]
     _extra_audio: Option<ExtraAudioContext>,
 }

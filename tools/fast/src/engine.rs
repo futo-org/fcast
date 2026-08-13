@@ -224,7 +224,8 @@ struct Expectations {
     companion_hello: bool,
     companion_served: Option<u32>,
     error: Option<v4::flat::ErrorKind>,
-    /// Satisfied by a v4 progress update whose position is at least this many seconds.
+    /// Satisfied by a v4 progress update whose position is at least this many
+    /// seconds.
     progress_v4_at_least: Option<f64>,
     /// The next v4 progress update with a non-zero position must be at least
     /// this many seconds, a lower one fails the test immediately.

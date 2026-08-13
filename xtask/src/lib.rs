@@ -17,6 +17,7 @@ pub mod gstreamer;
 pub mod kotlin;
 #[cfg(feature = "mdns")]
 pub mod mdns;
+pub mod patched_plugins;
 pub mod protocol;
 pub mod receiver;
 pub mod sender;

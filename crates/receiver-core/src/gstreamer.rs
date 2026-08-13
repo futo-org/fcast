@@ -15,14 +15,19 @@ pub fn init_and_load_plugins() {
         std::env::set_var("GST_REGISTRY_DISABLE", "yes");
     }
 
+    // Naming the encoding avoids subparse latching a UTF-8 failure for the rest
+    // of the stream when a multi-byte character straddles a read boundary.
+    if std::env::var_os("GST_SUBTITLE_ENCODING").is_none() {
+        unsafe {
+            std::env::set_var("GST_SUBTITLE_ENCODING", "UTF-8");
+        }
+    }
+
     gst::init().unwrap();
     debug!(gstreamer_version = %gst::version_string());
 
-    // Dynamic-build path only: load the bundled plugin dylibs/DLLs and point
-    // GIO at the bundled TLS module. A static build must NOT do this — the
-    // on-disk plugins would drag in a second glib ("cannot register existing
-    // type"), and TLS is already compiled in (glib-networking's GIO module is
-    // registered by gst_init_static_plugins).
+    // Dynamic builds only: on a static build these on-disk plugins would drag in
+    // a second glib ("cannot register existing type") and TLS is already linked.
     #[cfg(all(
         any(target_os = "windows", target_os = "macos"),
         not(feature = "static-gstreamer")
@@ -56,20 +61,38 @@ pub fn init_and_load_plugins() {
 
     fcast_gst_elements::fcastwhepsrcbin::plugin_init().unwrap();
     fcast_gst_elements::fcasthttpsrc::plugin_init().unwrap();
+    fcast_gst_elements::fcastaudiostretch::plugin_init().unwrap();
     #[cfg(target_os = "linux")]
     fcast_gst_elements::pwaudiosink::plugin_init().unwrap();
-    crate::fcompsrc::plugin_init().unwrap();
+    fcast_gst_elements::fcompsrc::plugin_init().unwrap();
     fcast_gst_elements::sabrumpsrc::plugin_init().unwrap();
     #[cfg(feature = "airplay")]
     crate::airplay::source::plugin_init().unwrap();
-    crate::fwebrtcsrc::plugin_init().unwrap();
-    crate::imagetypefind::plugin_init().unwrap();
-    crate::imagedec::plugin_init().unwrap();
-    // Registers only on a VA-capable Linux box (see the fn); a no-op otherwise,
-    // so baseline JPEG falls back to fimagedec.
+    fcast_gst_elements::fwebrtcsrc::plugin_init().unwrap();
+    fcast_gst_elements::imagetypefind::plugin_init().unwrap();
+    fcast_gst_elements::imagedec::plugin_init().unwrap();
     #[cfg(target_os = "linux")]
-    crate::vajpegdec::plugin_init().unwrap();
+    fcast_gst_elements::vajpegdec::plugin_init().unwrap();
     gstrswebrtc::plugin_register_static().unwrap();
+    gstrssubparse::plugin_register_static().unwrap();
+
+    // Swap ranks so decodebin3/parsebin autoplug the Rust subtitle parsers, which
+    // register at NONE, instead of the C ones, which register at PRIMARY.
+    {
+        use gst::prelude::PluginFeatureExtManual;
+        let registry = gst::Registry::get();
+        for c_name in ["subparse", "ssaparse"] {
+            if let Some(feature) = registry.lookup_feature(c_name) {
+                feature.set_rank(gst::Rank::NONE);
+            }
+        }
+        for rs_name in ["rssubparse", "rsssaparse"] {
+            registry
+                .lookup_feature(rs_name)
+                .expect("registered by gstrssubparse above")
+                .set_rank(gst::Rank::PRIMARY);
+        }
+    }
 
     #[cfg(feature = "static-gst-plugins")]
     {
@@ -97,6 +120,9 @@ pub(crate) fn init_for_tests() {
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         gst::init().unwrap();
+        // Elements every fcastplaybin pipeline builds must be registered here too,
+        // or tests fail on a missing factory rather than on what they assert.
+        fcast_gst_elements::fcastaudiostretch::plugin_init().unwrap();
     });
 }
 
@@ -228,9 +254,7 @@ pub fn find_formats() -> (
                             "audio/x-wavpack" => {
                                 audios.insert(Audio::WavPack);
                             }
-                            // `audio/mpeg` covers both MPEG-1/2 audio (mp1/2/3,
-                            // mpegversion=1) and AAC (mpegversion 2/4); the
-                            // `mpegversion` field disambiguates the two.
+                            // mpegversion 1 is mp1/2/3; 2 and 4 are AAC.
                             "audio/mpeg" => {
                                 if caps_field_has_int(structure, "mpegversion", 1) {
                                     audios.insert(Audio::Mpeg);

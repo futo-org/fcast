@@ -1,26 +1,16 @@
-//! Layout for the inspector's pipeline graph.
+//! Layout for the inspector's pipeline graph: turns a [`GraphSnapshot`] into
+//! flat primitives Slint draws natively (rects, texts, two batched SVG path
+//! strings), using a left-to-right layered scheme with orthogonally routed
+//! edges.
 //!
-//! Takes the [`GraphSnapshot`] the playbin worker produced (see
-//! `fcastplaybin::graph`) and lays it out into flat primitives Slint draws
-//! natively: axis-aligned rectangles, positioned left-aligned text, and two
-//! batched SVG path strings (edge polylines and arrowheads). No graphviz.
-//!
-//! The layout is the classic left-to-right layered scheme. Within every bin,
-//! direct children are ranked by longest path over the links that connect
-//! them, ranks become columns, and each column is stacked vertically in the
-//! order of the children's upstream neighbours. Bins recurse, and their
-//! ghost pads sit on the bin border so cross-boundary links attach where
-//! the eye expects them. Edges are routed orthogonally around the boxes,
-//! and each wire carries a one-line caps chip that the UI expands on hover.
-//!
-//! Text metrics are estimated (the `CHAR_W` em-width factor) because the
-//! layout runs off the GUI thread with no font access. Boxes get enough
-//! slack that a few pixels of error never clip.
+//! Text metrics are estimated (the `CHAR_W` em-width factor) because the layout
+//! runs off the GUI thread with no font access; boxes carry enough slack that a
+//! few pixels of error never clip.
 
 use std::collections::HashMap;
 
+use crate::ui_types::Color;
 use fcastplaybin::graph::{GraphCell, GraphSnapshot};
-use slint::Color;
 
 #[derive(Debug, Clone)]
 pub struct SceneRect {
@@ -41,9 +31,8 @@ pub struct SceneText {
     pub text: String,
 }
 
-/// A caps label: a compact always-visible chip on the wire, expanding to
-/// the full caps block on hover. Full caps blocks cannot be placed sanely
-/// next to a multi-stream fan-out, so only the chip is always visible.
+/// A caps label: an always-visible chip on the wire, expanding to the full caps
+/// block on hover (a full block cannot be placed sanely next to a fan-out).
 #[derive(Debug, Clone)]
 pub struct SceneLabel {
     /// Chip box.
@@ -79,9 +68,8 @@ pub struct SceneEdgeHit {
     pub edge: usize,
 }
 
-/// The laid-out graph. `edges`/`arrows` are single SVG path strings (all
-/// edges share one stroke, all arrowheads one fill) so the UI draws the
-/// whole wiring in two Path elements regardless of graph size.
+/// The laid-out graph. `edges`/`arrows` batch all wiring into two SVG path
+/// strings, so the UI draws it with two Path elements regardless of graph size.
 #[derive(Debug, Default, Clone)]
 pub struct Scene {
     pub width: f32,
@@ -108,19 +96,14 @@ const TITLE_SIZE: f32 = 13.0;
 const BODY_SIZE: f32 = 11.0;
 const PAD_SIZE: f32 = 10.0;
 const CAPS_SIZE: f32 = 10.0;
-/// Estimated average glyph advance as a fraction of the font size. Slightly
-/// generous on purpose, so estimated text never sits flush on a box border.
+/// Estimated glyph advance as a fraction of the font size; generous on purpose.
 const CHAR_W: f32 = 0.65;
 const LINE_H: f32 = 14.0;
-/// Show at most this many property lines per element (the rest collapse
-/// into a `+N more` line) so a property-heavy element can't dwarf the graph.
+/// Max property lines per element; the rest collapse into a `+N more` line.
 const MAX_PROPS: usize = 14;
 
-// The inspector's own palette (see inspector.slint): #1c1c1e surfaces,
-// #ffffff20 hairlines, white/#b0b0b0/#8a8a8a text tiers, #4da3ff blue and
-// #6ee7a0 green accents.
-// The canvas itself is card-coloured (#1c1c1e, set in inspector.slint), so
-// the box fills step one shade lighter per nesting level to stay visible.
+// The canvas is card-coloured (#1c1c1e, set in inspector.slint), so the box
+// fills step one shade lighter per nesting level to stay visible.
 const BIN_FILL: [Color; 2] = [
     Color::from_rgb_u8(0x21, 0x21, 0x24),
     Color::from_rgb_u8(0x26, 0x26, 0x2a),
@@ -163,8 +146,7 @@ fn state_color(state: &str) -> Color {
 
 /// Lay out a snapshot into a drawable [`Scene`].
 pub fn layout(snap: &GraphSnapshot) -> Scene {
-    // Pad ownership and cell parenthood decide which links rank the
-    // children of any given bin.
+    // Pad ownership and cell parenthood decide which links rank a bin's children.
     let mut pad_owner: HashMap<u32, CellId> = HashMap::new();
     let mut parent_of: HashMap<CellId, CellId> = HashMap::new();
     index_cells(&snap.root, None, &mut pad_owner, &mut parent_of);
@@ -194,11 +176,9 @@ pub fn layout(snap: &GraphSnapshot) -> Scene {
     }
 }
 
-/// A ghost-pad chain (`elem.src -> ghost -> elem.sink`) carries identical
-/// caps on every leg, so only one leg gets the caps chip: the leg between
-/// two cells of the SAME bin, which is also the leg whose column gap is
-/// widened to fit it. Inner legs (a bin's own ghost pad to or from one of
-/// its direct children) stay unlabelled.
+/// A ghost-pad chain carries identical caps on every leg, so only one leg gets
+/// the chip: the leg between two cells of the same bin, whose column gap is
+/// widened to fit it.
 fn carries_label(ctx: &Ctx<'_>, src_owner: CellId, sink_owner: CellId) -> bool {
     ctx.parent_of.get(&src_owner) == ctx.parent_of.get(&sink_owner)
 }
@@ -234,9 +214,9 @@ struct Ctx<'a> {
     parent_of: HashMap<CellId, CellId>,
 }
 
-/// A measured cell: its size plus the relative positions of its children.
-/// Pad boxes and header text are re-derived in the draw pass from the same
-/// deterministic rules, so they aren't stored.
+/// A measured cell: its size plus the relative positions of its children. Pad
+/// boxes and header text are re-derived in the draw pass, so they aren't
+/// stored.
 struct Measured<'a> {
     cell: &'a GraphCell,
     depth: usize,
@@ -250,7 +230,6 @@ struct Measured<'a> {
     child_pos: Vec<(f32, f32)>,
 }
 
-/// Widths of a cell's own pad boxes.
 fn pad_box_w(name: &str, detail: &str) -> f32 {
     (text_w(name, PAD_SIZE).max(text_w(detail, PAD_SIZE - 2.0)) + 10.0).max(30.0)
 }
@@ -289,7 +268,6 @@ fn header_w(cell: &GraphCell, props: &[String]) -> f32 {
         .iter()
         .map(|prop| text_w(prop, BODY_SIZE))
         .fold(0.0, f32::max);
-    // Extra breathing room so the longest line never touches the border.
     title.max(name).max(widest_prop) + 6.0
 }
 
@@ -315,7 +293,6 @@ fn measure<'a>(cell: &'a GraphCell, ctx: &Ctx<'a>, depth: usize) -> Measured<'a>
         };
     }
 
-    // ---- Bin: place children in ranked columns ----
     let children: Vec<Measured<'a>> = cell
         .children
         .iter()
@@ -330,9 +307,7 @@ fn measure<'a>(cell: &'a GraphCell, ctx: &Ctx<'a>, depth: usize) -> Measured<'a>
         .map(|(index, child)| (cell_id(child), index))
         .collect();
 
-    // Links whose two endpoints belong to two different direct children of
-    // this bin. Deeper links rank a deeper bin's children instead, and
-    // ghost-pad internal legs connect the bin itself so they never rank.
+    // Only links between two different direct children of this bin rank it.
     let mut ranking_edges: Vec<(usize, usize)> = Vec::new();
     for link in &ctx.snap.links {
         let (Some(&src_owner), Some(&sink_owner)) = (
@@ -351,8 +326,7 @@ fn measure<'a>(cell: &'a GraphCell, ctx: &Ctx<'a>, depth: usize) -> Measured<'a>
         }
     }
 
-    // Longest-path ranks, with bounded relaxation so a feedback loop
-    // cannot hang.
+    // Longest-path ranks, with bounded relaxation so a feedback loop cannot hang.
     let child_count = children.len();
     let mut rank = vec![0usize; child_count];
     for _ in 0..child_count.max(1) {
@@ -374,9 +348,8 @@ fn measure<'a>(cell: &'a GraphCell, ctx: &Ctx<'a>, depth: usize) -> Measured<'a>
         columns[child_rank].push(child);
     }
 
-    // Column-by-column vertical placement: order each column by the mean
-    // center of its already-placed upstream neighbours to keep chains
-    // roughly horizontal, then stack.
+    // Order each column by the mean center of its already-placed upstream
+    // neighbours, so chains stay roughly horizontal, then stack.
     let mut center_y = vec![0.0f32; child_count];
     let mut child_pos = vec![(0.0f32, 0.0f32); child_count];
     let mut col_w = vec![0.0f32; column_count];
@@ -411,10 +384,8 @@ fn measure<'a>(cell: &'a GraphCell, ctx: &Ctx<'a>, depth: usize) -> Measured<'a>
         content_h = content_h.max((stack_y - V_GAP).max(0.0));
     }
 
-    // Column gaps widen to fit the caps chips drawn after the source
-    // column. Only links that will carry a chip reserve space (see
-    // `carries_label`), and only chip-sized space, since the full caps
-    // block appears on hover.
+    // Column gaps widen to fit only the chips drawn after the source column (see
+    // `carries_label`), not the full caps block, which appears on hover.
     let mut gap_after = vec![BASE_GAP; column_count.saturating_sub(1)];
     for link in &ctx.snap.links {
         let (Some(&src_owner), Some(&sink_owner)) = (
@@ -438,13 +409,12 @@ fn measure<'a>(cell: &'a GraphCell, ctx: &Ctx<'a>, depth: usize) -> Measured<'a>
         }
     }
 
-    // Ghost pads occupy a lane just inside the bin's left/right border. The
-    // extra room doubles as an edge corridor for their internal legs.
+    // Ghost-pad lane just inside the bin border; doubles as an edge corridor.
     let sink_lane = if sink_w > 0.0 { sink_w + 24.0 } else { 0.0 };
     let src_lane = if src_w > 0.0 { src_w + 24.0 } else { 0.0 };
 
-    // No gap is added after the last column (gap_after has one entry fewer
-    // than the columns), so the cursor ends at the content's right edge.
+    // `gap_after` has one entry fewer than the columns, so the cursor ends at
+    // the content's right edge.
     let mut cursor_x = PADDING + sink_lane;
     for (col, members) in columns.iter().enumerate() {
         for &child in members {
@@ -542,7 +512,6 @@ fn draw_cell(measured: &Measured<'_>, x: f32, y: f32, out: &mut Out) {
     out.rect(x, y, measured.w, measured.h, fill, stroke);
     out.obstacles.push((x, y, measured.w, measured.h));
 
-    // Header: type and state, then name, then properties.
     let text_x = x + PADDING;
     let mut text_y = y + 5.0;
     out.text(text_x, text_y, TITLE_SIZE, TITLE_COLOR, &cell.type_name);
@@ -561,8 +530,7 @@ fn draw_cell(measured: &Measured<'_>, x: f32, y: f32, out: &mut Out) {
         text_y += LINE_H;
     }
 
-    // Pads. Elements keep them tight under the header while bins push them
-    // to the border lanes so they read as boundary connectors.
+    // Bins push pads out to the border lanes; elements keep them under the header.
     let pad_top = y + measured.header_h + if cell.is_bin { 8.0 } else { 2.0 };
     let sink_x = x + if cell.is_bin { 4.0 } else { 6.0 };
     draw_pad_col(&cell.sink_pads, sink_x, pad_top, true, out);
@@ -582,9 +550,8 @@ fn draw_pad_col(
     is_sink: bool,
     out: &mut Out,
 ) {
-    // Sink pads align flush left and src pads flush right, so every pad
-    // sits on its cell's border and wires (and their caps chips) depart
-    // from the border instead of from inside the box.
+    // Sink pads flush left, src pads flush right, so every pad sits on its cell's
+    // border and wires depart from there instead of from inside the box.
     let col_w = pad_col_w(pads);
     let mut box_y = top;
     for pad in pads {
@@ -628,8 +595,8 @@ const CAPS_WRAP: usize = 56;
 /// Height of an always-visible caps chip.
 const CHIP_H: f32 = 16.0;
 
-/// The one-line chip text: media type plus the parameters someone actually
-/// scans for (geometry and rates). Everything else lives in the hover card.
+/// The one-line chip text: media type plus geometry and rates; the rest lives
+/// in the hover card.
 fn caps_summary(lines: &[String]) -> String {
     let mut fields: HashMap<&str, &str> = HashMap::new();
     let mut media_lines = lines.iter().filter(|line| !line.starts_with(' '));
@@ -661,9 +628,7 @@ fn caps_summary(lines: &[String]) -> String {
     summary
 }
 
-/// Re-flow the walker's one-field-per-line caps into a compact block. The
-/// media-type line stays on its own and the fields pack greedily into
-/// wrapped lines, shrinking a video caps block from about 15 lines to 5.
+/// Re-flow the walker's one-field-per-line caps into a compact wrapped block.
 fn wrap_caps(lines: &[String]) -> Vec<String> {
     let mut wrapped: Vec<String> = Vec::new();
     let mut packed = String::new();
@@ -692,13 +657,10 @@ fn wrap_caps(lines: &[String]) -> Vec<String> {
     wrapped
 }
 
-/// True when every segment of an orthogonal route avoids the cell boxes.
-///
-/// Two kinds of box are exempt. A box containing BOTH edge endpoints is an
-/// ancestor bin of the whole edge, and routing inside it is the point. The
-/// source or sink cell's own box is exempt for the first or last segment,
-/// because pads sit a few pixels inside their cell and the stub must pass
-/// through that strip to reach the pad.
+/// True when every segment of an orthogonal route avoids the cell boxes. A box
+/// containing BOTH endpoints is an ancestor bin (routing inside it is the
+/// point), and the src/sink cell's own box is exempt for the first/last
+/// segment, since the stub must cross that border strip to reach the pad.
 fn route_clear(
     obstacles: &[(f32, f32, f32, f32)],
     corners: &[(f32, f32)],
@@ -729,19 +691,14 @@ fn route_clear(
     })
 }
 
-/// Route every link orthogonally between its pad geometries, avoiding the
-/// cell boxes. The router tries, in order: the sink-height lane through any
-/// source-side corridor slot, the source-height lane through any sink-side
-/// corridor slot, then every combination of corridor slots and clear
-/// channels between rows. Only when nothing at all is clear does it accept
-/// a crossing. Links between two cells of the same bin also carry their
-/// caps chip (see [`carries_label`]). Chips are pushed below earlier chips
-/// they would overlap.
+/// Route every link orthogonally between its pad geometries, avoiding the cell
+/// boxes and accepting a crossing only when nothing at all is clear. Links
+/// between two cells of the same bin also carry their caps chip.
 fn route_edges(ctx: &Ctx<'_>, out: &mut Out) {
     use std::fmt::Write as _;
 
-    // Corridor key (quantized departure x) mapped to used slots, so wires
-    // departing the same column spread across parallel verticals.
+    // Quantized departure x -> used slots, so wires leaving the same column
+    // spread across parallel verticals.
     let mut corridors: HashMap<i32, u32> = HashMap::new();
     // Already-placed chips, for collision placement.
     let mut chips: Vec<(f32, f32, f32, f32)> = Vec::new();
@@ -756,8 +713,7 @@ fn route_edges(ctx: &Ctx<'_>, out: &mut Out) {
             Some((link, src, sink))
         })
         .collect();
-    // Top-to-bottom so the chip de-overlap pushes labels downwards in
-    // reading order.
+    // Top-to-bottom so the chip de-overlap pushes labels downwards.
     links.sort_by(|left, right| left.1.y.total_cmp(&right.1.y));
 
     for (link, src, sink) in links {
@@ -775,8 +731,7 @@ fn route_edges(ctx: &Ctx<'_>, out: &mut Out) {
         let clear = |corners: &[(f32, f32)]| route_clear(obstacles, corners, src_end, sink_end);
 
         let corners: Vec<(f32, f32)> = if sink_x >= src_x + 24.0 {
-            // Corridor slots on both sides, the wire's own stagger slot
-            // first so parallel wires spread out by default.
+            // Own stagger slot first, so parallel wires spread out by default.
             let src_slots: Vec<f32> = std::iter::once(stagger)
                 .chain((0..8).map(|slot| slot as f32 * 7.0))
                 .map(|offset| (src_x + 12.0 + offset).min(sink_x - 8.0))
@@ -813,8 +768,8 @@ fn route_edges(ctx: &Ctx<'_>, out: &mut Out) {
             if let Some(route) = sink_lane.or_else(src_lane) {
                 route
             } else {
-                // Both lanes blocked: try every corridor combination with a
-                // channel between rows, nearest channel first.
+                // Both lanes blocked: try every corridor combination with a channel
+                // between rows, nearest channel first.
                 let span_lo = src_x + 12.0;
                 let span_hi = sink_x - 8.0;
                 let target_y = (src_y + sink_y) / 2.0;
@@ -876,8 +831,7 @@ fn route_edges(ctx: &Ctx<'_>, out: &mut Out) {
             ]
         };
 
-        // Emit the batched path, the per-wire path, and a thin hit-zone
-        // rect per segment for hover highlighting.
+        // Batched path, per-wire path, and a thin hit-zone rect per segment.
         let edge_idx = out.edge_paths.len();
         let mut path_cmds = String::new();
         for (corner, (corner_x, corner_y)) in corners.iter().enumerate() {
@@ -933,8 +887,8 @@ fn route_edges(ctx: &Ctx<'_>, out: &mut Out) {
             let chip_w = text_w(&summary, CAPS_SIZE) + 12.0;
             let chip_x = src_x + 14.0 + stagger;
             let mut chip_y = src_y.min(sink_y) + 4.0;
-            // Push below every earlier chip this one would intersect. Chips
-            // are visited top-to-bottom, so this converges.
+            // Push below every earlier chip this one intersects; chips are visited
+            // top-to-bottom, so this converges.
             loop {
                 let blocking = chips.iter().find(|&&(other_x, other_y, other_w, other_h)| {
                     chip_x < other_x + other_w
@@ -1074,9 +1028,7 @@ mod tests {
         };
         let scene = layout(&snap);
 
-        // The bin rect fully contains the inner element's rect. Rects are
-        // emitted parent-first, so find them by size ordering: the
-        // pipeline rect is the largest, the bin next, inner smallest.
+        // Rects are emitted parent-first, so the pipeline rect is the largest.
         let mut areas: Vec<&SceneRect> = scene.rects.iter().collect();
         areas.sort_by(|a, b| (b.w * b.h).total_cmp(&(a.w * a.h)));
         let pipeline = areas[0];
@@ -1095,17 +1047,14 @@ mod tests {
             );
         }
 
-        // Ghost link into the bin and its internal leg are both routed…
+        // Both legs of the ghost chain are routed, but labelled exactly once.
         assert_eq!(scene.edges.matches('M').count(), 2);
-        // …but the wire's caps are labelled exactly once (on the outer,
-        // same-level leg), not repeated per leg of the ghost chain.
         assert_eq!(scene.labels.len(), 1);
     }
 
-    /// Parse the batched edges path back into polylines and assert that no
-    /// segment crosses an element box. Bins are skipped because edges
-    /// legitimately route inside them, and segment ends are trimmed so the
-    /// stubs touching pad boxes do not count.
+    /// Assert no edge segment crosses an element box. Bins are skipped (edges
+    /// legitimately route inside them) and segment ends are trimmed so pad
+    /// stubs do not count.
     fn assert_no_element_crossings(scene: &Scene) {
         let mut polylines: Vec<Vec<(f32, f32)>> = Vec::new();
         let mut pending: Vec<f32> = Vec::new();
@@ -1128,8 +1077,7 @@ mod tests {
         for polyline in &polylines {
             let last_segment = polyline.len().saturating_sub(2);
             for (index, segment) in polyline.windows(2).enumerate() {
-                // The first and last segments are pad stubs and may pass
-                // through their own cell's border strip.
+                // First/last segments are pad stubs through their own cell's border.
                 if index == 0 || index == last_segment {
                     continue;
                 }
@@ -1160,10 +1108,8 @@ mod tests {
         }
     }
 
-    /// A demuxer-like fan-out: video runs through two parser stages while
-    /// meta and subtitle wires skip straight across to a tall queue. The
-    /// straight lanes for the skip wires are blocked by the parser column,
-    /// so they must route around it.
+    /// A demuxer-like fan-out whose skip wires have their straight lanes
+    /// blocked by the parser column, so they must route around it.
     #[test]
     fn dense_rows_route_around_elements() {
         let mut demux = elem("demux", Some(10), Some(1));
@@ -1188,10 +1134,8 @@ mod tests {
         assert_no_element_crossings(&scene);
     }
 
-    /// A skip-level edge (a to c with b in the middle column, all three in
-    /// the same row) must not run straight through b's box. Both the
-    /// sink-height and source-height lanes are blocked, so the router picks
-    /// a channel above or below b, a 6-point path instead of a 4-point one.
+    /// A skip-level edge (a to c, b in between) must not run through b's box:
+    /// both lanes are blocked, so the router picks a channel above or below it.
     #[test]
     fn skip_edge_routes_around_boxes() {
         let mut a = elem("a", None, Some(1));
@@ -1236,11 +1180,10 @@ mod tests {
         assert!(scene.edges.is_empty());
     }
 
-    /// End-to-end over a real pipeline: identity -> [bin: identity, ghost
-    /// pads on both sides] -> identity, walked by fcastplaybin's snapshot
-    /// and laid out here. Guards the walker/layout contract (pad ids line
-    /// up, ghost links route, ranks flow left to right). All-identity
-    /// because the static test build trims the fake/test elements.
+    /// End-to-end over a real pipeline, guarding the walker/layout contract
+    /// (pad ids line up, ghost links route, ranks flow left to right).
+    /// All-identity because the static test build trims the fake/test
+    /// elements.
     #[test]
     fn real_pipeline_snapshot_lays_out() {
         crate::gstreamer::init_for_tests();
@@ -1277,8 +1220,7 @@ mod tests {
         let snap = fcastplaybin::graph::snapshot(pipeline.upcast_ref());
         let scene = layout(&snap);
 
-        // head.src -> ghost sink -> mid.sink, mid.src -> ghost src ->
-        // tail.sink: four routed edges with arrowheads.
+        // Two ghost chains: four routed edges with arrowheads.
         assert_eq!(scene.edges.matches('M').count(), 4, "{}", scene.edges);
         assert_eq!(scene.arrows.matches('Z').count(), 4);
 

@@ -81,8 +81,8 @@ impl SabrSegment {
         self.duration_exact.load(Ordering::Acquire)
     }
 
-    /// Update the segment duration. An exact duration is never overwritten by an
-    /// inexact estimate.
+    /// Update the segment duration. An exact duration is never overwritten by
+    /// an inexact estimate.
     pub fn set_duration(&self, us: i64, exact: bool) {
         if us <= 0 {
             return;

@@ -1,13 +1,6 @@
-//! AirPlay screen-mirroring receiver.
-//!
-//! This is distinct from the legacy RAOP/AirTunes audio receiver in [`crate::raop`]:
-//! mirroring is the newer protocol advertised on `_airplay._tcp`, served over a
-//! hybrid HTTP/1.1 + RTSP/1.0 connection (see [`http`]).
-//!
-//! Milestone 1 (this module's current scope) implements service discovery and
-//! the `GET /info` capability exchange, which is what makes the receiver appear
-//! in the iOS screen-mirroring menu. Pairing/FairPlay, `SETUP`, the `/stream`
-//! data connection, and the H.264 pipeline are added in later milestones.
+//! AirPlay screen-mirroring receiver: `_airplay._tcp`, served over a hybrid
+//! HTTP/1.1 + RTSP/1.0 connection (see [`http`]). Distinct from the legacy
+//! RAOP/AirTunes audio receiver in [`crate::raop`].
 
 mod audio;
 mod crypto;
@@ -32,33 +25,26 @@ use apple_fairplay::FairPlay;
 use crypto::MirrorCipher;
 use http::{Connection, Request, Response};
 
-/// Apple's default AirPlay port. iOS expects the `_airplay._tcp` HTTP/RTSP
-/// server here.
+/// Apple's default AirPlay port; iOS expects the HTTP/RTSP server here.
 pub const AIRPLAY_TCP_PORT: u16 = 7000;
 
-/// AirPlay features bitmask split into low/high 32-bit words, advertised in the
-/// `_airplay._tcp` TXT record. (video, FairPlay DRM, screen mirroring, audio, ...).
-///
-/// Note bit 27 ("supports legacy pairing") is deliberately **off** (UxPlay's
-/// `0x5A7FFEE6` has it on, `0x527FFEE6` off). With it on, the client performs a
-/// `/pair-setup` ed25519/x25519 handshake before FairPlay; with it off it skips
-/// straight to `/fp-setup`, and the recovered AES key is used directly (no ECDH
-/// hashing). We don't implement legacy pairing, so we advertise it off.
+/// TXT-record features bitmask, low/high 32-bit words. Bit 27 ("legacy
+/// pairing") is deliberately off, so the client skips the `/pair-setup`
+/// ed25519/x25519 handshake and goes straight to `/fp-setup`, whose recovered
+/// AES key is used directly (no ECDH hashing).
 const FEATURES_LO: u32 = 0x527F_FEE6;
 const FEATURES_HI: u32 = 0x0;
 
-/// Combined 64-bit AirPlay features bitmask (the same value advertised in the
-/// TXT record), reported in the `GET /info` plist. iOS inspects these bits to
-/// decide what the receiver supports (screen mirroring, FairPlay, audio, ...).
+/// Combined 64-bit features bitmask, reported in the `GET /info` plist.
 const FEATURES: u64 = ((FEATURES_HI as u64) << 32) | (FEATURES_LO as u64);
 
-/// Default mirroring display geometry reported in `GET /info`. iOS uses this to
-/// pick the streamed resolution.
+/// Mirroring geometry in `GET /info`; iOS picks the streamed resolution from
+/// it.
 const DISPLAY_WIDTH: u64 = 1920;
 const DISPLAY_HEIGHT: u64 = 1080;
 
-/// Apple device model and source version reported during discovery and in
-/// `GET /info`. Matching UxPlay's values makes iOS treat us as a known receiver.
+/// Model/source version matching UxPlay's, so iOS treats us as a known
+/// receiver.
 const MODEL: &str = "AppleTV3,2";
 const SOURCE_VERSION: &str = "220.68";
 
@@ -68,11 +54,9 @@ const PAIRING_ID: &str = "2e388006-13ba-4041-9a67-25dd4a43d536";
 #[derive(Debug, Clone)]
 pub struct Configuration {
     pub device_name: String,
-    /// 6-byte hardware address, reused from the RAOP device-name hash so both
-    /// services report a consistent device id.
+    /// 6-byte hardware address, shared with RAOP so both report one device id.
     pub hw_addr: [u8; 6],
-    /// Public key advertised in the `pk` TXT record (hex). Stable per device
-    /// name; real ed25519 pairing/verify use comes in a later milestone.
+    /// Public key advertised in the `pk` TXT record (hex).
     pub pk: String,
 }
 
@@ -86,17 +70,16 @@ impl Configuration {
             .join(":")
     }
 
-    /// Raw 32-byte public key (the `pk` TXT value is its hex encoding). In the
-    /// `/info` plist `pk` is sent as binary data, not the hex string.
+    /// Raw public key: `/info` sends `pk` as binary data, not the TXT hex
+    /// string.
     fn pk_raw(&self) -> Vec<u8> {
         (0..self.pk.len() / 2)
             .filter_map(|i| u8::from_str_radix(&self.pk[i * 2..i * 2 + 2], 16).ok())
             .collect()
     }
 
-    /// DNS-TXT wire encoding of the `_airplay._tcp` TXT record (each entry is a
-    /// length byte followed by `key=value`). This is the payload iOS asks for
-    /// via the `GET /info` `txtAirPlay` qualifier.
+    /// DNS-TXT wire encoding of the TXT record: each entry is a length byte
+    /// followed by `key=value`.
     fn airplay_txt_record(&self) -> Vec<u8> {
         let props = txt_properties(self);
         let mut entries: Vec<(&String, &String)> = props.iter().collect();
@@ -110,8 +93,7 @@ impl Configuration {
         out
     }
 
-    /// Build the full `GET /info` capabilities plist (binary), mirroring
-    /// UxPlay's `raop_handler_info` response.
+    /// Build the `GET /info` capabilities plist, mirroring UxPlay's response.
     fn info_plist_dict(&self) -> plist::Dictionary {
         use plist::Value;
         let device_id = self.device_id();
@@ -137,7 +119,6 @@ impl Configuration {
         d.insert("audioLatencies".into(), Value::Array(audio_array(0)));
         d.insert("audioFormats".into(), Value::Array(audio_array(0x3ff_fffc)));
 
-        // A single virtual display describing the mirroring surface.
         let mut display = plist::Dictionary::new();
         display.insert(
             "uuid".into(),
@@ -175,10 +156,9 @@ impl Configuration {
     }
 }
 
-/// Inspect a `TEARDOWN` body's `streams` array, returning `(has_audio,
-/// has_video)` - whether it lists the audio (`type 96`) and/or video
-/// (`type 110`) streams. A body with no valid `streams` array yields
-/// `(false, false)`, which callers treat as a full-session teardown.
+/// `(has_audio, has_video)` for a `TEARDOWN` body's `streams` array (audio is
+/// `type 96`, video `type 110`). No valid array yields `(false, false)`, which
+/// callers treat as a full-session teardown.
 fn teardown_stream_types(body: &[u8]) -> (bool, bool) {
     let Ok(root) = plist::from_bytes::<plist::Value>(body) else {
         return (false, false);
@@ -206,17 +186,16 @@ fn teardown_stream_types(body: &[u8]) -> (bool, bool) {
     (has_audio, has_video)
 }
 
-/// Extract a `u64` from a plist value that may be encoded as an unsigned
-/// integer, a signed integer, or a decimal string. iOS sometimes sends large
-/// identifiers (e.g. `streamConnectionID`) as strings.
+/// Plist `u64`: iOS sends large ids (e.g. `streamConnectionID`) as an unsigned
+/// integer, a signed integer, or a decimal string.
 fn plist_u64(v: &plist::Value) -> Option<u64> {
     v.as_unsigned_integer()
         .or_else(|| v.as_signed_integer().map(|i| i as u64))
         .or_else(|| v.as_string().and_then(|s| s.parse().ok()))
 }
 
-/// Build the `audioLatencies`/`audioFormats` two-element arrays (types 100 and
-/// 101). `formats` is `0` for latencies and the format bitmask for formats.
+/// The `audioLatencies`/`audioFormats` two-element arrays (types 100 and 101);
+/// `formats` is `0` for latencies and the format bitmask for formats.
 fn audio_array(formats: u64) -> Vec<plist::Value> {
     use plist::Value;
     [100u64, 101]
@@ -243,14 +222,11 @@ fn audio_array(formats: u64) -> Vec<plist::Value> {
         .collect()
 }
 
-/// Build the `_airplay._tcp` mDNS service together with the matching
-/// configuration for the connection handler.
+/// Build the `_airplay._tcp` mDNS service and its connection-handler config.
 pub fn service_info(device_name: String) -> Result<(ServiceInfo, Configuration)> {
     let hw_addr = crate::raop::device_name_hash(&device_name);
 
-    // Deterministic 32-byte public key derived from the device name. For
-    // discovery the value only needs to be a stable 64-char hex string; pairing
-    // (a later milestone) replaces this with a real ed25519 public key.
+    // Discovery only needs a stable 64-char hex string here.
     let pk = Sha256::digest(device_name.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -302,8 +278,6 @@ pub async fn handle_sender(
     msg_tx: MessageSender,
     airplay_context: AirPlayContext,
 ) {
-    // The client's IP is the destination for NTP timing polls (its port comes
-    // from `SETUP`). Fall back to loopback if the peer address is unavailable.
     let peer_ip = stream
         .peer_addr()
         .map(|addr| addr.ip())
@@ -331,26 +305,23 @@ struct Handler {
     config: Configuration,
     connection: Connection,
     fairplay: FairPlay,
-    /// 16-byte AES key recovered from the `SETUP` `ekey` via FairPlay. Seeds the
-    /// per-stream mirror cipher; set in `SETUP` phase A, used in phase B.
+    /// 16-byte AES key recovered from the `SETUP` `ekey` via FairPlay; set in
+    /// phase A, seeds the mirror cipher in phase B.
     aeskey: Option<[u8; 16]>,
-    /// 16-byte AES IV from the `SETUP` `eiv`. Used for AES-CBC audio decryption.
+    /// 16-byte AES IV from the `SETUP` `eiv`, for AES-CBC audio decryption.
     aesiv: Option<[u8; 16]>,
     msg_tx: MessageSender,
     airplay_context: AirPlayContext,
     /// Client IP, used as the destination for NTP timing polls.
     peer_ip: std::net::IpAddr,
-    /// `streamConnectionID` of the mirror session this connection started, if
-    /// any. Set at `SETUP` (type 110); `None` on connections that never start a
-    /// mirror (e.g. `/info` probes), so closing them doesn't tear down a session.
+    /// `streamConnectionID` of the mirror this connection started; `None` on
+    /// connections that never start one (e.g. `/info` probes), so closing them
+    /// doesn't tear down a session.
     mirror_session: Option<u64>,
-    /// Background tasks (video reader, audio receiver, NTP) spawned for the
-    /// session, aborted on teardown so they stop promptly rather than on
-    /// timeout/EOF.
+    /// Session background tasks (video reader, audio receiver, NTP), aborted on
+    /// teardown so they stop promptly rather than on timeout/EOF.
     tasks: Vec<tokio::task::AbortHandle>,
-    /// The audio receiver task specifically, so a per-stream audio `TEARDOWN`
-    /// (sent when the client pauses/stops audio) can stop just it while the
-    /// video mirror keeps playing.
+    /// The audio receiver task, so an audio-only `TEARDOWN` can stop just it.
     audio_task: Option<tokio::task::AbortHandle>,
     /// Drift-corrected remote↔local clock maintained by the NTP timing client.
     ntp_clock: ntp::NtpClock,
@@ -358,8 +329,7 @@ struct Handler {
 
 impl Drop for Handler {
     fn drop(&mut self) {
-        // Covers all exit paths (clean close, error): abort session tasks and
-        // notify the app. Idempotent with the explicit `TEARDOWN` handler.
+        // Idempotent with the explicit `TEARDOWN` handler.
         self.full_teardown();
     }
 }
@@ -394,8 +364,7 @@ impl Handler {
             ("SET_PARAMETER", _) => self.set_parameter(request),
             ("TEARDOWN", _) => self.teardown(request),
             _ => {
-                // Permissive default (as in UxPlay): keep the connection healthy
-                // through discovery. SETUP/pairing/etc. land in later milestones.
+                // Permissive default (as in UxPlay) keeps the connection healthy.
                 debug!(method = %request.method, url = %request.url, "unhandled airplay request");
                 Response::new(&request.protocol, 200, "OK")
             }
@@ -409,11 +378,9 @@ impl Handler {
         response
     }
 
-    /// `TEARDOWN`: a per-stream teardown (`streams: [{type: 96}]`) is sent when
-    /// the client stops *just* audio (e.g. pausing music) - the video mirror must
-    /// keep playing. A teardown that lists the video stream (`type 110`), or one
-    /// with no `streams` array, ends the whole session. (See UxPlay's
-    /// `raop_handler_teardown`.)
+    /// `TEARDOWN`: `streams: [{type: 96}]` alone stops *just* audio (the client
+    /// paused music) and the video mirror must keep playing; a teardown listing
+    /// video (`type 110`) or with no `streams` array ends the whole session.
     fn teardown(&mut self, request: &Request) -> Response {
         let (has_audio, has_video) = teardown_stream_types(&request.body);
         if has_audio && !has_video {
@@ -425,28 +392,24 @@ impl Handler {
         Response::new(&request.protocol, 200, "OK")
     }
 
-    /// Stop only the audio receiver task, leaving the video mirror running. The
-    /// audio channel stays registered so a later audio `SETUP` (on unpause)
-    /// resumes feeding the existing audio pad.
+    /// Stop only the audio receiver task; the audio channel stays registered so
+    /// a later audio `SETUP` resumes feeding the existing pad.
     fn teardown_audio(&mut self) {
         if let Some(handle) = self.audio_task.take() {
             handle.abort();
         }
     }
 
-    /// Stop this connection's mirror session entirely: abort its background tasks
-    /// (so the audio/video tasks stop immediately instead of on their idle
-    /// timeout/EOF) and tell the app to stop the player. Idempotent - runs on a
-    /// full `TEARDOWN` and again on `Drop`; only the connection that started the
-    /// mirror sends `MirrorStopped`.
+    /// Stop this connection's mirror session: abort its background tasks and
+    /// tell the app to stop the player. Idempotent - runs on `TEARDOWN` and
+    /// on `Drop`; only the connection that started the mirror sends
+    /// `MirrorStopped`.
     fn full_teardown(&mut self) {
-        // Notify the app first so `MirrorStopped` is queued ahead of any player
-        // EOS that aborting the video task triggers (the app's generic EOS path
-        // would otherwise clear state without resetting the GUI).
+        // Notify before aborting the video task, so `MirrorStopped` is queued
+        // ahead of the player EOS that abort triggers (the app's generic EOS
+        // path would otherwise clear state without resetting the GUI).
         if let Some(stream_connection_id) = self.mirror_session.take() {
             debug!(stream_connection_id, "airplay mirror teardown");
-            // Free the session slot (and abort its registered tasks) so the next
-            // mirror can start.
             self.airplay_context.end_session(stream_connection_id);
             self.msg_tx.airplay(crate::message::AirPlay::MirrorStopped {
                 stream_connection_id,
@@ -459,12 +422,10 @@ impl Handler {
     }
 
     /// `GET /info`: capability exchange. The response protocol must echo the
-    /// request's (`RTSP/1.0` from real devices, `HTTP/1.1` from tools like curl)
-    /// and the body is a binary plist.
-    ///
-    /// iOS first asks for the TXT record via a binary-plist body carrying a
-    /// `qualifier` array (`["txtAirPlay"]`); we answer with just that record.
-    /// A plain `GET /info` (no qualifier) gets the full capability plist.
+    /// request's (`RTSP/1.0` from real devices, `HTTP/1.1` from curl); iOS
+    /// first asks for just the TXT record via a plist body with a
+    /// `qualifier` array (`["txtAirPlay"]`), and a plain `GET /info` gets
+    /// the full plist.
     fn info(&self, request: &Request) -> Response {
         let is_plist_request = request
             .header("Content-Type")
@@ -496,7 +457,8 @@ impl Handler {
         self.binary_plist_response(request, self.config.info_plist_dict())
     }
 
-    /// Serialize `dict` as a binary plist response, echoing the request protocol.
+    /// Serialize `dict` as a binary plist response, echoing the request
+    /// protocol.
     fn binary_plist_response(&self, request: &Request, dict: plist::Dictionary) -> Response {
         let mut body = Vec::new();
         match plist::to_writer_binary(&mut body, &plist::Value::Dictionary(dict)) {
@@ -509,9 +471,8 @@ impl Handler {
         }
     }
 
-    /// `POST /fp-setup`: FairPlay handshake. Stage is selected by body length
-    /// (16 → 142-byte reply, 164 → 32-byte reply). The 164-byte message is
-    /// stashed for the `ekey` decryption that happens at `SETUP`.
+    /// `POST /fp-setup`: FairPlay handshake; the stage is selected by body
+    /// length (16 → 142-byte reply, 164 → 32-byte reply).
     fn fp_setup(&mut self, request: &Request) -> Response {
         let result = match request.body.len() {
             16 => self.fairplay.setup(&request.body).map(|r| r.to_vec()),
@@ -532,10 +493,8 @@ impl Handler {
         }
     }
 
-    /// `SET_PARAMETER`: the client adjusts session parameters. We handle the
-    /// `text/parameters` `volume:` command, mapping the AirPlay dB value onto the
-    /// mirror audio pipeline's linear volume. Other parameters are accepted and
-    /// ignored (matching UxPlay's permissive behaviour).
+    /// `SET_PARAMETER`: maps the `text/parameters` `volume:` dB value onto
+    /// linear volume; other parameters are accepted and ignored.
     fn set_parameter(&mut self, request: &Request) -> Response {
         let is_text = request
             .header("Content-Type")
@@ -545,9 +504,6 @@ impl Handler {
             for line in body.lines() {
                 if let Some(value) = line.strip_prefix("volume:") {
                     if let Ok(db) = value.trim().parse::<f32>() {
-                        // Mirror audio now decodes inside the shared playbin, so
-                        // the player's own volume reaches it - route the change to
-                        // the app loop, which applies it via `player.set_volume`.
                         let linear = crate::raop::airplay_volume_to_linear(db.into());
                         debug!(db, linear, "SET_PARAMETER volume");
                         if let Some(stream_connection_id) = self.mirror_session {
@@ -565,17 +521,10 @@ impl Handler {
         Response::new(&request.protocol, 200, "OK")
     }
 
-    /// `SETUP`: a binary-plist request that arrives in (up to) two phases.
-    ///
-    /// **Phase A** carries `ekey`/`eiv` - the FairPlay-wrapped AES key. We
-    /// decrypt `ekey` into the 16-byte `aeskey` and stash it.
-    ///
-    /// **Phase B** carries a `streams` array. For the mirror stream (`type 110`)
-    /// we read `streamConnectionID`, derive the video cipher, bind the `/stream`
-    /// data listener, and return its `dataPort`.
-    ///
-    /// Both can appear in one request; we handle whichever fields are present
-    /// and answer with a binary plist.
+    /// `SETUP`: a binary-plist request with up to two phases, either or both of
+    /// which may be present. Phase A carries `ekey`/`eiv`, the FairPlay-wrapped
+    /// AES key; phase B carries the `streams` array and answers with each
+    /// stream's port.
     async fn setup(&mut self, request: &Request) -> Response {
         let root: plist::Value = match plist::from_bytes(&request.body) {
             Ok(v) => v,
@@ -614,9 +563,7 @@ impl Handler {
                     return Response::new(&request.protocol, 400, "Bad Request");
                 }
             }
-            // Start the NTP timing client if the client advertised a timing
-            // port, and report the local port we poll from. We don't run an
-            // event channel, so that port stays unused.
+            // We run no event channel, so `eventPort` is reported as unused.
             let timing_port = self.start_ntp(dict).await;
             response.insert("eventPort".into(), 0u32.into());
             response.insert("timingPort".into(), u32::from(timing_port).into());
@@ -643,10 +590,9 @@ impl Handler {
         Response::new(&request.protocol, 200, "OK").body("application/x-apple-binary-plist", body)
     }
 
-    /// Start the NTP timing client for this session, given the `SETUP` phase-A
-    /// dictionary. Binds a local UDP socket, spawns the polling task against the
-    /// client's `timingPort`, and returns the local port to advertise (`0` if
-    /// the client supplied no timing port or the socket could not be bound).
+    /// Start the NTP timing client against the client's `timingPort`, returning
+    /// the local port to advertise (`0` if there is no timing port or no
+    /// socket).
     async fn start_ntp(&mut self, dict: &plist::Dictionary) -> u16 {
         let Some(timing_rport) = dict.get("timingPort").and_then(plist_u64) else {
             debug!("SETUP without timingPort; skipping NTP timing client");
@@ -678,22 +624,17 @@ impl Handler {
         local_port
     }
 
-    /// Process the `streams` array of a phase-B `SETUP`, returning the response
-    /// stream descriptors (in request order). The mirror video stream
-    /// (`type 110`) and audio stream (`type 96`) both feed the one `airplaysrc`
-    /// Bin, so they share a pipeline/clock.
-    ///
-    /// The video stream is set up first so the audio channel can attach to its
-    /// session, and `MirrorStarted` is announced only after every stream in the
-    /// request is registered - otherwise the source Bin could start (on the
-    /// app setting the URI) before the audio channel exists and miss its pad.
+    /// Process a phase-B `SETUP` `streams` array, returning the response
+    /// descriptors in request order. Video (`type 110`) is set up before audio
+    /// (`type 96`) so audio can attach to its session, and `MirrorStarted` is
+    /// announced only once every stream is registered - otherwise the source
+    /// Bin could start before the audio channel exists and miss its pad.
     async fn setup_streams(&mut self, streams: &[plist::Value]) -> Result<Vec<plist::Value>> {
         let dicts: Vec<&plist::Dictionary> =
             streams.iter().filter_map(|s| s.as_dictionary()).collect();
         let stream_type = |s: &plist::Dictionary| s.get("type").and_then(plist_u64);
 
-        // Pass 1: establish the video session (this also claims the single
-        // mirror slot). `data_port` is remembered for the response below.
+        // Pass 1: establish the video session (claims the single mirror slot).
         let mut video_data_port: Option<u16> = None;
         for s in &dicts {
             if stream_type(s) == Some(110) {
@@ -701,8 +642,7 @@ impl Handler {
             }
         }
 
-        // Pass 2: build the response in request order, wiring audio to the
-        // session created in pass 1.
+        // Pass 2: respond in request order, wiring audio to pass 1's session.
         let mut out = Vec::new();
         for s in &dicts {
             match stream_type(s) {
@@ -725,11 +665,9 @@ impl Handler {
             }
         }
 
-        // Announce only when a video stream was set up in *this* SETUP - i.e. a
-        // new session was just established. A later audio-only SETUP (audio is
-        // set up on demand) must NOT re-announce, or the app would re-set the
-        // player URI and playbin would build a second source element whose
-        // `prepare` fails (the session's channels are already claimed).
+        // A later audio-only SETUP must NOT re-announce, or the app re-sets the
+        // player URI and playbin builds a second source element whose `prepare`
+        // fails on the already-claimed channels.
         if video_data_port.is_some()
             && let Some(stream_connection_id) = self.mirror_session
         {
@@ -740,9 +678,8 @@ impl Handler {
         Ok(out)
     }
 
-    /// Set up the mirror video stream (`type 110`): claim the session slot,
-    /// register the video channel, bind the `/stream` listener, and spawn the
-    /// reader. Returns the data port to advertise.
+    /// Set up the mirror video stream (`type 110`), returning the data port to
+    /// advertise.
     async fn setup_video_stream(&mut self, s: &plist::Dictionary) -> Result<u16> {
         let stream_connection_id = s
             .get("streamConnectionID")
@@ -752,9 +689,8 @@ impl Handler {
             .aeskey
             .context("mirror SETUP before keys were established")?;
 
-        // Refuse a second concurrent mirror: we serve one at a time. Registering
-        // also claims the session slot and creates the access-unit channel the
-        // `airplaysrc` Bin claims when the app sets the player URI.
+        // Registering claims the single mirror slot and creates the access-unit
+        // channel the `airplaysrc` Bin takes when the app sets the player URI.
         let au_tx = self
             .airplay_context
             .try_register(stream_connection_id)
@@ -777,19 +713,16 @@ impl Handler {
             self.config.device_name.clone(),
         ));
         self.tasks.push(task.abort_handle());
-        // Also record the handle against the session so the app can force-end it
-        // (e.g. if it refuses the mirror).
+        // Recorded against the session so the app can force-end the mirror.
         self.airplay_context
             .add_abort(stream_connection_id, task.abort_handle());
         self.mirror_session = Some(stream_connection_id);
         Ok(data_port)
     }
 
-    /// Set up the mirror audio stream (`type 96`, AAC-ELD over RTP/UDP): bind the
-    /// data/control ports, register the audio channel, and spawn the receiver
-    /// that feeds the source Bin's audio appsrc. Returns `(data_port,
-    /// control_port)`. Audio is skipped (ports still bound and reported) if no
-    /// AAC decoder is available or no session exists.
+    /// Set up the mirror audio stream (`type 96`, AAC-ELD over RTP/UDP),
+    /// returning `(data_port, control_port)`. Audio is skipped - ports still
+    /// bound and reported - without an AAC decoder or a session.
     async fn setup_audio_stream(&mut self, s: &plist::Dictionary) -> Result<(u16, u16)> {
         let ct = s.get("ct").and_then(plist_u64).unwrap_or(0) as u8;
         let aeskey = self
@@ -797,9 +730,8 @@ impl Handler {
             .context("audio SETUP before keys were established")?;
         let aesiv = self.aesiv.context("audio SETUP missing eiv")?;
 
-        // The client streams audio to our data port and sync packets to the
-        // control port; we bind both and answer with their numbers. (Sync/resend
-        // handling is not yet used.)
+        // The control port carries sync/resend packets: bound and reported to
+        // satisfy the client, but not yet read.
         let data_sock = tokio::net::UdpSocket::bind(("0.0.0.0", 0))
             .await
             .context("failed to bind audio data port")?;
@@ -810,9 +742,6 @@ impl Handler {
         let control_port = control_sock.local_addr()?.port();
         debug!(ct, data_port, control_port, "mirror audio stream setup");
 
-        // Only decode if we have a session to attach to and an AAC decoder. If
-        // not, the ports are still reported (the client is happy) but audio is
-        // dropped - the video mirror is unaffected.
         let Some(stream_connection_id) = self.mirror_session else {
             warn!("audio SETUP with no mirror session; dropping audio");
             return Ok((data_port, control_port));
@@ -835,9 +764,6 @@ impl Handler {
             self.config.device_name.clone(),
         ));
         self.tasks.push(task.abort_handle());
-        // Tie the audio task to the session so ending it (teardown or refusal)
-        // also stops audio, and keep its handle so a per-stream audio TEARDOWN
-        // can stop just it.
         self.airplay_context
             .add_abort(stream_connection_id, task.abort_handle());
         self.audio_task = Some(task.abort_handle());
@@ -862,7 +788,6 @@ mod tests {
         assert_eq!(test_config().device_id(), "01:23:45:67:89:ab");
     }
 
-    /// Build a binary-plist TEARDOWN body listing the given stream types.
     fn teardown_body(types: &[u64]) -> Vec<u8> {
         use plist::Value;
         let streams = types
@@ -882,20 +807,15 @@ mod tests {
 
     #[test]
     fn teardown_stream_types_classifies_body() {
-        // Audio-only teardown (pause) - video must be kept.
         assert_eq!(teardown_stream_types(&teardown_body(&[96])), (true, false));
-        // Video teardown ends the mirror.
         assert_eq!(teardown_stream_types(&teardown_body(&[110])), (false, true));
         assert_eq!(
             teardown_stream_types(&teardown_body(&[96, 110])),
             (true, true)
         );
-        // No/empty streams => full teardown.
         assert_eq!(teardown_stream_types(&teardown_body(&[])), (false, false));
         assert_eq!(teardown_stream_types(b""), (false, false));
     }
-
-    // The volume-curve tests live next to the shared conversion, in `raop`.
 
     #[test]
     fn info_plist_parses_with_expected_keys() {
@@ -918,12 +838,10 @@ mod tests {
             dict.get("features").and_then(|v| v.as_unsigned_integer()),
             Some(FEATURES)
         );
-        // `pk` is binary data (hex "deadbeef" -> 4 bytes), not the hex string.
         assert_eq!(
             dict.get("pk").and_then(|v| v.as_data()),
             Some([0xde, 0xad, 0xbe, 0xef].as_slice())
         );
-        // The mirroring display must report sane dimensions.
         let display = dict
             .get("displays")
             .and_then(|v| v.as_array())
@@ -939,7 +857,6 @@ mod tests {
     #[test]
     fn airplay_txt_record_is_dns_txt_encoded() {
         let txt = test_config().airplay_txt_record();
-        // Walk the length-prefixed entries and confirm a known key=value pair.
         let mut i = 0;
         let mut entries = Vec::new();
         while i < txt.len() {
@@ -952,8 +869,6 @@ mod tests {
         assert!(entries.iter().any(|e| e == "model=AppleTV3,2"));
     }
 
-    /// End-to-end: drive the real request loop over a loopback TCP socket and
-    /// confirm `GET /info` yields a parseable plist response.
     #[tokio::test]
     async fn serves_info_over_tcp() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -988,7 +903,6 @@ mod tests {
             .await
             .unwrap();
 
-        // Read until we have headers + the full Content-Length body.
         let mut buf = Vec::new();
         let mut tmp = [0u8; 1024];
         let (status_line, body) = loop {

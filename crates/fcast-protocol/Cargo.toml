@@ -8,6 +8,7 @@ edition = "2021"
 exclude = ["misc/", "tests/"]
 
 [dependencies]
+bytes.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 serde_repr = "0.1.20"

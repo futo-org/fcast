@@ -10,8 +10,9 @@ use crate::workspace;
 pub enum ProtocolCommand {
     /// Regenerate `docs/docs/protocol/v4.md` from the `fcast-protocol` sources.
     ExportV4,
-    /// Regenerate the vendored `src/v4_generated.rs` from `flatbuffers/fcast.fbs`.
-    /// Requires the `flatc` binary on PATH; run after editing the schema.
+    /// Regenerate the vendored `src/v4_generated.rs` from
+    /// `flatbuffers/fcast.fbs`. Requires the `flatc` binary on PATH; run
+    /// after editing the schema.
     RegenFlatbuffers,
 }
 
@@ -46,9 +47,8 @@ fn strip_top_attribs(input: &str) -> String {
 }
 
 /// Render a type's own source, pretty-printed, the way the old
-/// `#[derive(GetTypeString)]` proc-macro used to. It parses `fcast-protocol`'s
-/// source rather than depending on the crate, so no schema-only feature has to
-/// ship in the published crate.
+/// `#[derive(GetTypeString)]` did. Parses `fcast-protocol`'s source rather than
+/// depending on the crate, so no schema-only feature has to ship.
 fn render_type_source(file: &syn::File, ident: &str) -> Result<String> {
     let mut item = file
         .items
@@ -61,9 +61,8 @@ fn render_type_source(file: &syn::File, ident: &str) -> Result<String> {
         .cloned()
         .with_context(|| format!("`{ident}` not found in fcast-protocol/src/lib.rs"))?;
 
-    // A derive macro receives the item with its `#[derive(..)]` attributes
-    // already stripped by the compiler; do the same so pretty-printing
-    // reproduces the historical output regardless of attribute length.
+    // A derive macro receives the item with `#[derive(..)]` already stripped;
+    // do the same so pretty-printing matches the historical output.
     let attrs = match &mut item {
         syn::Item::Struct(s) => &mut s.attrs,
         syn::Item::Enum(e) => &mut e.attrs,

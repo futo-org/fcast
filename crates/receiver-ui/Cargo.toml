@@ -1,0 +1,66 @@
+[package]
+name = "receiver-ui"
+version = "3.0.3"
+edition = "2024"
+license = "GPL-3.0-only"
+
+[dependencies]
+# This crate owns the GL/render loop, so it is where `render` is switched on —
+# for itself and for the surface receiver-core re-exports to the binaries.
+receiver-core = { path = "../receiver-core", features = ["render"] }
+fcast-video = { path = "../fcast-video", features = ["slint", "render"] }
+fcast-protocol = { path = "../fcast-protocol", features = ["tokio-receiver"] }
+fcast-runtime = { path = "../fcast-runtime" }
+libplacebo.path = "../libplacebo"
+anyhow.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+parking_lot.workspace = true
+oneshot = { version = "0.2", features = ["std"] }
+glow.workspace = true
+gst = { workspace = true, features = [ "v1_26" ] }
+gst-base.workspace = true
+gst-video.workspace = true
+
+[dependencies.slint]
+workspace = true
+features = [
+    "compat-1-2",
+    "std",
+]
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+glutin_egl_sys = { version = "0.7.1" }
+i-slint-backend-winit = { workspace = true, optional = true }
+
+# The cursor-hide callback in gui.rs sets the macOS cursor directly.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-app-kit = { version = "0.3.2", features = ["NSCursor"] }
+
+[build-dependencies]
+slint-build.workspace = true
+
+[features]
+default = []
+airplay = ["receiver-core/airplay"]
+desktop = [
+    "slint/backend-winit",
+    "slint/renderer-femtovg",
+    "receiver-core/desktop",
+    "wayland-subsurface",
+]
+wayland-subsurface = [
+    "dep:i-slint-backend-winit",
+    "fcast-video/wayland-subsurface",
+]
+systray = ["slint/system-tray", "receiver-core/systray"]
+kms-backend = ["slint/backend-linuxkms"]
+android = ["slint/backend-android-activity-06", "slint/renderer-skia", "receiver-core/android"]
+tracy = ["receiver-core/tracy"]
+fhs = ["slint/renderer-femtovg", "receiver-core/fhs"]
+# Forwarded to the core so a receiver binary keeps naming one dependency.
+static-gst-plugins = ["receiver-core/static-gst-plugins"]
+static-gstreamer = ["receiver-core/static-gstreamer"]

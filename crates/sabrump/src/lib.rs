@@ -7,8 +7,8 @@
 //!
 //! The pump runs as an async task (tokio) and issues requests via reqwest
 //! directly (the crate has a single consumer, so a generic transport trait
-//! bought nothing). A [`SabrTransport::canned`] variant replays canned UMP bytes
-//! so the protocol logic can be unit-tested without a live server.
+//! bought nothing). A [`SabrTransport::canned`] variant replays canned UMP
+//! bytes so the protocol logic can be unit-tested without a live server.
 
 pub mod buffer;
 pub mod error;

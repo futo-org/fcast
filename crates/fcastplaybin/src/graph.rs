@@ -1,7 +1,7 @@
 //! A pipeline-graph snapshot for the receiver's inspector.
 //!
-//! The walk reads element properties, so it must not race element teardown.
-//! Run it on the crate worker (see [`FcastPlaybin::debug_graph_async`]).
+//! The walk reads live element properties, so it must not race element
+//! teardown. Run it on the crate worker ([`FcastPlaybin::debug_graph_async`]).
 //!
 //! [`FcastPlaybin::debug_graph_async`]: crate::FcastPlaybin::debug_graph_async
 
@@ -10,20 +10,17 @@ use std::collections::HashMap;
 use gst::prelude::*;
 
 /// One element's worth of the snapshot. Bins carry their children and expose
-/// their ghost pads as ordinary pads (the layout draws them on the bin
-/// border), so the whole pipeline is one recursive cell tree.
+/// ghost pads as ordinary pads, so the pipeline is one recursive cell tree.
 #[derive(Debug, Default, Clone)]
 pub struct GraphCell {
     /// Element name (unique within its bin), e.g. `avdec_h264-0`.
     pub name: String,
-    /// Factory name when the element came from one, else the GType name
-    /// (directly-constructed bins report `GstBin` and their `name` carries
-    /// the kind).
+    /// Factory name, else the GType name (directly-constructed bins report
+    /// `GstBin` and their `name` carries the kind).
     pub type_name: String,
     /// Settled state (`PLAYING`) or transition (`READY → PAUSED`).
     pub state: String,
-    /// `prop=value` lines for readable properties that differ from their
-    /// default, values truncated. The same set the dot dump printed.
+    /// `prop=value` for readable properties differing from their default.
     pub properties: Vec<String>,
     pub sink_pads: Vec<GraphPad>,
     pub src_pads: Vec<GraphPad>,
@@ -44,16 +41,13 @@ pub struct GraphPad {
     pub ghost: bool,
 }
 
-/// A pad-to-pad connection. Besides real links this includes the internal
-/// leg of every ghost sink pad (ghost -> its target), so following links
-/// walks through bin boundaries the same way the dot dump drew them.
+/// A pad-to-pad connection, plus the internal leg of every ghost sink pad
+/// (ghost -> target), so following links traverses bin boundaries.
 #[derive(Debug, Clone)]
 pub struct GraphLink {
     pub src_pad: u32,
     pub sink_pad: u32,
-    /// Negotiated caps as display lines: media type (plus non-system memory
-    /// features) first, then one `field: value` line per caps field. Empty
-    /// when not negotiated yet.
+    /// Negotiated caps as display lines; empty when not negotiated yet.
     pub caps: Vec<String>,
 }
 
@@ -64,9 +58,8 @@ pub struct GraphSnapshot {
     pub links: Vec<GraphLink>,
 }
 
-/// Snapshot `bin` and everything below it. Read-only, but it reads live
-/// element state and properties: call it where element teardown cannot race
-/// (the crate worker).
+/// Snapshot `bin` and everything below it. Reads live element state, so call
+/// it where element teardown cannot race (the crate worker).
 pub fn snapshot(bin: &gst::Bin) -> GraphSnapshot {
     let mut walker = Walker::default();
     let root = walker.bin_cell(bin);
@@ -90,9 +83,8 @@ pub fn snapshot(bin: &gst::Bin) -> GraphSnapshot {
 struct Walker {
     next_pad_id: u32,
     pad_ids: HashMap<gst::Pad, u32>,
-    /// (source side, sink side, negotiated caps), resolved to ids once every
-    /// pad has been visited. A peer outside the walked hierarchy never gets
-    /// an id and the link is dropped.
+    /// (src, sink, caps), resolved to ids once every pad has been visited.
+    /// Links to peers outside the walked hierarchy are dropped.
     raw_links: Vec<(gst::Pad, gst::Pad, Option<gst::Caps>)>,
 }
 
@@ -100,8 +92,7 @@ impl Walker {
     fn bin_cell(&mut self, bin: &gst::Bin) -> GraphCell {
         let mut cell = self.element_cell(bin.upcast_ref());
         cell.is_bin = true;
-        // `children()` lists newest-added first. Reverse for creation order
-        // so the layout sees a stable, natural ordering.
+        // `children()` lists newest-added first; reverse for creation order.
         cell.children = bin
             .children()
             .iter()
@@ -151,10 +142,9 @@ impl Walker {
                 }
                 gst::PadDirection::Sink => {
                     cell.sink_pads.push(entry);
-                    // The internal leg of a ghost sink pad: flow enters the
-                    // bin here and continues at the target. (Ghost *src*
-                    // pads need no such edge: their target's own `peer()` is
-                    // the ghost's proxy, resolved back to the ghost below.)
+                    // Internal leg of a ghost sink pad. Ghost src pads need
+                    // none because `resolve_peer` maps their proxy back to
+                    // the ghost.
                     if let Some(target) = pad
                         .downcast_ref::<gst::GhostPad>()
                         .and_then(|ghost| ghost.target())
@@ -178,10 +168,8 @@ impl Walker {
     }
 }
 
-/// The logical link endpoint for `peer`. An element linked into a ghost pad
-/// sees either the ghost itself (from outside the bin) or the ghost's
-/// internal proxy pad (from inside). Map the proxy back to its ghost so
-/// links always terminate on pads the walk has visited.
+/// Logical link endpoint for `peer`: map a ghost's internal proxy pad back to
+/// the ghost, so links always terminate on pads the walk has visited.
 fn resolve_peer(peer: gst::Pad) -> gst::Pad {
     if peer.is::<gst::GhostPad>() {
         return peer;
@@ -219,11 +207,8 @@ fn pad_detail(pad: &gst::Pad) -> String {
     parts.join(" ")
 }
 
-/// `prop=value` for every readable property whose value differs from the
-/// default, the same selection the gst dot dump made. Values the type
-/// system cannot serialize (e.g. object-typed properties) are skipped and
-/// long values truncated, a base64 codec blob carries no information
-/// visually.
+/// `prop=value` for every readable property differing from its default.
+/// Unserializable values are skipped, long ones truncated.
 fn non_default_properties(elem: &gst::Element) -> Vec<String> {
     let mut out = Vec::new();
     for pspec in elem.list_properties() {
@@ -236,9 +221,8 @@ fn non_default_properties(elem: &gst::Element) -> Vec<String> {
         if name == "name" || name == "parent" {
             continue;
         }
-        // Sample-typed properties (a basesink's `last-sample`) serialize
-        // into an entire buffer dump. Skip them without even reading, so
-        // the walk never takes a reference on a whole video frame.
+        // Reading Sample-typed properties would take a reference on a
+        // whole video frame.
         if pspec.value_type().is_a(gst::Sample::static_type()) {
             continue;
         }
@@ -254,13 +238,8 @@ fn non_default_properties(elem: &gst::Element) -> Vec<String> {
     out
 }
 
-/// `gst_value_serialize`, except that any NULL boxed value is mapped to
-/// `None` up front. Every GStreamer mini object (structure, caps, sample,
-/// buffer, tag list) is a boxed GType, and several of their serializers
-/// assert on NULL and log GStreamer CRITICALs (a sink's unset `last-sample`
-/// being the everyday case). The stock dot dump never hits this because it
-/// formats properties with `g_strdup_value_contents`, which prints raw
-/// pointers instead of invoking the per-type serializers.
+/// `gst_value_serialize`, but NULL boxed values map to `None` first. Boxed
+/// GType serializers assert on NULL and log CRITICALs.
 fn serialize_value(value: &gst::glib::Value) -> Option<gst::glib::GString> {
     use gst::glib::translate::ToGlibPtr;
 
@@ -282,7 +261,6 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 /// Caps as display lines: `media/type (features)` then `  field: value`.
-/// Multiple structures are all listed (rare on a negotiated pad).
 fn caps_lines(caps: &gst::Caps) -> Vec<String> {
     if caps.is_any() {
         return vec!["ANY".to_string()];
@@ -320,8 +298,7 @@ mod tests {
         ONCE.call_once(|| gst::init().unwrap());
     }
 
-    /// fakesrc -> [bin: identity (ghosted both sides)] -> fakesink, checking
-    /// the cell tree shape and that links pass through the ghost pads.
+    /// fakesrc -> [bin: identity (ghosted both sides)] -> fakesink.
     #[test]
     fn walks_bins_and_ghost_pads() {
         init();
@@ -363,7 +340,6 @@ mod tests {
         assert_eq!(wrap.src_pads.len(), 1);
         assert!(wrap.sink_pads[0].ghost);
 
-        // Pad ids are unique.
         let mut ids = Vec::new();
         fn collect(cell: &GraphCell, ids: &mut Vec<u32>) {
             for p in cell.sink_pads.iter().chain(&cell.src_pads) {
@@ -377,8 +353,7 @@ mod tests {
         let unique: std::collections::HashSet<_> = ids.iter().collect();
         assert_eq!(unique.len(), ids.len());
 
-        // Expected connectivity: fakesrc.src -> wrap.(ghost)sink -> identity.sink,
-        // identity.src -> wrap.(ghost)src -> fakesink.sink. Four links total.
+        // src -> ghost sink -> identity -> ghost src -> sink: four links.
         assert_eq!(snap.links.len(), 4, "links: {:?}", snap.links);
 
         let find = |cell_name: &str, pad_name: &str| -> u32 {

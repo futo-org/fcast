@@ -38,8 +38,8 @@ impl CSharpArgs {
                 //     "aarch64-apple-darwin",
                 //     "x86_64-apple-darwin",
                 // ] {
-                //     cmd!(sh, "cargo build --release --target {target} -p fcast-sender-sdk --features _uniffi_csharp").run()?;
-                // }
+                //     cmd!(sh, "cargo build --release --target {target} -p fcast-sender-sdk
+                // --features _uniffi_csharp").run()?; }
                 Ok(())
             }
         }
