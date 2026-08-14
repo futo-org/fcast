@@ -1150,8 +1150,9 @@ mod imp {
                             );
                             bridge = self.shared.bridge.lock();
                         }
-                        // Reported once. Keep waiting at the same cadence rather
-                        // than failing the segment (gstaudiosink skips a refused
+                        // Reported once. Keep waiting at the same cadence
+                        // rather than failing the
+                        // segment (gstaudiosink skips a refused
                         // one and calls straight back, a busy loop). Teardown,
                         // flush and death still break the loop at the top.
                     }

@@ -67,8 +67,8 @@ const ENABLE_COMMON: &[(Plugins, &str)] = &[(Plugins::Base, "vorbis"), (Plugins:
 
 /// Element-level whitelists (`-Dgst-full-elements`): a plugin named here
 /// registers ONLY these elements; the rest are dropped by --gc-sections. NEVER
-/// list va or libav, since they register dynamically and would lose everything. A
-/// whitelisted plugin also skips plugin-level init, dropping its typefinders
+/// list va or libav, since they register dynamically and would lose everything.
+/// A whitelisted plugin also skips plugin-level init, dropping its typefinders
 /// and device providers (unused here). Recheck on a gst bump: a newly added
 /// element is silently excluded.
 const FULL_ELEMENTS: &[(&str, &[&str])] = &[

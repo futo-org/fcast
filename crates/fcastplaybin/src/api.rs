@@ -258,7 +258,6 @@ pub enum SubtitleFeedItem {
 
 /// The consumer callback installed by
 /// [`FcastPlaybin::set_subtitle_consumer`](crate::FcastPlaybin::set_subtitle_consumer).
-///
 pub type SubtitleConsumer = Arc<dyn Fn(SubtitleFeedItem) + Send + Sync>;
 
 /// A typed pipeline event, delivered through the callback installed by

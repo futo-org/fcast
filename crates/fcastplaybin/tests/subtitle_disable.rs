@@ -428,8 +428,8 @@ impl Harness {
     /// is still on screen, which is why every assertion here reads this and
     /// not the graph.
     ///
-    /// It stopped being a PIXEL instrument when subtitleoverlay was deleted. Nothing is
-    /// composited inside the crate any more, so there is no
+    /// It stopped being a PIXEL instrument when subtitleoverlay was deleted.
+    /// Nothing is composited inside the crate any more, so there is no
     /// `GstVideoOverlayCompositionMeta` to find and no white glyphs in the
     /// luma plane to count: `text_arm` rejoins the buffer's running time
     /// against the cue feed instead, and answers the same question.
@@ -1230,9 +1230,9 @@ fn second_external_switch_and_return_renders() {
 /// # Verification
 ///
 /// * Green: no env vars.
-/// * There is no other arm to check now. While the v1 lever existed
-///   this test reported NO VERDICT under it -- the F5 precedent, a printed skip
-///   rather than an inverted assertion, because the overlay's answer was not a
+/// * There is no other arm to check now. While the v1 lever existed this test
+///   reported NO VERDICT under it -- the F5 precedent, a printed skip rather
+///   than an inverted assertion, because the overlay's answer was not a
 ///   different value but an absent mechanism. That RED was MEASURED rather than
 ///   asserted: with the skip removed, the overlay arm did not even reach the
 ///   cue wait, failing 20s earlier at `wait_subtitle_branch(true, ...)`,
@@ -1276,8 +1276,8 @@ fn paused_external_toggle_shows_while_paused() {
     harness.paused.set(true);
 
     // Disable while paused. The detach unlinks the branch eagerly and, since
-    // the subtitleoverlay deletion, disposes of it inline too (`detach_text_parts` only
-    // postpones for the pad-removed path now). A flooded external slot can
+    // the subtitleoverlay deletion, disposes of it inline too (`detach_text_parts`
+    // only postpones for the pad-removed path now). A flooded external slot can
     // still keep decodebin3 mid-push, so the deselect is not required to
     // CONFIRM while the pipeline rests: assert the eager unlink and the hold
     // here, and leave every confirmation to the resume below.

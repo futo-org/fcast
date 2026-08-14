@@ -975,8 +975,8 @@ impl DvbDecoder {
         };
 
         // WHICH REGIONS CLAIMED IT. An object nobody composed is refused, which
-        // is the reference's rule and the same one the PGS decoder applies: pixels for a region that has not asked for them
-        // have nowhere to go.
+        // is the reference's rule and the same one the PGS decoder applies: pixels for
+        // a region that has not asked for them have nowhere to go.
         let targets: Vec<(u8, Placement)> = self
             .regions
             .iter()

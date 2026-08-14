@@ -1020,8 +1020,8 @@ impl Inner {
             // * its sticky SEGMENT survives the clear, so the segmentless-holder rule above
             //   says it is healthy;
             // * routed ORDER says nothing, because the replacement output can be built
-            //   either side of it (decodebin3 recycles outputs in both directions) and
-            //   in one capture there was no new entry at all for seconds;
+            //   either side of it (decodebin3 recycles outputs in both directions) and in
+            //   one capture there was no new entry at all for seconds;
             // * its `last_buffer` ticket is whatever it was, and a rival that has not
             //   carried a buffer YET stamps zero, so the flow reclaim cannot order a dead
             //   pad against a live-but-idle one, which is precisely a sparse subtitle
@@ -1906,9 +1906,9 @@ impl Inner {
                  latches the multiqueue slot for good"
             );
         }
-        // THE SLOT HEAL, LAST, and outside every lock this function takes. A joined text
-        // branch whose multiqueue slot has latched delivers nothing for the
-        // rest of the item and says nothing about it; the poll that just
+        // THE SLOT HEAL, LAST, and outside every lock this function takes. A joined
+        // text branch whose multiqueue slot has latched delivers nothing for
+        // the rest of the item and says nothing about it; the poll that just
         // decided the branch should exist is the natural place to also check
         // that it can still be reached. See
         // [`Inner::heal_latched_text_slots`] for why the repair is placed on
@@ -2091,9 +2091,9 @@ impl FcastPlaybin {
 
     /// TEST FAULT INJECTION: destroy the next parked text stream's sticky CAPS
     /// on its decodebin3 ghost and on the multiqueue slot behind it, staging
-    /// The staged caps loss (see [`Inner::stage_text_caps_loss`]). One shot, and per
-    /// instance so it is safe under a test binary's thread pool. Not part of
-    /// the public API.
+    /// The staged caps loss (see [`Inner::stage_text_caps_loss`]). One shot,
+    /// and per instance so it is safe under a test binary's thread pool.
+    /// Not part of the public API.
     #[doc(hidden)]
     pub fn stage_text_caps_loss(&self) {
         self.inner

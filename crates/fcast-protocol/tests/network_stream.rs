@@ -59,10 +59,7 @@ macro_rules! read_packet_zerocopy {
                 Some(packet) => break packet,
                 None => {
                     let spare = $reader.spare_capacity_mut();
-                    assert!(
-                        !spare.is_empty(),
-                        "spare capacity empty, would read as EOF"
-                    );
+                    assert!(!spare.is_empty(), "spare capacity empty, would read as EOF");
                     let n = $stream.read(spare).await.expect("read failed");
                     assert_ne!(n, 0, "stream closed before a full packet arrived");
                     $reader.commit(n);

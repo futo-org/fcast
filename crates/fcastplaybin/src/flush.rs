@@ -46,9 +46,9 @@ pub(crate) enum FlushReason {
     /// it.
     ///
     /// The overlay-seat reasons are gone with subtitleoverlay rather than kept
-    /// as tombstones, because `crate_flush_pairs_for` panics on an unknown name:
-    /// an asserted zero on a reason with no producer left is an assertion wired
-    /// to nothing.
+    /// as tombstones, because `crate_flush_pairs_for` panics on an unknown
+    /// name: an asserted zero on a reason with no producer left is an
+    /// assertion wired to nothing.
     DisposalConsumer,
     /// The same pair at a TEARDOWN boundary, split from the mid-play one for
     /// the reason [`FlushReason::TeardownQueue`] documents.
@@ -293,7 +293,8 @@ impl Inner {
     /// (it forwards downstream and de-PLAYs both sinks).
     ///
     /// TRYLOCK, never lock: this runs on the decider, and blocking on a
-    /// streaming thread's stream lock is the deadlock this guards against. The safe binding offers only the blocking `stream_lock()`, so
+    /// streaming thread's stream lock is the deadlock this guards against. The
+    /// safe binding offers only the blocking `stream_lock()`, so
     /// the try goes through the ffi.
     ///
     /// # Why the answer is stable after the lock is released
@@ -535,11 +536,11 @@ impl Inner {
     ///  * The sink-pad FLUSH_STOP is FORWARDED DOWNSTREAM FIRST
     ///    (`gst_pad_push_event (srcpad, event)`, `:2787`) before the slot is
     ///    touched. By the time a disposal runs, that src pad may already be
-    ///    ghosting a re-linked branch, since decodebin3 recycles text
-    ///    outputs in both directions, so the repair would flush the INCOMING
-    ///    track's queue. It also deletes the SEGMENT sticky off the
-    ///    multiqueue's sink pad (`remove_event_by_type`, gstpad.c:5919), which
-    ///    nothing replays, on a pad the crate does not own.
+    ///    ghosting a re-linked branch, since decodebin3 recycles text outputs
+    ///    in both directions, so the repair would flush the INCOMING track's
+    ///    queue. It also deletes the SEGMENT sticky off the multiqueue's sink
+    ///    pad (`remove_event_by_type`, gstpad.c:5919), which nothing replays,
+    ///    on a pad the crate does not own.
     ///  * Re-activation pushes no event anywhere. It touches this slot and
     ///    nothing else.
     ///
@@ -565,10 +566,11 @@ impl Inner {
     /// and the disposal call site did, for 50 ms, whenever the slot came up
     /// CLEAN. That is a stall on the DECIDER, once per mid-play text disposal,
     /// on the overwhelmingly common path where there was nothing to repair.
-    /// `external_subtitle_lifecycle` went from 20 passed in 2.4 s to 19 passed /
-    /// 1 failed in 40 s under default parallelism, 6 runs out of 6, against 6 of
-    /// 6 green with the budget at zero. The heal fired ZERO times in every one
-    /// of those runs: the repair was never the cost, the waiting was.
+    /// `external_subtitle_lifecycle` went from 20 passed in 2.4 s to 19 passed
+    /// / 1 failed in 40 s under default parallelism, 6 runs out of 6,
+    /// against 6 of 6 green with the budget at zero. The heal fired ZERO
+    /// times in every one of those runs: the repair was never the cost, the
+    /// waiting was.
     ///
     /// The wait was never load-bearing anyway, and
     /// [`Inner::heal_latched_text_slots`] is why: it re-reads every live text
@@ -661,14 +663,15 @@ impl Inner {
     /// # Why this is not enough to do it at the disposal
     ///
     /// The disposal-side repair answers ONE trigger: our own flush pair caught
-    /// a push. A capture at full debug rules that trigger out. The branch joined
-    /// its consumer tail mid state-transition, with the pipeline still buffering
-    /// at 76% and the audio sink still in READY_TO_PAUSED. The six seconds that
-    /// follow contain no disposal, no flush, no policy job and no seek, and the
-    /// demuxer's discard appears six seconds later still. On a whole-period text
-    /// representation the demuxer pushes the entire track ONCE, so nothing
-    /// crosses the slot in between: the discard is not when the track died, it
-    /// is the first push through a slot that has been dead since the JOIN.
+    /// a push. A capture at full debug rules that trigger out. The branch
+    /// joined its consumer tail mid state-transition, with the pipeline
+    /// still buffering at 76% and the audio sink still in READY_TO_PAUSED.
+    /// The six seconds that follow contain no disposal, no flush, no policy
+    /// job and no seek, and the demuxer's discard appears six seconds later
+    /// still. On a whole-period text representation the demuxer pushes the
+    /// entire track ONCE, so nothing crosses the slot in between: the
+    /// discard is not when the track died, it is the first push through a
+    /// slot that has been dead since the JOIN.
     ///
     /// The join can latch a slot with no flush anywhere near it, by the same
     /// mechanism read backwards: a pad that has never been
@@ -692,8 +695,8 @@ impl Inner {
     /// slot that is merely passing through a flush. Three conditions, all
     /// required:
     ///
-    ///  * the branch is LIVE, a `downstream` in the routing entry, i.e. this
-    ///    is a joined branch and not one mid-disposal (a disposal takes the pad
+    ///  * the branch is LIVE, a `downstream` in the routing entry, i.e. this is
+    ///    a joined branch and not one mid-disposal (a disposal takes the pad
     ///    out of the entry before it flushes anything) and not a PARKED one
     ///    (measured, see the scope note in the body);
     ///  * the branch is NOT flushing right now, since during a seek's flush
@@ -791,8 +794,8 @@ impl Inner {
     /// retracted fix that was a timing guess (the slot-seeding latch, measured
     /// as noise at 384 runs an arm). The CONSEQUENCE is a fact about two pads
     /// that is cheap to read and unambiguous (the slot's SINK pad has the caps
-    /// and its SRC pad does not) so the repair sits on the state, on a poll that
-    /// runs anyway.
+    /// and its SRC pad does not) so the repair sits on the state, on a poll
+    /// that runs anyway.
     ///
     /// # The guard, which is what makes this safe to run unconditionally
     ///

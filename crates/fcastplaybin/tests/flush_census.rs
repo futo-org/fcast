@@ -9,26 +9,25 @@
 //! below). The removals then flipped `eager_branch` and `disposal_queue` to
 //! zero, and every direction is asserted here against a lever:
 //!
-//! * [`a_mid_play_subtitle_schedule_fires_the_reasons_the_removals_touch`] drives
-//!   attach / select / replace / off / detach at PLAYING and at PAUSED. The
-//!   direct REPLACE PARKS, and the flush it used to be able to choose -- with
-//!   its `eager_text_flushes()` counter, its `eager_branch` reason and its
+//! * [`a_mid_play_subtitle_schedule_fires_the_reasons_the_removals_touch`]
+//!   drives attach / select / replace / off / detach at PLAYING and at PAUSED.
+//!   The direct REPLACE PARKS, and the flush it used to be able to choose --
+//!   with its `eager_text_flushes()` counter, its `eager_branch` reason and its
 //!   `FCAST_EAGER_REPLACE_FLUSH` lever -- is gone. The `remove_input` pair is
 //!   still SENT: the quiescence skip was measured to break the same-URL
 //!   re-attach, so its de-PLAY survives and is RECORDED here rather than
 //!   removed. The mid-play `disposal_queue` pair is gone, the branch being
 //!   proved quiescent instead. The disposal pair moved: `disposal_seat` was
 //!   subtitleoverlay's shared `subtitle_sink` and died with it, and
-//!   `disposal_consumer` is the same pair on the branch's OWN appsink,
-//!   asserted positive here. The teardown boundary's pairs are counted under
-//!   their OWN reasons (`teardown_consumer`, `teardown_queue`) so the mid-play
-//!   zeros are absolute rather than deltas, which is what makes them safe to
-//!   assert while another test in this binary tears down.
+//!   `disposal_consumer` is the same pair on the branch's OWN appsink, asserted
+//!   positive here. The teardown boundary's pairs are counted under their OWN
+//!   reasons (`teardown_consumer`, `teardown_queue`) so the mid-play zeros are
+//!   absolute rather than deltas, which is what makes them safe to assert while
+//!   another test in this binary tears down.
 //! * [`a_teardown_fires_the_teardown_reasons_and_splits_no_pair`] covers the
-//!   boundary that STAYS, and the invariant that holds
-//!   everywhere: no pair may straddle a pad deactivation, because gstpad.c
-//!   discards a FLUSH_STOP on an inactive pad and the pad then flushes for
-//!   good.
+//!   boundary that STAYS, and the invariant that holds everywhere: no pair may
+//!   straddle a pad deactivation, because gstpad.c discards a FLUSH_STOP on an
+//!   inactive pad and the pad then flushes for good.
 //!
 //! # Why the counters are read as `FcastPlaybin::` associated functions
 //!
@@ -42,8 +41,8 @@
 //! # Verification
 //!
 //! * Green: no env vars.
-//! * `FCAST_REMOVE_INPUT_FLUSH_SKIP=1`: the `remove_input` assertions invert (the gate
-//!   skips the pair). THIS ARM IS EXPECTED TO BREAK
+//! * `FCAST_REMOVE_INPUT_FLUSH_SKIP=1`: the `remove_input` assertions invert
+//!   (the gate skips the pair). THIS ARM IS EXPECTED TO BREAK
 //!   `external_subtitle_lifecycle`'s two re-attach tests - that failure is the
 //!   measurement the skip is off for.
 //! * `FCAST_NO_REMOVE_INPUT_FLUSH_SKIP=1`: restores v1's `remove_input`
@@ -426,8 +425,7 @@ fn every_crate_origin_flush_stop_leaves_the_running_time_alone() {
 /// 1. attach an external and select it (a branch links);
 /// 2. attach a SECOND external and select that - the direct REPLACE, the one
 ///    dispatch shape that could ever have chosen the eager FLUSH over the park.
-///    It PARKS, and now there is no other answer to
-///    choose;
+///    It PARKS, and now there is no other answer to choose;
 /// 3. subtitles off at a settled PLAYING (an inline disposal);
 /// 4. re-select, then subtitles off at a resting PAUSED and back to PLAYING (a
 ///    POSTPONED disposal, drained by `run_deferred_text_work`);
@@ -646,10 +644,7 @@ fn a_mid_play_subtitle_schedule_fires_the_reasons_the_removals_touch() {
             FcastPlaybin::flow_census_breakdown()
         );
     }
-    println!(
-        "flow census: {:?}",
-        FcastPlaybin::flow_census_breakdown()
-    );
+    println!("flow census: {:?}", FcastPlaybin::flow_census_breakdown());
     assert_eq!(
         FcastPlaybin::teardown_descent_stuck(),
         0,
@@ -669,9 +664,9 @@ fn a_mid_play_subtitle_schedule_fires_the_reasons_the_removals_touch() {
 /// and no pair anywhere straddles a pad deactivation.
 ///
 /// The teardown pairs are what three fuzz seeds pin, and this is the counter's
-/// proof that they are under observation. The read happens after the playbin is DROPPED, which is
-/// the whole reason the counters are process-global: `Teardown::run` executes
-/// from `Inner`'s drop, with no handle left to ask.
+/// proof that they are under observation. The read happens after the playbin is
+/// DROPPED, which is the whole reason the counters are process-global:
+/// `Teardown::run` executes from `Inner`'s drop, with no handle left to ask.
 #[test]
 fn a_teardown_fires_the_teardown_reasons_and_splits_no_pair() {
     init();

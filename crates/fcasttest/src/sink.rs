@@ -400,7 +400,8 @@ pub mod asserts {
 
     /// A SEGMENT precedes the first buffer, and a fresh one precedes the first
     /// buffer after every FLUSH_STOP (a flush drops the sticky segment). A
-    /// GAP counts, since sticky events are pushed ahead of any serialized event.
+    /// GAP counts, since sticky events are pushed ahead of any serialized
+    /// event.
     pub fn segment_before_first_buffer(log: &[RecordEntry]) -> Result<(), String> {
         let mut have_segment = false;
         for (index, entry) in log.iter().enumerate() {

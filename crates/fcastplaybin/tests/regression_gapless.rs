@@ -11,10 +11,10 @@
 //!   coverage check behind it at all.
 //! * `streamsynchronizer` parks every streaming thread until each non-sparse
 //!   stream has delivered its new stream-start, with no timeout. A slot that
-//!   dies at the boundary, or a stream that ended early, turns that wait into
-//!   a permanent park. A park is not an error or an EOS, the event stream
-//!   simply goes quiet, which is why every case here also asserts that audio
-//!   keeps reaching the sink.
+//!   dies at the boundary, or a stream that ended early, turns that wait into a
+//!   permanent park. A park is not an error or an EOS, the event stream simply
+//!   goes quiet, which is why every case here also asserts that audio keeps
+//!   reaching the sink.
 //!
 //! The media is encoded the way `tests/gapless.rs` encodes it, the
 //! configuration the gapless path is known to work in. `ftest://` scenario

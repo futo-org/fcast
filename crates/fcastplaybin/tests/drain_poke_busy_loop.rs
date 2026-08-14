@@ -18,12 +18,12 @@
 //! 2. The suppression never delays the real drain: with the verdict standing
 //!    and ZERO further polls, resuming playback alone still drains the
 //!    postponed work, off the pipeline's own state edge.
-//! 3. Since the poll itself became a worker job, the same
-//!    caller must not accumulate THOSE either: every poll is accounted for
-//!    exactly once, as a job or as a fold into one already queued, and the jobs
-//!    never outnumber the polls. A poll loop is the crate's most frequent
-//!    caller interaction, so "the receiver polls faster than the worker
-//!    decides" has to cost an atomic swap rather than a queue entry.
+//! 3. Since the poll itself became a worker job, the same caller must not
+//!    accumulate THOSE either: every poll is accounted for exactly once, as a
+//!    job or as a fold into one already queued, and the jobs never outnumber
+//!    the polls. A poll loop is the crate's most frequent caller interaction,
+//!    so "the receiver polls faster than the worker decides" has to cost an
+//!    atomic swap rather than a queue entry.
 
 use std::{
     sync::{Arc, mpsc},

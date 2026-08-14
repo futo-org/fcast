@@ -217,20 +217,21 @@ pub(crate) struct RoutedStream {
     /// stream id, so this pad is the one it left behind
     /// (gstdecodebin3.c:3169-3183 / 4761-4784).
     ///
-    /// NOT permanent, and that correction is the walk-back's whole root cause. This was
-    /// written as a permanent verdict on the belief that decodebin3 only ever
-    /// replaces an output with a LATER one and never comes back, so no proof
-    /// of life could exist ("the sticky segment on a superseded pad is
-    /// whatever it held before the flush, so 'a segment appeared' says
-    /// nothing"). The segment half of that is still true. The conclusion was
-    /// not: decodebin3 recycles outputs in BOTH directions.
-    /// `gst_decodebin_get_slot_for_input_stream_locked` takes the
-    /// LOWEST-INDEXED unused compatible slot (`:3874-3886`, "Re-using existing
-    /// unused slot 2") and `db_output_stream_reconfigure` (`:4229`) re-points
-    /// the EXISTING ghost pad at it, emitting no pad-added. Which direction a
-    /// re-enable takes depends only on whether the previous input's slot has
-    /// been released yet, so an off/on that drains the old input first walks
-    /// BACK onto the pad this flag had condemned.
+    /// NOT permanent, and that correction is the walk-back's whole root cause.
+    /// This was written as a permanent verdict on the belief that
+    /// decodebin3 only ever replaces an output with a LATER one and never
+    /// comes back, so no proof of life could exist ("the sticky segment on
+    /// a superseded pad is whatever it held before the flush, so 'a segment
+    /// appeared' says nothing"). The segment half of that is still true.
+    /// The conclusion was not: decodebin3 recycles outputs in BOTH
+    /// directions. `gst_decodebin_get_slot_for_input_stream_locked` takes
+    /// the LOWEST-INDEXED unused compatible slot (`:3874-3886`, "Re-using
+    /// existing unused slot 2") and `db_output_stream_reconfigure`
+    /// (`:4229`) re-points the EXISTING ghost pad at it, emitting no
+    /// pad-added. Which direction a re-enable takes depends only on whether
+    /// the previous input's slot has been released yet, so an off/on that
+    /// drains the old input first walks BACK onto the pad this flag had
+    /// condemned.
     ///
     /// The proof of life that does exist is a BUFFER: a pad decodebin3 has
     /// abandoned carries none, and one it has re-pointed at a live slot
@@ -367,8 +368,8 @@ pub(crate) struct RoutingState {
 /// both sinks - and it is nonzero on the default arm, because the skip that
 /// would have driven it to zero was measured to break the same-URL re-attach
 /// (see `Inner::remove_input`). SKIPPED only moves under
-/// `FCAST_REMOVE_INPUT_FLUSH_SKIP`. Both are here so the next attempt at the skip
-/// is measured rather than argued.
+/// `FCAST_REMOVE_INPUT_FLUSH_SKIP`. Both are here so the next attempt at the
+/// skip is measured rather than argued.
 static REMOVE_INPUT_PAIRS_SENT: AtomicU64 = AtomicU64::new(0);
 
 static REMOVE_INPUT_PAIRS_SKIPPED: AtomicU64 = AtomicU64::new(0);
@@ -533,9 +534,7 @@ impl Inner {
                             // `swap` rather than a load, so a second EOS cannot
                             // seed twice. A slot survives a flush, so nothing
                             // resets this.
-                            gst::EventView::Eos(_)
-                                if !produced.swap(true, Ordering::Relaxed) =>
-                            {
+                            gst::EventView::Eos(_) if !produced.swap(true, Ordering::Relaxed) => {
                                 debug!(
                                     pad = %pad.name(),
                                     "an input stream ended without ever producing data; \

@@ -1456,8 +1456,8 @@ const PAUSED_SWITCH_BOUND: Duration = Duration::from_millis(200);
 /// So the claim is exactly this test's claim, and no more: WHEN a cue
 /// is redelivered while paused, it is in front of the renderer immediately and
 /// covers the frozen frame. The undelivered case is already carved out as a
-/// documented residual ("the flip claims the delivered case, and the residual is
-/// documented"); this records that an embedded switch at a settled PAUSED is
+/// documented residual ("the flip claims the delivered case, and the residual
+/// is documented"); this records that an embedded switch at a settled PAUSED is
 /// one of them, on decodebin3's account rather than the transport's.
 ///
 /// # Where the other half lives

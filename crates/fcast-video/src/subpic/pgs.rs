@@ -224,8 +224,8 @@ impl ObjectData {
 /// A display set being assembled: the presentation segment has arrived, the END
 /// segment has not.
 struct OpenSet {
-    /// Running time of the packet the PRESENTATION segment arrived in, i.e. when
-    /// this set goes on screen.
+    /// Running time of the packet the PRESENTATION segment arrived in, i.e.
+    /// when this set goes on screen.
     rt: gst::ClockTime,
     /// The authoring canvas, from the presentation segment's video descriptor.
     canvas: (u16, u16),
@@ -1125,11 +1125,11 @@ fn crop_picture(picture: Picture, crop: Crop) -> Option<Picture> {
 /// `1.164 / 1.793 / -0.213 / -0.533 / 2.112` at 8 fractional bits. (BT.709 is
 /// what the name says it is, and this comment said BT.601 until the
 /// arithmetic was checked. The VALUES were always the reference's, and
-/// the reference is right, since Blu-ray video is BT.709 and its graphics planes are
-/// authored to match. A provenance comment that names the wrong standard is a
-/// provenance comment nobody can check.) They are cited rather than re-derived
-/// because "which matrix does a Blu-ray palette actually use" is a question the
-/// format leaves open and twenty years of field use answers.
+/// the reference is right, since Blu-ray video is BT.709 and its graphics
+/// planes are authored to match. A provenance comment that names the wrong
+/// standard is a provenance comment nobody can check.) They are cited rather
+/// than re-derived because "which matrix does a Blu-ray palette actually use"
+/// is a question the format leaves open and twenty years of field use answers.
 ///
 /// **The alpha stays STRAIGHT.** The reference premultiplies here
 /// (`gstspu-pgs.c:545-548`) because its compositor wants that; this renderer
@@ -2294,8 +2294,8 @@ mod tests {
     }
 
     /// A malformed stream costs the ENGINE a counted decode error, which is the
-    /// other end of the decoder's own counter: the cap asks for the count, and this
-    /// is where it lands.
+    /// other end of the decoder's own counter: the cap asks for the count, and
+    /// this is where it lands.
     #[test]
     fn a_malformed_set_counts_a_decode_error_at_the_engine() {
         gst::init().unwrap();

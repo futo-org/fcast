@@ -18,12 +18,12 @@
 //! The race is too rare to soak for, so it is manufactured:
 //!
 //! * the `MessageHook` (raw first look at every bus message, running on the
-//!   posting thread) takes the first message posted from a thread that is
-//!   not the caller's after an external subtitle is attached to a PLAYING
-//!   pipeline. The attach puts a fresh input into a running decoder, whose
-//!   source task is what posts,
-//! * it then signals the main thread and sleeps, holding its upgraded
-//!   reference open for [`HOLD`],
+//!   posting thread) takes the first message posted from a thread that is not
+//!   the caller's after an external subtitle is attached to a PLAYING pipeline.
+//!   The attach puts a fresh input into a running decoder, whose source task is
+//!   what posts,
+//! * it then signals the main thread and sleeps, holding its upgraded reference
+//!   open for [`HOLD`],
 //! * the main thread drops its only handle inside that window, leaving the
 //!   hook's upgrade terminal.
 //!

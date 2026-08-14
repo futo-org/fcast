@@ -67,11 +67,10 @@ fn init() {
 /// * `Pacing::Realtime`, so the first pass cannot race ahead to
 ///   [`SEEK_TARGET_FRAME`]. Unpaced, the source fills the queues at memory
 ///   speed and the stall wedges the initial preroll instead.
-/// * the video stall at exactly the frame the post-seek restart begins at.
-///   That park holds the lost-state window open (the sink cannot re-preroll,
-///   no ASYNC_DONE, no commit attempt). Without it the window is one
-///   re-preroll long, the error lands after the commit, and the test passes
-///   in both arms.
+/// * the video stall at exactly the frame the post-seek restart begins at. That
+///   park holds the lost-state window open (the sink cannot re-preroll, no
+///   ASYNC_DONE, no commit attempt). Without it the window is one re-preroll
+///   long, the error lands after the commit, and the test passes in both arms.
 fn main_item(key: &str) -> ScenarioHandle {
     let video = StreamSpec::new(
         "video_0",
@@ -371,11 +370,11 @@ fn the_injected_transport_error_carries_the_text_the_crate_recovers_on() {
 
 /// Setup both tests share. Each step is load-bearing:
 ///
-/// 1. play to a settled PLAYING. From PAUSED the pipeline never re-prerolls
-///    in either arm, so it would be a non-control.
-/// 2. attach the erroring externals unselected. Selected, the seek is
-///    forwarded into them and blocks on the very task the stall gate holds,
-///    wedging the worker in both arms.
+/// 1. play to a settled PLAYING. From PAUSED the pipeline never re-prerolls in
+///    either arm, so it would be a non-control.
+/// 2. attach the erroring externals unselected. Selected, the seek is forwarded
+///    into them and blocks on the very task the stall gate holds, wedging the
+///    worker in both arms.
 /// 3. seek. The crate answers `QueueSeek` and drops to PAUSED, the machine
 ///    dispatches the real flushing seek on the settled-Paused edge, and that
 ///    flush loses the state.

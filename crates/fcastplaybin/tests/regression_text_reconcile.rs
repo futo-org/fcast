@@ -12,10 +12,9 @@
 //!   nothing-in-flight guards, an unconditional periodic trigger would be a
 //!   replay generator.
 //! * [`the_seat_occupant_is_observed_not_remembered`]:
-//!   `observed_seat_occupant()` must agree with what is actually wired to
-//!   the consumer tail and go to `None` the moment the branch leaves,
-//!   whereas the `last_applied_subtitle` mirror may keep claiming whatever
-//!   it last wrote.
+//!   `observed_seat_occupant()` must agree with what is actually wired to the
+//!   consumer tail and go to `None` the moment the branch leaves, whereas the
+//!   `last_applied_subtitle` mirror may keep claiming whatever it last wrote.
 //!
 //! The complementary property, that the trigger stops firing when nothing is
 //! left to remember, lives in `tests/tick_idle.rs` in its own binary.
@@ -28,8 +27,8 @@
 //!   `--test-threads` value is safe.
 //! * `FCAST_NO_TEXT_RECONCILE=1`: the pass is off and the v1 slots are back.
 //!   The fixpoint test then proves only that the v1 drains emit nothing.
-//! * `FCAST_NO_TICK_RECONCILE_POKE=1`: removes the periodic trigger. Both
-//!   tests still pass because they poll explicitly.
+//! * `FCAST_NO_TICK_RECONCILE_POKE=1`: removes the periodic trigger. Both tests
+//!   still pass because they poll explicitly.
 
 use std::{
     sync::{Arc, Mutex, mpsc},

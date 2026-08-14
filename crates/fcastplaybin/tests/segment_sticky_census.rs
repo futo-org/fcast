@@ -210,9 +210,9 @@ fn install_census(playbin: &FcastPlaybin, census: &Census) -> Vec<gst::Pad> {
 /// The census pads `install_census` cannot reach: the TEXT branch.
 ///
 /// `install_census` watches `fpb-decodebin`'s sink pads, which is the right
-/// set for the decodebin3-sink pairs and the wrong one for everything the flush policy
-/// removes. The eager REPLACE flush and both disposal pairs land on the text
-/// queue's sink pad and on the branch's tail, and neither was
+/// set for the decodebin3-sink pairs and the wrong one for everything the flush
+/// policy removes. The eager REPLACE flush and both disposal pairs land on the
+/// text queue's sink pad and on the branch's tail, and neither was
 /// under observation by anything crate-side or test-side.
 ///
 /// Probes every `fpb-tqueue-*` sink pad currently in the pipeline plus

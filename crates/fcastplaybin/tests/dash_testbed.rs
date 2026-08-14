@@ -11,8 +11,8 @@
 //! * External: VTT files named by no manifest, reached only via
 //!   `attach_subtitle`. Each gets its own `urisourcebin` into a decodebin3
 //!   request pad.
-//! * Embedded: a `text/vtt` AdaptationSet in the manifest, so the text
-//!   arrives out of the demuxer's output loop, the loop the freeze pauses.
+//! * Embedded: a `text/vtt` AdaptationSet in the manifest, so the text arrives
+//!   out of the demuxer's output loop, the loop the freeze pauses.
 //!
 //! Cue payloads are prefixed `EXTA`/`EXTB`/`EMB` so the overlay tap proves
 //! which source rendered.
@@ -1205,9 +1205,9 @@ type Db3TextLog = Arc<Mutex<Vec<(Option<gst::ClockTime>, Instant)>>>;
 /// load-to-first-cue interval between its possible owners:
 ///
 /// * `T0`: `load_async` returns from the caller's hand.
-/// * `T_mpd`: the server is asked for the manifest. `T_mpd - T0` is the
-///   crate's own bring-up: everything between the caller's load and a source
-///   that has started fetching.
+/// * `T_mpd`: the server is asked for the manifest. `T_mpd - T0` is the crate's
+///   own bring-up: everything between the caller's load and a source that has
+///   started fetching.
 /// * `T_vtt`: the server is asked for `embedded.vtt`. `T_vtt - T_mpd` is the
 ///   DEMUXER's, and nobody else's: it has the manifest, it knows the text
 ///   Representation is there, and this is when it decided to go get it.
@@ -1751,8 +1751,8 @@ fn dash_embedded_text_rejoins_whether_decodebin3_replaces_or_reuses_its_pad() {
 ///
 /// The slot's SINK pad has no CAPS either. Nothing was destroyed inside
 /// decodebin3 (that is the lost-caps shape, whose repair needs a caps on the
-/// sink to put back). Nothing ever ARRIVED. The demuxer exposed the pad, pushed its
-/// opening events, was deselected 3.4 ms later and drained it, and the
+/// sink to put back). Nothing ever ARRIVED. The demuxer exposed the pad, pushed
+/// its opening events, was deselected 3.4 ms later and drained it, and the
 /// re-select that followed 0.7 s later landed 1.36 s BEFORE that drain
 /// finished and was swallowed.
 ///
@@ -2270,8 +2270,9 @@ fn dash_segmented_embedded_text_shows_on_a_first_select_while_paused() {
     harness.shutdown();
 }
 
-/// The same staging REPEATED, which is where it broke: the walk-back, and the pin on
-/// the rule that the text seat follows the DATA rather than routed order.
+/// The same staging REPEATED, which is where it broke: the walk-back, and the
+/// pin on the rule that the text seat follows the DATA rather than routed
+/// order.
 ///
 /// # What it was NOT
 ///

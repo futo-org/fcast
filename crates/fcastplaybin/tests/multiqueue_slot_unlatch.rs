@@ -1,5 +1,5 @@
-//! The slot latch, staged directly: a multiqueue slot latched by a flush pair BELOW it,
-//! and what clears it.
+//! The slot latch, staged directly: a multiqueue slot latched by a flush pair
+//! BELOW it, and what clears it.
 //!
 //! `dispose_text_branch_on` flushes two pads and both are below decodebin3,
 //! the branch's appsink (pair D) and its queue's sink (pair E). A push caught

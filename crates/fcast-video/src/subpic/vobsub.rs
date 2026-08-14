@@ -1712,9 +1712,9 @@ mod tests {
         assert_eq!(decoder.take_decode_errors(), 0);
     }
 
-    /// The allocation cap, at the one place this decoder allocates: a display area is
-    /// twelve bits per axis, so a packet can ask for 4095x4095 RGBA (64 MiB)
-    /// out of a few dozen bytes.
+    /// The allocation cap, at the one place this decoder allocates: a display
+    /// area is twelve bits per axis, so a packet can ask for 4095x4095 RGBA
+    /// (64 MiB) out of a few dozen bytes.
     #[test]
     fn a_picture_past_the_budget_is_a_counted_reset() {
         gst::init().unwrap();
@@ -1785,7 +1785,8 @@ mod tests {
     /// nowhere, at a position it is already stopped at: no epoch, no palette
     /// from an earlier delivery, no half-built object store, and a picture
     /// appears. PGS cannot be driven this way (its display set is a delta on an
-    /// epoch it needs to have seen); VOBSUB can, which is the point of the paused path.
+    /// epoch it needs to have seen); VOBSUB can, which is the point of the
+    /// paused path.
     #[test]
     fn a_paused_unit_covering_the_frozen_frame_reaches_the_screen() {
         gst::init().unwrap();

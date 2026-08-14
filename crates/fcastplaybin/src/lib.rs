@@ -405,9 +405,9 @@ struct Inner {
     /// a text pad nobody consumes pins that loop for the whole element (see
     /// `Inner::park_stream`). The consumer branch is joined later, by
     /// `Inner::poll_text_policy`, and NOT before the pipeline settles at
-    /// PAUSED, where `decisions::text_may_link` is the gate. So there is always a
-    /// window, the whole of bring-up, in which the demuxer's cues cross into a
-    /// sink whose only job is to throw them away.
+    /// PAUSED, where `decisions::text_may_link` is the gate. So there is always
+    /// a window, the whole of bring-up, in which the demuxer's cues cross
+    /// into a sink whose only job is to throw them away.
     ///
     /// On a SEGMENTED text track that costs a cue or two that arrive again.
     /// On a whole-period Representation (one `<BaseURL>`, the entire track

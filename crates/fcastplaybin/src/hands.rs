@@ -7,10 +7,10 @@
 //!
 //! # The rules (each one grep-enforceable)
 //!
-//! 1. Lanes are not the worker. No `Job::SetState`, load, stop, or teardown
-//!    is DISPATCHED here. Two sanctioned exceptions: `ChainJoin`'s
-//!    element-level sink activation, and the pipeline descent a lane can carry
-//!    as the last reference holder (so `Inner::drop` can run here).
+//! 1. Lanes are not the worker. No `Job::SetState`, load, stop, or teardown is
+//!    DISPATCHED here. Two sanctioned exceptions: `ChainJoin`'s element-level
+//!    sink activation, and the pipeline descent a lane can carry as the last
+//!    reference holder (so `Inner::drop` can run here).
 //! 2. Lanes are not each other. One dedicated thread per lane (`fpb-select`,
 //!    `fpb-replay`, `fpb-join`). `Inner::route_db3_pad` runs INLINE on the
 //!    select lane when decodebin3 exposes a pad inside `send_event` and
@@ -19,15 +19,15 @@
 //! 3. The decider never blocks on a hand. Nothing joins a lane or waits for a
 //!    completion. The only coupling is the in-flight table, whose mutex is a
 //!    LEAF: nothing else is acquired while it is held, and it is never taken
-//!    while holding `selection`. `routing` and the gates CAN be held across
-//!    an enqueue (`route_db3_pad` queues its join under the route gate so the
+//!    while holding `selection`. `routing` and the gates CAN be held across an
+//!    enqueue (`route_db3_pad` queues its join under the route gate so the
 //!    routing entry is visible to the join first).
 //! 4. Every enqueue produces EXACTLY ONE outcome, with two edges. A lane whose
 //!    `Weak` no longer upgrades stops without reporting. A lane that cannot
 //!    reach the decider retires the entry itself and settles what is owed. A
 //!    body that never finished owes what the EFFECT owes ([`LaneFallback::of`],
-//!    armed before the body and covering an unwind). A finished body owes
-//!    what its OUTCOME owes ([`Outcome::owed`]).
+//!    armed before the body and covering an unwind). A finished body owes what
+//!    its OUTCOME owes ([`Outcome::owed`]).
 //! 5. Revalidation happens at EXECUTION, not at enqueue. A select whose queue
 //!    epoch has moved is skipped WITH an outcome, never silently.
 //!

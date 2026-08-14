@@ -6,12 +6,12 @@
 //! over raw atomics and a futex, so whether TSan sees a happens-before edge
 //! through it is an empirical question.
 //!
-//! * [`tsan_canary_positive`] is a deliberate unsynchronized write pair.
-//!   TSan must report it, or the gate is not instrumenting the crate's Rust
-//!   code and every green run is vacuous.
-//! * [`tsan_canary_negative`] is the same pair through a
-//!   `parking_lot::Mutex`. TSan must stay silent, or the gate would flag
-//!   every correctly-synchronized access in the crate.
+//! * [`tsan_canary_positive`] is a deliberate unsynchronized write pair. TSan
+//!   must report it, or the gate is not instrumenting the crate's Rust code and
+//!   every green run is vacuous.
+//! * [`tsan_canary_negative`] is the same pair through a `parking_lot::Mutex`.
+//!   TSan must stay silent, or the gate would flag every correctly-synchronized
+//!   access in the crate.
 //!
 //! Both are `#[ignore]`d because the positive one is deliberate undefined
 //! behaviour. `tools/run-tsan.sh` runs this target first, with `--ignored`,

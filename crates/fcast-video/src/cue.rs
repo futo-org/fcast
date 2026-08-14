@@ -1466,9 +1466,9 @@ fn same_update(a: &DisplayUpdate, b: &DisplayUpdate) -> bool {
 ///
 ///  * a popped update with no regions is the scheduled clear. It takes the
 ///    active set away instead of becoming it.
-///  * expiry is a real event here rather than an edge case. Some formats'
-///    pages carry a timeout and must come off the screen with nothing to
-///    replace them.
+///  * expiry is a real event here rather than an edge case. Some formats' pages
+///    carry a timeout and must come off the screen with nothing to replace
+///    them.
 ///
 /// The rule, stated once so [`trim_bitmap_pending`] can state the same one:
 /// **what survives a run of due sets is the last non-expired one.** An expired
@@ -1682,9 +1682,9 @@ fn merge_end(a: Option<gst::ClockTime>, b: Option<gst::ClockTime>) -> Option<gst
 ///
 ///  * **Files carry each cue twice.** Caption converters emit, for every cue, a
 ///    zero-length record (`start == end`) immediately before the real one. Both
-///    are real records and the parser and transport carry both faithfully
-///    (`pts + 0` is `pts`), so 401 cues can arrive as 783 deliveries. Un-merged,
-///    the twins double the backlog and the degenerate copy can expire the cue it
+///    are real records and the parser and transport carry both faithfully (`pts
+///    + 0` is `pts`), so 401 cues can arrive as 783 deliveries. Un-merged, the
+///    twins double the backlog and the degenerate copy can expire the cue it
 ///    duplicates, since `end <= rt` is true of a zero-length window at every rt
 ///    at or after its start.
 ///  * **A replay re-delivers the whole file.** The subtitle input is seeked and
@@ -1783,10 +1783,10 @@ fn trim_pending(state: &mut State, dropped: &AtomicU64) {
 ///
 /// MULTI-ACTIVE: every cue whose window covers `rt` is on screen, and each one
 /// leaves on its own end. Overlapping cues are normal in a subtitle file (a
-/// speaker label under a line of dialogue, a sign translated while someone talks
-/// over it). The single-active engine this one grew out of showed them one at a
-/// time, because `fcasttextoverlay` holds exactly one text buffer and a newer
-/// one replaces it.
+/// speaker label under a line of dialogue, a sign translated while someone
+/// talks over it). The single-active engine this one grew out of showed them
+/// one at a time, because `fcasttextoverlay` holds exactly one text buffer and
+/// a newer one replaces it.
 ///
 /// LATEST-START-WINS is not gone. It stopped being a REPLACEMENT policy and
 /// became an ORDERING one. The active set is kept in start order and
@@ -2431,9 +2431,9 @@ impl Drop for DecodeHold {
 /// out.
 ///
 /// Everything expensive about bitmap subtitles happens here and nowhere else
-/// (mapping the buffer, RLE expansion, palette conversion, the persistent region
-/// buffers DVB paints into), which is what keeps `submit_bitmap` a pointer copy
-/// on the delivery thread.
+/// (mapping the buffer, RLE expansion, palette conversion, the persistent
+/// region buffers DVB paints into), which is what keeps `submit_bitmap` a
+/// pointer copy on the delivery thread.
 fn decode_worker_main(shared: Weak<Shared>, inbox: Arc<BitmapInbox>) {
     let mut decoder: Option<(BitmapFormat, Box<dyn SubpicDecoder>)> = None;
     let mut applied_codec_data: Option<gst::Buffer> = None;
@@ -2679,8 +2679,9 @@ fn record_raster_latency(shared: &Arc<Shared>, cost: Duration) {
 
 /// Hand a finished raster to the engine. Returns whether it changed what is on
 /// screen (a raster for a cue that has since been replaced only warms the
-/// cache). Takes the state lock without holding the inbox lock, since the worker
-/// must never hold both, since the engine takes them in the opposite order.
+/// cache). Takes the state lock without holding the inbox lock, since the
+/// worker must never hold both, since the engine takes them in the opposite
+/// order.
 fn publish(shared: &Arc<Shared>, key: RasterKey, raster: Option<Arc<Raster>>) -> bool {
     if let Some(raster) = raster.as_ref() {
         shared.cache.lock().insert(key.clone(), raster.clone());
@@ -3364,8 +3365,9 @@ mod tests {
         assert_eq!(engine.shared.state.lock().last_shown_rt, Some(ms(10)));
     }
 
-    /// The whole-file burst, at engine scale: an external subtitle arrives as one
-    /// burst of the whole file, and every cue in it has to survive to its turn.
+    /// The whole-file burst, at engine scale: an external subtitle arrives as
+    /// one burst of the whole file, and every cue in it has to survive to
+    /// its turn.
     #[test]
     fn a_whole_file_burst_is_retained_and_shows_at_its_times() {
         let engine = CueEngine::new();
@@ -4079,8 +4081,8 @@ mod tests {
     /// `end(N) == start(N+1)` to the nanosecond and there is no gap for a frame
     /// to fall into. The predicates handle that seam correctly (one `evaluate`
     /// expires N and adopts N+1) and the cue was already in `pending` a full
-    /// second early, because the text branch is unsynced and runs ~1.2s ahead of
-    /// the clock.
+    /// second early, because the text branch is unsynced and runs ~1.2s ahead
+    /// of the clock.
     ///
     /// The blank came from the RASTER, not the schedule: the cue was adopted
     /// `Pending`, `active_overlays` skips anything that is not Ready or Stale,
@@ -4919,16 +4921,16 @@ mod tests {
     }
 
     /// One packet, with a distinct buffer every call. The duplicate check is on
-    /// buffer IDENTITY, so a test that wants a duplicate has to clone the buffer
-    /// deliberately.
+    /// buffer IDENTITY, so a test that wants a duplicate has to clone the
+    /// buffer deliberately.
     fn bitmap_packet(tag: u8, rt: u64, duration: Option<u64>) -> BitmapPacket {
         bitmap_packet_of(BitmapFormat::Pgs, tag, rt, duration)
     }
 
     /// The same, for a NAMED format. Every test in this file installs its own
-    /// decoder, so the format is only ever a routing key here, except in the one
-    /// test that deliberately does not install anything and needs a format the
-    /// production table still answers `None` for.
+    /// decoder, so the format is only ever a routing key here, except in the
+    /// one test that deliberately does not install anything and needs a
+    /// format the production table still answers `None` for.
     fn bitmap_packet_of(
         format: BitmapFormat,
         tag: u8,
@@ -5111,13 +5113,14 @@ mod tests {
         );
     }
 
-    /// The packet inbox overflows by RESETTING, not by skipping, and a reset that
-    /// lands while packets are already queued discards what they decode to.
+    /// The packet inbox overflows by RESETTING, not by skipping, and a reset
+    /// that lands while packets are already queued discards what they
+    /// decode to.
     ///
     /// The two halves are the same mechanism from both ends. Reset-not-skip is
     /// what keeps a stateful decoder from being handed a stream with a hole in
-    /// it. The epoch check is what keeps the work already in flight from landing
-    /// on the far side of a track switch.
+    /// it. The epoch check is what keeps the work already in flight from
+    /// landing on the far side of a track switch.
     #[test]
     fn an_overflowing_inbox_resets_and_a_clear_discards_what_is_queued() {
         gst::init().unwrap();
@@ -5343,8 +5346,8 @@ mod tests {
         );
     }
 
-    /// A set covering the FROZEN frame goes on screen with no frame flowing, and
-    /// the renderer is told to repaint. The bitmap twin of
+    /// A set covering the FROZEN frame goes on screen with no frame flowing,
+    /// and the renderer is told to repaint. The bitmap twin of
     /// `a_paused_cue_covering_the_frozen_frame_reaches_the_screen`.
     #[test]
     fn a_paused_bitmap_set_covering_the_frozen_frame_reaches_the_screen() {
@@ -5461,8 +5464,8 @@ mod tests {
     /// size. The worker used to forget only the `codec_data`, and every set
     /// decoded after a flush, a clear or an inbox overflow was then scaled
     /// against the default grid for the rest of the stream. "Applied once" is
-    /// the wrong property to pin: it is applied once per DECODER LIFETIME, and a
-    /// reset starts a new one.
+    /// the wrong property to pin: it is applied once per DECODER LIFETIME, and
+    /// a reset starts a new one.
     #[test]
     fn the_decoder_learns_its_setup_once_and_relearns_it_after_a_reset() {
         gst::init().unwrap();

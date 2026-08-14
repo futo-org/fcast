@@ -40,8 +40,8 @@
 //!    and the post-seek PREROLL frame must restore. It is printed beside
 //!    `overlays_for(Some(rt))`, which supplies an rt instead of reading one.
 //!    *Broken:* `current_overlays()` is 0 while `overlays_for(Some(0ms))` is 1
-//!    the cue is schedulable but `last_shown_rt` is `None`, so no preroll
-//!    frame reached `show_frame` after the flush.
+//!    the cue is schedulable but `last_shown_rt` is `None`, so no preroll frame
+//!    reached `show_frame` after the flush.
 //! 4. **REPAINT**, `overlays-changed` is what tells a frozen frame to redraw
 //!    (there is no next frame to carry it). *Broken:* the count is 0 while
 //!    `current_overlays()` is non-zero, the engine has the overlay and nobody

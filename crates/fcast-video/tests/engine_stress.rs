@@ -109,8 +109,8 @@ fn five_threads_on_one_engine_with_a_dvb_decoder() {
         }));
     }
 
-    // 3. Clears (epoch discard). Old-epoch decodes must be dropped, and the
-    //    window that matters is while another thread is inside a decode.
+    // 3. Clears (epoch discard). Old-epoch decodes must be dropped, and the window
+    //    that matters is while another thread is inside a decode.
     {
         let (engine, stop, cleared) = (engine.clone(), stop.clone(), cleared.clone());
         threads.push(std::thread::spawn(move || {
@@ -122,8 +122,8 @@ fn five_threads_on_one_engine_with_a_dvb_decoder() {
         }));
     }
 
-    // 4. Renderer: reads overlays, takes the dirty flag, moves the video
-    //    rectangle under everything.
+    // 4. Renderer: reads overlays, takes the dirty flag, moves the video rectangle
+    //    under everything.
     {
         let (engine, stop, read) = (engine.clone(), stop.clone(), read.clone());
         threads.push(std::thread::spawn(move || {
@@ -141,8 +141,8 @@ fn five_threads_on_one_engine_with_a_dvb_decoder() {
         }));
     }
 
-    // 5. Text cues through the raster worker, so both workers are live and
-    //    both reset hooks hit the same state lock.
+    // 5. Text cues through the raster worker, so both workers are live and both
+    //    reset hooks hit the same state lock.
     {
         let (engine, stop) = (engine.clone(), stop.clone());
         threads.push(std::thread::spawn(move || {

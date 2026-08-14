@@ -581,9 +581,9 @@ impl Inner {
             let _ = pipeline.remove(&appsink);
         }
 
-        // THE SLOT REPAIR. Everything above this line happened BELOW decodebin3, and the
-        // one thing this function cannot do from down there is un-break what
-        // it broke UP there: a push caught inside a pair's window returns
+        // THE SLOT REPAIR. Everything above this line happened BELOW decodebin3, and
+        // the one thing this function cannot do from down there is un-break
+        // what it broke UP there: a push caught inside a pair's window returns
         // FLUSHING into `gst_single_queue_push_one`, which latches the slot's
         // `srcresult` permanently, and our FLUSH_STOP never goes near the
         // multiqueue's sink pad, which is the only event that would clear it.

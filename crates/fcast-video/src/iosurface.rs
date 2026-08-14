@@ -99,10 +99,11 @@ unsafe extern "C" {
 /// The GL format triple used to interpret a single IOSurface plane, plus the
 /// libplacebo `iformat` for `pl_opengl_wrap`.
 ///
-/// `cgl_internal` and `pl_iformat` are separate because `CGLTexImageIOSurface2D`
-/// wants the legacy interop formats (unsized `GL_RGBA` for BGRA, sized
-/// `GL_R16`/`GL_RG16` for 16-bit) while libplacebo only matches sized internal
-/// formats. The CGL triples mirror mpv's VideoToolbox interop table.
+/// `cgl_internal` and `pl_iformat` are separate because
+/// `CGLTexImageIOSurface2D` wants the legacy interop formats (unsized `GL_RGBA`
+/// for BGRA, sized `GL_R16`/`GL_RG16` for 16-bit) while libplacebo only matches
+/// sized internal formats. The CGL triples mirror mpv's VideoToolbox interop
+/// table.
 #[derive(Debug, Clone, Copy)]
 pub struct PlaneGlFormat {
     /// Internal format for `CGLTexImageIOSurface2D`.

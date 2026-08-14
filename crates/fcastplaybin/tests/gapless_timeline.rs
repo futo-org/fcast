@@ -544,8 +544,9 @@ impl Harness {
 
     /// The video chain joins with the item's first video stream, so a settled
     /// PLAYING is not proof the sink is in the pipeline yet. Wait for it
-    /// rather than racing it. (Before subtitleoverlay was deleted this waited for
-    /// subtitleoverlay, which joined at the same moment for the same reason.)
+    /// rather than racing it. (Before subtitleoverlay was deleted this waited
+    /// for subtitleoverlay, which joined at the same moment for the same
+    /// reason.)
     fn video_sink_pad(&self) -> gst::Pad {
         let deadline = Instant::now() + EVENT_TIMEOUT;
         loop {
