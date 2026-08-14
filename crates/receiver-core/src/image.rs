@@ -44,6 +44,10 @@ pub enum DownloadImageError {
     CompRequestFailed,
     #[error("FCompanion resource not found")]
     ResourceNotFound,
+    #[error("FCompanion resource failed: {0:?}")]
+    CompanionResource(crate::fcast::CompanionResourceOutcome),
+    #[error("FCompanion request timed out")]
+    CompanionTimeout,
 }
 
 pub fn orientation_to_degs(orientation: metadata::Orientation) -> f32 {
@@ -397,33 +401,58 @@ impl Downloader {
 
         let url = crate::fcompsrc::FCompUrl::new(&url).ok_or(DownloadImageError::InvalidCompUrl)?;
 
-        let provider = ctx
-            .get_provider(url.provider_id)
-            .ok_or(DownloadImageError::ProviderNotFound)?;
-        let mut info = provider
-            .get_resource_info(url.resource_id)
-            .map_err(|_| DownloadImageError::FailedToGetInfo)?;
-        let mut resource_rx = provider
-            .get_resource(url.resource_id, None)
-            .map_err(|_| DownloadImageError::CompRequestFailed)?;
-
-        let info = info
-            .recv()
-            .await
-            .ok_or(DownloadImageError::FailedToGetInfo)?;
-        let format = Self::format_from_content_type(info.borrow_dependent().content_type())?;
-
-        let mut res = Vec::new();
-        while let Some(a) = resource_rx.recv().await {
-            match a.result {
-                companion::GetResourceResult::NotFound => {
+        tokio::time::timeout(crate::fcast::COMPANION_REQUEST_TIMEOUT, async {
+            let provider = ctx
+                .get_provider(url.provider_id)
+                .ok_or(DownloadImageError::ProviderNotFound)?;
+            let mut info = provider
+                .get_resource_info(url.resource_id, &url.route)
+                .map_err(|_| DownloadImageError::FailedToGetInfo)?;
+            let info = info
+                .recv()
+                .await
+                .ok_or(DownloadImageError::FailedToGetInfo)?;
+            let info = info.borrow_dependent();
+            let format = Self::format_from_content_type(info.content_type())?;
+            match crate::fcast::companion_info_outcome(info.status()) {
+                crate::fcast::CompanionResourceOutcome::Success => (),
+                crate::fcast::CompanionResourceOutcome::NotFound => {
                     return Err(DownloadImageError::ResourceNotFound);
                 }
-                companion::GetResourceResult::Success(buf) => res.extend_from_slice(&buf),
+                crate::fcast::CompanionResourceOutcome::EndOfStream => {
+                    return Ok((Bytes::new(), format));
+                }
+                outcome => return Err(DownloadImageError::CompanionResource(outcome)),
             }
-        }
 
-        Ok((Bytes::from_owner(res), format))
+            let mut resource_rx = provider
+                .get_resource(url.resource_id, &url.route, None)
+                .map_err(|_| DownloadImageError::CompRequestFailed)?;
+            let mut res = Vec::new();
+            let mut received = false;
+            while let Some(response) = resource_rx.recv().await {
+                received = true;
+                match response.result {
+                    companion::GetResourceResult::Success(buf) => res.extend_from_slice(&buf),
+                    companion::GetResourceResult::EndOfStream => break,
+                    companion::GetResourceResult::NotFound => {
+                        return Err(DownloadImageError::ResourceNotFound);
+                    }
+                    result => {
+                        return Err(DownloadImageError::CompanionResource(
+                            crate::fcast::companion_resource_outcome(&result),
+                        ));
+                    }
+                }
+            }
+            if !received {
+                return Err(DownloadImageError::CompRequestFailed);
+            }
+
+            Ok((Bytes::from_owner(res), format))
+        })
+        .await
+        .map_err(|_| DownloadImageError::CompanionTimeout)?
     }
 
     pub fn queue_download(&self, id: u32, url: String, headers: Option<HashMap<String, String>>) {

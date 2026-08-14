@@ -949,14 +949,28 @@ impl<'a> Engine<'a> {
         // Explicitly report not-found resources so the receiver surfaces a
         // ResourceNotFound error.
         if self.companion_missing.contains_key(&resource_id) {
-            return self.send_companion_not_found(request_id).await;
+            let body = companion::ResourceResponse {
+                request_id,
+                part: 0,
+                total_parts: 1,
+                result: companion::GetResourceResult::NotFound,
+            }
+            .serialize();
+            return self.conn.write(Opcode::Resource, Some(&body)).await;
         }
         let Some(data) = self
             .companion_resources
             .get(&resource_id)
             .map(|r| r.data.clone())
         else {
-            return self.send_companion_not_found(request_id).await;
+            let body = companion::ResourceResponse {
+                request_id,
+                part: 0,
+                total_parts: 1,
+                result: companion::GetResourceResult::NotFound,
+            }
+            .serialize();
+            return self.conn.write(Opcode::Resource, Some(&body)).await;
         };
 
         let end = read_head
@@ -972,7 +986,8 @@ impl<'a> Engine<'a> {
         } else {
             slice.chunks(companion::MAX_RESOURCE_READ_SIZE).collect()
         };
-        let total_parts = chunks.len() as u8;
+        let total_parts = companion::resource_part_count(slice.len())
+            .ok_or_else(|| anyhow!("companion resource response exceeds 255 parts"))?;
 
         for (i, chunk) in chunks.iter().enumerate() {
             // Part numbering is 0-based (v4 spec, Resource/Response: "Part #

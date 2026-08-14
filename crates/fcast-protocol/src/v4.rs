@@ -188,11 +188,26 @@ impl<'a> MessageBuilder<'a> {
     }
 
     pub fn companion_hello_request(mut self) -> ConstructedMessage<'a> {
-        create_msg!(self, CompanionHelloRequest,)
+        create_msg!(self, CompanionHelloRequest, max_protocol_version: 0)
+    }
+
+    pub fn companion_hello_request_with_version(
+        mut self,
+        max_protocol_version: u16,
+    ) -> ConstructedMessage<'a> {
+        create_msg!(self, CompanionHelloRequest, max_protocol_version)
     }
 
     pub fn companion_hello_response(mut self, provider_id: u16) -> ConstructedMessage<'a> {
-        create_msg!(self, CompanionHelloResponse, provider_id)
+        create_msg!(self, CompanionHelloResponse, provider_id, protocol_version: 0)
+    }
+
+    pub fn companion_hello_response_with_version(
+        mut self,
+        provider_id: u16,
+        protocol_version: u16,
+    ) -> ConstructedMessage<'a> {
+        create_msg!(self, CompanionHelloResponse, provider_id, protocol_version)
     }
 
     pub fn companion_resource_info_request(
@@ -200,14 +215,46 @@ impl<'a> MessageBuilder<'a> {
         request_id: u32,
         resource_id: u32,
     ) -> ConstructedMessage<'a> {
-        create_msg!(self, CompanionResourceInfoRequest, request_id, resource_id)
+        create_msg!(self, CompanionResourceInfoRequest, request_id, resource_id, route: None)
+    }
+
+    pub fn companion_resource_info_request_with_route(
+        mut self,
+        request_id: u32,
+        resource_id: u32,
+        route: &str,
+    ) -> Result<ConstructedMessage<'a>, crate::companion::RouteError> {
+        crate::companion::validate_route(route)?;
+        let route = (!route.is_empty()).then(|| self.builder.create_string(route));
+        Ok(create_msg!(
+            self,
+            CompanionResourceInfoRequest,
+            request_id,
+            resource_id,
+            route
+        ))
     }
 
     pub fn companion_resource_info_response(
+        self,
+        request_id: u32,
+        content_type: &str,
+        size: Option<u64>,
+    ) -> ConstructedMessage<'a> {
+        self.companion_resource_info_response_with_status(
+            request_id,
+            content_type,
+            size,
+            flat::CompanionResourceStatus::Success,
+        )
+    }
+
+    pub fn companion_resource_info_response_with_status(
         mut self,
         request_id: u32,
         content_type: &str,
         size: Option<u64>,
+        status: flat::CompanionResourceStatus,
     ) -> ConstructedMessage<'a> {
         let content_type = self.builder.create_string(content_type);
         let (resource_size_type, resource_size) = match size {
@@ -234,7 +281,8 @@ impl<'a> MessageBuilder<'a> {
             request_id,
             content_type: Some(content_type),
             resource_size_type: resource_size_type,
-            resource_size: Some(resource_size)
+            resource_size: Some(resource_size),
+            status
         )
     }
 
@@ -763,7 +811,21 @@ impl<'a> MessageBuilder<'a> {
         resource_id: u32,
         read_head: Option<flat::ResourceReadHead>,
     ) -> ConstructedMessage<'a> {
-        create_msg!(self, CompanionResourceRequest, request_id, resource_id, read_head: read_head.as_ref())
+        create_msg!(self, CompanionResourceRequest, request_id, resource_id, read_head: read_head.as_ref(), route: None)
+    }
+
+    pub fn companion_resource_request_with_route(
+        mut self,
+        request_id: u32,
+        resource_id: u32,
+        read_head: Option<flat::ResourceReadHead>,
+        route: &str,
+    ) -> Result<ConstructedMessage<'a>, crate::companion::RouteError> {
+        crate::companion::validate_route(route)?;
+        let route = (!route.is_empty()).then(|| self.builder.create_string(route));
+        Ok(
+            create_msg!(self, CompanionResourceRequest, request_id, resource_id, read_head: read_head.as_ref(), route),
+        )
     }
 }
 
@@ -938,6 +1000,106 @@ mod tests {
             item.start_time = Some(bad);
             let _ = MessageBuilder::new().queue_insert(item, Some(bad), QueuePosition::Front);
         }
+    }
+
+    #[test]
+    fn companion_v1_fields_and_legacy_defaults() {
+        let legacy = MessageBuilder::new().companion_hello_request();
+        assert_eq!(
+            flat::root_as_packet(&legacy)
+                .unwrap()
+                .payload_as_companion_hello_request()
+                .unwrap()
+                .max_protocol_version(),
+            0
+        );
+        let hello = MessageBuilder::new()
+            .companion_hello_request_with_version(crate::companion::FCOMPANION_PROTOCOL_VERSION);
+        assert_eq!(
+            flat::root_as_packet(&hello)
+                .unwrap()
+                .payload_as_companion_hello_request()
+                .unwrap()
+                .max_protocol_version(),
+            1
+        );
+
+        let legacy = MessageBuilder::new().companion_hello_response(7);
+        assert_eq!(
+            flat::root_as_packet(&legacy)
+                .unwrap()
+                .payload_as_companion_hello_response()
+                .unwrap()
+                .protocol_version(),
+            0
+        );
+        let hello = MessageBuilder::new().companion_hello_response_with_version(7, 1);
+        let hello = flat::root_as_packet(&hello)
+            .unwrap()
+            .payload_as_companion_hello_response()
+            .unwrap();
+        assert_eq!(hello.provider_id(), 7);
+        assert_eq!(hello.protocol_version(), 1);
+
+        let legacy = MessageBuilder::new().companion_resource_info_request(8, 9);
+        assert_eq!(
+            flat::root_as_packet(&legacy)
+                .unwrap()
+                .payload_as_companion_resource_info_request()
+                .unwrap()
+                .route()
+                .unwrap_or_default(),
+            ""
+        );
+        let routed = MessageBuilder::new()
+            .companion_resource_info_request_with_route(8, 9, "/video/init.mp4?x=1")
+            .unwrap();
+        assert_eq!(
+            flat::root_as_packet(&routed)
+                .unwrap()
+                .payload_as_companion_resource_info_request()
+                .unwrap()
+                .route(),
+            Some("/video/init.mp4?x=1")
+        );
+
+        let legacy = MessageBuilder::new().companion_resource_request(8, 9, None);
+        assert_eq!(
+            flat::root_as_packet(&legacy)
+                .unwrap()
+                .payload_as_companion_resource_request()
+                .unwrap()
+                .route()
+                .unwrap_or_default(),
+            ""
+        );
+        assert!(MessageBuilder::new()
+            .companion_resource_request_with_route(8, 9, None, "//authority")
+            .is_err());
+
+        let legacy = MessageBuilder::new().companion_resource_info_response(8, "video/mp4", None);
+        assert_eq!(
+            flat::root_as_packet(&legacy)
+                .unwrap()
+                .payload_as_companion_resource_info_response()
+                .unwrap()
+                .status(),
+            flat::CompanionResourceStatus::Success
+        );
+        let failed = MessageBuilder::new().companion_resource_info_response_with_status(
+            8,
+            "application/octet-stream",
+            None,
+            flat::CompanionResourceStatus::NotFound,
+        );
+        assert_eq!(
+            flat::root_as_packet(&failed)
+                .unwrap()
+                .payload_as_companion_resource_info_response()
+                .unwrap()
+                .status(),
+            flat::CompanionResourceStatus::NotFound
+        );
     }
 
     /// A Load's custom `extra_metadata` must round-trip through the peer-relay

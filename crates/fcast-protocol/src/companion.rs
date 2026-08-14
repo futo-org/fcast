@@ -6,9 +6,34 @@ pub type ProviderId = u16;
 pub type ResourceId = u32;
 pub type RequestId = u32;
 
+pub const FCOMPANION_PROTOCOL_VERSION: u16 = 1;
+pub const MAX_ROUTE_BYTES: usize = 8192;
 const OPCODE_SIZE: usize = 1;
 pub const MAX_RESOURCE_READ_SIZE: usize =
     crate::v4::MAX_PACKET_SIZE - ResourceResponse::max_overhead() - OPCODE_SIZE;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RouteError {
+    TooLong,
+    NotOriginForm,
+    Fragment,
+    Newline,
+}
+
+impl error::Error for RouteError {}
+
+impl fmt::Display for RouteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLong => write!(f, "route exceeds {MAX_ROUTE_BYTES} bytes"),
+            Self::NotOriginForm => {
+                write!(f, "route must be empty or origin-form without authority")
+            }
+            Self::Fragment => write!(f, "route must not contain a fragment"),
+            Self::Newline => write!(f, "route must not contain CR or LF"),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum ParseError {
@@ -74,6 +99,10 @@ impl ResourceResponse {
         size_of::<u32>() + size_of::<u8>() * 3
     }
 
+    pub const fn is_last_part(&self) -> bool {
+        self.total_parts != 0 && self.part == self.total_parts - 1
+    }
+
     pub fn header_success(
         request_id: u32,
         part: u8,
@@ -95,26 +124,38 @@ impl ResourceResponse {
 #[derive(Debug, PartialEq, Eq)]
 pub enum GetResourceResult {
     NotFound,
-    /// The requested bytes, as a refcounted view of the packet they arrived
-    /// in, not a copy.
-    Success(Bytes),
+    Success(Vec<u8>),
+    InvalidRange,
+    Cancelled,
+    Failed,
+    EndOfStream,
 }
 
 impl GetResourceResult {
-    pub fn parse(buf: Bytes) -> Result<Self, ParseError> {
-        match buf.first() {
-            None => Err(ParseError::MissingData),
-            Some(0x00) => Ok(Self::NotFound),
-            // A slice sharing `buf`'s allocation. The payload is never copied.
-            Some(0x01) => Ok(Self::Success(buf.slice(1..))),
-            Some(&v) => Err(ParseError::InvalidEnumVariant(v)),
+    pub fn parse(buf: &[u8]) -> Result<Self, ParseError> {
+        if buf.is_empty() {
+            return Err(ParseError::MissingData);
+        }
+
+        match buf[0] {
+            0x00 => Ok(Self::NotFound),
+            0x01 => Ok(Self::Success(buf[1..].to_vec())),
+            0x02 => Ok(Self::InvalidRange),
+            0x03 => Ok(Self::Cancelled),
+            0x04 => Ok(Self::Failed),
+            0x05 => Ok(Self::EndOfStream),
+            v => Err(ParseError::InvalidEnumVariant(v)),
         }
     }
 
     pub fn serialize(&self) -> Vec<u8> {
         match self {
-            GetResourceResult::NotFound => vec![0x00],
-            GetResourceResult::Success(buf) => [&[Self::success_tag()], &buf[..]].concat(),
+            Self::NotFound => vec![0x00],
+            Self::Success(buf) => [&[Self::success_tag()], buf.as_slice()].concat(),
+            Self::InvalidRange => vec![0x02],
+            Self::Cancelled => vec![0x03],
+            Self::Failed => vec![0x04],
+            Self::EndOfStream => vec![0x05],
         }
     }
 
@@ -125,6 +166,40 @@ impl GetResourceResult {
 
 pub fn create_url(provider_id: u16, resource_id: u32) -> String {
     format!("fcomp://{provider_id}.fcast/{resource_id}")
+}
+
+/// Validates an FCompanion route: empty, or origin-form beginning with `/`,
+/// without an authority, fragment, CR, or LF.
+pub fn validate_route(route: &str) -> Result<(), RouteError> {
+    if route.len() > MAX_ROUTE_BYTES {
+        return Err(RouteError::TooLong);
+    }
+    if !route.is_empty() && (!route.starts_with('/') || route.starts_with("//")) {
+        return Err(RouteError::NotOriginForm);
+    }
+    if route.contains('#') {
+        return Err(RouteError::Fragment);
+    }
+    if route.contains('\r') || route.contains('\n') {
+        return Err(RouteError::Newline);
+    }
+    Ok(())
+}
+
+pub fn create_routed_url(
+    provider_id: u16,
+    resource_id: u32,
+    route: &str,
+) -> Result<String, RouteError> {
+    validate_route(route)?;
+    Ok(format!("{}{route}", create_url(provider_id, resource_id)))
+}
+
+pub fn resource_part_count(byte_len: usize) -> Option<u8> {
+    let parts = (byte_len / MAX_RESOURCE_READ_SIZE
+        + usize::from(byte_len % MAX_RESOURCE_READ_SIZE != 0))
+    .max(1);
+    u8::try_from(parts).ok()
 }
 
 #[derive(Default)]
@@ -167,18 +242,74 @@ mod tests {
 
     #[test]
     fn get_resource_result() {
-        assert_eq!(
-            GetResourceResult::parse(Bytes::from_static(&[0x00])).unwrap(),
+        for result in [
             GetResourceResult::NotFound,
+            GetResourceResult::Success(vec![1, 2, 3]),
+            GetResourceResult::Success(vec![]),
+            GetResourceResult::InvalidRange,
+            GetResourceResult::Cancelled,
+            GetResourceResult::Failed,
+            GetResourceResult::EndOfStream,
+        ] {
+            assert_eq!(
+                GetResourceResult::parse(&result.serialize()).unwrap(),
+                result
+            );
+        }
+        assert!(matches!(
+            GetResourceResult::parse(&[0xff]),
+            Err(ParseError::InvalidEnumVariant(0xff))
+        ));
+    }
+
+    #[test]
+    fn route_validation_and_url_creation() {
+        assert_eq!(create_routed_url(12, 34, "").unwrap(), create_url(12, 34));
+        assert_eq!(
+            create_routed_url(12, 34, "/manifest.mpd?token=x").unwrap(),
+            "fcomp://12.fcast/34/manifest.mpd?token=x"
+        );
+        assert_eq!(validate_route("relative"), Err(RouteError::NotOriginForm));
+        assert_eq!(
+            validate_route("//authority/path"),
+            Err(RouteError::NotOriginForm)
+        );
+        assert_eq!(validate_route("/path#fragment"), Err(RouteError::Fragment));
+        assert_eq!(validate_route("/path\r\nheader"), Err(RouteError::Newline));
+        assert_eq!(
+            validate_route(&format!("/{}", "a".repeat(MAX_ROUTE_BYTES))),
+            Err(RouteError::TooLong)
+        );
+        assert!(validate_route(&format!("/{}", "a".repeat(MAX_ROUTE_BYTES - 1))).is_ok());
+    }
+
+    #[test]
+    fn multipart_boundaries() {
+        assert_eq!(resource_part_count(0), Some(1));
+        assert_eq!(resource_part_count(MAX_RESOURCE_READ_SIZE), Some(1));
+        assert_eq!(
+            resource_part_count(MAX_RESOURCE_READ_SIZE * u8::MAX as usize),
+            Some(u8::MAX)
         );
         assert_eq!(
-            GetResourceResult::parse(Bytes::from_static(&[0x01, 1, 2, 3])).unwrap(),
-            GetResourceResult::Success(Bytes::from_static(&[1, 2, 3])),
+            resource_part_count(MAX_RESOURCE_READ_SIZE * (u8::MAX as usize + 1)),
+            None
         );
-        assert_eq!(
-            GetResourceResult::parse(Bytes::from_static(&[0x01])).unwrap(),
-            GetResourceResult::Success(Bytes::new()),
-        );
+
+        assert!(ResourceResponse {
+            request_id: 0,
+            part: u8::MAX - 1,
+            total_parts: u8::MAX,
+            result: GetResourceResult::Success(vec![]),
+        }
+        .is_last_part());
+        assert!(!ResourceResponse {
+            request_id: 0,
+            part: 0,
+            total_parts: 0,
+            result: GetResourceResult::Success(vec![]),
+        }
+        .is_last_part());
     }
 
     /// A `Resource` packet body, `payload` long, and the offset its payload

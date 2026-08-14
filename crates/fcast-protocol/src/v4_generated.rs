@@ -1056,6 +1056,106 @@ impl<'a> ::flatbuffers::Verifiable for CompanionResourceSize {
 impl ::flatbuffers::SimpleToVerifyInSlice for CompanionResourceSize {}
 pub struct CompanionResourceSizeUnionTableOffset {}
 
+#[deprecated(since = "2.0.0", note = "Use associated constants instead. This will no longer be generated in 2021.")]
+pub const ENUM_MIN_COMPANION_RESOURCE_STATUS: u8 = 0;
+#[deprecated(since = "2.0.0", note = "Use associated constants instead. This will no longer be generated in 2021.")]
+pub const ENUM_MAX_COMPANION_RESOURCE_STATUS: u8 = 5;
+#[deprecated(since = "2.0.0", note = "Use associated constants instead. This will no longer be generated in 2021.")]
+#[allow(non_camel_case_types)]
+pub const ENUM_VALUES_COMPANION_RESOURCE_STATUS: [CompanionResourceStatus; 6] = [
+  CompanionResourceStatus::Success,
+  CompanionResourceStatus::NotFound,
+  CompanionResourceStatus::InvalidRange,
+  CompanionResourceStatus::Cancelled,
+  CompanionResourceStatus::Failed,
+  CompanionResourceStatus::EndOfStream,
+];
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct CompanionResourceStatus(pub u8);
+#[allow(non_upper_case_globals)]
+impl CompanionResourceStatus {
+  pub const Success: Self = Self(0);
+  pub const NotFound: Self = Self(1);
+  pub const InvalidRange: Self = Self(2);
+  pub const Cancelled: Self = Self(3);
+  pub const Failed: Self = Self(4);
+  pub const EndOfStream: Self = Self(5);
+
+  pub const ENUM_MIN: u8 = 0;
+  pub const ENUM_MAX: u8 = 5;
+  pub const ENUM_VALUES: &'static [Self] = &[
+    Self::Success,
+    Self::NotFound,
+    Self::InvalidRange,
+    Self::Cancelled,
+    Self::Failed,
+    Self::EndOfStream,
+  ];
+  /// Returns the variant's name or "" if unknown.
+  pub fn variant_name(self) -> Option<&'static str> {
+    match self {
+      Self::Success => Some("Success"),
+      Self::NotFound => Some("NotFound"),
+      Self::InvalidRange => Some("InvalidRange"),
+      Self::Cancelled => Some("Cancelled"),
+      Self::Failed => Some("Failed"),
+      Self::EndOfStream => Some("EndOfStream"),
+      _ => None,
+    }
+  }
+}
+impl ::core::fmt::Debug for CompanionResourceStatus {
+  fn fmt(&self, f: &mut ::core::fmt::Formatter) -> ::core::fmt::Result {
+    if let Some(name) = self.variant_name() {
+      f.write_str(name)
+    } else {
+      f.write_fmt(format_args!("<UNKNOWN {:?}>", self.0))
+    }
+  }
+}
+impl<'a> ::flatbuffers::Follow<'a> for CompanionResourceStatus {
+  type Inner = Self;
+  #[inline]
+  unsafe fn follow(buf: &'a [u8], loc: usize) -> Self::Inner {
+    let b = unsafe { ::flatbuffers::read_scalar_at::<u8>(buf, loc) };
+    Self(b)
+  }
+}
+
+impl ::flatbuffers::Push for CompanionResourceStatus {
+    type Output = CompanionResourceStatus;
+    #[inline]
+    unsafe fn push(&self, dst: &mut [u8], _written_len: usize) {
+        unsafe { ::flatbuffers::emplace_scalar::<u8>(dst, self.0) };
+    }
+}
+
+impl ::flatbuffers::EndianScalar for CompanionResourceStatus {
+  type Scalar = u8;
+  #[inline]
+  fn to_little_endian(self) -> u8 {
+    self.0.to_le()
+  }
+  #[inline]
+  #[allow(clippy::wrong_self_convention)]
+  fn from_little_endian(v: u8) -> Self {
+    let b = u8::from_le(v);
+    Self(b)
+  }
+}
+
+impl<'a> ::flatbuffers::Verifiable for CompanionResourceStatus {
+  #[inline]
+  fn run_verifier(
+    v: &mut ::flatbuffers::Verifier, pos: usize
+  ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
+    u8::run_verifier(v, pos)
+  }
+}
+
+impl ::flatbuffers::SimpleToVerifyInSlice for CompanionResourceStatus {}
 // struct Time, aligned to 8
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq)]
@@ -7645,6 +7745,7 @@ impl<'a> ::flatbuffers::Follow<'a> for CompanionHelloRequest<'a> {
 }
 
 impl<'a> CompanionHelloRequest<'a> {
+  pub const VT_MAX_PROTOCOL_VERSION: ::flatbuffers::VOffsetT = 4;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -7653,12 +7754,21 @@ impl<'a> CompanionHelloRequest<'a> {
   #[allow(unused_mut)]
   pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: ::flatbuffers::Allocator + 'bldr>(
     _fbb: &'mut_bldr mut ::flatbuffers::FlatBufferBuilder<'bldr, A>,
-    _args: &'args CompanionHelloRequestArgs
+    args: &'args CompanionHelloRequestArgs
   ) -> ::flatbuffers::WIPOffset<CompanionHelloRequest<'bldr>> {
     let mut builder = CompanionHelloRequestBuilder::new(_fbb);
+    builder.add_max_protocol_version(args.max_protocol_version);
     builder.finish()
   }
 
+
+  #[inline]
+  pub fn max_protocol_version(&self) -> u16 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u16>(CompanionHelloRequest::VT_MAX_PROTOCOL_VERSION, Some(0)).unwrap()}
+  }
 }
 
 impl ::flatbuffers::Verifiable for CompanionHelloRequest<'_> {
@@ -7667,16 +7777,19 @@ impl ::flatbuffers::Verifiable for CompanionHelloRequest<'_> {
     v: &mut ::flatbuffers::Verifier, pos: usize
   ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
     v.visit_table(pos)?
+     .visit_field::<u16>("max_protocol_version", Self::VT_MAX_PROTOCOL_VERSION, false)?
      .finish();
     Ok(())
   }
 }
 pub struct CompanionHelloRequestArgs {
+    pub max_protocol_version: u16,
 }
 impl<'a> Default for CompanionHelloRequestArgs {
   #[inline]
   fn default() -> Self {
     CompanionHelloRequestArgs {
+      max_protocol_version: 0,
     }
   }
 }
@@ -7686,6 +7799,10 @@ pub struct CompanionHelloRequestBuilder<'a: 'b, 'b, A: ::flatbuffers::Allocator 
   start_: ::flatbuffers::WIPOffset<::flatbuffers::TableUnfinishedWIPOffset>,
 }
 impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> CompanionHelloRequestBuilder<'a, 'b, A> {
+  #[inline]
+  pub fn add_max_protocol_version(&mut self, max_protocol_version: u16) {
+    self.fbb_.push_slot::<u16>(CompanionHelloRequest::VT_MAX_PROTOCOL_VERSION, max_protocol_version, 0);
+  }
   #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> CompanionHelloRequestBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
@@ -7704,6 +7821,7 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> CompanionHelloRequestBuilder<
 impl ::core::fmt::Debug for CompanionHelloRequest<'_> {
   fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
     let mut ds = f.debug_struct("CompanionHelloRequest");
+      ds.field("max_protocol_version", &self.max_protocol_version());
       ds.finish()
   }
 }
@@ -7724,6 +7842,7 @@ impl<'a> ::flatbuffers::Follow<'a> for CompanionHelloResponse<'a> {
 
 impl<'a> CompanionHelloResponse<'a> {
   pub const VT_PROVIDER_ID: ::flatbuffers::VOffsetT = 4;
+  pub const VT_PROTOCOL_VERSION: ::flatbuffers::VOffsetT = 6;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -7735,6 +7854,7 @@ impl<'a> CompanionHelloResponse<'a> {
     args: &'args CompanionHelloResponseArgs
   ) -> ::flatbuffers::WIPOffset<CompanionHelloResponse<'bldr>> {
     let mut builder = CompanionHelloResponseBuilder::new(_fbb);
+    builder.add_protocol_version(args.protocol_version);
     builder.add_provider_id(args.provider_id);
     builder.finish()
   }
@@ -7747,6 +7867,13 @@ impl<'a> CompanionHelloResponse<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<u16>(CompanionHelloResponse::VT_PROVIDER_ID, Some(0)).unwrap()}
   }
+  #[inline]
+  pub fn protocol_version(&self) -> u16 {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<u16>(CompanionHelloResponse::VT_PROTOCOL_VERSION, Some(0)).unwrap()}
+  }
 }
 
 impl ::flatbuffers::Verifiable for CompanionHelloResponse<'_> {
@@ -7756,18 +7883,21 @@ impl ::flatbuffers::Verifiable for CompanionHelloResponse<'_> {
   ) -> Result<(), ::flatbuffers::InvalidFlatbuffer> {
     v.visit_table(pos)?
      .visit_field::<u16>("provider_id", Self::VT_PROVIDER_ID, false)?
+     .visit_field::<u16>("protocol_version", Self::VT_PROTOCOL_VERSION, false)?
      .finish();
     Ok(())
   }
 }
 pub struct CompanionHelloResponseArgs {
     pub provider_id: u16,
+    pub protocol_version: u16,
 }
 impl<'a> Default for CompanionHelloResponseArgs {
   #[inline]
   fn default() -> Self {
     CompanionHelloResponseArgs {
       provider_id: 0,
+      protocol_version: 0,
     }
   }
 }
@@ -7780,6 +7910,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> CompanionHelloResponseBuilder
   #[inline]
   pub fn add_provider_id(&mut self, provider_id: u16) {
     self.fbb_.push_slot::<u16>(CompanionHelloResponse::VT_PROVIDER_ID, provider_id, 0);
+  }
+  #[inline]
+  pub fn add_protocol_version(&mut self, protocol_version: u16) {
+    self.fbb_.push_slot::<u16>(CompanionHelloResponse::VT_PROTOCOL_VERSION, protocol_version, 0);
   }
   #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> CompanionHelloResponseBuilder<'a, 'b, A> {
@@ -7800,6 +7934,7 @@ impl ::core::fmt::Debug for CompanionHelloResponse<'_> {
   fn fmt(&self, f: &mut ::core::fmt::Formatter<'_>) -> ::core::fmt::Result {
     let mut ds = f.debug_struct("CompanionHelloResponse");
       ds.field("provider_id", &self.provider_id());
+      ds.field("protocol_version", &self.protocol_version());
       ds.finish()
   }
 }
@@ -7821,6 +7956,7 @@ impl<'a> ::flatbuffers::Follow<'a> for CompanionResourceInfoRequest<'a> {
 impl<'a> CompanionResourceInfoRequest<'a> {
   pub const VT_REQUEST_ID: ::flatbuffers::VOffsetT = 4;
   pub const VT_RESOURCE_ID: ::flatbuffers::VOffsetT = 6;
+  pub const VT_ROUTE: ::flatbuffers::VOffsetT = 8;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -7829,9 +7965,10 @@ impl<'a> CompanionResourceInfoRequest<'a> {
   #[allow(unused_mut)]
   pub fn create<'bldr: 'args, 'args: 'mut_bldr, 'mut_bldr, A: ::flatbuffers::Allocator + 'bldr>(
     _fbb: &'mut_bldr mut ::flatbuffers::FlatBufferBuilder<'bldr, A>,
-    args: &'args CompanionResourceInfoRequestArgs
+    args: &'args CompanionResourceInfoRequestArgs<'args>
   ) -> ::flatbuffers::WIPOffset<CompanionResourceInfoRequest<'bldr>> {
     let mut builder = CompanionResourceInfoRequestBuilder::new(_fbb);
+    if let Some(x) = args.route { builder.add_route(x); }
     builder.add_resource_id(args.resource_id);
     builder.add_request_id(args.request_id);
     builder.finish()
@@ -7852,6 +7989,13 @@ impl<'a> CompanionResourceInfoRequest<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<u32>(CompanionResourceInfoRequest::VT_RESOURCE_ID, Some(0)).unwrap()}
   }
+  #[inline]
+  pub fn route(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<&str>>(CompanionResourceInfoRequest::VT_ROUTE, None)}
+  }
 }
 
 impl ::flatbuffers::Verifiable for CompanionResourceInfoRequest<'_> {
@@ -7862,20 +8006,23 @@ impl ::flatbuffers::Verifiable for CompanionResourceInfoRequest<'_> {
     v.visit_table(pos)?
      .visit_field::<u32>("request_id", Self::VT_REQUEST_ID, false)?
      .visit_field::<u32>("resource_id", Self::VT_RESOURCE_ID, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<&str>>("route", Self::VT_ROUTE, false)?
      .finish();
     Ok(())
   }
 }
-pub struct CompanionResourceInfoRequestArgs {
+pub struct CompanionResourceInfoRequestArgs<'a> {
     pub request_id: u32,
     pub resource_id: u32,
+    pub route: Option<::flatbuffers::WIPOffset<&'a str>>,
 }
-impl<'a> Default for CompanionResourceInfoRequestArgs {
+impl<'a> Default for CompanionResourceInfoRequestArgs<'a> {
   #[inline]
   fn default() -> Self {
     CompanionResourceInfoRequestArgs {
       request_id: 0,
       resource_id: 0,
+      route: None,
     }
   }
 }
@@ -7892,6 +8039,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> CompanionResourceInfoRequestB
   #[inline]
   pub fn add_resource_id(&mut self, resource_id: u32) {
     self.fbb_.push_slot::<u32>(CompanionResourceInfoRequest::VT_RESOURCE_ID, resource_id, 0);
+  }
+  #[inline]
+  pub fn add_route(&mut self, route: ::flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(CompanionResourceInfoRequest::VT_ROUTE, route);
   }
   #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> CompanionResourceInfoRequestBuilder<'a, 'b, A> {
@@ -7913,6 +8064,7 @@ impl ::core::fmt::Debug for CompanionResourceInfoRequest<'_> {
     let mut ds = f.debug_struct("CompanionResourceInfoRequest");
       ds.field("request_id", &self.request_id());
       ds.field("resource_id", &self.resource_id());
+      ds.field("route", &self.route());
       ds.finish()
   }
 }
@@ -8110,6 +8262,7 @@ impl<'a> CompanionResourceInfoResponse<'a> {
   pub const VT_CONTENT_TYPE: ::flatbuffers::VOffsetT = 6;
   pub const VT_RESOURCE_SIZE_TYPE: ::flatbuffers::VOffsetT = 8;
   pub const VT_RESOURCE_SIZE: ::flatbuffers::VOffsetT = 10;
+  pub const VT_STATUS: ::flatbuffers::VOffsetT = 12;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -8124,6 +8277,7 @@ impl<'a> CompanionResourceInfoResponse<'a> {
     if let Some(x) = args.resource_size { builder.add_resource_size(x); }
     if let Some(x) = args.content_type { builder.add_content_type(x); }
     builder.add_request_id(args.request_id);
+    builder.add_status(args.status);
     builder.add_resource_size_type(args.resource_size_type);
     builder.finish()
   }
@@ -8156,6 +8310,13 @@ impl<'a> CompanionResourceInfoResponse<'a> {
     // Created from valid Table for this object
     // which contains a valid value in this slot
     unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<::flatbuffers::Table<'a>>>(CompanionResourceInfoResponse::VT_RESOURCE_SIZE, None)}
+  }
+  #[inline]
+  pub fn status(&self) -> CompanionResourceStatus {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<CompanionResourceStatus>(CompanionResourceInfoResponse::VT_STATUS, Some(CompanionResourceStatus::Success)).unwrap()}
   }
   #[inline]
   #[allow(non_snake_case)]
@@ -8204,6 +8365,7 @@ impl ::flatbuffers::Verifiable for CompanionResourceInfoResponse<'_> {
           _ => Ok(()),
         }
      })?
+     .visit_field::<CompanionResourceStatus>("status", Self::VT_STATUS, false)?
      .finish();
     Ok(())
   }
@@ -8213,6 +8375,7 @@ pub struct CompanionResourceInfoResponseArgs<'a> {
     pub content_type: Option<::flatbuffers::WIPOffset<&'a str>>,
     pub resource_size_type: CompanionResourceSize,
     pub resource_size: Option<::flatbuffers::WIPOffset<::flatbuffers::UnionWIPOffset>>,
+    pub status: CompanionResourceStatus,
 }
 impl<'a> Default for CompanionResourceInfoResponseArgs<'a> {
   #[inline]
@@ -8222,6 +8385,7 @@ impl<'a> Default for CompanionResourceInfoResponseArgs<'a> {
       content_type: None, // required field
       resource_size_type: CompanionResourceSize::NONE,
       resource_size: None,
+      status: CompanionResourceStatus::Success,
     }
   }
 }
@@ -8246,6 +8410,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> CompanionResourceInfoResponse
   #[inline]
   pub fn add_resource_size(&mut self, resource_size: ::flatbuffers::WIPOffset<::flatbuffers::UnionWIPOffset>) {
     self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(CompanionResourceInfoResponse::VT_RESOURCE_SIZE, resource_size);
+  }
+  #[inline]
+  pub fn add_status(&mut self, status: CompanionResourceStatus) {
+    self.fbb_.push_slot::<CompanionResourceStatus>(CompanionResourceInfoResponse::VT_STATUS, status, CompanionResourceStatus::Success);
   }
   #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> CompanionResourceInfoResponseBuilder<'a, 'b, A> {
@@ -8289,6 +8457,7 @@ impl ::core::fmt::Debug for CompanionResourceInfoResponse<'_> {
           ds.field("resource_size", &x)
         },
       };
+      ds.field("status", &self.status());
       ds.finish()
   }
 }
@@ -8311,6 +8480,7 @@ impl<'a> CompanionResourceRequest<'a> {
   pub const VT_REQUEST_ID: ::flatbuffers::VOffsetT = 4;
   pub const VT_RESOURCE_ID: ::flatbuffers::VOffsetT = 6;
   pub const VT_READ_HEAD: ::flatbuffers::VOffsetT = 8;
+  pub const VT_ROUTE: ::flatbuffers::VOffsetT = 10;
 
   #[inline]
   pub unsafe fn init_from_table(table: ::flatbuffers::Table<'a>) -> Self {
@@ -8322,6 +8492,7 @@ impl<'a> CompanionResourceRequest<'a> {
     args: &'args CompanionResourceRequestArgs<'args>
   ) -> ::flatbuffers::WIPOffset<CompanionResourceRequest<'bldr>> {
     let mut builder = CompanionResourceRequestBuilder::new(_fbb);
+    if let Some(x) = args.route { builder.add_route(x); }
     if let Some(x) = args.read_head { builder.add_read_head(x); }
     builder.add_resource_id(args.resource_id);
     builder.add_request_id(args.request_id);
@@ -8350,6 +8521,13 @@ impl<'a> CompanionResourceRequest<'a> {
     // which contains a valid value in this slot
     unsafe { self._tab.get::<ResourceReadHead>(CompanionResourceRequest::VT_READ_HEAD, None)}
   }
+  #[inline]
+  pub fn route(&self) -> Option<&'a str> {
+    // Safety:
+    // Created from valid Table for this object
+    // which contains a valid value in this slot
+    unsafe { self._tab.get::<::flatbuffers::ForwardsUOffset<&str>>(CompanionResourceRequest::VT_ROUTE, None)}
+  }
 }
 
 impl ::flatbuffers::Verifiable for CompanionResourceRequest<'_> {
@@ -8361,6 +8539,7 @@ impl ::flatbuffers::Verifiable for CompanionResourceRequest<'_> {
      .visit_field::<u32>("request_id", Self::VT_REQUEST_ID, false)?
      .visit_field::<u32>("resource_id", Self::VT_RESOURCE_ID, false)?
      .visit_field::<ResourceReadHead>("read_head", Self::VT_READ_HEAD, false)?
+     .visit_field::<::flatbuffers::ForwardsUOffset<&str>>("route", Self::VT_ROUTE, false)?
      .finish();
     Ok(())
   }
@@ -8369,6 +8548,7 @@ pub struct CompanionResourceRequestArgs<'a> {
     pub request_id: u32,
     pub resource_id: u32,
     pub read_head: Option<&'a ResourceReadHead>,
+    pub route: Option<::flatbuffers::WIPOffset<&'a str>>,
 }
 impl<'a> Default for CompanionResourceRequestArgs<'a> {
   #[inline]
@@ -8377,6 +8557,7 @@ impl<'a> Default for CompanionResourceRequestArgs<'a> {
       request_id: 0,
       resource_id: 0,
       read_head: None,
+      route: None,
     }
   }
 }
@@ -8399,6 +8580,10 @@ impl<'a: 'b, 'b, A: ::flatbuffers::Allocator + 'a> CompanionResourceRequestBuild
     self.fbb_.push_slot_always::<&ResourceReadHead>(CompanionResourceRequest::VT_READ_HEAD, read_head);
   }
   #[inline]
+  pub fn add_route(&mut self, route: ::flatbuffers::WIPOffset<&'b  str>) {
+    self.fbb_.push_slot_always::<::flatbuffers::WIPOffset<_>>(CompanionResourceRequest::VT_ROUTE, route);
+  }
+  #[inline]
   pub fn new(_fbb: &'b mut ::flatbuffers::FlatBufferBuilder<'a, A>) -> CompanionResourceRequestBuilder<'a, 'b, A> {
     let start = _fbb.start_table();
     CompanionResourceRequestBuilder {
@@ -8419,6 +8604,7 @@ impl ::core::fmt::Debug for CompanionResourceRequest<'_> {
       ds.field("request_id", &self.request_id());
       ds.field("resource_id", &self.resource_id());
       ds.field("read_head", &self.read_head());
+      ds.field("route", &self.route());
       ds.finish()
   }
 }

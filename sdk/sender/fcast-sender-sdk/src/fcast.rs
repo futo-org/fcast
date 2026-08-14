@@ -1,9 +1,13 @@
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
+    future::Future,
+    io::{Read, Seek},
     net::SocketAddr,
+    ops::RangeInclusive,
+    pin::Pin,
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, Weak,
     },
     time::Duration,
 };
@@ -21,11 +25,19 @@ use fcast_protocol::{
     v4, Opcode, PlaybackErrorMessage, PlaybackState as FCastPlaybackState, SeekMessage,
     SetSpeedMessage, SetVolumeMessage, VersionMessage,
 };
+use futures::{
+    future::{AbortHandle, Abortable},
+    stream::FuturesUnordered,
+    StreamExt,
+};
 use log::{debug, error, warn};
 use serde::Serialize;
 use tokio::{
     runtime::Handle,
-    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    sync::{
+        mpsc::{UnboundedReceiver, UnboundedSender},
+        oneshot,
+    },
 };
 use tokio_rustls::{rustls, TlsConnector};
 
@@ -46,6 +58,137 @@ const V3_FEATURES_MIN_PROTO_VERSION: u64 = 3;
 
 const CONNECTED_EVENT_DEADLINE_DURATION: Duration = Duration::from_secs(2);
 const TLS_UPGRADE_TIMEOUT: Duration = Duration::from_secs(5);
+const COMPANION_CALLBACK_TIMEOUT: Duration = Duration::from_secs(2);
+const MAX_COMPANION_CALLBACKS: usize = 8;
+
+pub type CompanionResourceFuture<'a, T> =
+    Pin<Box<dyn Future<Output = std::io::Result<T>> + Send + 'a>>;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CompanionResourceRoute(String);
+
+impl CompanionResourceRoute {
+    pub fn new(route: impl Into<String>) -> Result<Self, companion::RouteError> {
+        let route = route.into();
+        companion::validate_route(&route)?;
+        Ok(Self(route))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompanionResourceRequest {
+    pub route: CompanionResourceRoute,
+    pub range: Option<RangeInclusive<u64>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CompanionResourceInfo {
+    pub content_type: String,
+    pub size: Option<u64>,
+}
+
+pub trait CompanionResource: std::fmt::Debug + Send + Sync + 'static {
+    fn info(
+        &self,
+        route: CompanionResourceRoute,
+    ) -> CompanionResourceFuture<'_, CompanionResourceInfo>;
+
+    fn read(&self, request: CompanionResourceRequest) -> CompanionResourceFuture<'_, Vec<u8>>;
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CompanionResourceRegistrationError {
+    Unsupported,
+    Disconnected,
+    Exhausted,
+}
+
+impl std::fmt::Display for CompanionResourceRegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Unsupported => {
+                write!(f, "receiver does not support dynamic FCompanion resources")
+            }
+            Self::Disconnected => write!(f, "FCast worker is disconnected"),
+            Self::Exhausted => write!(f, "FCompanion resource IDs are exhausted"),
+        }
+    }
+}
+
+impl std::error::Error for CompanionResourceRegistrationError {}
+
+#[derive(Clone)]
+pub struct CompanionResourceRegistrar {
+    state: Weak<Mutex<State>>,
+}
+
+impl std::fmt::Debug for CompanionResourceRegistrar {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompanionResourceRegistrar")
+            .finish_non_exhaustive()
+    }
+}
+
+#[must_use = "dropping the registration unregisters its companion resource"]
+#[derive(Debug)]
+pub struct CompanionResourceRegistration {
+    command_tx: UnboundedSender<Command>,
+    generation: u64,
+    provider_id: u16,
+    resource_id: u32,
+    url: String,
+}
+
+impl CompanionResourceRegistration {
+    pub fn url(&self) -> &str {
+        &self.url
+    }
+
+    pub fn url_for(&self, route: &str) -> Result<String, companion::RouteError> {
+        companion::create_routed_url(self.provider_id, self.resource_id, route)
+    }
+}
+
+impl Drop for CompanionResourceRegistration {
+    fn drop(&mut self) {
+        let _ = self.command_tx.send(Command::UnregisterCompanionResource {
+            generation: self.generation,
+            resource_id: self.resource_id,
+        });
+    }
+}
+
+impl CompanionResourceRegistrar {
+    pub async fn register(
+        &self,
+        resource: Arc<dyn CompanionResource>,
+    ) -> Result<CompanionResourceRegistration, CompanionResourceRegistrationError> {
+        let (reply, result) = oneshot::channel();
+        let command = Command::RegisterCompanionResource { resource, reply };
+        {
+            let state = self
+                .state
+                .upgrade()
+                .ok_or(CompanionResourceRegistrationError::Disconnected)?;
+            let mut state = state.lock().unwrap();
+            match state.command_tx.as_ref() {
+                Some(tx) => {
+                    tx.send(command)
+                        .map_err(|_| CompanionResourceRegistrationError::Disconnected)?;
+                }
+                None if !state.ever_started => state.pending_commands.push_back(command),
+                None => return Err(CompanionResourceRegistrationError::Disconnected),
+            }
+        }
+        result
+            .await
+            .unwrap_or(Err(CompanionResourceRegistrationError::Disconnected))
+    }
+}
 
 // #[derive(Debug, Clone, PartialEq)]
 #[derive(Debug, PartialEq)]
@@ -65,7 +208,7 @@ impl PartialEq for WrappedSignaller {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug)]
 enum Command {
     ChangeVolume(f64),
     ChangeSpeed(f64),
@@ -115,12 +258,25 @@ enum Command {
     QueueSelect {
         position: QueuePosition,
     },
+    RegisterCompanionResource {
+        resource: Arc<dyn CompanionResource>,
+        reply: oneshot::Sender<
+            Result<CompanionResourceRegistration, CompanionResourceRegistrationError>,
+        >,
+    },
+    UnregisterCompanionResource {
+        generation: u64,
+        resource_id: u32,
+    },
 }
 
 struct State {
     rt_handle: Handle,
     started: bool,
     command_tx: Option<UnboundedSender<Command>>,
+    pending_commands: VecDeque<Command>,
+    ever_started: bool,
+    worker_id: u64,
     addresses: Vec<IpAddr>,
     name: String,
     port: u16,
@@ -133,6 +289,9 @@ impl State {
             rt_handle,
             started: false,
             command_tx: None,
+            pending_commands: VecDeque::new(),
+            ever_started: false,
+            worker_id: 0,
             addresses: device_info.addresses,
             name: device_info.name,
             port: device_info.port,
@@ -143,7 +302,7 @@ impl State {
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 pub struct FCastDevice {
-    state: Mutex<State>,
+    state: Arc<Mutex<State>>,
     session_version: FCastVersion,
     supports_whep: Arc<AtomicBool>,
 }
@@ -151,9 +310,15 @@ pub struct FCastDevice {
 impl FCastDevice {
     pub fn new(device_info: DeviceInfo, rt_handle: Handle) -> Self {
         Self {
-            state: Mutex::new(State::new(device_info, rt_handle)),
+            state: Arc::new(Mutex::new(State::new(device_info, rt_handle))),
             session_version: FCastVersion::new(),
             supports_whep: Arc::new(AtomicBool::new(false)),
+        }
+    }
+
+    pub fn companion_resource_registrar(&self) -> CompanionResourceRegistrar {
+        CompanionResourceRegistrar {
+            state: Arc::downgrade(&self.state),
         }
     }
 }
@@ -210,7 +375,7 @@ enum StateVariant {
     V2,
     V3,
     V4 {
-        companion_provider_id: Option<u16>,
+        companion_provider: Option<(u16, u16)>,
         mirroring_session: Option<u16>,
         mirroring_session_id_gen: IdGenerator,
     },
@@ -238,11 +403,13 @@ enum CompanionRequest {
     ResourceInfo {
         request_id: u32,
         resource_id: u32,
+        route: String,
     },
     Resource {
         request_id: u32,
         resource_id: u32,
         read_head: Option<(/* start */ u64, /* stop_inclusive */ u64)>,
+        route: String,
     },
 }
 
@@ -278,6 +445,10 @@ enum Action {
     PlaybackStateChanged(v4::fcast_flatbuffers::fcast::v4::PlaybackState),
     PlaybackStopped,
     Companion(CompanionRequest),
+    CompanionHello {
+        provider_id: u16,
+        protocol_version: u16,
+    },
     StartMirroringSession {
         id: u16,
         signaller: WrappedSignaller,
@@ -458,7 +629,7 @@ impl DeviceStateMachine {
                     }
                     4 => {
                         self.variant = StateVariant::V4 {
-                            companion_provider_id: None,
+                            companion_provider: None,
                             mirroring_session: None,
                             mirroring_session_id_gen: IdGenerator::new(),
                         };
@@ -583,21 +754,27 @@ impl DeviceStateMachine {
             v4::flat::Message::CompanionHelloResponse => {
                 let msg = union!(packet.payload_as_companion_hello_response());
                 if let StateVariant::V4 {
-                    companion_provider_id,
-                    ..
+                    companion_provider, ..
                 } = &mut self.variant
                 {
-                    debug!("Got companion provider ID ({})", msg.provider_id());
-                    *companion_provider_id = Some(msg.provider_id());
+                    debug!(
+                        "Got companion provider ID ({}) with protocol version {}",
+                        msg.provider_id(),
+                        msg.protocol_version()
+                    );
+                    *companion_provider = Some((msg.provider_id(), msg.protocol_version()));
                 }
-
-                Action::CompanionReady
+                Action::CompanionHello {
+                    provider_id: msg.provider_id(),
+                    protocol_version: msg.protocol_version(),
+                }
             }
             v4::flat::Message::CompanionResourceInfoRequest => {
                 let msg = union!(packet.payload_as_companion_resource_info_request());
                 Action::Companion(CompanionRequest::ResourceInfo {
                     request_id: msg.request_id(),
                     resource_id: msg.resource_id(),
+                    route: msg.route().unwrap_or_default().to_owned(),
                 })
             }
             v4::flat::Message::TracksAvailable => {
@@ -702,6 +879,7 @@ impl DeviceStateMachine {
                     request_id: msg.request_id(),
                     resource_id: msg.resource_id(),
                     read_head: msg.read_head().map(|r| (r.start(), r.stop_inclusive())),
+                    route: msg.route().unwrap_or_default().to_owned(),
                 })
             }
             v4::flat::Message::Load => {
@@ -1030,64 +1208,212 @@ fn queue_item_to_entry(item: QueueItem) -> QueueEntry {
     }
 }
 
-/// Internal locator for an `AddSubtitleSource` command. Either a ready URL, or
-/// a companion source that resolves to an `fcomp://` URL at send time (once the
-/// provider ID is known).
-#[derive(Debug, Clone, PartialEq)]
-enum SubtitleCommandSource {
-    Url(String),
-    Companion(CompanionSource),
-}
-
-/// Backing bytes for a registered companion source. An opened file (path/fd) or
-/// an in-memory buffer.
-enum CompanionData {
-    File(std::fs::File),
-    Bytes(std::io::Cursor<Vec<u8>>),
-}
-
-impl CompanionData {
-    /// Total length in bytes. One `fstat` for a file, so callers cache it (see
-    /// [`WrappedCompanionSource::len`]).
-    fn len(&self) -> std::io::Result<u64> {
-        match self {
-            CompanionData::File(f) => Ok(f.metadata()?.len()),
-            CompanionData::Bytes(c) => Ok(c.get_ref().len() as u64),
-        }
-    }
-
-    fn seek(&mut self, pos: std::io::SeekFrom) -> std::io::Result<u64> {
-        match self {
-            CompanionData::File(f) => std::io::Seek::seek(f, pos),
-            CompanionData::Bytes(c) => std::io::Seek::seek(c, pos),
-        }
-    }
-
-    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
-        match self {
-            CompanionData::File(f) => std::io::Read::read(f, buf),
-            CompanionData::Bytes(c) => std::io::Read::read(c, buf),
-        }
-    }
-
-    /// The raw fd of a file-backed source, for the fd-reuse guard. `None` for
-    /// in-memory bytes.
-    #[cfg(unix)]
-    fn raw_fd(&self) -> Option<i32> {
-        use std::os::fd::AsRawFd as _;
-        match self {
-            CompanionData::File(f) => Some(f.as_raw_fd()),
-            CompanionData::Bytes(_) => None,
-        }
-    }
-}
-
-struct WrappedCompanionSource {
-    data: CompanionData,
+#[derive(Debug)]
+struct StaticCompanionResource {
+    file: Arc<Mutex<std::fs::File>>,
     content_type: String,
     /// Cached at registration. Companion resources are treated as immutable for
     /// the session.
     len: u64,
+}
+
+impl CompanionResource for StaticCompanionResource {
+    fn info(
+        &self,
+        _route: CompanionResourceRoute,
+    ) -> CompanionResourceFuture<'_, CompanionResourceInfo> {
+        let file = Arc::clone(&self.file);
+        let content_type = self.content_type.clone();
+        Box::pin(async move {
+            let size = tokio::task::spawn_blocking(move || file.lock().unwrap().metadata())
+                .await
+                .map_err(std::io::Error::other)??
+                .len();
+            Ok(CompanionResourceInfo {
+                content_type,
+                size: Some(size),
+            })
+        })
+    }
+
+    fn read(&self, request: CompanionResourceRequest) -> CompanionResourceFuture<'_, Vec<u8>> {
+        let file = Arc::clone(&self.file);
+        Box::pin(async move {
+            tokio::task::spawn_blocking(move || {
+                let mut file = file.lock().unwrap();
+                let file_len = file.metadata()?.len();
+                let Some((start, stop)) = request
+                    .range
+                    .map(|range| (*range.start(), *range.end()))
+                    .or_else(|| (file_len > 0).then_some((0, file_len - 1)))
+                else {
+                    return Ok(Vec::new());
+                };
+                if start > stop {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidInput,
+                        "invalid inclusive companion range",
+                    ));
+                }
+                let len = resource_bytes_to_read(start, stop, file_len);
+                let max_len = companion::MAX_RESOURCE_READ_SIZE * u8::MAX as usize;
+                if len > max_len as u64 {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::InvalidData,
+                        "companion response exceeds multipart limit",
+                    ));
+                }
+                let mut data = vec![0; len as usize];
+                file.seek(std::io::SeekFrom::Start(start))?;
+                file.read_exact(&mut data)?;
+                Ok(data)
+            })
+            .await
+            .map_err(std::io::Error::other)?
+        })
+    }
+}
+
+#[derive(Debug)]
+struct RegisteredCompanionResource {
+    resource: Arc<dyn CompanionResource>,
+    playback_owned: bool,
+}
+
+#[derive(Debug)]
+struct PendingCompanionRegistration {
+    resource: Arc<dyn CompanionResource>,
+    reply:
+        oneshot::Sender<Result<CompanionResourceRegistration, CompanionResourceRegistrationError>>,
+}
+
+enum CompanionCallbackKind {
+    Info(CompanionResourceRoute),
+    Read(CompanionResourceRequest),
+}
+
+struct CompanionCallbackJob {
+    resource_id: u32,
+    request_id: u32,
+    resource: Arc<dyn CompanionResource>,
+    kind: CompanionCallbackKind,
+}
+
+enum CompanionCallbackValue {
+    Info(std::io::Result<CompanionResourceInfo>),
+    Read {
+        requested_range: Option<RangeInclusive<u64>>,
+        result: std::io::Result<Vec<u8>>,
+    },
+}
+
+struct CompanionCallbackResult {
+    request_id: u32,
+    value: CompanionCallbackValue,
+}
+
+type ActiveCompanionCallback =
+    Pin<Box<dyn Future<Output = (u64, Option<CompanionCallbackResult>)> + Send + 'static>>;
+
+#[derive(Default)]
+struct CompanionCallbacks {
+    queued: VecDeque<CompanionCallbackJob>,
+    active: FuturesUnordered<ActiveCompanionCallback>,
+    aborts: HashMap<u64, (u32, AbortHandle)>,
+    next_id: u64,
+}
+
+impl CompanionCallbacks {
+    fn push(&mut self, job: CompanionCallbackJob) {
+        self.queued.push_back(job);
+        self.fill();
+    }
+
+    fn fill(&mut self) {
+        while self.active.len() < MAX_COMPANION_CALLBACKS {
+            let Some(job) = self.queued.pop_front() else {
+                break;
+            };
+            let callback_id = self.next_id;
+            self.next_id = self.next_id.wrapping_add(1);
+            let (abort, registration) = AbortHandle::new_pair();
+            self.aborts.insert(callback_id, (job.resource_id, abort));
+            let callback = async move {
+                let value = match job.kind {
+                    CompanionCallbackKind::Info(route) => CompanionCallbackValue::Info(
+                        match tokio::time::timeout(
+                            COMPANION_CALLBACK_TIMEOUT,
+                            job.resource.info(route),
+                        )
+                        .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => Err(std::io::Error::new(
+                                std::io::ErrorKind::TimedOut,
+                                "companion metadata callback timed out",
+                            )),
+                        },
+                    ),
+                    CompanionCallbackKind::Read(request) => {
+                        let requested_range = request.range.clone();
+                        CompanionCallbackValue::Read {
+                            requested_range,
+                            result: match tokio::time::timeout(
+                                COMPANION_CALLBACK_TIMEOUT,
+                                job.resource.read(request),
+                            )
+                            .await
+                            {
+                                Ok(result) => result,
+                                Err(_) => Err(std::io::Error::new(
+                                    std::io::ErrorKind::TimedOut,
+                                    "companion read callback timed out",
+                                )),
+                            },
+                        }
+                    }
+                };
+                CompanionCallbackResult {
+                    request_id: job.request_id,
+                    value,
+                }
+            };
+            self.active.push(Box::pin(async move {
+                (
+                    callback_id,
+                    Abortable::new(callback, registration).await.ok(),
+                )
+            }));
+        }
+    }
+
+    async fn next(&mut self) -> Option<CompanionCallbackResult> {
+        loop {
+            let (id, result) = self.active.next().await?;
+            self.aborts.remove(&id);
+            self.fill();
+            if result.is_some() {
+                return result;
+            }
+        }
+    }
+
+    fn cancel_missing(&mut self, resources: &HashMap<u32, RegisteredCompanionResource>) {
+        self.queued
+            .retain(|job| resources.contains_key(&job.resource_id));
+        let removed: Vec<_> = self
+            .aborts
+            .iter()
+            .filter_map(|(id, (resource_id, _))| {
+                (!resources.contains_key(resource_id)).then_some(*id)
+            })
+            .collect();
+        for id in removed {
+            if let Some((_, abort)) = self.aborts.remove(&id) {
+                abort.abort();
+            }
+        }
+    }
 }
 
 struct InnerDevice {
@@ -1097,7 +1423,10 @@ struct InnerDevice {
     app_info: Option<ApplicationInfo>,
     supports_whep: Arc<AtomicBool>,
     state_machine: DeviceStateMachine,
-    companion_sources: HashMap<u32, WrappedCompanionSource>,
+    companion_resources: HashMap<u32, RegisteredCompanionResource>,
+    pending_companion_registrations: VecDeque<PendingCompanionRegistration>,
+    next_companion_resource_id: u64,
+    connection_generation: u64,
     receiver_fingerprint: Option<Vec<u8>>,
     signaller: Option<Arc<dyn crate::device::FWRTCSignaller>>,
     queue_mirror: QueueMirror,
@@ -1132,7 +1461,10 @@ impl InnerDevice {
             app_info,
             supports_whep,
             state_machine: DeviceStateMachine::new(receiver_fingerprint.is_some()),
-            companion_sources: HashMap::new(),
+            companion_resources: HashMap::new(),
+            pending_companion_registrations: VecDeque::new(),
+            next_companion_resource_id: 0,
+            connection_generation: 0,
             receiver_fingerprint,
             signaller: None,
             queue_mirror: QueueMirror::default(),
@@ -1240,80 +1572,11 @@ impl InnerDevice {
         Ok(())
     }
 
-    /// Assume ownership of a raw file descriptor transferred through
-    /// [`CompanionSourceDescriptor::Fd`].
-    ///
-    /// Guards the transfer as far as a plain integer allows: negative and dead
-    /// descriptors are rejected up front, and a descriptor this device
-    /// already holds open is rejected *without* being consumed. While the
-    /// SDK holds a descriptor open the kernel cannot reassign its number,
-    /// so a second arrival of the same number can only be a duplicate use of an
-    /// already-transferred descriptor, and double-closing it would tear
-    /// down whatever unrelated file the number later gets recycled to.
-    #[cfg(unix)]
-    fn take_fd_ownership(&self, fd: i32) -> std::io::Result<std::fs::File> {
-        use std::os::fd::{FromRawFd as _, OwnedFd};
-
-        if fd < 0 {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("invalid file descriptor: {fd}"),
-            ));
-        }
-        if self
-            .companion_sources
-            .values()
-            .any(|s| s.data.raw_fd() == Some(fd))
-        {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!("file descriptor {fd} is already registered as a companion source"),
-            ));
-        }
-        // SAFETY: the caller transferred ownership of `fd` to the SDK (see
-        // `CompanionSourceDescriptor::Fd`), and the checks above rejected the
-        // descriptors we provably must not own. From here the SDK closes it
-        // exactly once: immediately below if it turns out to be dead, or when
-        // the registered source is dropped (stop/session end).
-        let file = unsafe { std::fs::File::from(OwnedFd::from_raw_fd(fd)) };
-        // Catch garbage descriptors from foreign callers with a clean error instead of
-        // failing at serve time. On error `file` drops here, and closing a dead
-        // fd is a harmless no-op.
-        file.metadata()?;
-        Ok(file)
-    }
-
-    /// Close a descriptor whose transfer failed before it could be registered.
-    /// Ownership passed to the SDK the moment the app handed the descriptor
-    /// over, so it must still be closed exactly once on failure.  The
-    /// exception is a number currently owned by a registered source: that
-    /// value is a duplicate reference and the real owner closes it.
-    fn discard_companion_descriptor(&self, descriptor: &CompanionSourceDescriptor) {
-        #[cfg(unix)]
-        if let CompanionSourceDescriptor::Fd(fd) = *descriptor {
-            use std::os::fd::{FromRawFd as _, OwnedFd};
-            if fd >= 0
-                && !self
-                    .companion_sources
-                    .values()
-                    .any(|s| s.data.raw_fd() == Some(fd))
-            {
-                // SAFETY: same ownership transfer as `take_fd_ownership`. The descriptor was
-                // never registered, so this is its only owner.
-                drop(unsafe { OwnedFd::from_raw_fd(fd) });
-            }
-        }
-        #[cfg(not(unix))]
-        let _ = descriptor;
-    }
-
     fn add_source(&mut self, source: &CompanionSource) -> std::io::Result<u32> {
-        let data = match source.descriptor {
-            CompanionSourceDescriptor::Path(ref path) => {
-                CompanionData::File(std::fs::File::open(path)?)
-            }
+        let file = match &source.descriptor {
+            CompanionSourceDescriptor::Path(ref path) => std::fs::File::open(path)?,
             #[cfg(unix)]
-            CompanionSourceDescriptor::Fd(fd) => CompanionData::File(self.take_fd_ownership(fd)?),
+            CompanionSourceDescriptor::Fd(fd) => std::fs::File::from(fd.take()?),
             #[cfg(not(unix))]
             CompanionSourceDescriptor::Fd(..) => {
                 return Err(std::io::Error::new(
@@ -1326,18 +1589,29 @@ impl InnerDevice {
             }
         };
 
-        let len = data.len()?;
-        let source = WrappedCompanionSource {
-            data,
+        file.metadata()?;
+        let source = StaticCompanionResource {
+            file: Arc::new(Mutex::new(file)),
             content_type: source.content_type.clone(),
             len,
         };
+        let id = self
+            .next_resource_id()
+            .map_err(|_| std::io::Error::other("companion resource IDs are exhausted"))?;
+        self.companion_resources.insert(
+            id,
+            RegisteredCompanionResource {
+                resource: Arc::new(source),
+                playback_owned: true,
+            },
+        );
+        Ok(id)
+    }
 
-        let mut id = 0;
-        while self.companion_sources.contains_key(&id) {
-            id += 1;
-        }
-        self.companion_sources.insert(id, source);
+    fn next_resource_id(&mut self) -> Result<u32, CompanionResourceRegistrationError> {
+        let id = u32::try_from(self.next_companion_resource_id)
+            .map_err(|_| CompanionResourceRegistrationError::Exhausted)?;
+        self.next_companion_resource_id += 1;
         Ok(id)
     }
 
@@ -1406,15 +1680,12 @@ impl InnerDevice {
 
     fn companion_url(&mut self, source: &CompanionSource) -> anyhow::Result<String> {
         let StateVariant::V4 {
-            companion_provider_id,
-            ..
+            companion_provider, ..
         } = self.state_machine.variant
         else {
-            self.discard_companion_descriptor(&source.descriptor);
             bail!("Receiver does not support FCompanion");
         };
-        let Some(provider_id) = companion_provider_id else {
-            self.discard_companion_descriptor(&source.descriptor);
+        let Some((provider_id, _)) = companion_provider else {
             bail!("No companion provider ID has been assigned");
         };
         let resource_id = self.add_source(source)?;
@@ -1604,19 +1875,247 @@ impl InnerDevice {
         Ok(())
     }
 
-    async fn handle_resource_request(
+    async fn send_resource_result(
         &mut self,
         request_id: u32,
-        resource_id: u32,
-        read_head: Option<(/* start */ u64, /* stop_inclusive */ u64)>,
-    ) -> Result<(), utils::WorkError> {
-        let source = self.companion_sources.get_mut(&resource_id);
-        serve_resource(&mut self.stream, source, request_id, read_head).await
+        result: companion::GetResourceResult,
+    ) -> anyhow::Result<()> {
+        let body = companion::ResourceResponse {
+            request_id,
+            part: 0,
+            total_parts: 1,
+            result,
+        }
+        .serialize();
+        self.send_bytes(Opcode::Resource, &body).await
+    }
+
+    async fn queue_companion_request(
+        &mut self,
+        callbacks: &mut CompanionCallbacks,
+        request: CompanionRequest,
+    ) -> anyhow::Result<()> {
+        let (request_id, resource_id, route, kind) = match request {
+            CompanionRequest::ResourceInfo {
+                request_id,
+                resource_id,
+                route,
+            } => (request_id, resource_id, route, None),
+            CompanionRequest::Resource {
+                request_id,
+                resource_id,
+                read_head,
+                route,
+            } => (request_id, resource_id, route, Some(read_head)),
+        };
+        let Some(resource) = self.companion_resources.get(&resource_id) else {
+            if kind.is_some() {
+                return self
+                    .send_resource_result(request_id, companion::GetResourceResult::NotFound)
+                    .await;
+            }
+            let msg = v4::MessageBuilder::new().companion_resource_info_response_with_status(
+                request_id,
+                "application/octet-stream",
+                None,
+                v4::flat::CompanionResourceStatus::NotFound,
+            );
+            return self.send_bytes(Opcode::Flatbuf, &msg).await;
+        };
+        let route = match CompanionResourceRoute::new(route) {
+            Ok(route) => route,
+            Err(_) if kind.is_some() => {
+                return self
+                    .send_resource_result(request_id, companion::GetResourceResult::Failed)
+                    .await
+            }
+            Err(_) => {
+                let msg = v4::MessageBuilder::new().companion_resource_info_response_with_status(
+                    request_id,
+                    "application/octet-stream",
+                    None,
+                    v4::flat::CompanionResourceStatus::Failed,
+                );
+                return self.send_bytes(Opcode::Flatbuf, &msg).await;
+            }
+        };
+        let kind = match kind {
+            None => CompanionCallbackKind::Info(route),
+            Some(read_head) => {
+                let range = read_head.map(|(start, stop)| start..=stop);
+                if range
+                    .as_ref()
+                    .is_some_and(|range| range.start() > range.end())
+                {
+                    return self
+                        .send_resource_result(
+                            request_id,
+                            companion::GetResourceResult::InvalidRange,
+                        )
+                        .await;
+                }
+                CompanionCallbackKind::Read(CompanionResourceRequest { route, range })
+            }
+        };
+        callbacks.push(CompanionCallbackJob {
+            resource_id,
+            request_id,
+            resource: Arc::clone(&resource.resource),
+            kind,
+        });
+        Ok(())
+    }
+
+    async fn handle_companion_callback(
+        &mut self,
+        callback: CompanionCallbackResult,
+    ) -> anyhow::Result<()> {
+        match callback.value {
+            CompanionCallbackValue::Info(Ok(info)) => {
+                let msg = v4::MessageBuilder::new().companion_resource_info_response(
+                    callback.request_id,
+                    &info.content_type,
+                    info.size,
+                );
+                self.send_bytes(Opcode::Flatbuf, &msg).await
+            }
+            CompanionCallbackValue::Info(Err(err)) => {
+                let msg = v4::MessageBuilder::new().companion_resource_info_response_with_status(
+                    callback.request_id,
+                    "application/octet-stream",
+                    None,
+                    companion_info_status(err.kind()),
+                );
+                self.send_bytes(Opcode::Flatbuf, &msg).await
+            }
+            CompanionCallbackValue::Read {
+                requested_range,
+                result: Ok(data),
+            } => {
+                if requested_range.as_ref().is_some_and(|range| {
+                    range
+                        .end()
+                        .checked_sub(*range.start())
+                        .and_then(|len| len.checked_add(1))
+                        .is_none_or(|len| data.len() as u64 > len)
+                }) {
+                    return self
+                        .send_resource_result(
+                            callback.request_id,
+                            companion::GetResourceResult::InvalidRange,
+                        )
+                        .await;
+                }
+                let Some(total_parts) = companion::resource_part_count(data.len()) else {
+                    return self
+                        .send_resource_result(
+                            callback.request_id,
+                            companion::GetResourceResult::Failed,
+                        )
+                        .await;
+                };
+                if data.is_empty() {
+                    return self
+                        .send_resource_result(
+                            callback.request_id,
+                            companion::GetResourceResult::Success(Vec::new()),
+                        )
+                        .await;
+                }
+                for (part, chunk) in data.chunks(companion::MAX_RESOURCE_READ_SIZE).enumerate() {
+                    let body = companion::ResourceResponse {
+                        request_id: callback.request_id,
+                        part: part as u8,
+                        total_parts,
+                        result: companion::GetResourceResult::Success(chunk.to_vec()),
+                    }
+                    .serialize();
+                    self.send_bytes(Opcode::Resource, &body).await?;
+                }
+                Ok(())
+            }
+            CompanionCallbackValue::Read {
+                result: Err(err), ..
+            } => {
+                self.send_resource_result(callback.request_id, companion_read_result(err.kind()))
+                    .await
+            }
+        }
+    }
+
+    fn register_companion_resource(
+        &mut self,
+        pending: PendingCompanionRegistration,
+        cmd_tx: &UnboundedSender<Command>,
+    ) {
+        let StateVariant::V4 {
+            companion_provider, ..
+        } = self.state_machine.variant
+        else {
+            if matches!(self.state_machine.variant, StateVariant::Connecting) {
+                self.pending_companion_registrations.push_back(pending);
+            } else {
+                let _ = pending
+                    .reply
+                    .send(Err(CompanionResourceRegistrationError::Unsupported));
+            }
+            return;
+        };
+        let Some((provider_id, version)) = companion_provider else {
+            self.pending_companion_registrations.push_back(pending);
+            return;
+        };
+        if version != companion::FCOMPANION_PROTOCOL_VERSION {
+            let _ = pending
+                .reply
+                .send(Err(CompanionResourceRegistrationError::Unsupported));
+            return;
+        }
+        let resource_id = match self.next_resource_id() {
+            Ok(id) => id,
+            Err(err) => {
+                let _ = pending.reply.send(Err(err));
+                return;
+            }
+        };
+        self.companion_resources.insert(
+            resource_id,
+            RegisteredCompanionResource {
+                resource: pending.resource,
+                playback_owned: false,
+            },
+        );
+        let _ = pending.reply.send(Ok(CompanionResourceRegistration {
+            command_tx: cmd_tx.clone(),
+            generation: self.connection_generation,
+            provider_id,
+            resource_id,
+            url: companion::create_url(provider_id, resource_id),
+        }));
+    }
+
+    fn finish_pending_companion_registrations(&mut self, cmd_tx: &UnboundedSender<Command>) {
+        let pending = std::mem::take(&mut self.pending_companion_registrations);
+        for registration in pending {
+            self.register_companion_resource(registration, cmd_tx);
+        }
+    }
+
+    fn unregister_companion_resource(&mut self, generation: u64, resource_id: u32) {
+        if generation == self.connection_generation
+            && self
+                .companion_resources
+                .get(&resource_id)
+                .is_some_and(|resource| !resource.playback_owned)
+        {
+            self.companion_resources.remove(&resource_id);
+        }
     }
 
     /// Returns `true` if the main loop should be quit.
     async fn handle_action(
         &mut self,
+        callbacks: &mut CompanionCallbacks,
         shared_state: &mut SharedState,
         has_emitted_connected_event: &mut bool,
         current_playlist_item_index: &mut Option<usize>,
@@ -1648,6 +2147,7 @@ impl InnerDevice {
                     self.emit_connected(*used_remote_addr, *local_addr, None);
                     *has_emitted_connected_event = true;
                     self.session_version.set(2);
+                    self.finish_pending_companion_registrations(cmd_tx);
                 }
                 VersionCode::V3 => {
                     self.send(
@@ -1681,12 +2181,17 @@ impl InnerDevice {
                     )
                     .await
                     .context("Failed to subscribe to MediaItemEnd")?;
+                    self.finish_pending_companion_registrations(cmd_tx);
                 }
             },
             Action::VolumeUpdated(msg) => {
                 changed!(volume, msg.volume, volume_changed);
             }
             Action::PlaybackError(error) => {
+                if self.load_in_flight {
+                    self.load_in_flight = false;
+                    self.clear_playback_scoped_state();
+                }
                 self.event_handler.playback_error(error.message);
             }
             Action::PlaybackUpdateV2(update) => {
@@ -1855,7 +2360,8 @@ impl InnerDevice {
 
                 self.session_version.set(4);
 
-                let msg = v4::MessageBuilder::new().companion_hello_request();
+                let msg = v4::MessageBuilder::new()
+                    .companion_hello_request_with_version(companion::FCOMPANION_PROTOCOL_VERSION);
                 self.send_bytes(Opcode::Flatbuf, &msg).await?;
             }
             Action::ProgressChanged { pos, dur } => {
@@ -1895,6 +2401,10 @@ impl InnerDevice {
                     // this update).
                     self.load_in_flight = false;
                 }
+                if state == PlaybackState::Ended {
+                    self.load_in_flight = false;
+                    self.clear_playback_scoped_state();
+                }
                 self.event_handler.playback_state_changed(state);
             }
             Action::PlaybackStopped => {
@@ -1912,32 +2422,8 @@ impl InnerDevice {
                 }
                 self.event_handler.playback_stopped();
             }
-            Action::Companion(request) => {
-                match request {
-                    CompanionRequest::ResourceInfo {
-                        request_id,
-                        resource_id,
-                    } => {
-                        if let Some(source) = self.companion_sources.get(&resource_id) {
-                            let msg = v4::MessageBuilder::new().companion_resource_info_response(
-                                request_id,
-                                &source.content_type,
-                                Some(source.len),
-                            );
-                            self.send_bytes(Opcode::Flatbuf, &msg).await?;
-                        }
-                        // TODO: send failed?
-                    }
-                    CompanionRequest::Resource {
-                        request_id,
-                        resource_id,
-                        read_head,
-                    } => {
-                        self.handle_resource_request(request_id, resource_id, read_head)
-                            .await?;
-                    }
-                }
-            }
+            Action::Companion(request) => self.queue_companion_request(callbacks, request).await?,
+            Action::CompanionHello { .. } => self.finish_pending_companion_registrations(cmd_tx),
             Action::StartMirroringSession { id, signaller } => {
                 self.start_mirroring_session(id, signaller, cmd_tx).await?;
             }
@@ -1968,41 +2454,38 @@ impl InnerDevice {
                     *has_emitted_connected_event = true;
                 }
             }
-            Action::CompanionReady => {
-                // Replay commands that were parked while the provider ID was
-                // still pending
-                for cmd in self.pending_companion_cmds.drain(..) {
-                    let _ = cmd_tx.send(cmd);
+            Action::LoadedV4(load) => {
+                self.companion_resources
+                    .retain(|_, resource| !resource.playback_owned);
+                match load {
+                    V4Load::Single(source) => {
+                        // Switching to a single item ends any active queue.
+                        self.clear_queue_mirror();
+                        self.event_handler.source_changed(source.clone());
+                        shared_state.source = Some(source);
+                    }
+                    V4Load::Queue {
+                        entries,
+                        start_index,
+                        autoplay,
+                    } => {
+                        let index = start_index.unwrap_or(0) as usize;
+                        if let Some(entry) = entries.get(index) {
+                            if let MediaLocator::Url { url } = &entry.item.source {
+                                let source = Source::Url {
+                                    url: url.clone(),
+                                    content_type: entry.item.content_type.clone(),
+                                };
+                                self.event_handler.source_changed(source.clone());
+                                shared_state.source = Some(source);
+                            }
+                        }
+                        self.queue_mirror
+                            .set(entries, start_index.map(|i| i as u32), autoplay);
+                        self.emit_queue_changed();
+                    }
                 }
             }
-            Action::LoadedV4(load) => match load {
-                V4Load::Single(source) => {
-                    // Switching to a single item ends any active queue.
-                    self.clear_queue_mirror();
-                    self.event_handler.source_changed(source.clone());
-                    shared_state.source = Some(source);
-                }
-                V4Load::Queue {
-                    entries,
-                    start_index,
-                    autoplay,
-                } => {
-                    let index = start_index.unwrap_or(0) as usize;
-                    if let Some(entry) = entries.get(index) {
-                        if let MediaLocator::Url { url } = &entry.item.source {
-                            let source = Source::Url {
-                                url: url.clone(),
-                                content_type: entry.item.content_type.clone(),
-                            };
-                            self.event_handler.source_changed(source.clone());
-                            shared_state.source = Some(source);
-                        }
-                    }
-                    self.queue_mirror
-                        .set(entries, start_index.map(|i| i as u32), autoplay);
-                    self.emit_queue_changed();
-                }
-            },
             Action::QueueInserted { entry, position } => {
                 if self.queue_mirror.insert(entry, &position) {
                     self.emit_queue_changed();
@@ -2023,6 +2506,7 @@ impl InnerDevice {
             }
         }
 
+        callbacks.cancel_missing(&self.companion_resources);
         Ok(false)
     }
 
@@ -2078,13 +2562,20 @@ impl InnerDevice {
     /// resource can still be requested afterwards and nothing may be left
     /// open.
     fn clear_playback_scoped_state(&mut self) {
-        self.companion_sources.clear();
+        self.companion_resources
+            .retain(|_, resource| !resource.playback_owned);
         self.clear_queue_mirror();
     }
 
-    /// Ask a v4 receiver to report playback progress every `interval_millis`
-    /// milliseconds (floored to 100 ms, the receiver's granularity). Older
-    /// receivers have no such message, so the request is skipped there.
+    fn finish_replacement_load(&mut self, first_new_id: u64, succeeded: bool) {
+        self.companion_resources.retain(|id, resource| {
+            !resource.playback_owned || (u64::from(*id) >= first_new_id) == succeeded
+        });
+    }
+
+    /// Ask a v4 receiver to report playback progress every `interval_millis` milliseconds (floored
+    /// to 100 ms, the receiver's granularity). Older receivers have no such message, so the request
+    /// is skipped there.
     async fn send_progress_update_interval(&mut self, interval_millis: u64) -> anyhow::Result<()> {
         match self.state_machine.variant {
             StateVariant::V4 { .. } => {
@@ -2140,6 +2631,7 @@ impl InnerDevice {
     /// Returns `true` if the event loops should quit;
     async fn handle_command(
         &mut self,
+        callbacks: &mut CompanionCallbacks,
         shared_state: &mut SharedState,
         has_emitted_connected_event: &mut bool,
         current_playlist_item_index: &mut Option<usize>,
@@ -2168,16 +2660,20 @@ impl InnerDevice {
                 metadata,
                 request_headers,
             } => {
-                self.load(
-                    type_,
-                    content_type,
-                    resume_position,
-                    speed,
-                    volume,
-                    metadata,
-                    request_headers,
-                )
-                .await?;
+                let first_new_id = self.next_companion_resource_id;
+                let result = self
+                    .load(
+                        type_,
+                        content_type,
+                        resume_position,
+                        speed,
+                        volume,
+                        metadata,
+                        request_headers,
+                    )
+                    .await;
+                self.finish_replacement_load(first_new_id, result.is_ok());
+                result?;
                 self.load_in_flight = true;
                 *playlist_length = None;
                 *current_playlist_item_index = None;
@@ -2186,6 +2682,7 @@ impl InnerDevice {
                 self.clear_queue_mirror();
             }
             Command::LoadPlaylist(items) => {
+                let first_new_id = self.next_companion_resource_id;
                 let items = items
                     .into_iter()
                     .map(|item| v3::MediaItem {
@@ -2210,18 +2707,21 @@ impl InnerDevice {
                     return Ok(false);
                 };
 
-                self.load(
-                    LoadType::Content {
-                        content: json_paylaod,
-                    },
-                    "application/json".to_owned(),
-                    0.0,
-                    None,
-                    None,
-                    None,
-                    None,
-                )
-                .await?;
+                let result = self
+                    .load(
+                        LoadType::Content {
+                            content: json_paylaod,
+                        },
+                        "application/json".to_owned(),
+                        0.0,
+                        None,
+                        None,
+                        None,
+                        None,
+                    )
+                    .await;
+                self.finish_replacement_load(first_new_id, result.is_ok());
+                result?;
                 self.load_in_flight = true;
             }
             Command::SetProgressUpdateInterval(interval_millis) => {
@@ -2285,6 +2785,7 @@ impl InnerDevice {
             Command::StartMirroringSession(signaller) => {
                 let action = self.state_machine.start_mirroring_session(signaller);
                 self.handle_action(
+                    callbacks,
                     shared_state,
                     has_emitted_connected_event,
                     current_playlist_item_index,
@@ -2313,7 +2814,10 @@ impl InnerDevice {
                 self.send_bytes(Opcode::Flatbuf, &msg).await?;
             }
             Command::LoadQueue(queue) => {
-                self.load_rich_queue(queue).await?;
+                let first_new_id = self.next_companion_resource_id;
+                let result = self.load_rich_queue(queue).await;
+                self.finish_replacement_load(first_new_id, result.is_ok());
+                result?;
                 self.load_in_flight = true;
                 *playlist_length = None;
                 *current_playlist_item_index = None;
@@ -2351,6 +2855,7 @@ impl InnerDevice {
                 playback_duration,
                 position,
             } => {
+                let first_new_id = self.next_companion_resource_id;
                 // Resolve companion sources up front so the fd is consumed once and only the
                 // resulting URL is retained in the mirror.
                 let resolved = self.resolve_media_item(item)?;
@@ -2360,7 +2865,10 @@ impl InnerDevice {
                     playback_duration,
                     to_v4_queue_position(position),
                 );
-                self.send_bytes(Opcode::Flatbuf, &msg).await?;
+                if let Err(err) = self.send_bytes(Opcode::Flatbuf, &msg).await {
+                    self.finish_replacement_load(first_new_id, false);
+                    return Err(err);
+                }
                 if self.queue_mirror.insert(
                     QueueEntry {
                         item: resolved,
@@ -2378,8 +2886,19 @@ impl InnerDevice {
                     self.emit_queue_changed();
                 }
             }
+            Command::RegisterCompanionResource { resource, reply } => {
+                self.register_companion_resource(
+                    PendingCompanionRegistration { resource, reply },
+                    cmd_tx,
+                );
+            }
+            Command::UnregisterCompanionResource {
+                generation,
+                resource_id,
+            } => self.unregister_companion_resource(generation, resource_id),
         }
 
+        callbacks.cancel_missing(&self.companion_resources);
         Ok(false)
     }
 
@@ -2388,10 +2907,16 @@ impl InnerDevice {
         addrs: &[SocketAddr],
         cmd_rx: &mut UnboundedReceiver<Command>,
         cmd_tx: UnboundedSender<Command>,
+        queued_commands: &mut VecDeque<Command>,
         _txt_records: &HashMap<String, String>,
     ) -> Result<(), utils::WorkError> {
         let Some(stream) = utils::try_connect_tcp(addrs, Duration::from_secs(5), cmd_rx, |cmd| {
-            cmd == Command::Quit
+            if matches!(cmd, Command::Quit) {
+                true
+            } else {
+                queued_commands.push_back(cmd);
+                false
+            }
         })
         .await
         .map_err(|err| utils::WorkError::DidNotConnect(err.to_string()))?
@@ -2422,14 +2947,14 @@ impl InnerDevice {
         self.queue_mirror = QueueMirror::default();
         self.track_mirror = TrackMirror::default();
         self.load_in_flight = false;
-        // Close any companion sources left over from a previous connection so a
-        // dropped-then-reconnected session doesn't leak file descriptors.
-        self.companion_sources.clear();
-        // Commands still parked when the previous session died will never
-        // execute, so release their transferred descriptors too.
-        for cmd in std::mem::take(&mut self.pending_companion_cmds) {
-            self.discard_command_descriptors(&cmd);
-        }
+        self.connection_generation = self
+            .connection_generation
+            .checked_add(1)
+            .ok_or_else(|| anyhow!("connection generations are exhausted"))?;
+        self.next_companion_resource_id = 0;
+        self.companion_resources.clear();
+        let mut callbacks = CompanionCallbacks::default();
+        let mut deferred_commands = std::mem::take(queued_commands);
         const READ_HEADROOM: usize = 1024 * 8;
         let mut packet_reader =
             fcast_protocol::PacketReader::new(v4::MAX_PACKET_SIZE, READ_HEADROOM);
@@ -2438,6 +2963,29 @@ impl InnerDevice {
             .await?;
 
         'main_loop: loop {
+            for _ in 0..deferred_commands.len() {
+                let cmd = deferred_commands.pop_front().unwrap();
+                if self.command_is_ready(&cmd) {
+                    if self
+                        .handle_command(
+                            &mut callbacks,
+                            &mut shared_state,
+                            &mut has_emitted_connected_event,
+                            &mut current_playlist_item_index,
+                            &used_remote_addr,
+                            &local_addr,
+                            &cmd_tx,
+                            &mut playlist_length,
+                            cmd,
+                        )
+                        .await?
+                    {
+                        break 'main_loop;
+                    }
+                } else {
+                    deferred_commands.push_back(cmd);
+                }
+            }
             tokio::select! {
                 res = self.stream.read(packet_reader.spare_capacity_mut()) => {
                     let n_read = res?;
@@ -2468,6 +3016,7 @@ impl InnerDevice {
 
                         let action = self.state_machine.handle_packet(opcode, body);
                         if self.handle_action(
+                            &mut callbacks,
                             &mut shared_state,
                             &mut has_emitted_connected_event,
                             &mut current_playlist_item_index,
@@ -2484,18 +3033,27 @@ impl InnerDevice {
                     let cmd = cmd.ok_or(anyhow!("No more commands"))?;
 
                     debug!("Received command: {cmd:?}");
-
-                    if self.handle_command(
-                        &mut shared_state,
-                        &mut has_emitted_connected_event,
-                        &mut current_playlist_item_index,
-                        &used_remote_addr,
-                        &local_addr,
-                        &cmd_tx,
-                        &mut playlist_length,
-                        cmd
-                    ).await? {
-                        break;
+                    if self.command_is_ready(&cmd) {
+                        if self.handle_command(
+                            &mut callbacks,
+                            &mut shared_state,
+                            &mut has_emitted_connected_event,
+                            &mut current_playlist_item_index,
+                            &used_remote_addr,
+                            &local_addr,
+                            &cmd_tx,
+                            &mut playlist_length,
+                            cmd
+                        ).await? {
+                            break;
+                        }
+                    } else {
+                        deferred_commands.push_back(cmd);
+                    }
+                }
+                callback = callbacks.next(), if !callbacks.active.is_empty() => {
+                    if let Some(callback) = callback {
+                        self.handle_companion_callback(callback).await?;
                     }
                 }
             }
@@ -2506,6 +3064,37 @@ impl InnerDevice {
         // TODO: shutdown network stream?
 
         Ok(())
+    }
+
+    fn command_is_ready(&self, command: &Command) -> bool {
+        match command {
+            Command::Quit
+            | Command::ConnectedEventDeadlineElapsed
+            | Command::RegisterCompanionResource { .. }
+            | Command::UnregisterCompanionResource { .. } => true,
+            Command::Load {
+                type_: LoadType::CompanionResource { .. },
+                ..
+            }
+            | Command::LoadQueue(_)
+            | Command::QueueInsert { .. } => matches!(
+                self.state_machine.variant,
+                StateVariant::V4 {
+                    companion_provider: Some(_),
+                    ..
+                }
+            ),
+            _ => !matches!(self.state_machine.variant, StateVariant::Connecting),
+        }
+    }
+
+    fn clear_connection_companion_state(&mut self) {
+        self.companion_resources.clear();
+        for registration in self.pending_companion_registrations.drain(..) {
+            let _ = registration
+                .reply
+                .send(Err(CompanionResourceRegistrationError::Disconnected));
+        }
     }
 
     pub async fn work(
@@ -2519,17 +3108,53 @@ impl InnerDevice {
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Connecting);
 
-        crate::connection_loop!(
-            reconnect_interval_millis,
-            on_work = {
-                self.inner_work(&addrs, &mut cmd_rx, cmd_tx.clone(), &txt_records)
-                    .await
-            },
-            on_reconnect_started = {
-                self.event_handler
-                    .connection_state_changed(DeviceConnectionState::Reconnecting);
+        let mut queued_commands = VecDeque::new();
+        'worker: loop {
+            let result = self
+                .inner_work(
+                    &addrs,
+                    &mut cmd_rx,
+                    cmd_tx.clone(),
+                    &mut queued_commands,
+                    &txt_records,
+                )
+                .await;
+            self.clear_connection_companion_state();
+            match result {
+                Ok(()) => break,
+                Err(err) => {
+                    error!("Inner work error: {err}");
+                    if reconnect_interval_millis == 0 {
+                        break;
+                    }
+                    if !matches!(err, utils::WorkError::DidNotConnect(_)) {
+                        self.event_handler
+                            .connection_state_changed(DeviceConnectionState::Reconnecting);
+                    }
+                }
             }
-        );
+
+            let sleep = tokio::time::sleep(Duration::from_millis(reconnect_interval_millis));
+            tokio::pin!(sleep);
+            loop {
+                tokio::select! {
+                    _ = &mut sleep => break,
+                    command = cmd_rx.recv() => match command {
+                        Some(Command::Quit) | None => break 'worker,
+                        Some(command) => queued_commands.push_back(command),
+                    }
+                }
+            }
+        }
+
+        self.clear_connection_companion_state();
+        while let Some(command) = queued_commands.pop_front() {
+            fail_pending_registration(command);
+        }
+        while let Ok(command) = cmd_rx.try_recv() {
+            fail_pending_registration(command);
+        }
+        self.session_version.set(DEFAULT_SESSION_VERSION);
 
         self.event_handler
             .connection_state_changed(DeviceConnectionState::Disconnected);
@@ -2538,17 +3163,17 @@ impl InnerDevice {
 
 impl FCastDevice {
     fn send_command(&self, cmd: Command) -> Result<(), CastingDeviceError> {
-        let state = self.state.lock().unwrap();
-        match state.command_tx.as_ref() {
-            Some(cmd_tx) => {
-                let _ = cmd_tx.send(cmd);
-                Ok(())
-            }
-            None => {
-                error!("Missing command tx");
-                Err(CastingDeviceError::FailedToSendCommand)
-            }
+        let mut state = self.state.lock().unwrap();
+        let Some(cmd_tx) = state.command_tx.as_ref() else {
+            error!("Missing command tx");
+            return Err(CastingDeviceError::FailedToSendCommand);
+        };
+        if cmd_tx.send(cmd).is_err() {
+            state.command_tx = None;
+            state.started = false;
+            return Err(CastingDeviceError::FailedToSendCommand);
         }
+        Ok(())
     }
 
     fn load_url(
@@ -2785,9 +3410,7 @@ impl CastingDevice for FCastDevice {
 
     fn disconnect(&self) -> Result<(), CastingDeviceError> {
         debug!("Trying to stop worker...");
-        if let Err(err) = self.send_command(Command::Quit) {
-            error!("Failed to stop worker: {err}");
-        }
+        self.send_command(Command::Quit)?;
         debug!("Sent quit command");
         let mut state = self.state.lock().unwrap();
         state.command_tx = None;
@@ -2813,10 +3436,18 @@ impl CastingDevice for FCastDevice {
         }
 
         state.started = true;
+        state.ever_started = true;
+        state.worker_id = state.worker_id.wrapping_add(1);
+        let worker_id = state.worker_id;
         debug!("Starting with address list: {addrs:?}...");
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<Command>();
         state.command_tx = Some(tx.clone());
+        for command in state.pending_commands.drain(..) {
+            if let Err(err) = tx.send(command) {
+                fail_pending_registration(err.0);
+            }
+        }
 
         let fingerprint = state.txt_records.get("fp").and_then(|fp| {
             let mut fingerprint = Vec::new();
@@ -2829,22 +3460,28 @@ impl CastingDevice for FCastDevice {
             }
         });
 
-        state.rt_handle.spawn(
+        let worker_state = Arc::clone(&self.state);
+        let session_version = self.session_version.clone();
+        let supports_whep = Arc::clone(&self.supports_whep);
+        let txt_records = state.txt_records.clone();
+        let rt_handle = state.rt_handle.clone();
+        drop(state);
+        rt_handle.spawn(async move {
             InnerDevice::new(
                 app_info,
                 event_handler,
-                self.session_version.clone(),
-                Arc::clone(&self.supports_whep),
+                session_version,
+                supports_whep,
                 fingerprint,
             )
-            .work(
-                addrs,
-                rx,
-                tx,
-                reconnect_interval_millis,
-                state.txt_records.clone(),
-            ),
-        );
+            .work(addrs, rx, tx, reconnect_interval_millis, txt_records)
+            .await;
+            let mut state = worker_state.lock().unwrap();
+            if state.worker_id == worker_id {
+                state.command_tx = None;
+                state.started = false;
+            }
+        });
 
         Ok(())
     }
@@ -2993,140 +3630,34 @@ impl CastingDevice for FCastDevice {
     }
 }
 
-/// Minimal async byte sink, so [`serve_resource`] can write to an in-memory
-/// buffer in tests, not only a live [`NetworkStream`].
-#[allow(async_fn_in_trait)]
-trait ByteSink {
-    async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()>;
-    async fn flush(&mut self) -> std::io::Result<()>;
-}
-
-impl ByteSink for NetworkStream {
-    async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-        NetworkStream::write_all(self, buf).await
-    }
-    async fn flush(&mut self) -> std::io::Result<()> {
-        NetworkStream::flush(self).await
+fn fail_pending_registration(command: Command) {
+    if let Command::RegisterCompanionResource { reply, .. } = command {
+        let _ = reply.send(Err(CompanionResourceRegistrationError::Disconnected));
     }
 }
 
-/// Answer a companion `GetResource` that cannot be fulfilled, with a single
-/// terminal `NotFound` frame.
-///
-/// `NotFound` is the wire's only "no data" result (see
-/// [`companion::GetResourceResult`]), so it doubles as the answer to a request
-/// that names nothing readable. Being precise about the reason matters far less
-/// than answering at all: the requester is blocked on the response, and the
-/// receiver's image fetch blocks on it with no timeout whatsoever.
-async fn send_resource_not_found<S: ByteSink>(
-    stream: &mut S,
-    request_id: u32,
-) -> Result<(), utils::WorkError> {
-    let body = companion::ResourceResponse {
-        request_id,
-        part: 0,
-        total_parts: 1,
-        result: companion::GetResourceResult::NotFound,
-    }
-    .serialize();
-
-    let size = 1 + body.len();
-    let mut header = [0u8; HEADER_LENGTH];
-    header[..HEADER_LENGTH - 1].copy_from_slice(&(size as u32).to_le_bytes());
-    header[HEADER_LENGTH - 1] = Opcode::Resource as u8;
-    stream.write_all(&header).await?;
-    stream.write_all(&body).await?;
-    stream.flush().await?;
-
-    Ok(())
-}
-
-/// Answer one companion `GetResource`: the requested byte range (the whole
-/// resource when `read_head` is `None`) split into `MAX_RESOURCE_READ_SIZE`
-/// parts.
-///
-/// Every request gets exactly one answer, terminated by a frame whose `part` is
-/// `total_parts - 1` (that is what releases the requester's pending entry). An
-/// unknown resource, a range naming no readable bytes (an empty resource, or
-/// one starting at or past EOF), and a range too large for the 255 parts the
-/// wire format can carry are all answered with `NotFound`.
-async fn serve_resource<S: ByteSink>(
-    stream: &mut S,
-    source: Option<&mut WrappedCompanionSource>,
-    request_id: u32,
-    read_head: Option<(/* start */ u64, /* stop_inclusive */ u64)>,
-) -> Result<(), utils::WorkError> {
-    let Some(source) = source else {
-        return send_resource_not_found(stream, request_id).await;
-    };
-
-    let file_len = source.len;
-    let (start, stop_inclusive): (u64, u64) = match read_head {
-        Some((start, stop_inclusive)) => (start, stop_inclusive),
-        None => (0, file_len.saturating_sub(1)),
-    };
-
-    let max_packet_size = companion::MAX_RESOURCE_READ_SIZE;
-    let mut bytes_to_read = resource_bytes_to_read(start, stop_inclusive, file_len);
-    if bytes_to_read == 0 {
-        warn!(
-            "Companion resource request {request_id} names no readable bytes (start={start}, stop_inclusive={stop_inclusive}, len={file_len}), answering NotFound"
-        );
-        return send_resource_not_found(stream, request_id).await;
-    }
-
-    let total_packets = bytes_to_read.div_ceil(max_packet_size as u64);
-    if total_packets > u8::MAX.into() {
-        error!(
-            "Companion resource request {request_id} needs {total_packets} parts, exceeding the 255-part limit"
-        );
-        return send_resource_not_found(stream, request_id).await;
-    }
-
-    source.data.seek(std::io::SeekFrom::Start(start))?;
-
-    let total_packets = total_packets as u8;
-    let mut current_packet = 0;
-    'outer: while bytes_to_read > 0 {
-        let response_header =
-            companion::ResourceResponse::header_success(request_id, current_packet, total_packets);
-
-        let mut packet_bytes_to_read = bytes_to_read.min(max_packet_size as u64);
-
-        let size = 1 + response_header.len() + packet_bytes_to_read as usize;
-        let mut header = [0u8; HEADER_LENGTH];
-        header[..HEADER_LENGTH - 1].copy_from_slice(&(size as u32).to_le_bytes());
-        header[HEADER_LENGTH - 1] = Opcode::Resource as u8;
-        stream.write_all(&header).await?;
-        stream.write_all(&response_header).await?;
-
-        while packet_bytes_to_read > 0 {
-            let mut buf = [0u8; 1024 * 8];
-            let max_read = packet_bytes_to_read.min(buf.len() as u64) as usize;
-            let mut n_read = source.data.read(&mut buf[0..max_read])?;
-            if n_read == 0 {
-                return Err(utils::WorkError::Anyhow(anyhow!(
-                    "Failed to read from local resource"
-                )));
-            }
-
-            n_read = (n_read as u64).min(bytes_to_read) as usize;
-
-            stream.write_all(&buf[0..n_read]).await?;
-            if (n_read as u64) < bytes_to_read {
-                packet_bytes_to_read -= n_read as u64;
-                bytes_to_read -= n_read as u64;
-            } else {
-                break 'outer;
-            }
+fn companion_info_status(kind: std::io::ErrorKind) -> v4::flat::CompanionResourceStatus {
+    match kind {
+        std::io::ErrorKind::NotFound => v4::flat::CompanionResourceStatus::NotFound,
+        std::io::ErrorKind::InvalidInput => v4::flat::CompanionResourceStatus::InvalidRange,
+        std::io::ErrorKind::Interrupted | std::io::ErrorKind::TimedOut => {
+            v4::flat::CompanionResourceStatus::Cancelled
         }
-
-        current_packet += 1;
+        std::io::ErrorKind::UnexpectedEof => v4::flat::CompanionResourceStatus::EndOfStream,
+        _ => v4::flat::CompanionResourceStatus::Failed,
     }
+}
 
-    stream.flush().await?;
-
-    Ok(())
+fn companion_read_result(kind: std::io::ErrorKind) -> companion::GetResourceResult {
+    match kind {
+        std::io::ErrorKind::NotFound => companion::GetResourceResult::NotFound,
+        std::io::ErrorKind::InvalidInput => companion::GetResourceResult::InvalidRange,
+        std::io::ErrorKind::Interrupted | std::io::ErrorKind::TimedOut => {
+            companion::GetResourceResult::Cancelled
+        }
+        std::io::ErrorKind::UnexpectedEof => companion::GetResourceResult::EndOfStream,
+        _ => companion::GetResourceResult::Failed,
+    }
 }
 
 fn resource_bytes_to_read(start: u64, stop_inclusive: u64, file_len: u64) -> u64 {
@@ -3155,222 +3686,626 @@ mod tests {
 
     use super::*;
 
-    // --- companion resource serving ---
+    #[derive(Debug)]
+    struct NoopHandler;
 
-    #[derive(Default)]
-    struct VecSink(Vec<u8>);
-
-    impl ByteSink for VecSink {
-        async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()> {
-            self.0.extend_from_slice(buf);
-            Ok(())
-        }
-        async fn flush(&mut self) -> std::io::Result<()> {
-            Ok(())
-        }
+    impl DeviceEventHandler for NoopHandler {
+        fn connection_state_changed(&self, _: DeviceConnectionState) {}
+        fn volume_changed(&self, _: f64) {}
+        fn time_changed(&self, _: f64) {}
+        fn playback_state_changed(&self, _: PlaybackState) {}
+        fn duration_changed(&self, _: f64) {}
+        fn speed_changed(&self, _: f64) {}
+        fn source_changed(&self, _: Source) {}
+        fn playback_stopped(&self) {}
+        fn playback_error(&self, _: String) {}
+        fn tracks_available(&self, _: Vec<MediaTrack>) {}
+        fn track_selected(&self, _: Option<u32>, _: MediaTrackType) {}
+        fn tracks_changed(&self, _: TrackList) {}
+        fn queue_changed(&self, _: QueueState) {}
+        fn command_error(&self, _: ReceiverError) {}
     }
 
-    fn bytes_source(data: Vec<u8>) -> WrappedCompanionSource {
-        let len = data.len() as u64;
-        WrappedCompanionSource {
-            data: CompanionData::Bytes(std::io::Cursor::new(data)),
-            content_type: "text/vtt".to_owned(),
-            len,
-        }
+    #[derive(Debug)]
+    struct TestResource {
+        data: Vec<u8>,
+        error: Option<std::io::ErrorKind>,
+        requests: Arc<Mutex<Vec<CompanionResourceRequest>>>,
     }
 
-    /// Split a captured sink back into the `ResourceResponse` frames it
-    /// carries.
-    fn parse_frames(mut buf: &[u8]) -> Vec<companion::ResourceResponse> {
-        let mut out = Vec::new();
-        while !buf.is_empty() {
-            assert!(buf.len() >= HEADER_LENGTH, "truncated frame header");
-            let mut size_bytes = [0u8; 4];
-            size_bytes.copy_from_slice(&buf[..HEADER_LENGTH - 1]);
-            let size = u32::from_le_bytes(size_bytes) as usize; // opcode byte + body
-            assert_eq!(buf[HEADER_LENGTH - 1], Opcode::Resource as u8);
-            let body_len = size - 1;
-            let body = &buf[HEADER_LENGTH..HEADER_LENGTH + body_len];
-            out.push(companion::ResourceResponse::parse(Bytes::copy_from_slice(body)).unwrap());
-            buf = &buf[HEADER_LENGTH + body_len..];
-        }
-        out
-    }
-
-    /// Concatenate success-frame payloads, asserting parts are ordered `0..len`
-    /// and agree on `total_parts`.
-    fn reassemble(frames: &[companion::ResourceResponse]) -> Vec<u8> {
-        let mut payload = Vec::new();
-        for (i, frame) in frames.iter().enumerate() {
-            assert_eq!(frame.part as usize, i, "parts out of order");
-            assert_eq!(
-                frame.total_parts as usize,
-                frames.len(),
-                "total_parts disagrees with the number of frames sent"
-            );
-            match &frame.result {
-                companion::GetResourceResult::Success(bytes) => payload.extend_from_slice(bytes),
-                companion::GetResourceResult::NotFound => panic!("unexpected NotFound frame"),
-            }
-        }
-        payload
-    }
-
-    async fn serve(
-        source: Option<&mut WrappedCompanionSource>,
-        head: Option<(u64, u64)>,
-    ) -> Vec<u8> {
-        let mut sink = VecSink::default();
-        serve_resource(&mut sink, source, 42, head).await.unwrap();
-        sink.0
-    }
-
-    #[tokio::test]
-    async fn serve_resource_not_found_when_absent() {
-        let frames = parse_frames(&serve(None, None).await);
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].request_id, 42);
-        assert_eq!(frames[0].result, companion::GetResourceResult::NotFound);
-    }
-
-    #[tokio::test]
-    async fn serve_resource_whole_small_resource() {
-        let data = b"WEBVTT\n\n00:00.000 --> 00:01.000\nhi\n".to_vec();
-        let mut src = bytes_source(data.clone());
-        let frames = parse_frames(&serve(Some(&mut src), None).await);
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].request_id, 42);
-        assert_eq!(reassemble(&frames), data);
-    }
-
-    #[tokio::test]
-    async fn serve_resource_serves_explicit_subrange() {
-        let data: Vec<u8> = (0..100u8).collect();
-        let mut src = bytes_source(data.clone());
-        let frames = parse_frames(&serve(Some(&mut src), Some((10, 19))).await);
-        assert_eq!(reassemble(&frames), data[10..=19]);
-    }
-
-    #[tokio::test]
-    async fn serve_resource_clamps_stop_past_eof() {
-        let data: Vec<u8> = (0..100u8).collect();
-        let mut src = bytes_source(data.clone());
-        let frames = parse_frames(&serve(Some(&mut src), Some((90, 1000))).await);
-        assert_eq!(reassemble(&frames), data[90..100]);
-    }
-
-    #[tokio::test]
-    async fn serve_resource_start_past_eof_answers_not_found() {
-        let mut src = bytes_source((0..100u8).collect());
-        let frames = parse_frames(&serve(Some(&mut src), Some((100, 200))).await);
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].request_id, 42);
-        assert_eq!(frames[0].result, companion::GetResourceResult::NotFound);
-    }
-
-    #[tokio::test]
-    async fn serve_resource_empty_resource_answers_not_found() {
-        let mut src = bytes_source(Vec::new());
-        let frames = parse_frames(&serve(Some(&mut src), None).await);
-        assert_eq!(frames.len(), 1);
-        assert_eq!(frames[0].request_id, 42);
-        assert_eq!(frames[0].result, companion::GetResourceResult::NotFound);
-    }
-
-    /// Every `GetResource` must be answered, and the answer must terminate the
-    /// request.
-    ///
-    /// Zero-byte ranges used to emit no frames at all, which parks the
-    /// requester on a response that never arrives: `fcompsrc` eats a 2.5s
-    /// stall and then errors, and the receiver's companion image fetch
-    /// awaits the channel with no timeout, so it hangs outright. Reachable from
-    /// a caller as soon as it registers an empty resource
-    /// (`SubtitleContent::Data` with no bytes) or seeks to EOF.
-    #[tokio::test]
-    async fn serve_resource_always_answers_and_terminates() {
-        // (name, resource length, read head)
-        let cases: &[(&str, usize, Option<(u64, u64)>)] = &[
-            ("empty resource, implicit whole-range", 0, None),
-            ("empty resource, explicit range", 0, Some((0, 99))),
-            ("range starting exactly at eof", 100, Some((100, 200))),
-            ("range starting past eof", 100, Some((1000, 2000))),
-            ("inverted range", 100, Some((50, 10))),
-            ("range within the resource", 100, Some((0, 9))),
-            ("whole resource", 100, None),
-            (
-                "multi-part whole resource",
-                companion::MAX_RESOURCE_READ_SIZE * 2 + 1,
-                None,
-            ),
-        ];
-
-        for (name, len, head) in cases {
-            let mut src = bytes_source((0..*len).map(|i| i as u8).collect());
-            let frames = parse_frames(&serve(Some(&mut src), *head).await);
-            assert!(!frames.is_empty(), "{name}: request went unanswered");
-            let last = frames.last().unwrap();
-            // The requester releases its pending entry on the frame whose part is the last
-            // one, so an answer that never marks itself final leaves the
-            // request dangling.
-            assert_eq!(
-                last.part,
-                last.total_parts.saturating_sub(1),
-                "{name}: answer never terminates the request"
-            );
-            for frame in &frames {
-                assert_eq!(frame.request_id, 42, "{name}: wrong request id");
+    impl TestResource {
+        fn new(data: impl Into<Vec<u8>>) -> Self {
+            Self {
+                data: data.into(),
+                error: None,
+                requests: Arc::new(Mutex::new(Vec::new())),
             }
         }
     }
 
+    impl CompanionResource for TestResource {
+        fn info(
+            &self,
+            _route: CompanionResourceRoute,
+        ) -> CompanionResourceFuture<'_, CompanionResourceInfo> {
+            Box::pin(async move {
+                if let Some(kind) = self.error {
+                    return Err(std::io::Error::new(kind, "test error"));
+                }
+                Ok(CompanionResourceInfo {
+                    content_type: "video/test".to_owned(),
+                    size: Some(self.data.len() as u64),
+                })
+            })
+        }
+
+        fn read(&self, request: CompanionResourceRequest) -> CompanionResourceFuture<'_, Vec<u8>> {
+            Box::pin(async move {
+                self.requests.lock().unwrap().push(request);
+                if let Some(kind) = self.error {
+                    Err(std::io::Error::new(kind, "test error"))
+                } else {
+                    Ok(self.data.clone())
+                }
+            })
+        }
+    }
+
+    fn test_inner() -> InnerDevice {
+        InnerDevice::new(
+            None,
+            Arc::new(NoopHandler),
+            FCastVersion::new(),
+            Arc::new(AtomicBool::new(false)),
+            None,
+        )
+    }
+
+    fn set_companion(inner: &mut InnerDevice, provider_id: u16, version: u16) {
+        inner.state_machine.variant = StateVariant::V4 {
+            companion_provider: Some((provider_id, version)),
+            mirroring_session: None,
+            mirroring_session_id_gen: IdGenerator::new(),
+        };
+        inner.connection_generation = 1;
+    }
+
+    #[test]
+    fn companion_resource_is_object_safe() {
+        fn accepts(_: Arc<dyn CompanionResource>) {}
+        accepts(Arc::new(TestResource::new([])));
+    }
+
+    #[test]
+    fn companion_hello_accepts_old_and_new_responses() {
+        for version in [0, companion::FCOMPANION_PROTOCOL_VERSION] {
+            let mut state = DeviceStateMachine::new(false);
+            state.variant = StateVariant::V4 {
+                companion_provider: None,
+                mirroring_session: None,
+                mirroring_session_id_gen: IdGenerator::new(),
+            };
+            let packet =
+                v4::MessageBuilder::new().companion_hello_response_with_version(17, version);
+            let action = state.handle_packet(Opcode::Flatbuf, Some(&packet));
+            assert_eq!(
+                action,
+                Action::CompanionHello {
+                    provider_id: 17,
+                    protocol_version: version,
+                }
+            );
+            assert!(matches!(
+                state.variant,
+                StateVariant::V4 {
+                    companion_provider: Some((17, v)),
+                    ..
+                } if v == version
+            ));
+        }
+    }
+
     #[tokio::test]
-    async fn serve_resource_splits_into_multiple_parts() {
-        // Just over two full packets, so three parts with the last partial.
-        let max = companion::MAX_RESOURCE_READ_SIZE;
-        let data: Vec<u8> = (0..(max * 2 + 123)).map(|i| i as u8).collect();
-        let mut src = bytes_source(data.clone());
-        let frames = parse_frames(&serve(Some(&mut src), None).await);
-        assert_eq!(frames.len(), 3);
-        assert_eq!(reassemble(&frames), data);
+    async fn pending_registration_waits_for_v1_and_url_is_stable() {
+        let mut inner = test_inner();
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (reply, result) = oneshot::channel();
+        inner.register_companion_resource(
+            PendingCompanionRegistration {
+                resource: Arc::new(TestResource::new([])),
+                reply,
+            },
+            &cmd_tx,
+        );
+        assert_eq!(inner.pending_companion_registrations.len(), 1);
+        set_companion(&mut inner, 12, 1);
+        inner.finish_pending_companion_registrations(&cmd_tx);
+        let registration = result.await.unwrap().unwrap();
+        assert_eq!(registration.url(), "fcomp://12.fcast/0");
+        assert_eq!(
+            registration.url_for("/manifest.mpd?x=1").unwrap(),
+            "fcomp://12.fcast/0/manifest.mpd?x=1"
+        );
+        assert!(registration.url_for("//authority").is_err());
     }
 
-    #[test]
-    fn companion_data_bytes_len_and_no_fd() {
-        let data = CompanionData::Bytes(std::io::Cursor::new(vec![1, 2, 3, 4, 5]));
-        assert_eq!(data.len().unwrap(), 5);
-        #[cfg(unix)]
-        assert!(data.raw_fd().is_none());
+    #[tokio::test]
+    async fn registration_before_connect_is_retained() {
+        let state = Arc::new(Mutex::new(State::new(
+            DeviceInfo::fcast("test".to_owned(), vec![], 1, HashMap::new()),
+            Handle::current(),
+        )));
+        let registrar = CompanionResourceRegistrar {
+            state: Arc::downgrade(&state),
+        };
+        let task =
+            tokio::spawn(async move { registrar.register(Arc::new(TestResource::new([]))).await });
+        tokio::task::yield_now().await;
+        let command = state.lock().unwrap().pending_commands.pop_front().unwrap();
+        assert!(matches!(
+            &command,
+            Command::RegisterCompanionResource { .. }
+        ));
+        fail_pending_registration(command);
+        assert!(matches!(
+            task.await.unwrap(),
+            Err(CompanionResourceRegistrationError::Disconnected)
+        ));
     }
 
-    #[test]
-    fn companion_data_file_len_and_fd() {
+    #[tokio::test]
+    async fn companion_resource_ids_exhaust_without_reuse() {
+        let mut inner = test_inner();
+        set_companion(&mut inner, 12, 1);
+        inner.next_companion_resource_id = u64::from(u32::MAX) + 1;
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (reply, result) = oneshot::channel();
+        inner.register_companion_resource(
+            PendingCompanionRegistration {
+                resource: Arc::new(TestResource::new([])),
+                reply,
+            },
+            &cmd_tx,
+        );
+        assert!(matches!(
+            result.await.unwrap(),
+            Err(CompanionResourceRegistrationError::Exhausted)
+        ));
+        assert!(inner.companion_resources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn v0_registration_is_unsupported_but_static_source_is_allowed() {
+        let mut inner = test_inner();
+        set_companion(&mut inner, 4, 0);
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (reply, result) = oneshot::channel();
+        inner.register_companion_resource(
+            PendingCompanionRegistration {
+                resource: Arc::new(TestResource::new([])),
+                reply,
+            },
+            &cmd_tx,
+        );
+        assert!(matches!(
+            result.await.unwrap(),
+            Err(CompanionResourceRegistrationError::Unsupported)
+        ));
+
         let path =
-            std::env::temp_dir().join(format!("fcast_companion_test_{}.bin", std::process::id()));
-        std::fs::write(&path, b"hello world").unwrap();
-        let data = CompanionData::File(std::fs::File::open(&path).unwrap());
-        assert_eq!(data.len().unwrap(), 11);
-        #[cfg(unix)]
-        assert!(data.raw_fd().is_some());
-        let _ = std::fs::remove_file(&path);
+            std::env::temp_dir().join(format!("fcast-static-companion-{}", std::process::id()));
+        std::fs::write(&path, b"static").unwrap();
+        let source = CompanionSource::from_path(path.to_string_lossy(), "video/test");
+        assert_eq!(inner.companion_url(&source).unwrap(), "fcomp://4.fcast/0");
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[derive(Debug)]
+    struct NestedResource {
+        registrar: CompanionResourceRegistrar,
+    }
+
+    impl CompanionResource for NestedResource {
+        fn info(
+            &self,
+            _route: CompanionResourceRoute,
+        ) -> CompanionResourceFuture<'_, CompanionResourceInfo> {
+            Box::pin(async {
+                Ok(CompanionResourceInfo {
+                    content_type: "video/test".to_owned(),
+                    size: None,
+                })
+            })
+        }
+
+        fn read(&self, _request: CompanionResourceRequest) -> CompanionResourceFuture<'_, Vec<u8>> {
+            Box::pin(async move {
+                let _nested = self
+                    .registrar
+                    .register(Arc::new(TestResource::new([])))
+                    .await
+                    .map_err(std::io::Error::other)?;
+                Ok(vec![1])
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn nested_registration_does_not_deadlock_callback_polling() {
+        let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let state = Arc::new(Mutex::new(State::new(
+            DeviceInfo::fcast("test".to_owned(), vec![], 1, HashMap::new()),
+            Handle::current(),
+        )));
+        {
+            let mut state = state.lock().unwrap();
+            state.command_tx = Some(cmd_tx.clone());
+            state.ever_started = true;
+        }
+        let registrar = CompanionResourceRegistrar {
+            state: Arc::downgrade(&state),
+        };
+        let mut inner = test_inner();
+        set_companion(&mut inner, 9, 1);
+        let mut callbacks = CompanionCallbacks::default();
+        callbacks.push(CompanionCallbackJob {
+            resource_id: 0,
+            request_id: 1,
+            resource: Arc::new(NestedResource { registrar }),
+            kind: CompanionCallbackKind::Read(CompanionResourceRequest {
+                route: CompanionResourceRoute::default(),
+                range: Some(0..=0),
+            }),
+        });
+        let mut callback = Box::pin(callbacks.next());
+        let command = tokio::select! {
+            command = cmd_rx.recv() => command.unwrap(),
+            _ = &mut callback => panic!("callback completed before nested registration"),
+        };
+        let Command::RegisterCompanionResource { resource, reply } = command else {
+            panic!("unexpected command");
+        };
+        inner
+            .register_companion_resource(PendingCompanionRegistration { resource, reply }, &cmd_tx);
+        let result = tokio::time::timeout(Duration::from_millis(100), callback)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(
+            result.value,
+            CompanionCallbackValue::Read {
+                result: Ok(ref data), ..
+            } if data == &[1]
+        ));
+    }
+
+    #[tokio::test]
+    async fn callback_forwards_route_range_metadata_and_empty_success() {
+        let resource = Arc::new(TestResource::new([]));
+        let requests = Arc::clone(&resource.requests);
+        let mut callbacks = CompanionCallbacks::default();
+        callbacks.push(CompanionCallbackJob {
+            resource_id: 0,
+            request_id: 1,
+            resource: resource.clone(),
+            kind: CompanionCallbackKind::Info(CompanionResourceRoute::new("/meta").unwrap()),
+        });
+        assert!(matches!(
+            callbacks.next().await.unwrap().value,
+            CompanionCallbackValue::Info(Ok(CompanionResourceInfo {
+                content_type,
+                size: Some(0),
+            })) if content_type == "video/test"
+        ));
+        callbacks.push(CompanionCallbackJob {
+            resource_id: 0,
+            request_id: 2,
+            resource,
+            kind: CompanionCallbackKind::Read(CompanionResourceRequest {
+                route: CompanionResourceRoute::new("/segment").unwrap(),
+                range: Some(4..=7),
+            }),
+        });
+        assert!(matches!(
+            callbacks.next().await.unwrap().value,
+            CompanionCallbackValue::Read { result: Ok(data), .. } if data.is_empty()
+        ));
+        assert_eq!(
+            requests.lock().unwrap().as_slice(),
+            &[CompanionResourceRequest {
+                route: CompanionResourceRoute::new("/segment").unwrap(),
+                range: Some(4..=7),
+            }]
+        );
+        assert_eq!(companion::resource_part_count(0), Some(1));
     }
 
     #[test]
-    fn resource_bytes_to_read_ranges() {
-        // Whole file (as the `read_head = None` path computes it).
-        assert_eq!(resource_bytes_to_read(0, 99, 100), 100);
-        // Sub-range, inclusive.
-        assert_eq!(resource_bytes_to_read(10, 19, 100), 10);
-        // Single byte.
-        assert_eq!(resource_bytes_to_read(5, 5, 100), 1);
-        // Stop past EOF is clamped to the last byte.
-        assert_eq!(resource_bytes_to_read(90, 1000, 100), 10);
-        // Start at/after EOF yields nothing.
-        assert_eq!(resource_bytes_to_read(100, 200, 100), 0);
-        assert_eq!(resource_bytes_to_read(150, 200, 100), 0);
-        // Empty resource yields nothing regardless of range.
-        assert_eq!(resource_bytes_to_read(0, 0, 0), 0);
-        // Inverted range yields nothing.
-        assert_eq!(resource_bytes_to_read(50, 40, 100), 0);
+    fn callback_errors_map_without_disconnect_statuses() {
+        use std::io::ErrorKind::*;
+        assert_eq!(
+            companion_read_result(NotFound),
+            companion::GetResourceResult::NotFound
+        );
+        assert_eq!(
+            companion_read_result(InvalidInput),
+            companion::GetResourceResult::InvalidRange
+        );
+        assert_eq!(
+            companion_read_result(TimedOut),
+            companion::GetResourceResult::Cancelled
+        );
+        assert_eq!(
+            companion_read_result(UnexpectedEof),
+            companion::GetResourceResult::EndOfStream
+        );
+        assert_eq!(
+            companion_info_status(PermissionDenied),
+            v4::flat::CompanionResourceStatus::Failed
+        );
+    }
+
+    #[derive(Debug)]
+    struct BlockingResource {
+        active: Arc<std::sync::atomic::AtomicUsize>,
+        peak: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    struct ActiveGuard(Arc<std::sync::atomic::AtomicUsize>);
+
+    impl Drop for ActiveGuard {
+        fn drop(&mut self) {
+            self.0.fetch_sub(1, Ordering::SeqCst);
+        }
+    }
+
+    impl CompanionResource for BlockingResource {
+        fn info(
+            &self,
+            _route: CompanionResourceRoute,
+        ) -> CompanionResourceFuture<'_, CompanionResourceInfo> {
+            Box::pin(std::future::pending())
+        }
+
+        fn read(&self, _request: CompanionResourceRequest) -> CompanionResourceFuture<'_, Vec<u8>> {
+            Box::pin(async move {
+                let current = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+                self.peak.fetch_max(current, Ordering::SeqCst);
+                let _guard = ActiveGuard(Arc::clone(&self.active));
+                std::future::pending().await
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn callbacks_are_limited_and_cancelled_on_drop() {
+        let active = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let peak = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let resource = Arc::new(BlockingResource {
+            active: Arc::clone(&active),
+            peak: Arc::clone(&peak),
+        });
+        let mut callbacks = CompanionCallbacks::default();
+        for request_id in 0..9 {
+            callbacks.push(CompanionCallbackJob {
+                resource_id: 0,
+                request_id,
+                resource: resource.clone(),
+                kind: CompanionCallbackKind::Read(CompanionResourceRequest {
+                    route: CompanionResourceRoute::default(),
+                    range: None,
+                }),
+            });
+        }
+        let task = tokio::spawn(async move { callbacks.next().await });
+        tokio::task::yield_now().await;
+        assert_eq!(active.load(Ordering::SeqCst), MAX_COMPANION_CALLBACKS);
+        assert_eq!(peak.load(Ordering::SeqCst), MAX_COMPANION_CALLBACKS);
+        task.abort();
+        let _ = task.await;
+        assert_eq!(active.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn callback_timeout_is_cancelled() {
+        let resource = Arc::new(BlockingResource {
+            active: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            peak: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+        });
+        let mut callbacks = CompanionCallbacks::default();
+        callbacks.push(CompanionCallbackJob {
+            resource_id: 0,
+            request_id: 1,
+            resource,
+            kind: CompanionCallbackKind::Read(CompanionResourceRequest {
+                route: CompanionResourceRoute::default(),
+                range: None,
+            }),
+        });
+        let result = callbacks.next().await.unwrap();
+        assert!(matches!(
+            result.value,
+            CompanionCallbackValue::Read {
+                result: Err(ref err), ..
+            } if err.kind() == std::io::ErrorKind::TimedOut
+        ));
+    }
+
+    #[tokio::test]
+    async fn generation_and_connection_cleanup_are_safe() {
+        let mut inner = test_inner();
+        set_companion(&mut inner, 3, 1);
+        let (cmd_tx, _cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (reply, result) = oneshot::channel();
+        inner.register_companion_resource(
+            PendingCompanionRegistration {
+                resource: Arc::new(TestResource::new([])),
+                reply,
+            },
+            &cmd_tx,
+        );
+        let registration = result.await.unwrap().unwrap();
+        assert_eq!(inner.companion_resources.len(), 1);
+        inner.connection_generation = 2;
+        inner.unregister_companion_resource(1, 0);
+        assert_eq!(inner.companion_resources.len(), 1);
+        inner.unregister_companion_resource(2, 0);
+        assert!(inner.companion_resources.is_empty());
+        drop(registration);
+
+        let (reply, result) = oneshot::channel();
+        inner
+            .pending_companion_registrations
+            .push_back(PendingCompanionRegistration {
+                resource: Arc::new(TestResource::new([])),
+                reply,
+            });
+        inner.clear_connection_companion_state();
+        assert!(matches!(
+            result.await.unwrap(),
+            Err(CompanionResourceRegistrationError::Disconnected)
+        ));
+    }
+
+    #[tokio::test]
+    async fn dropped_registration_unregisters_resource() {
+        let mut inner = test_inner();
+        set_companion(&mut inner, 3, 1);
+        let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (reply, result) = oneshot::channel();
+        inner.register_companion_resource(
+            PendingCompanionRegistration {
+                resource: Arc::new(TestResource::new([])),
+                reply,
+            },
+            &cmd_tx,
+        );
+        drop(result.await.unwrap().unwrap());
+        let Command::UnregisterCompanionResource {
+            generation,
+            resource_id,
+        } = cmd_rx.recv().await.unwrap()
+        else {
+            panic!("unexpected command");
+        };
+        inner.unregister_companion_resource(generation, resource_id);
+        assert!(inner.companion_resources.is_empty());
+    }
+
+    #[tokio::test]
+    async fn failed_command_send_is_reported_and_resets_worker_state() {
+        let device = FCastDevice::new(
+            DeviceInfo::fcast(
+                "test".to_owned(),
+                vec![IpAddr::v4(127, 0, 0, 1)],
+                1,
+                HashMap::new(),
+            ),
+            Handle::current(),
+        );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(rx);
+        {
+            let mut state = device.state.lock().unwrap();
+            state.command_tx = Some(tx);
+            state.started = true;
+            state.ever_started = true;
+        }
+        assert!(matches!(
+            device.seek(1.0),
+            Err(CastingDeviceError::FailedToSendCommand)
+        ));
+        let state = device.state.lock().unwrap();
+        assert!(!state.started);
+        assert!(state.command_tx.is_none());
+    }
+
+    #[tokio::test]
+    async fn failed_and_partial_loads_release_static_resources() {
+        let path =
+            std::env::temp_dir().join(format!("fcast-partial-companion-{}", std::process::id()));
+        std::fs::write(&path, b"static").unwrap();
+        let mut inner = test_inner();
+        set_companion(&mut inner, 5, 1);
+        let first_new_id = inner.next_companion_resource_id;
+        let result = inner
+            .load(
+                LoadType::CompanionResource {
+                    source: CompanionSource::from_path(path.to_string_lossy(), "video/test"),
+                },
+                "video/test".to_owned(),
+                0.0,
+                None,
+                None,
+                None,
+                None,
+            )
+            .await;
+        inner.finish_replacement_load(first_new_id, result.is_ok());
+        assert!(result.is_err());
+        assert!(inner.companion_resources.is_empty());
+
+        let queue = Queue {
+            items: vec![
+                QueueEntry {
+                    item: MediaItem {
+                        content_type: "video/test".to_owned(),
+                        source: MediaLocator::FCompanion {
+                            source: CompanionSource::from_path(
+                                path.to_string_lossy(),
+                                "video/test",
+                            ),
+                        },
+                        start_time: None,
+                        volume: None,
+                        speed: None,
+                        request_headers: None,
+                        title: None,
+                        thumbnail_url: None,
+                    },
+                    playback_duration: None,
+                },
+                QueueEntry {
+                    item: MediaItem {
+                        source: MediaLocator::FCompanion {
+                            source: CompanionSource::from_path(
+                                path.with_extension("missing").to_string_lossy(),
+                                "video/test",
+                            ),
+                        },
+                        ..test_entry(2).item
+                    },
+                    playback_duration: None,
+                },
+            ],
+            start_index: None,
+            autoplay: true,
+        };
+        let first_new_id = inner.next_companion_resource_id;
+        let result = inner.load_rich_queue(queue).await;
+        inner.finish_replacement_load(first_new_id, result.is_ok());
+        assert!(result.is_err());
+        assert!(inner.companion_resources.is_empty());
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn owned_fd_is_consumed_and_closed_exactly_once() {
+        use std::os::{fd::OwnedFd, unix::net::UnixStream};
+
+        let (owned, mut peer) = UnixStream::pair().unwrap();
+        let source = CompanionSource::from_fd(OwnedFd::from(owned), "video/test");
+        let CompanionSourceDescriptor::Fd(owner) = &source.descriptor else {
+            unreachable!();
+        };
+        let mut inner = test_inner();
+        set_companion(&mut inner, 6, 1);
+        inner.add_source(&source).unwrap();
+        assert!(owner.take().is_err());
+        inner.clear_playback_scoped_state();
+        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        drop(source);
     }
 
     fn test_entry(n: u32) -> QueueEntry {
@@ -3530,7 +4465,7 @@ mod tests {
         assert_eq!(
             state_machine.variant,
             StateVariant::V4 {
-                companion_provider_id: None,
+                companion_provider: None,
                 mirroring_session: None,
                 mirroring_session_id_gen: IdGenerator::new(),
             }

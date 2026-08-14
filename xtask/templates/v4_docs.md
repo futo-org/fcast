@@ -244,11 +244,22 @@ This section defines the FCompanion protocol used to transfer media data over an
 connection. The bodies are in a custom binary format in which all multi-byte integers are encoded
 as little-endian.
 
-URLs are defined like this:
+Legacy URLs are defined like this:
 
 `fcomp://<provider-id>.fcast/<resource-id>`
 
  - `provider-id` is a `U16` and `resource-id` is a `U32`, both rendered as ASCII decimal digits.
+
+FCompanion subprotocol v1 adds an optional route:
+
+`fcomp://<provider-id>.fcast/<resource-id><route>`
+
+`route` is encoded in origin-form. It is either empty or begins with `/`, is at most 8192 bytes,
+and must not contain an authority, fragment, CR, or LF. A missing route is treated as empty.
+
+The hello fields negotiate the subprotocol version. A sender advertises
+`max_protocol_version`; the receiver selects `protocol_version`. Missing version fields are 0,
+which preserves legacy behavior. The current FCompanion protocol version is 1.
 
 A sender that wants to provide resources first sends a `CompanionHelloRequest`. The receiver replies
 with a `CompanionHelloResponse` containing the `provider_id` it has assigned to that sender
@@ -292,6 +303,10 @@ The values of `variant` are:
 |-------|------------|----------------------------|
 | 0x00  | NONE       | The resource was not found |
 | 0x01  | \[U8\]     | Success                    |
+| 0x02  | NONE       | The requested range is invalid |
+| 0x03  | NONE       | The request was cancelled  |
+| 0x04  | NONE       | The request failed         |
+| 0x05  | NONE       | End of stream              |
 
 The length of the success array is calculated by subtracting the size of the fixed fields (Request
 ID + Part # + Total Parts + variant byte) from the message body length.

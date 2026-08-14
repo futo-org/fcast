@@ -2,30 +2,56 @@ use fcast_protocol::companion;
 use gst::{glib, prelude::*};
 use url::Url;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FCompUrl {
     pub provider_id: companion::ProviderId,
     pub resource_id: companion::ResourceId,
+    pub route: String,
 }
 
 impl FCompUrl {
     pub fn new(url: &Url) -> Option<Self> {
+        let authority = url.as_str().split_once("://")?.1.split('/').next()?;
+        if url.scheme() != "fcomp"
+            || authority.contains('@')
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some()
+            || url.fragment().is_some()
+        {
+            return None;
+        }
         let url::Host::Domain(host) = url.host()? else {
             return None;
         };
-        if url.scheme() != "fcomp" {
+        let (provider, suffix) = host.split_once('.')?;
+        if suffix != "fcast" || provider.is_empty() || !provider.bytes().all(|c| c.is_ascii_digit())
+        {
             return None;
         }
-        let mut host_parts = host.split('.');
-        let provider_id = host_parts.next()?.parse::<u16>().ok()?;
-        if host_parts.next()? != "fcast" {
+        let provider_id = provider.parse::<u16>().ok()?;
+
+        let path = url.path().strip_prefix('/')?;
+        let (resource, remaining) = path.split_once('/').unwrap_or((path, ""));
+        if resource.is_empty() || !resource.bytes().all(|c| c.is_ascii_digit()) {
             return None;
         }
-        let resource_id = url.path().strip_prefix('/')?.parse::<u32>().ok()?;
+        let resource_id = resource.parse::<u32>().ok()?;
+        let mut route = if path.contains('/') {
+            format!("/{remaining}")
+        } else {
+            String::new()
+        };
+        if let Some(query) = url.query() {
+            route.push('?');
+            route.push_str(query);
+        }
+        companion::validate_route(&route).ok()?;
 
         Some(Self {
             provider_id,
             resource_id,
+            route,
         })
     }
 }
@@ -36,7 +62,7 @@ pub mod imp {
     use gst::{glib, prelude::*, subclass::prelude::*};
     use gst_base::subclass::{base_src::CreateSuccess, prelude::*};
     use parking_lot::Mutex;
-    use std::{sync::LazyLock, time::Duration};
+    use std::sync::LazyLock;
     use url::Url;
 
     use crate::fcompsrc::FCompUrl;
@@ -153,15 +179,17 @@ pub mod imp {
                     ["Provider not found id={}", url.provider_id]
                 ))?;
 
-            let mut rx = provider.get_resource_info(url.resource_id).map_err(|err| {
-                gst::error_msg!(
-                    gst::ResourceError::NotFound,
-                    [
-                        "Failed to get resource info id={} err={err}",
-                        url.resource_id
-                    ]
-                )
-            })?;
+            let mut rx = provider
+                .get_resource_info(url.resource_id, &url.route)
+                .map_err(|err| {
+                    gst::error_msg!(
+                        gst::ResourceError::NotFound,
+                        [
+                            "Failed to get resource info id={} err={err}",
+                            url.resource_id
+                        ]
+                    )
+                })?;
 
             let res = self.wait(async move {
                 match rx.recv().await {
@@ -176,6 +204,23 @@ pub mod imp {
             match res {
                 Ok(info) => {
                     let info = info.borrow_dependent();
+                    match crate::fcast::companion_info_outcome(info.status()) {
+                        crate::fcast::CompanionResourceOutcome::Success => (),
+                        crate::fcast::CompanionResourceOutcome::EndOfStream => {
+                            *self.state.lock() = State::Started {
+                                size: Some(0),
+                                current_pos: 0,
+                                stop: None,
+                            };
+                            return Ok(());
+                        }
+                        outcome => {
+                            return Err(gst::error_msg!(
+                                gst::ResourceError::OpenRead,
+                                ["Companion resource info failed: {outcome:?}"]
+                            ));
+                        }
+                    }
                     let size = match info.resource_size_type() {
                         fcast_protocol::v4::flat::CompanionResourceSize::Known => {
                             info.resource_size_as_known().map(|s| s.size())
@@ -191,9 +236,10 @@ pub mod imp {
 
                     Ok(())
                 }
-                Err(_) => Err(gst::error_msg!(
+                Err(Some(err)) => Err(err),
+                Err(None) => Err(gst::error_msg!(
                     gst::ResourceError::OpenRead,
-                    ["Failed to get resource info"]
+                    ["Companion resource info request was cancelled"]
                 )),
             }
         }
@@ -212,7 +258,8 @@ pub mod imp {
             drop(canceller);
 
             let future = async {
-                let res = tokio::time::timeout(Duration::from_millis(2500), future).await;
+                let res =
+                    tokio::time::timeout(crate::fcast::COMPANION_REQUEST_TIMEOUT, future).await;
 
                 match res {
                     Ok(res) => res,
@@ -416,10 +463,16 @@ pub mod imp {
             _buffer: Option<&mut gst::BufferRef>,
         ) -> Result<CreateSuccess, gst::FlowError> {
             let mut state = self.state.lock();
-            let State::Started { current_pos, .. } = &mut *state else {
+            let State::Started {
+                size, current_pos, ..
+            } = &mut *state
+            else {
                 gst::element_imp_error!(self, gst::CoreError::Failed, ["Not started yet"]);
                 return Err(gst::FlowError::Error);
             };
+            if size.is_some_and(|size| *current_pos >= size) {
+                return Err(gst::FlowError::Eos);
+            }
 
             // Reads inside the preloaded head come from memory, anything past it goes
             // to the provider. Per-chunk reads keep this correct across seeks in
@@ -469,7 +522,7 @@ pub mod imp {
             );
 
             let mut rx = provider
-                .get_resource(url.resource_id, Some(read_head))
+                .get_resource(url.resource_id, &url.route, Some(read_head))
                 .map_err(|err| {
                     gst::element_imp_error!(
                         self,
@@ -480,39 +533,56 @@ pub mod imp {
                 })?;
 
             let res = self.wait(async move {
-                match rx.recv().await {
-                    Some(c) => Ok(c),
-                    None => Err(gst::error_msg!(
+                let mut data = Vec::new();
+                let mut received = false;
+                while let Some(response) = rx.recv().await {
+                    received = true;
+                    match response.result {
+                        companion::GetResourceResult::Success(part) => data.extend(part),
+                        companion::GetResourceResult::EndOfStream => return Ok((data, true)),
+                        result => {
+                            let outcome = crate::fcast::companion_resource_outcome(&result);
+                            return Err(gst::error_msg!(
+                                gst::ResourceError::Read,
+                                ["Companion resource request failed: {outcome:?}"]
+                            ));
+                        }
+                    }
+                }
+                if received {
+                    Ok((data, false))
+                } else {
+                    Err(gst::error_msg!(
                         gst::ResourceError::Read,
-                        ["Failed to read"]
-                    )),
+                        ["Companion resource response was incomplete"]
+                    ))
                 }
             });
 
             match res {
-                Ok(res) => match res.result {
-                    companion::GetResourceResult::NotFound => {
+                Ok((data, end_of_stream)) => {
+                    if end_of_stream || (data.is_empty() && size.is_none()) {
+                        return Err(gst::FlowError::Eos);
+                    }
+                    if data.is_empty() {
                         gst::element_imp_error!(
                             self,
-                            gst::ResourceError::NotFound,
-                            ["Companion resource was not found"]
+                            gst::ResourceError::Read,
+                            ["Companion resource returned no data before its known end"]
                         );
-                        Err(gst::FlowError::Error)
+                        return Err(gst::FlowError::Error);
                     }
-                    companion::GetResourceResult::Success(data) => {
-                        let size = data.len() as u64;
-                        let mut buffer = gst::Buffer::from_slice(data);
-                        {
-                            let buffer = buffer.get_mut().unwrap();
-                            buffer.set_offset(*current_pos);
-                            buffer.set_offset_end(*current_pos + size);
-                        }
 
-                        *current_pos += size;
-
-                        Ok(CreateSuccess::NewBuffer(buffer))
+                    let data_size = data.len() as u64;
+                    let mut buffer = gst::Buffer::from_slice(data);
+                    {
+                        let buffer = buffer.get_mut().unwrap();
+                        buffer.set_offset(*current_pos);
+                        buffer.set_offset_end(*current_pos + data_size);
                     }
-                },
+                    *current_pos += data_size;
+                    Ok(CreateSuccess::NewBuffer(buffer))
+                }
                 Err(Some(err)) => {
                     gst::debug!(CAT, imp = self, "Error {:?}", err);
                     self.post_error_message(err);
@@ -642,6 +712,7 @@ mod tests {
                 Some(FCompUrl {
                     provider_id: 0,
                     resource_id: 0,
+                    route: String::new(),
                 }),
             ),
             (
@@ -649,6 +720,23 @@ mod tests {
                 Some(FCompUrl {
                     provider_id: 100,
                     resource_id: 1337,
+                    route: String::new(),
+                }),
+            ),
+            (
+                "fcomp://65535.fcast/4294967295/path%2Fopaque?q=%2F%23",
+                Some(FCompUrl {
+                    provider_id: u16::MAX,
+                    resource_id: u32::MAX,
+                    route: "/path%2Fopaque?q=%2F%23".to_owned(),
+                }),
+            ),
+            (
+                "fcomp://1.fcast/2/",
+                Some(FCompUrl {
+                    provider_id: 1,
+                    resource_id: 2,
+                    route: "/".to_owned(),
                 }),
             ),
             ("fcomp://fcast/0", None),
@@ -660,12 +748,26 @@ mod tests {
             ("fcomp://12a3.gcast/0", None),
             ("fcomp://0.gcast/0", None),
             ("fomp://0.fcast/0", None),
-            ("fcomp://0.fcast/0/0", None),
+            ("fcomp://0.fcast.example/0", None),
+            ("fcomp://0.fcast./0", None),
+            ("fcomp://user@0.fcast/0", None),
+            ("fcomp://@0.fcast/0", None),
+            ("fcomp://0.fcast:123/0", None),
+            ("fcomp://0.fcast/0#fragment", None),
+            ("fcomp://0.fcast/0?query-only", None),
+            ("fcomp://0.fcast/0//authority", None),
+            ("fcomp://0.fcast/0/route#fragment", None),
         ];
 
         for (url, result) in cases {
             assert_eq!(FCompUrl::new(&Url::parse(url).unwrap()), result, "{url}",);
         }
+
+        let too_long = format!(
+            "fcomp://0.fcast/0/{}",
+            "a".repeat(companion::MAX_ROUTE_BYTES)
+        );
+        assert_eq!(FCompUrl::new(&Url::parse(&too_long).unwrap()), None);
     }
 
     #[derive(Debug, Clone)]
@@ -692,8 +794,12 @@ mod tests {
     enum ProviderBehavior {
         /// Serve the given bytes, chunked according to the read head.
         Data(Vec<u8>),
-        /// Report `reported_size`, but answer every `GetResource` with
-        /// `GetResourceResult::None`.
+        /// Report an unknown size and return an empty successful response.
+        UnknownEmpty,
+        /// End the stream explicitly, with either a known or unknown size.
+        EndOfStream { size: Option<u64> },
+        /// Report `reported_size` for the resource info, but answer every
+        /// `GetResource` with `GetResourceResult::NotFound`.
         AlwaysNone { reported_size: u64 },
     }
 
@@ -730,6 +836,12 @@ mod tests {
                                     let FeedbackSender::Channel(tx) = feedback;
                                     let size = match &behavior {
                                         ProviderBehavior::Data(data) => data.len() as u64,
+                                        ProviderBehavior::UnknownEmpty
+                                        | ProviderBehavior::EndOfStream { size: None } => {
+                                            let _ = tx.send(resource_info_cell(None));
+                                            continue;
+                                        }
+                                        ProviderBehavior::EndOfStream { size: Some(size) } => *size,
                                         ProviderBehavior::AlwaysNone { reported_size } => {
                                             *reported_size
                                         }
@@ -759,6 +871,12 @@ mod tests {
                                             companion::GetResourceResult::Success(
                                                 bytes::Bytes::from(chunk),
                                             )
+                                        }
+                                        ProviderBehavior::UnknownEmpty => {
+                                            companion::GetResourceResult::Success(Vec::new())
+                                        }
+                                        ProviderBehavior::EndOfStream { .. } => {
+                                            companion::GetResourceResult::EndOfStream
                                         }
                                         ProviderBehavior::AlwaysNone { .. } => {
                                             companion::GetResourceResult::NotFound
@@ -991,6 +1109,29 @@ mod tests {
         });
 
         assert_eq!(h.collect_until_eos(), data);
+    }
+
+    #[test]
+    fn test_empty_known_resource_is_clean_eos() {
+        let mut h = Harness::new(Some(Vec::new()));
+        h.run(|src| src.set_state(gst::State::Playing).unwrap());
+        assert_eq!(h.collect_until_eos(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn test_empty_unknown_resource_is_clean_eos() {
+        let mut h = Harness::new_with(Some(ProviderBehavior::UnknownEmpty));
+        h.run(|src| src.set_state(gst::State::Playing).unwrap());
+        assert_eq!(h.collect_until_eos(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn test_explicit_end_of_stream_is_clean_eos() {
+        for size in [None, Some(4096)] {
+            let mut h = Harness::new_with(Some(ProviderBehavior::EndOfStream { size }));
+            h.run(|src| src.set_state(gst::State::Playing).unwrap());
+            assert_eq!(h.collect_until_eos(), Vec::<u8>::new());
+        }
     }
 
     #[test]

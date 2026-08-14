@@ -404,32 +404,49 @@ pub struct ApplicationInfo {
     pub display_name: String,
 }
 
+#[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
+#[derive(Debug)]
+pub struct OwnedCompanionFd {
+    #[cfg(unix)]
+    fd: std::sync::Mutex<Option<std::os::fd::OwnedFd>>,
+}
+
+impl OwnedCompanionFd {
+    #[cfg(unix)]
+    fn new(fd: std::os::fd::OwnedFd) -> Self {
+        Self {
+            fd: std::sync::Mutex::new(Some(fd)),
+        }
+    }
+
+    #[cfg(unix)]
+    pub(crate) fn take(&self) -> std::io::Result<std::os::fd::OwnedFd> {
+        self.fd.lock().unwrap().take().ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "file descriptor companion source was already consumed",
+            )
+        })
+    }
+}
+
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum CompanionSourceDescriptor {
     /// A local filesystem path the SDK opens for reading.
     Path(String),
-    /// An already-open file descriptor whose ownership is transferred to the
-    /// SDK.
-    ///
-    /// Intended for platforms that hand apps a descriptor rather than a path
-    /// (e.g. Android's Storage Access Framework, iOS document/photo
-    /// pickers).  The caller must relinquish ownership first (Android:
-    /// `ParcelFileDescriptor.detachFd()`), must not close or reuse it
-    /// afterwards, and must not reference the same descriptor from a second
-    /// source or load. The SDK closes it exactly once: when playback stops,
-    /// the session ends, or the load that carried it fails. Reusing a
-    /// descriptor that is still registered is rejected with an error. The SDK
-    /// cannot detect reuse after it has closed the descriptor, so that remains
-    /// the caller's responsibility.
-    ///
-    /// The variant exists on every platform so the generated foreign bindings
-    /// are identical everywhere, but it is only usable on Unix targets. On
-    /// other platforms a load carrying it fails.
-    Fd(i32),
-    /// In-memory bytes, copied into the SDK and served directly. Best for small
-    /// payloads (e.g. a subtitle file) rather than large media.
-    Bytes(Vec<u8>),
+    /// An owned Unix file descriptor. Construct with [`CompanionSource::from_fd`].
+    Fd(Arc<OwnedCompanionFd>),
+}
+
+impl PartialEq for CompanionSourceDescriptor {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Path(a), Self::Path(b)) => a == b,
+            (Self::Fd(a), Self::Fd(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        }
+    }
 }
 
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -451,14 +468,11 @@ impl CompanionSource {
     /// A companion source backed by an owned file descriptor, moving ownership
     /// of the descriptor into the SDK (which closes it when finished).
     ///
-    /// Unix only. Foreign-language callers instead construct the record
-    /// directly with [`CompanionSourceDescriptor::Fd`] after detaching the
-    /// descriptor from its owner.
+    /// Unix only. The descriptor is closed exactly once on every success and error path.
     #[cfg(unix)]
     pub fn from_fd(fd: std::os::fd::OwnedFd, content_type: impl Into<String>) -> Self {
-        use std::os::fd::IntoRawFd as _;
         Self {
-            descriptor: CompanionSourceDescriptor::Fd(fd.into_raw_fd()),
+            descriptor: CompanionSourceDescriptor::Fd(Arc::new(OwnedCompanionFd::new(fd))),
             content_type: content_type.into(),
         }
     }

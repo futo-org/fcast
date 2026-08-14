@@ -31,6 +31,21 @@ impl CastContext {
 }
 
 #[cfg(any_protocol)]
+impl CastContext {
+    /// Construct an FCast device without erasing its concrete Rust type.
+    #[cfg(feature = "fcast")]
+    pub fn create_fcast_device_from_info(
+        &self,
+        info: DeviceInfo,
+    ) -> Arc<crate::fcast::FCastDevice> {
+        Arc::new(crate::fcast::FCastDevice::new(
+            info,
+            self.runtime.handle().clone(),
+        ))
+    }
+}
+
+#[cfg(any_protocol)]
 #[cfg_attr(feature = "uniffi", uniffi::export)]
 impl CastContext {
     pub fn create_device_from_info(&self, info: DeviceInfo) -> Arc<dyn CastingDevice> {
@@ -41,10 +56,7 @@ impl CastContext {
                 self.runtime.handle().clone(),
             )),
             #[cfg(feature = "fcast")]
-            ProtocolType::FCast => Arc::new(crate::fcast::FCastDevice::new(
-                info,
-                self.runtime.handle().clone(),
-            )),
+            ProtocolType::FCast => self.create_fcast_device_from_info(info),
             // Under `__flutter_hacks`, `ProtocolType` carries variants for protocols that were not
             // compiled in. Their device types do not exist, so reject them here. Callers gate on
             // `enabled_protocols`.

@@ -388,15 +388,20 @@ table Error {
 
 table StopPlayback {}
 
-table CompanionHelloRequest {}
+table CompanionHelloRequest {
+    max_protocol_version: uint16;
+}
 
 table CompanionHelloResponse {
     provider_id: uint16;
+    protocol_version: uint16;
 }
 
 table CompanionResourceInfoRequest {
     request_id: uint32;
     resource_id: uint32;
+    // Origin-form route: empty or begins with '/', with no authority or fragment.
+    route: string;
 }
 
 table UnknownResourceSize {}
@@ -410,10 +415,20 @@ union CompanionResourceSize {
     Known: KnownResourceSize,
 }
 
+enum CompanionResourceStatus: ubyte {
+    Success,
+    NotFound,
+    InvalidRange,
+    Cancelled,
+    Failed,
+    EndOfStream,
+}
+
 table CompanionResourceInfoResponse {
     request_id: uint32;
     content_type: string (required);
     resource_size: CompanionResourceSize;
+    status: CompanionResourceStatus = Success;
 }
 
 struct ResourceReadHead {
@@ -425,4 +440,6 @@ table CompanionResourceRequest {
     request_id: uint32;
     resource_id: uint32;
     read_head: ResourceReadHead;
+    // Origin-form route: empty or begins with '/', with no authority or fragment.
+    route: string;
 }

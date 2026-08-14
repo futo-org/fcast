@@ -27,6 +27,7 @@ use tracing::{debug, error, instrument, trace, warn};
 const TICKS_BEFORE_PING: u32 = 3;
 
 const TLS_UPGRADE_TIMEOUT: Duration = Duration::from_secs(5);
+pub const COMPANION_REQUEST_TIMEOUT: Duration = Duration::from_millis(2500);
 
 #[derive(Debug, PartialEq)]
 pub struct Header {
@@ -239,10 +240,14 @@ pub enum V4Message {
     VolumeChanged(f32),
     PlaybackStateChanged(v4::PlaybackState),
     PlaybackRateChanged(f32),
-    CompanionHello(u16),
+    CompanionHello {
+        provider_id: u16,
+        protocol_version: u16,
+    },
     CompanionGetResourceInfo {
         request_id: u32,
         resource_id: u32,
+        route: String,
     },
     Play {
         initiator_session_id: SenderId,
@@ -410,6 +415,42 @@ enum CompanionResponse {
     ResourceResponse(companion::ResourceResponse),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CompanionResourceOutcome {
+    Success,
+    NotFound,
+    InvalidRange,
+    Cancelled,
+    Failed,
+    EndOfStream,
+}
+
+pub fn companion_info_outcome(
+    status: v4::flat::CompanionResourceStatus,
+) -> CompanionResourceOutcome {
+    match status {
+        v4::flat::CompanionResourceStatus::Success => CompanionResourceOutcome::Success,
+        v4::flat::CompanionResourceStatus::NotFound => CompanionResourceOutcome::NotFound,
+        v4::flat::CompanionResourceStatus::InvalidRange => CompanionResourceOutcome::InvalidRange,
+        v4::flat::CompanionResourceStatus::Cancelled => CompanionResourceOutcome::Cancelled,
+        v4::flat::CompanionResourceStatus::EndOfStream => CompanionResourceOutcome::EndOfStream,
+        _ => CompanionResourceOutcome::Failed,
+    }
+}
+
+pub fn companion_resource_outcome(
+    result: &companion::GetResourceResult,
+) -> CompanionResourceOutcome {
+    match result {
+        companion::GetResourceResult::Success(_) => CompanionResourceOutcome::Success,
+        companion::GetResourceResult::NotFound => CompanionResourceOutcome::NotFound,
+        companion::GetResourceResult::InvalidRange => CompanionResourceOutcome::InvalidRange,
+        companion::GetResourceResult::Cancelled => CompanionResourceOutcome::Cancelled,
+        companion::GetResourceResult::Failed => CompanionResourceOutcome::Failed,
+        companion::GetResourceResult::EndOfStream => CompanionResourceOutcome::EndOfStream,
+    }
+}
+
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, PartialEq)]
 enum Action {
@@ -426,7 +467,9 @@ enum Action {
         msg: Arc<ReceiverToSenderMessage>,
     },
     UpgradeToTls,
-    RespondCompanionHello,
+    RespondCompanionHello {
+        protocol_version: u16,
+    },
     Companion(CompanionResponse),
     StartMirroringSession {
         session_id: u16,
@@ -508,7 +551,155 @@ pub use fcast_gst_elements::companion_ctx::{
     CompanionContext, CompanionMessage, FeedbackSender, ResourceInfoResponseCell,
 };
 
-use fcast_gst_elements::companion_ctx::{CompanionMsgReceiver, CompanionMsgSender};
+pub enum FeedbackSender<T> {
+    // TODO: is this the most efficient solution?
+    Channel(tokio::sync::mpsc::UnboundedSender<T>),
+}
+
+impl<T> FeedbackSender<T> {
+    fn send(&self, obj: T) {
+        match self {
+            FeedbackSender::Channel(sender) => {
+                let _ = sender.send(obj);
+            }
+        }
+    }
+}
+
+pub enum CompanionMessage {
+    GetResourceInfo {
+        id: companion::ResourceId,
+        route: String,
+        feedback: FeedbackSender<ResourceInfoResponseCell>,
+    },
+    GetResource {
+        id: companion::ResourceId,
+        route: String,
+        read_head: Option<v4::flat::ResourceReadHead>,
+        feedback: FeedbackSender<companion::ResourceResponse>,
+    },
+}
+
+#[derive(Clone)]
+pub struct CompanionProviderHandle {
+    tx: CompanionMsgSender,
+    protocol_version: u16,
+}
+
+impl CompanionProviderHandle {
+    pub fn get_resource_info(
+        &self,
+        resource_id: companion::ResourceId,
+        route: &str,
+    ) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<ResourceInfoResponseCell>> {
+        self.validate_route(route)?;
+        let (feedback, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.tx.send(CompanionMessage::GetResourceInfo {
+            id: resource_id,
+            route: route.to_owned(),
+            feedback: FeedbackSender::Channel(feedback),
+        })?;
+        Ok(rx)
+    }
+
+    pub fn get_resource(
+        &self,
+        resource_id: companion::ResourceId,
+        route: &str,
+        read_head: Option<v4::flat::ResourceReadHead>,
+    ) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<companion::ResourceResponse>> {
+        self.validate_route(route)?;
+        let (feedback, rx) = tokio::sync::mpsc::unbounded_channel();
+        self.tx.send(CompanionMessage::GetResource {
+            id: resource_id,
+            route: route.to_owned(),
+            read_head,
+            feedback: FeedbackSender::Channel(feedback),
+        })?;
+        Ok(rx)
+    }
+
+    fn validate_route(&self, route: &str) -> anyhow::Result<()> {
+        companion::validate_route(route)?;
+        if !route.is_empty() && self.protocol_version < 1 {
+            bail!("companion provider does not support routed resources");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct InnerCompanionContext {
+    providers: HashMap<companion::ProviderId, CompanionProviderHandle>,
+}
+
+impl InnerCompanionContext {
+    fn register_provider(
+        &mut self,
+        tx: CompanionMsgSender,
+        protocol_version: u16,
+    ) -> companion::ProviderId {
+        let mut id = 0;
+        while self.providers.contains_key(&id) {
+            id += 1;
+        }
+
+        let handle = CompanionProviderHandle {
+            tx,
+            protocol_version,
+        };
+        self.providers.insert(id, handle);
+
+        id
+    }
+
+    pub fn unregister_provider(&mut self, id: companion::ProviderId) {
+        debug!(id, "Unregistering provider");
+        self.providers.remove(&id);
+    }
+}
+
+#[derive(Clone)]
+pub struct CompanionContext(Arc<Mutex<InnerCompanionContext>>);
+
+impl std::fmt::Debug for CompanionContext {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("CompanionContext").finish()
+    }
+}
+
+impl CompanionContext {
+    pub fn new() -> Self {
+        Self(Arc::new(Mutex::new(InnerCompanionContext::default())))
+    }
+
+    pub fn register_provider(&self, tx: CompanionMsgSender) -> companion::ProviderId {
+        self.0.lock().register_provider(tx, 0)
+    }
+
+    fn replace_provider(
+        &self,
+        previous: &mut Option<companion::ProviderId>,
+        tx: CompanionMsgSender,
+        protocol_version: u16,
+    ) -> companion::ProviderId {
+        let mut context = self.0.lock();
+        if let Some(id) = previous.take() {
+            context.unregister_provider(id);
+        }
+        let id = context.register_provider(tx, protocol_version);
+        *previous = Some(id);
+        id
+    }
+
+    pub fn unregister_provider(&self, id: companion::ProviderId) {
+        self.0.lock().unregister_provider(id)
+    }
+
+    pub fn get_provider(&self, id: companion::ProviderId) -> Option<CompanionProviderHandle> {
+        self.0.lock().providers.get(&id).cloned()
+    }
+}
 
 macro_rules! err_body {
     ($res:expr) => {
@@ -875,7 +1066,14 @@ impl State {
                 }
             }
             v4::flat::Message::StopPlayback => Action::Op(Operation::Stop),
-            v4::flat::Message::CompanionHelloRequest => Action::RespondCompanionHello,
+            v4::flat::Message::CompanionHelloRequest => {
+                let hello = union!(packet.payload_as_companion_hello_request());
+                Action::RespondCompanionHello {
+                    protocol_version: hello
+                        .max_protocol_version()
+                        .min(companion::FCOMPANION_PROTOCOL_VERSION),
+                }
+            }
             v4::flat::Message::CompanionResourceInfoResponse => {
                 Action::Companion(CompanionResponse::ResourceInfo(
                     ResourceInfoResponseCell::try_new(body.to_owned(), |buf| {
@@ -1142,9 +1340,102 @@ impl State {
     }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum MultipartError {
+    UnknownRequest,
+    WrongResponseType,
+    InvalidTotal,
+    UnexpectedPart,
+    TotalChanged,
+}
+
 enum CompanionQueueItem {
     GetResourceInfo(FeedbackSender<ResourceInfoResponseCell>),
-    GetResource(FeedbackSender<companion::ResourceResponse>),
+    GetResource {
+        feedback: FeedbackSender<companion::ResourceResponse>,
+        next_part: u16,
+        total_parts: Option<u8>,
+    },
+}
+
+impl CompanionQueueItem {
+    fn feedback_closed(&self) -> bool {
+        match self {
+            Self::GetResourceInfo(FeedbackSender::Channel(tx)) => tx.is_closed(),
+            Self::GetResource {
+                feedback: FeedbackSender::Channel(tx),
+                ..
+            } => tx.is_closed(),
+        }
+    }
+}
+
+fn allocate_request_id(
+    next: &mut companion::RequestId,
+    outstanding: &HashMap<companion::RequestId, CompanionQueueItem>,
+) -> Option<companion::RequestId> {
+    for _ in 0..=outstanding.len() {
+        let candidate = *next;
+        *next = next.wrapping_add(1);
+        if !outstanding.contains_key(&candidate) {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+fn fail_resource_request(item: CompanionQueueItem, request_id: companion::RequestId) {
+    if let CompanionQueueItem::GetResource { feedback, .. } = item {
+        feedback.send(companion::ResourceResponse {
+            request_id,
+            part: 0,
+            total_parts: 1,
+            result: companion::GetResourceResult::Failed,
+        });
+    }
+}
+
+fn handle_resource_response(
+    queue: &mut HashMap<companion::RequestId, CompanionQueueItem>,
+    resource: companion::ResourceResponse,
+) -> Result<(), MultipartError> {
+    let request_id = resource.request_id;
+    let Some(item) = queue.get_mut(&request_id) else {
+        return Err(MultipartError::UnknownRequest);
+    };
+    let CompanionQueueItem::GetResource {
+        feedback,
+        next_part,
+        total_parts,
+    } = item
+    else {
+        queue.remove(&request_id);
+        return Err(MultipartError::WrongResponseType);
+    };
+
+    let error = if resource.total_parts == 0 {
+        Some(MultipartError::InvalidTotal)
+    } else if u16::from(resource.part) != *next_part {
+        Some(MultipartError::UnexpectedPart)
+    } else if total_parts.is_some_and(|total| total != resource.total_parts) {
+        Some(MultipartError::TotalChanged)
+    } else {
+        None
+    };
+    if let Some(error) = error {
+        let item = queue.remove(&request_id).unwrap();
+        fail_resource_request(item, request_id);
+        return Err(error);
+    }
+
+    *total_parts = Some(resource.total_parts);
+    *next_part += 1;
+    let complete = resource.is_last_part();
+    feedback.send(resource);
+    if complete {
+        queue.remove(&request_id);
+    }
+    Ok(())
 }
 
 // Both live with the signaller that consumes them
@@ -1164,8 +1455,8 @@ pub struct SessionDriver {
     tls_acceptor: TlsAcceptor,
     companion_ctx: CompanionContext,
     internal_companion_tx: CompanionMsgSender,
-    companion_queue: HashMap<companion::ResourceId, CompanionQueueItem>,
-    req_id_gen: companion::RequestIdGenerator,
+    companion_queue: HashMap<companion::RequestId, CompanionQueueItem>,
+    next_request_id: companion::RequestId,
     mirroring_offer_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     receiver_info: Arc<ReceiverInfo>,
     // TODO: not refreshed between accept and handshake, so an update in that window is
@@ -1196,7 +1487,7 @@ impl SessionDriver {
             companion_ctx,
             internal_companion_tx,
             companion_queue: HashMap::new(),
-            req_id_gen: companion::RequestIdGenerator::default(),
+            next_request_id: 0,
             mirroring_offer_tx: None,
             receiver_info,
             initial_v4_state,
@@ -1252,11 +1543,19 @@ impl SessionDriver {
             V4Message::VolumeChanged(vol) => builder.volume_changed(*vol),
             V4Message::PlaybackStateChanged(state) => builder.playback_state_changed(*state),
             V4Message::PlaybackRateChanged(rate) => builder.speed_changed(*rate),
-            V4Message::CompanionHello(id) => builder.companion_hello_response(*id),
+            V4Message::CompanionHello {
+                provider_id,
+                protocol_version,
+            } => builder.companion_hello_response_with_version(*provider_id, *protocol_version),
             V4Message::CompanionGetResourceInfo {
                 request_id,
                 resource_id,
-            } => builder.companion_resource_info_request(*request_id, *resource_id),
+                route,
+            } => builder.companion_resource_info_request_with_route(
+                *request_id,
+                *resource_id,
+                route,
+            )?,
             V4Message::Play {
                 initiator_session_id,
                 serialized_msg,
@@ -1457,14 +1756,7 @@ impl SessionDriver {
                 Action::UpgradeToTls => {
                     self.pending_tls_upgrade = true;
                 }
-                Action::RespondCompanionHello => {
-                    let id = self
-                        .companion_ctx
-                        .register_provider(self.internal_companion_tx.clone());
-                    debug!(id, "Registered companion provider");
-                    tokio::spawn(async move {});
-
-                    self.send_v4_message(&V4Message::CompanionHello(id)).await?;
+                Action::RespondCompanionHello { protocol_version } => {
                     if let StateVariant::Active {
                         version:
                             SessionVersion::V4 {
@@ -1473,15 +1765,31 @@ impl SessionDriver {
                             },
                     } = &mut self.state.variant
                     {
-                        *companion_provider_id = Some(id);
+                        let id = self.companion_ctx.replace_provider(
+                            companion_provider_id,
+                            self.internal_companion_tx.clone(),
+                            protocol_version,
+                        );
+                        debug!(id, protocol_version, "Registered companion provider");
+                        self.send_v4_message(&V4Message::CompanionHello {
+                            provider_id: id,
+                            protocol_version,
+                        })
+                        .await?;
                     }
                 }
                 Action::Companion(resp) => match resp {
                     CompanionResponse::ResourceInfo(resource_info) => {
                         let request_id = resource_info.borrow_dependent().request_id();
                         if let Some(req) = self.companion_queue.remove(&request_id) {
-                            if let CompanionQueueItem::GetResourceInfo(feedback) = req {
-                                feedback.send(resource_info);
+                            match req {
+                                CompanionQueueItem::GetResourceInfo(feedback) => {
+                                    feedback.send(resource_info);
+                                }
+                                resource => {
+                                    fail_resource_request(resource, request_id);
+                                    error!(request_id, "Received wrong companion response type");
+                                }
                             }
                         } else {
                             error!(
@@ -1492,20 +1800,10 @@ impl SessionDriver {
                     }
                     CompanionResponse::ResourceResponse(resource) => {
                         let request_id = resource.request_id;
-                        if let Some(req) = self.companion_queue.get(&request_id) {
-                            if let CompanionQueueItem::GetResource(feedback) = req {
-                                let was_last_part =
-                                    resource.part == resource.total_parts.saturating_sub(1);
-                                feedback.send(resource);
-                                if was_last_part {
-                                    self.companion_queue.remove(&request_id);
-                                }
-                            }
-                        } else {
-                            error!(
-                                request_id = resource.request_id,
-                                "Could not find request from response request ID"
-                            );
+                        if let Err(err) =
+                            handle_resource_response(&mut self.companion_queue, resource)
+                        {
+                            error!(request_id, ?err, "Invalid companion resource response");
                         }
                     }
                 },
@@ -1634,17 +1932,37 @@ impl SessionDriver {
                         break;
                     };
 
-                    let request_id = self.req_id_gen.next();
+                    self.companion_queue.retain(|_, req| !req.feedback_closed());
+                    let Some(request_id) = allocate_request_id(
+                        &mut self.next_request_id,
+                        &self.companion_queue,
+                    ) else {
+                        error!("No companion request IDs available");
+                        continue;
+                    };
                     match comp {
-                        CompanionMessage::GetResourceInfo { id, feedback } => {
-                            self.send_v4_message(&V4Message::CompanionGetResourceInfo { request_id, resource_id: id }).await?;
+                        CompanionMessage::GetResourceInfo { id, route, feedback } => {
+                            self.send_v4_message(&V4Message::CompanionGetResourceInfo {
+                                request_id,
+                                resource_id: id,
+                                route,
+                            }).await?;
                             self.companion_queue.insert(request_id, CompanionQueueItem::GetResourceInfo(feedback));
                         }
-                        CompanionMessage::GetResource { id, read_head, feedback } => {
+                        CompanionMessage::GetResource { id, route, read_head, feedback } => {
                             let builder = v4::MessageBuilder::new();
-                            let msg = builder.companion_resource_request(request_id, id, read_head);
+                            let msg = builder.companion_resource_request_with_route(
+                                request_id,
+                                id,
+                                read_head,
+                                &route,
+                            )?;
                             self.send_bin_msg(Opcode::Flatbuf, &msg).await?;
-                            self.companion_queue.insert(request_id, CompanionQueueItem::GetResource(feedback));
+                            self.companion_queue.insert(request_id, CompanionQueueItem::GetResource {
+                                feedback,
+                                next_part: 0,
+                                total_parts: None,
+                            });
                         }
                     }
                 }
@@ -1754,6 +2072,37 @@ impl SessionDriver {
 mod tests {
     use super::*;
 
+    fn resource_response(
+        request_id: u32,
+        part: u8,
+        total_parts: u8,
+    ) -> companion::ResourceResponse {
+        companion::ResourceResponse {
+            request_id,
+            part,
+            total_parts,
+            result: companion::GetResourceResult::Success(vec![part]),
+        }
+    }
+
+    fn resource_queue(
+        request_id: u32,
+    ) -> (
+        HashMap<companion::RequestId, CompanionQueueItem>,
+        tokio::sync::mpsc::UnboundedReceiver<companion::ResourceResponse>,
+    ) {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let queue = HashMap::from([(
+            request_id,
+            CompanionQueueItem::GetResource {
+                feedback: FeedbackSender::Channel(tx),
+                next_part: 0,
+                total_parts: None,
+            },
+        )]);
+        (queue, rx)
+    }
+
     #[test]
     fn progress_interval_rounding() {
         let ms = |m: u64| Duration::from_millis(m);
@@ -1774,6 +2123,183 @@ mod tests {
         assert_eq!(round_progress_interval(500_000), ms(500));
         assert_eq!(round_progress_interval(549_000), ms(500));
         assert_eq!(round_progress_interval(550_000), ms(600));
+    }
+
+    #[test]
+    fn companion_hello_negotiates_old_and_new_versions() {
+        let mut state = v4_state();
+        let old = v4::MessageBuilder::new().companion_hello_request();
+        assert_eq!(
+            advance_flatbuf(&mut state, &old),
+            Ok(Action::RespondCompanionHello {
+                protocol_version: 0
+            })
+        );
+
+        for sender_max in [1, 2, u16::MAX] {
+            let hello = v4::MessageBuilder::new().companion_hello_request_with_version(sender_max);
+            assert_eq!(
+                advance_flatbuf(&mut state, &hello),
+                Ok(Action::RespondCompanionHello {
+                    protocol_version: 1
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn companion_statuses_map_all_results() {
+        use CompanionResourceOutcome::*;
+
+        let info = [
+            (v4::flat::CompanionResourceStatus::Success, Success),
+            (v4::flat::CompanionResourceStatus::NotFound, NotFound),
+            (
+                v4::flat::CompanionResourceStatus::InvalidRange,
+                InvalidRange,
+            ),
+            (v4::flat::CompanionResourceStatus::Cancelled, Cancelled),
+            (v4::flat::CompanionResourceStatus::Failed, Failed),
+            (v4::flat::CompanionResourceStatus::EndOfStream, EndOfStream),
+        ];
+        for (status, expected) in info {
+            assert_eq!(companion_info_outcome(status), expected);
+        }
+
+        let resources = [
+            (companion::GetResourceResult::Success(Vec::new()), Success),
+            (companion::GetResourceResult::NotFound, NotFound),
+            (companion::GetResourceResult::InvalidRange, InvalidRange),
+            (companion::GetResourceResult::Cancelled, Cancelled),
+            (companion::GetResourceResult::Failed, Failed),
+            (companion::GetResourceResult::EndOfStream, EndOfStream),
+        ];
+        for (result, expected) in resources {
+            assert_eq!(companion_resource_outcome(&result), expected);
+        }
+    }
+
+    #[test]
+    fn companion_provider_replacement_tracks_version_and_route() {
+        let context = CompanionContext::new();
+        let mut provider_id = None;
+        let (old_tx, mut old_rx) = tokio::sync::mpsc::unbounded_channel();
+        let first = context.replace_provider(&mut provider_id, old_tx, 0);
+        let old_provider = context.get_provider(first).unwrap();
+        assert!(old_provider.get_resource_info(7, "/route").is_err());
+        old_provider.get_resource_info(7, "").unwrap();
+        assert!(matches!(
+            old_rx.try_recv().unwrap(),
+            CompanionMessage::GetResourceInfo { id: 7, route, .. } if route.is_empty()
+        ));
+        drop(old_provider);
+
+        let (new_tx, mut new_rx) = tokio::sync::mpsc::unbounded_channel();
+        let second = context.replace_provider(&mut provider_id, new_tx, 1);
+        assert_eq!(context.0.lock().providers.len(), 1);
+        assert!(matches!(
+            old_rx.try_recv(),
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected)
+        ));
+
+        context
+            .get_provider(second)
+            .unwrap()
+            .get_resource(9, "/a%2Fb?q=%23", None)
+            .unwrap();
+        assert!(matches!(
+            new_rx.try_recv().unwrap(),
+            CompanionMessage::GetResource { id: 9, route, .. }
+                if route == "/a%2Fb?q=%23"
+        ));
+    }
+
+    #[test]
+    fn companion_multipart_accepts_contiguous_parts() {
+        let (mut queue, mut rx) = resource_queue(3);
+        for part in 0..3 {
+            handle_resource_response(&mut queue, resource_response(3, part, 3)).unwrap();
+            assert_eq!(rx.try_recv().unwrap().part, part);
+            assert_eq!(queue.contains_key(&3), part != 2);
+        }
+    }
+
+    #[test]
+    fn companion_multipart_rejects_invalid_sequences() {
+        let cases = [
+            (resource_response(3, 0, 0), MultipartError::InvalidTotal),
+            (resource_response(3, 1, 2), MultipartError::UnexpectedPart),
+        ];
+        for (response, expected) in cases {
+            let (mut queue, mut rx) = resource_queue(3);
+            assert_eq!(
+                handle_resource_response(&mut queue, response),
+                Err(expected)
+            );
+            assert!(queue.is_empty());
+            assert!(matches!(
+                rx.try_recv().unwrap().result,
+                companion::GetResourceResult::Failed
+            ));
+        }
+
+        let (mut queue, mut rx) = resource_queue(3);
+        handle_resource_response(&mut queue, resource_response(3, 0, 2)).unwrap();
+        assert_eq!(
+            handle_resource_response(&mut queue, resource_response(3, 0, 2)),
+            Err(MultipartError::UnexpectedPart)
+        );
+        assert_eq!(rx.try_recv().unwrap().part, 0);
+        assert!(matches!(
+            rx.try_recv().unwrap().result,
+            companion::GetResourceResult::Failed
+        ));
+
+        let (mut queue, _rx) = resource_queue(3);
+        handle_resource_response(&mut queue, resource_response(3, 0, 2)).unwrap();
+        assert_eq!(
+            handle_resource_response(&mut queue, resource_response(3, 1, 3)),
+            Err(MultipartError::TotalChanged)
+        );
+        assert!(queue.is_empty());
+    }
+
+    #[test]
+    fn companion_multipart_keeps_request_correlation() {
+        let (mut queue, _rx) = resource_queue(3);
+        assert_eq!(
+            handle_resource_response(&mut queue, resource_response(4, 0, 1)),
+            Err(MultipartError::UnknownRequest)
+        );
+        assert!(queue.contains_key(&3));
+
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        queue.insert(
+            4,
+            CompanionQueueItem::GetResourceInfo(FeedbackSender::Channel(tx)),
+        );
+        assert_eq!(
+            handle_resource_response(&mut queue, resource_response(4, 0, 1)),
+            Err(MultipartError::WrongResponseType)
+        );
+        assert!(!queue.contains_key(&4));
+    }
+
+    #[test]
+    fn companion_request_ids_skip_collisions_and_wrap() {
+        let (mut queue, _rx) = resource_queue(u32::MAX);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        queue.insert(
+            0,
+            CompanionQueueItem::GetResource {
+                feedback: FeedbackSender::Channel(tx),
+                next_part: 0,
+                total_parts: None,
+            },
+        );
+        let mut next = u32::MAX;
+        assert_eq!(allocate_request_id(&mut next, &queue), Some(1));
+        assert_eq!(next, 2);
     }
 
     fn run_advancements(state: &mut State, events: Vec<(DriverEvent, Result<Action, StateError>)>) {

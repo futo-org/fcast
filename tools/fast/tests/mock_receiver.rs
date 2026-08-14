@@ -1520,13 +1520,10 @@ async fn run_companion_mock(
                 else {
                     continue;
                 };
-                if let companion::GetResourceResult::Success(bytes) = resp.result {
-                    received.extend_from_slice(&bytes);
+                if let companion::GetResourceResult::Success(bytes) = &resp.result {
+                    received.extend_from_slice(bytes);
                 }
-                // Part numbering is 0-based (v4 spec); the last part is
-                // total_parts - 1, mirroring the real receiver's
-                // completion check in receiver-core's fcast.rs.
-                if resp.part == resp.total_parts.saturating_sub(1) {
+                if resp.is_last_part() {
                     let _ = result_tx.send(received);
                     return;
                 }

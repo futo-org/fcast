@@ -18,7 +18,7 @@ pub(crate) async fn try_connect_tcp<T>(
     addrs: &[SocketAddr],
     timeout: Duration,
     cmd_rx: &mut tokio::sync::mpsc::UnboundedReceiver<T>,
-    on_cmd: impl Fn(T) -> bool,
+    mut on_cmd: impl FnMut(T) -> bool,
 ) -> anyhow::Result<Option<tokio::net::TcpStream>> {
     anyhow::ensure!(!addrs.is_empty());
 
