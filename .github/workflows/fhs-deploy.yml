@@ -1,24 +1,27 @@
 name: FHS Deploy
 
+# Manual dispatch only. To re-enable automatic builds, restore the push
+# trigger below:
+#
+#   push:
+#     branches: [fhs]
+#     paths:
+#       - 'receivers/experimental/fhs/**'
+#       - 'crates/receiver-core/**'
+#       - 'crates/fcast-protocol/**'
+#       - 'crates/libplacebo/**'
+#       - 'crates/libplacebo-sys/**'
+#       - 'crates/google-cast-protocol/**'
+#       - 'crates/inhibit-screensaver/**'
+#       - 'crates/egl-sys/**'
+#       - 'crates/fiatlux/**'
+#       - 'crates/fiatlux-sys/**'
+#       - 'tools/remote-pipeline-dbg/**'
+#       - 'xtask/**'
+#       - 'Cargo.toml'
+#       - 'Cargo.lock'
+#       - '.github/workflows/fhs-deploy.yml'
 on:
-  push:
-    branches: [fhs]
-    paths:
-      - 'receivers/experimental/fhs/**'
-      - 'crates/receiver-core/**'
-      - 'crates/fcast-protocol/**'
-      - 'crates/libplacebo/**'
-      - 'crates/libplacebo-sys/**'
-      - 'crates/google-cast-protocol/**'
-      - 'crates/inhibit-screensaver/**'
-      - 'crates/egl-sys/**'
-      - 'crates/fiatlux/**'
-      - 'crates/fiatlux-sys/**'
-      - 'tools/remote-pipeline-dbg/**'
-      - 'xtask/**'
-      - 'Cargo.toml'
-      - 'Cargo.lock'
-      - '.github/workflows/fhs-deploy.yml'
   workflow_dispatch:
     inputs:
       fhs_core_ref:
