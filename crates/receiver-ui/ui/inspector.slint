@@ -527,6 +527,13 @@ component GraphView inherits Rectangle {
     property <float> scaling: 1.0;
     property <length> offset-x: 0;
     property <length> offset-y: 0;
+    // Text re-shapes whenever its font size changes, and a zoom step changes
+    // every label at once. Whole-pixel quantization makes most zoom steps
+    // reuse the shaped layouts, and text below legibility is not worth
+    // shaping at all.
+    pure function zoom-font(size: length) -> length {
+        return Math.round(size * root.scaling / 1px) * 1px;
+    }
 
     // The hovered wire (via an edge segment or its caps chip), redrawn in
     // the accent color on top of the batched gray wiring.
@@ -704,7 +711,8 @@ component GraphView inherits Rectangle {
             y: t.y * root.scaling;
             text: t.text;
             color: t.color;
-            font-size: t.size * root.scaling;
+            visible: t.size * root.scaling >= 4px;
+            font-size: max(4px, root.zoom-font(t.size));
         }
 
         // Invisible hover zones along every wire segment.
@@ -742,7 +750,7 @@ component GraphView inherits Rectangle {
                 vertical-alignment: center;
                 text: l.summary;
                 color: #4da3ff;
-                font-size: 10px * root.scaling;
+                font-size: max(4px, root.zoom-font(10px));
             }
 
             TouchArea {
@@ -781,7 +789,7 @@ component GraphView inherits Rectangle {
                 y: 4px * root.scaling;
                 text: root.expanded-detail;
                 color: #b0b0b0;
-                font-size: 10px * root.scaling;
+                font-size: max(4px, root.zoom-font(10px));
             }
 
             TouchArea {

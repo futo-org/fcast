@@ -48,7 +48,7 @@ default = []
 airplay = ["receiver-core/airplay"]
 desktop = [
     "slint/backend-winit",
-    "slint/renderer-femtovg",
+    "slint/renderer-dodvg",
     "receiver-core/desktop",
     "wayland-subsurface",
 ]
@@ -60,7 +60,7 @@ systray = ["slint/system-tray", "receiver-core/systray"]
 kms-backend = ["slint/backend-linuxkms"]
 android = ["slint/backend-android-activity-06", "slint/renderer-skia", "receiver-core/android"]
 tracy = ["receiver-core/tracy"]
-fhs = ["slint/renderer-femtovg", "receiver-core/fhs"]
+fhs = ["slint/renderer-dodvg", "receiver-core/fhs"]
 # Forwarded to the core so a receiver binary keeps naming one dependency.
 static-gst-plugins = ["receiver-core/static-gst-plugins"]
 static-gstreamer = ["receiver-core/static-gstreamer"]

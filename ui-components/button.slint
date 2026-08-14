@@ -17,6 +17,8 @@ export component Button {
     // in property <color> background-default-color: FCastPalette.button-default-background;
     in property <brush> background-default-color: FCastPalette.button-default-background;
     in property <color> background-default-drop-shadow-color: FCastPalette.button-default-drop-shadow-color;
+    in property <length> background-blur: 0px;
+    in property <float> fade: 1.0;
 
     in property <color> text-color-disabled: FCastPalette.button-disabled-text-color;
     in property <color> background-disabled: FCastPalette.button-pressed-background;
@@ -95,9 +97,16 @@ export component Button {
         }
     ]
 
+    i-frost := Rectangle {
+        border-radius: i-background.border-radius;
+        background-blur: root.background-blur * root.fade;
+    }
+
     i-background := Rectangle {
         // Circle when icon only
         border-radius: root.text == "" ? self.height : 6px;
+
+        opacity: root.fade;
 
         // background: FCastPalette.button-default-background;
         background: background-default-color;

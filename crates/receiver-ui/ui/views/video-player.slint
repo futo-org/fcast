@@ -28,6 +28,7 @@ component SecondaryButton inherits Button {
     width: 45px;
     height: 45px;
     background-default-color: @linear-gradient(133.14deg, rgba(204, 204, 204, 0.1) 6.7%, rgba(122, 122, 122, 0.1) 92.77%);
+    background-blur: 34px;
     colorize-icon: true;
 }
 
@@ -200,6 +201,8 @@ component SettingsTrackList inherits Rectangle {
 }
 
 component ButtonControls inherits Rectangle {
+    in property <float> fade: 1.0;
+
     callback show-settings();
 
     HorizontalLayout {
@@ -213,6 +216,7 @@ component ButtonControls inherits Rectangle {
             MasterButton {
                 height: 50px;
                 width: 50px;
+                fade: root.fade;
             }
         }
 
@@ -222,6 +226,7 @@ component ButtonControls inherits Rectangle {
 
             settings-btn := SecondaryButton {
                 icon: Icons.settings;
+                fade: root.fade;
                 clicked => show-settings();
             }
         }
@@ -363,7 +368,7 @@ component PlaybackControls inherits Rectangle {
             visible: elems-opacity > 0;
 
             SecondaryButton {
-                opacity: elems-opacity;
+                fade: elems-opacity;
                 icon: Icons.close;
                 icon-rotation: 180deg;
                 icon-size: 14px;
@@ -374,7 +379,7 @@ component PlaybackControls inherits Rectangle {
             Rectangle { }
 
             SecondaryButton {
-                opacity: elems-opacity;
+                fade: elems-opacity;
                 icon: Bridge.is-fullscreen ? Icons.minimize : Icons.maximize;
 
                 clicked => Bridge.toggle-fullscreen();
@@ -445,7 +450,7 @@ component PlaybackControls inherits Rectangle {
                 }
 
                 ScrubbyMcScrub {
-                    opacity: elems-opacity;
+                    fade: elems-opacity;
                     visible: is-visible;
                     height: is-visible ? self.preferred-height : 0px;
                 }
@@ -455,7 +460,7 @@ component PlaybackControls inherits Rectangle {
                 }
 
                 if Bridge.ui-mode == UiMode.Full: ButtonControls {
-                    opacity: elems-opacity;
+                    fade: elems-opacity;
                     visible: is-visible;
 
                     show-settings => {
@@ -472,8 +477,10 @@ component PlaybackControls inherits Rectangle {
         Rectangle {}
 
         settings-side-bar := Rectangle {
-            background: @linear-gradient(180deg, #101010 0%, #0F0F10 100%);
-            border-color: @radial-gradient(circle, rgba(255, 255, 255, 0.04) 0%, rgba(102, 102, 102, 0.04) 100%);
+            // Translucent tint, an opaque background would skip the blur.
+            background: @linear-gradient(180deg, rgba(16, 16, 16, 0.55) 0%, rgba(15, 15, 16, 0.55) 100%);
+            background-blur: 44px;
+            border-color: @radial-gradient(circle, rgba(255, 255, 255, 0.12) 0%, rgba(102, 102, 102, 0.12) 100%);
             border-width: 1px;
             border-radius: 6px;
             width: show-settings ? root.width * 0.25 : 0px;

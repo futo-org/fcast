@@ -86,5 +86,5 @@ wayland-subsurface = [
     "dep:i-slint-backend-winit",
     "dep:libplacebo-vulkan",
     "slint/backend-winit",
-    "slint/renderer-femtovg",
+    "slint/renderer-dodvg",
 ]

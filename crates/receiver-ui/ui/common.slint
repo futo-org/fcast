@@ -22,8 +22,12 @@ export component PositionScrubber inherits Slider {
 
 export component ProgressLabelBox inherits Rectangle {
     in property <string> text <=> txt.text;
+    // Reveal factor, not `opacity:`. A layered fade hides the backdrop from
+    // the frost capture, so tint and blur radius scale with the fade instead.
+    in property <float> fade: 1.0;
 
-    background: FCastPalette.opacity-light-1000;
+    background: FCastPalette.opacity-light-1000.transparentize(1 - self.fade);
+    background-blur: 27px * self.fade;
     border-radius: 12px;
     height: txt.preferred-height + 4px;
     width: txt.preferred-width + 16px;
@@ -31,29 +35,37 @@ export component ProgressLabelBox inherits Rectangle {
     txt := Text {
         color: FCastPalette.foreground;
         font-size: 13px;
+        opacity: root.fade;
     }
 }
 
 export component ProgressLabels inherits HorizontalLayout {
+    in property <float> fade: 1.0;
+
     padding-left: 10px;
     padding-right: self.padding-left;
 
     ProgressLabelBox {
         text: Bridge.sec-float-to-string(Bridge.progress-secs);
+        fade: root.fade;
     }
 
     Rectangle {}
 
     if !Bridge.is-live: ProgressLabelBox {
         text: Bridge.sec-float-to-string(Bridge.duration-secs);
+        fade: root.fade;
     }
 }
 
 export component ScrubbyMcScrub {
+    in property <float> fade: 1.0;
+
     main-vlayout := VerticalLayout {
         spacing: 8px;
 
         scrubber := PositionScrubber {
+            opacity: root.fade;
             changed(_) => {
                 Bridge.is-scrubbing-position = true;
             }
@@ -69,6 +81,7 @@ export component ScrubbyMcScrub {
 
         ProgressLabels {
             visible: !scrubber.has-hover;
+            fade: root.fade;
         }
     }
 
@@ -81,6 +94,7 @@ export component ScrubbyMcScrub {
 
         plb := ProgressLabelBox {
             text: Bridge.sec-to-string(Bridge.duration-secs * scrubber.mouse-x / scrubber.width);
+            fade: root.fade;
         }
     }
 }
@@ -91,6 +105,7 @@ export component MasterButton inherits Button {
     icon-size: 20px;
     enabled: false;
     background-default-color: @linear-gradient(133.14deg, rgba(52, 52, 52, 0.6) 6.7%, rgba(20, 20, 20, 0.6) 92.77%);
+    background-blur: 41px;
 
     states [
         playing when Bridge.playback-state == GuiPlaybackState.Playing: {
@@ -132,22 +147,26 @@ export component VolumePreview {
 
     pill := Rectangle {
         border-radius: self.width / 2;
-        background: #00000080;
+        // Faded via color alpha and blur radius, not `opacity:`. A layered
+        // fade hides the backdrop from the frost capture mid-animation.
+        background: #00000080.transparentize(1 - root.reveal);
+        background-blur: 44px * root.reveal;
         height: root.height * 40%;
         border-width: 1px;
+        border-color: rgba(255, 255, 255, 0.18).transparentize(1 - root.reveal);
         width: bar.preferred-width + 26px * 2;
 
         // Right side, vertically centred. Slides in from off the right edge:
         // reveal = 1 rests 45px from the edge, reveal = 0 sits fully off-screen.
         y: (root.height - self.height) / 2;
         x: root.width - (self.width + 45px) * root.reveal;
-        opacity: root.reveal;
         visible: root.reveal > 0.01;
 
         vl := VerticalLayout {
             padding-top: 10px;
             padding-bottom: 10px;
             alignment: space-between;
+            opacity: root.reveal;
 
             bar := Slider {
                 // Display-only: keep arrow keys bubbling to the global
