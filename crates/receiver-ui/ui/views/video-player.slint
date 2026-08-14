@@ -477,15 +477,19 @@ component PlaybackControls inherits Rectangle {
         Rectangle {}
 
         settings-side-bar := Rectangle {
-            // Translucent tint, an opaque background would skip the blur.
-            background: @linear-gradient(180deg, rgba(16, 16, 16, 0.55) 0%, rgba(15, 15, 16, 0.55) 100%);
-            background-blur: 44px;
-            border-color: @radial-gradient(circle, rgba(255, 255, 255, 0.12) 0%, rgba(102, 102, 102, 0.12) 100%);
-            border-width: 1px;
-            border-radius: 6px;
-            width: show-settings ? root.width * 0.25 : 0px;
+            // Same panel as the settings drawer: opaque, flush against the right
+            // edge, with a 1px left divider. No frost, so nothing tints the video.
+            background: @linear-gradient(180deg, #101010 0%, #0F0F10 100%);
+            width: show-settings ? min(360px, root.width * 0.5) : 0px;
             animate width {
                 duration: 100ms;
+            }
+
+            // Left edge divider.
+            Rectangle {
+                x: 0;
+                width: 1px;
+                background: FCastPalette.opacity-light-1000;
             }
 
             TouchArea {}
@@ -494,10 +498,30 @@ component PlaybackControls inherits Rectangle {
                 padding: 15px;
                 padding-top: 18px;
 
-                FText {
-                    text: @tr("Playback settings");
-                    font-weight: 500;
-                    font-size: 18px;
+                HorizontalLayout {
+                    spacing: 12px;
+
+                    FText {
+                        text: @tr("Playback settings");
+                        font-weight: 500;
+                        font-size: 18px;
+                        horizontal-stretch: 1;
+                        vertical-alignment: center;
+                    }
+
+                    Button {
+                        icon: Icons.close;
+                        icon-size: 13px;
+                        width: 34px;
+                        height: 34px;
+
+                        clicked => {
+                            show-settings = false;
+                            // Closing destroys any list holding focus, same as
+                            // clicking outside the side bar.
+                            focus.focus();
+                        }
+                    }
                 }
 
                 VerticalLayout {

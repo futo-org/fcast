@@ -103,9 +103,9 @@ tracing-subscriber = "0.3"
 tracing-gstreamer = { git = "https://github.com/MAlba124/tracing-gstreamer.git", rev = "3ad7a1e71a4ca4d1fd9a229642fd09586370acaf" }
 tracing-panic = "0.1.2"
 parking_lot = "0.12"
-slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7e5f143307b251dd3afa51694e4063108ab38c44", default-features = false }
-slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7e5f143307b251dd3afa51694e4063108ab38c44" }
-i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7e5f143307b251dd3afa51694e4063108ab38c44" }
+slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "8796fa98619e560970a3ab82bc97efa0a5894778", default-features = false }
+slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "8796fa98619e560970a3ab82bc97efa0a5894778" }
+i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "8796fa98619e560970a3ab82bc97efa0a5894778" }
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.23", features = [ "v4" ] }
 bytes = "1"
