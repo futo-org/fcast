@@ -22,7 +22,8 @@ pub enum DeviceConnectionState {
     },
 }
 
-/// Capabilities advertised by an FCast receiver in its v4 `ReceiverIntroduction`.
+/// Capabilities advertised by an FCast receiver in its v4
+/// `ReceiverIntroduction`.
 ///
 /// Mirrors the `ReceiverCapabilities` flatbuffers table.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
@@ -81,9 +82,9 @@ pub enum ProtocolType {
     FCast,
 }
 
-/// Turn a progress-update interval in milliseconds into the `Duration` the backends use, flooring
-/// it to 100 ms. The floor matches the FCast receiver's granularity and keeps poll-based backends
-/// from spinning.
+/// Turn a progress-update interval in milliseconds into the `Duration` the
+/// backends use, flooring it to 100 ms. The floor matches the FCast receiver's
+/// granularity and keeps poll-based backends from spinning.
 pub(crate) fn sanitize_progress_interval(interval_millis: u64) -> std::time::Duration {
     std::time::Duration::from_millis(interval_millis.max(100))
 }
@@ -297,22 +298,25 @@ pub trait DeviceEventHandler: Send + Sync {
 
     /// The available tracks and/or the current per-type selection changed.
     ///
-    /// Carries the full track list plus the selected id for each track type in one coherent
-    /// snapshot, aggregating what the finer-grained [`tracks_available`](Self::tracks_available) and
-    /// [`track_selected`](Self::track_selected) callbacks report separately. Prefer this for
-    /// driving UI. FCast v4 only.
+    /// Carries the full track list plus the selected id for each track type in
+    /// one coherent snapshot, aggregating what the finer-grained
+    /// [`tracks_available`](Self::tracks_available) and
+    /// [`track_selected`](Self::track_selected) callbacks report separately.
+    /// Prefer this for driving UI. FCast v4 only.
     fn tracks_changed(&self, tracks: TrackList);
 
     /// The receiver's queue changed.
     ///
-    /// Fires on the initial queue load, on an insertion or removal, and on a selection change,
-    /// regardless of whether this sender or another connected sender caused it. Carries the full
-    /// current queue. When the queue ends (playback stops or a single-item load replaces it) one
+    /// Fires on the initial queue load, on an insertion or removal, and on a
+    /// selection change, regardless of whether this sender or another
+    /// connected sender caused it. Carries the full current queue. When the
+    /// queue ends (playback stops or a single-item load replaces it) one
     /// final empty snapshot is delivered. FCast v4 only.
     fn queue_changed(&self, queue: QueueState);
 
-    /// The receiver rejected a command this sender issued (e.g. a queue mutation that was out of
-    /// range, targeted the playing item, or hit the queue size cap). FCast v4 only.
+    /// The receiver rejected a command this sender issued (e.g. a queue
+    /// mutation that was out of range, targeted the playing item, or hit
+    /// the queue size cap). FCast v4 only.
     fn command_error(&self, error: ReceiverError);
 }
 
@@ -405,23 +409,26 @@ pub struct ApplicationInfo {
 pub enum CompanionSourceDescriptor {
     /// A local filesystem path the SDK opens for reading.
     Path(String),
-    /// An already-open file descriptor whose ownership is transferred to the SDK.
+    /// An already-open file descriptor whose ownership is transferred to the
+    /// SDK.
     ///
-    /// Intended for platforms that hand apps a descriptor rather than a path (e.g. Android's
-    /// Storage Access Framework, iOS document/photo pickers).  The caller must relinquish ownership
-    /// first (Android: `ParcelFileDescriptor.detachFd()`), must not close or reuse it afterwards,
-    /// and must not reference the same descriptor from a second source or load. The SDK closes it
-    /// exactly once: when playback stops, the session ends, or the load that carried it
-    /// fails. Reusing a descriptor that is still registered is rejected with an error. The SDK
-    /// cannot detect reuse after it has closed the descriptor, so that remains the caller's
-    /// responsibility.
+    /// Intended for platforms that hand apps a descriptor rather than a path
+    /// (e.g. Android's Storage Access Framework, iOS document/photo
+    /// pickers).  The caller must relinquish ownership first (Android:
+    /// `ParcelFileDescriptor.detachFd()`), must not close or reuse it
+    /// afterwards, and must not reference the same descriptor from a second
+    /// source or load. The SDK closes it exactly once: when playback stops,
+    /// the session ends, or the load that carried it fails. Reusing a
+    /// descriptor that is still registered is rejected with an error. The SDK
+    /// cannot detect reuse after it has closed the descriptor, so that remains
+    /// the caller's responsibility.
     ///
-    /// The variant exists on every platform so the generated foreign bindings are identical
-    /// everywhere, but it is only usable on Unix targets. On other platforms a load carrying it
-    /// fails.
+    /// The variant exists on every platform so the generated foreign bindings
+    /// are identical everywhere, but it is only usable on Unix targets. On
+    /// other platforms a load carrying it fails.
     Fd(i32),
-    /// In-memory bytes, copied into the SDK and served directly. Best for small payloads (e.g. a
-    /// subtitle file) rather than large media.
+    /// In-memory bytes, copied into the SDK and served directly. Best for small
+    /// payloads (e.g. a subtitle file) rather than large media.
     Bytes(Vec<u8>),
 }
 
@@ -441,11 +448,12 @@ impl CompanionSource {
         }
     }
 
-    /// A companion source backed by an owned file descriptor, moving ownership of the descriptor
-    /// into the SDK (which closes it when finished).
+    /// A companion source backed by an owned file descriptor, moving ownership
+    /// of the descriptor into the SDK (which closes it when finished).
     ///
-    /// Unix only. Foreign-language callers instead construct the record directly with
-    /// [`CompanionSourceDescriptor::Fd`] after detaching the descriptor from its owner.
+    /// Unix only. Foreign-language callers instead construct the record
+    /// directly with [`CompanionSourceDescriptor::Fd`] after detaching the
+    /// descriptor from its owner.
     #[cfg(unix)]
     pub fn from_fd(fd: std::os::fd::OwnedFd, content_type: impl Into<String>) -> Self {
         use std::os::fd::IntoRawFd as _;
@@ -508,16 +516,17 @@ pub enum MediaLocator {
 
 /// A single playable media item.
 ///
-/// This is the rich, non-lossy item type used by [`CastingDevice::load_queue`] and
-/// [`CastingDevice::queue_insert`], and the element type reported back in [`QueueState`].
+/// This is the rich, non-lossy item type used by [`CastingDevice::load_queue`]
+/// and [`CastingDevice::queue_insert`], and the element type reported back in
+/// [`QueueState`].
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Debug, Clone, PartialEq)]
 pub struct MediaItem {
     /// MIME container type, e.g. `"video/mp4"`.
     pub content_type: String,
     pub source: MediaLocator,
-    /// Seconds from the beginning of the media to start playback. Non-finite or negative values are
-    /// treated as unset.
+    /// Seconds from the beginning of the media to start playback. Non-finite or
+    /// negative values are treated as unset.
     pub start_time: Option<f64>,
     /// Initial volume, `0.0..=1.0`.
     pub volume: Option<f64>,
@@ -535,9 +544,9 @@ pub struct MediaItem {
 #[derive(Debug, Clone, PartialEq)]
 pub struct QueueEntry {
     pub item: MediaItem,
-    /// How long to play this entry before advancing, in seconds. Intended for live/unbounded
-    /// sources. `None` plays to the item's natural end. Non-finite or negative values are treated
-    /// as `None`.
+    /// How long to play this entry before advancing, in seconds. Intended for
+    /// live/unbounded sources. `None` plays to the item's natural end.
+    /// Non-finite or negative values are treated as `None`.
     pub playback_duration: Option<f64>,
 }
 
@@ -557,13 +566,14 @@ pub struct Queue {
 
 /// The SDK's live mirror of the receiver's queue.
 ///
-/// Delivered to [`DeviceEventHandler::queue_changed`] whenever the queue changes (the initial load,
-/// an insertion, a removal, or a selection), regardless of whether this sender or another sender
-/// caused the change.  When the queue ends (playback stops or a single-item load replaces it), one
-/// final empty snapshot with no items is delivered.
+/// Delivered to [`DeviceEventHandler::queue_changed`] whenever the queue
+/// changes (the initial load, an insertion, a removal, or a selection),
+/// regardless of whether this sender or another sender caused the change.  When
+/// the queue ends (playback stops or a single-item load replaces it), one final
+/// empty snapshot with no items is delivered.
 ///
-/// The SDK does not retain this for you: store the latest snapshot in your application if you need
-/// to read it back.
+/// The SDK does not retain this for you: store the latest snapshot in your
+/// application if you need to read it back.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct QueueState {
@@ -575,14 +585,16 @@ pub struct QueueState {
 
 /// Where an external subtitle's content comes from.
 ///
-/// The receiver fetches [`SubtitleContent::Url`] itself. [`SubtitleContent::Data`] is served to it
-/// over the FCast companion channel, so no HTTP server or receiver-reachable URL is needed.
+/// The receiver fetches [`SubtitleContent::Url`] itself.
+/// [`SubtitleContent::Data`] is served to it over the FCast companion channel,
+/// so no HTTP server or receiver-reachable URL is needed.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(Debug, Clone, PartialEq)]
 pub enum SubtitleContent {
     /// A subtitle at a URL the receiver fetches directly (e.g. `https://example.com/subs.vtt`).
     Url { url: String },
-    /// Raw subtitle bytes, delivered to the receiver over the FCast companion channel.
+    /// Raw subtitle bytes, delivered to the receiver over the FCast companion
+    /// channel.
     Data {
         data: Vec<u8>,
         /// MIME type of the payload, e.g. `"text/vtt"`.
@@ -602,11 +614,11 @@ pub struct SubtitleSource {
 
 /// The available media tracks and the current selection per track type.
 ///
-/// Delivered to [`DeviceEventHandler::tracks_changed`]. A `None` selected id means that track type
-/// is currently disabled (or has no applicable track).
+/// Delivered to [`DeviceEventHandler::tracks_changed`]. A `None` selected id
+/// means that track type is currently disabled (or has no applicable track).
 ///
-/// The SDK does not retain this for you: store the latest snapshot in your application if you need
-/// to read it back.
+/// The SDK does not retain this for you: store the latest snapshot in your
+/// application if you need to read it back.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Record))]
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct TrackList {
@@ -616,8 +628,8 @@ pub struct TrackList {
     pub selected_subtitle: Option<u32>,
 }
 
-/// An error the receiver reported in response to a command this sender issued (FCast v4
-/// `Error`). Mirrors the protocol's `ErrorKind`.
+/// An error the receiver reported in response to a command this sender issued
+/// (FCast v4 `Error`). Mirrors the protocol's `ErrorKind`.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Enum))]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReceiverError {
@@ -716,13 +728,15 @@ pub trait CastingDevice: Send + Sync {
     fn seek(&self, time_seconds: f64) -> Result<(), CastingDeviceError>;
     /// Stop the media that is playing on the receiver.
     ///
-    /// This will usually result in the receiver closing the media viewer and show a default screen.
+    /// This will usually result in the receiver closing the media viewer and
+    /// show a default screen.
     fn stop_playback(&self) -> Result<(), CastingDeviceError>;
     fn pause_playback(&self) -> Result<(), CastingDeviceError>;
     fn resume_playback(&self) -> Result<(), CastingDeviceError>;
-    /// Load a media item. `progress_update_interval_millis`, when set, is applied along with the
-    /// load (see [`Self::set_progress_update_interval`]). `None` keeps the device's current
-    /// interval.
+    /// Load a media item. `progress_update_interval_millis`, when set, is
+    /// applied along with the
+    /// load (see [`Self::set_progress_update_interval`]). `None` keeps the
+    /// device's current interval.
     fn load(
         &self,
         request: LoadRequest,
@@ -743,8 +757,9 @@ pub trait CastingDevice: Send + Sync {
     /// Connect to the device.
     ///
     /// # Arguments
-    ///   * `reconnect_interval_millis`: the interval between each reconnect attempt. Setting this
-    ///     to `0` indicates that reconnects should not be attempted.
+    ///   * `reconnect_interval_millis`: the interval between each reconnect
+    ///     attempt. Setting this to `0` indicates that reconnects should not be
+    ///     attempted.
     #[cfg_attr(feature = "uniffi", uniffi::method(default(app_info = None)))]
     fn connect(
         &self,
@@ -773,14 +788,15 @@ pub trait CastingDevice: Send + Sync {
 
     /// Load a queue of media items and begin playback.
     ///
-    /// This is the rich, non-lossy counterpart to [`LoadRequest::Queue`](LoadRequest::Queue): it
-    /// carries per-item titles, thumbnails, start times, volume/speed, the queue's `autoplay` flag,
-    /// and per-entry `playback_duration`. FCast v4 only. Devices that don't support it return
-    /// [`CastingDeviceError::UnsupportedFeature`].
+    /// This is the rich, non-lossy counterpart to
+    /// [`LoadRequest::Queue`](LoadRequest::Queue): it carries per-item
+    /// titles, thumbnails, start times, volume/speed, the queue's `autoplay`
+    /// flag, and per-entry `playback_duration`. FCast v4 only. Devices that
+    /// don't support it return [`CastingDeviceError::UnsupportedFeature`].
     fn load_queue(&self, queue: Queue) -> Result<(), CastingDeviceError>;
 
-    /// Insert a single item into the active queue at `position`, optionally bounding its playback
-    /// to `playback_duration` seconds. FCast v4 only.
+    /// Insert a single item into the active queue at `position`, optionally
+    /// bounding its playback to `playback_duration` seconds. FCast v4 only.
     fn queue_insert(
         &self,
         item: MediaItem,

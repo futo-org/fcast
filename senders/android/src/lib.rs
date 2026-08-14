@@ -198,7 +198,8 @@ impl Application {
                 if stop_playback {
                     debug!("Stopping playback");
                     log_err!(active_device.stop_playback(), "Failed to stop playback");
-                    // NOTE: Instead of waiting for the PlaybackState::Idle event in the main loop we just sleep here
+                    // NOTE: Instead of waiting for the PlaybackState::Idle event in the main loop
+                    // we just sleep here
                     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                 }
                 debug!("Disconnecting from active device");
@@ -343,7 +344,8 @@ impl Application {
                                 match new_source {
                                     fcast_sender_sdk::device::Source::Url { ref url, .. } => {
                                         if Some(url) != self.our_source_url.as_ref() {
-                                            // At this point the receiver has stopped playing our stream
+                                            // At this point the receiver has stopped playing our
+                                            // stream
                                             debug!(
                                                 ?new_source,
                                                 "The source on the receiver changed, disconnecting"
@@ -518,7 +520,9 @@ impl Application {
 
         gst::rust_allocator().clone().set_default();
 
-        // self.add_or_update_device(fcast_sender_sdk::device::DeviceInfo::fcast("Localhost for android emulator".to_owned(), vec![fcast_sender_sdk::IpAddr::v4(10, 0, 2, 2)], 46899))?;
+        // self.add_or_update_device(fcast_sender_sdk::device::DeviceInfo::fcast("
+        // Localhost for android emulator".to_owned(),
+        // vec![fcast_sender_sdk::IpAddr::v4(10, 0, 2, 2)], 46899))?;
 
         loop {
             let Some(event) = event_rx.recv().await else {
@@ -1046,7 +1050,8 @@ impl EglContextHandle {
         unsafe { &*self.0 }
     }
 
-    // Safety: only convert back to Box (to drop) when sure handle is no longer shared.
+    // Safety: only convert back to Box (to drop) when sure handle is no longer
+    // shared.
     pub unsafe fn into_box(self) -> Box<EglContext> {
         unsafe { Box::from_raw(self.0 as *mut EglContext) }
     }

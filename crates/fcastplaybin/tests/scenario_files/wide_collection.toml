@@ -1,0 +1,97 @@
+# Eleven streams in one collection: 1 video, 6 audio, 4 text. Every other file here
+# advertises three streams or fewer.
+#
+# What it stresses is the selection engine's id handling rather than the decode
+# path (only the selected streams are ever decoded): a collection this wide is what
+# made stream ids shift under reorders and produced the settle flakes that
+# merge_streams_stable fixed. Kept short (800 ms) because the cost is per stream.
+key = "widecollection"
+duration_ms = 800
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "video_0"
+kind = "video"
+fps = 25
+keyframe_interval = 25
+
+[[stream]]
+id = "audio_0"
+kind = "audio"
+
+[[stream]]
+id = "audio_1"
+kind = "audio"
+
+[[stream]]
+id = "audio_2"
+kind = "audio"
+
+[[stream]]
+id = "audio_3"
+kind = "audio"
+
+[[stream]]
+id = "audio_4"
+kind = "audio"
+
+[[stream]]
+id = "audio_5"
+kind = "audio"
+
+[[stream]]
+id = "text_0"
+kind = "text"
+
+[[stream.cue]]
+start_ms = 200
+end_ms = 400
+text = "T000"
+
+[[stream.cue]]
+start_ms = 500
+end_ms = 700
+text = "T001"
+
+[[stream]]
+id = "text_1"
+kind = "text"
+
+[[stream.cue]]
+start_ms = 200
+end_ms = 400
+text = "T100"
+
+[[stream.cue]]
+start_ms = 500
+end_ms = 700
+text = "T101"
+
+[[stream]]
+id = "text_2"
+kind = "text"
+
+[[stream.cue]]
+start_ms = 200
+end_ms = 400
+text = "T200"
+
+[[stream.cue]]
+start_ms = 500
+end_ms = 700
+text = "T201"
+
+[[stream]]
+id = "text_3"
+kind = "text"
+
+[[stream.cue]]
+start_ms = 200
+end_ms = 400
+text = "T300"
+
+[[stream.cue]]
+start_ms = 500
+end_ms = 700
+text = "T301"

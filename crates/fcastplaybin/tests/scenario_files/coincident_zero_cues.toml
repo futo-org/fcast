@@ -1,0 +1,76 @@
+# Several cues stamped at the SAME instant, three of them zero length.
+#
+# cue_past_media_end.toml has one zero-length cue in isolation. What it cannot
+# show is what happens when a run of them lands together, which is the shape an
+# authoring tool produces when it rounds a group of timestamps onto one frame, or
+# a converter emits per-line cues for a block that was one subtitle.
+#
+# `build_schedule` reacts to it in a way no other file here reproduces. A cue only
+# gets a leading GAP when `cue.start > cursor`, and a zero-length cue leaves the
+# cursor exactly where it was, so ZC1, ZC2 and ZC3 become three consecutive
+# buffers with identical PTS, identical (zero) duration and no gap anywhere
+# between them. The branch delivers three timestamps that are equal rather than
+# increasing.
+#
+# That distinguishes two things a sparse branch can mean by "no forward progress":
+#
+# * abutting_cues.toml never gaps, but every cue still advances the timeline,
+# * here three deliveries in a row advance it by nothing at all.
+#
+# A cue scheduler that assumes strictly increasing timestamps, a de-duplicator
+# keyed on PTS alone, and a renderer that replaces rather than stacks all resolve
+# this to one cue on screen instead of three. It is also the exact case the sink
+# sequence checker has to keep ACCEPTING. Equal timestamps are monotonic, and a
+# rule written as "strictly increasing" would reject legal media here, see
+# fcasttest::sink::asserts::monotonic_pts_within_segment.
+#
+# ZC4 is a normal cue after a real gap, so the branch returns to ordinary
+# behaviour and a scheduler wedged by the run above shows up as a missing cue at
+# the end rather than as an early EOS.
+key = "coincidentzerocues"
+duration_ms = 900
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "video_0"
+kind = "video"
+fps = 25
+keyframe_interval = 25
+
+[[stream]]
+id = "audio_0"
+kind = "audio"
+
+[[stream]]
+id = "text_0"
+kind = "text"
+
+# A normal cue first, so the run below starts from a branch that is already
+# delivering rather than from the head of the stream.
+[[stream.cue]]
+start_ms = 100
+end_ms = 300
+text = "ZC0"
+
+# Three cues at one instant, each of zero length. The cursor sits at 300 after
+# ZC0, so ZC1 also gets no leading gap and all four buffers abut.
+[[stream.cue]]
+start_ms = 300
+end_ms = 300
+text = "ZC1"
+
+[[stream.cue]]
+start_ms = 300
+end_ms = 300
+text = "ZC2"
+
+[[stream.cue]]
+start_ms = 300
+end_ms = 300
+text = "ZC3"
+
+[[stream.cue]]
+start_ms = 600
+end_ms = 850
+text = "ZC4"

@@ -114,8 +114,8 @@ fn find_images() -> std::io::Result<(Vec<ImageEntry>, Vec<UiFileEntry>)> {
     let mut images = Vec::new();
     let mut files = Vec::new();
 
-    // No user dirs or no Pictures directory means there is nothing to list. Return an empty catalog
-    // instead of panicking.
+    // No user dirs or no Pictures directory means there is nothing to list. Return
+    // an empty catalog instead of panicking.
     let Some(dirs) = directories::UserDirs::new() else {
         log::warn!("Could not determine user directories, no images to list");
         return Ok((images, files));
@@ -299,8 +299,8 @@ fn run(ui_weak: slint::Weak<MainWindow>, msg_tx: Sender<Message>, msg_rx: Receiv
                 }
 
                 // Rebuild the whole window and (re)load it. Used for the first cast and for
-                // non-adjacent jumps where the incremental select/add/remove dance cannot express
-                // the transition.
+                // non-adjacent jumps where the incremental select/add/remove dance cannot
+                // express the transition.
                 fn load_window(device: &dyn CastingDevice, images: &[ImageEntry], id: usize) {
                     let (lo, hi) = window_range(id, images.len());
                     let items = images[lo..=hi].iter().map(create_item).collect();
@@ -321,7 +321,8 @@ fn run(ui_weak: slint::Weak<MainWindow>, msg_tx: Sender<Message>, msg_rx: Receiv
 
                         // The new current is always still present in the old window on an adjacent
                         // move, so select it there first. Selecting before removing also keeps us
-                        // from ever removing the currently playing item, which the receiver refuses.
+                        // from ever removing the currently playing item, which the receiver
+                        // refuses.
                         let select_idx = (id - o_lo) as u8;
                         if let Err(e) = device.queue_select(QueuePosition::Index(select_idx)) {
                             log::warn!("Failed to select queue item: {e}");

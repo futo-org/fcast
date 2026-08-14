@@ -430,8 +430,8 @@ impl<'a> MessageBuilder<'a> {
         )
     }
 
-    /// Serialize an `extra_metadata` map into a `[MetadataKV]` vector, sorted by
-    /// key so the output is deterministic.
+    /// Serialize an `extra_metadata` map into a `[MetadataKV]` vector, sorted
+    /// by key so the output is deterministic.
     fn build_extra_metadata(
         &mut self,
         extra: &HashMap<String, MetaValue>,
@@ -447,8 +447,9 @@ impl<'a> MessageBuilder<'a> {
         self.builder.create_vector(&kvs)
     }
 
-    /// Encode a seconds value as a wire `Time` (microseconds). Values a `Duration` cannot represent
-    /// (negative, NaN, infinite, or overflowing) are treated as unset.
+    /// Encode a seconds value as a wire `Time` (microseconds). Values a
+    /// `Duration` cannot represent (negative, NaN, infinite, or
+    /// overflowing) are treated as unset.
     fn time_from_secs_f64(secs: f64) -> Option<flat::Time> {
         let duration = Duration::try_from_secs_f64(secs).ok()?;
         Some(flat::Time::new(
@@ -523,8 +524,9 @@ impl<'a> MessageBuilder<'a> {
         create_msg!(self, Load, source_type: flat::MediaSource::Single, source: Some(item))
     }
 
-    /// Build a `Load` carrying a queue. Each item is paired with an optional `playback_duration`
-    /// (seconds). `None` plays the item to its natural end.
+    /// Build a `Load` carrying a queue. Each item is paired with an optional
+    /// `playback_duration` (seconds). `None` plays the item to its natural
+    /// end.
     pub fn load_queue(
         mut self,
         items: impl Iterator<Item = (MediaItem, Option<f64>)>,
@@ -940,8 +942,7 @@ mod tests {
 
     /// A Load's custom `extra_metadata` must round-trip through the peer-relay
     /// path (`from_play_stripped`), covering scalar, float, and nested list
-    /// values. This is the receiver-side guarantee the multi-sender FAST cases
-    /// assert end-to-end.
+    /// values.
     #[test]
     fn extra_metadata_survives_relay_strip() {
         let mut extra = HashMap::new();

@@ -1,9 +1,8 @@
-//! The `/stream` TCP data connection that carries the mirrored H.264 video.
+//! The `/stream` TCP data connection carrying the mirrored H.264 video.
 //!
 //! After `SETUP`, iOS opens a *second* TCP connection (distinct from the
-//! HTTP/RTSP control connection) to the `dataPort` we returned. Each packet is a
-//! fixed 128-byte header followed by `payload_size` bytes of body
-//! (`raop_rtp_mirror.c`):
+//! HTTP/RTSP control connection) to the `dataPort` we returned. Each packet is
+//! a fixed 128-byte header followed by `payload_size` body bytes:
 //!
 //! | Bytes  | Field           | Endian | Notes                                                                               |
 //! |--------|-----------------|--------|-------------------------------------------------------------------------------------|
@@ -13,7 +12,7 @@
 //! | 8–15   | `ntp_timestamp` | LE     | raw client clock (nanoseconds since boot)                                           |
 //! | 16–127 | metadata        | -      | for config packets: image dimensions as IEEE-754 floats                             |
 //!
-//! Config (`0x01`) bodies are unencrypted; video (`0x00`/`0x10`) bodies are
+//! Config (`0x01`) bodies are unencrypted. Video (`0x00`/`0x10`) bodies are
 //! AES-128-CTR encrypted (see [`crate::airplay::crypto`]).
 
 use std::sync::mpsc::Sender;
@@ -49,9 +48,8 @@ impl Header {
         }
     }
 
-    /// The packet timestamp as nanoseconds on the client's clock. The raw value
-    /// is NTP-format (high 32 bits seconds, low 32 bits fraction) with no fixed
-    /// epoch (`raop_ntp_timestamp_to_nano_seconds`).
+    /// Packet timestamp in ns on the client's clock: NTP-format (high 32 bits
+    /// seconds, low 32 fraction) with no fixed epoch.
     fn remote_pts_ns(&self) -> u64 {
         let seconds = (self.ntp_timestamp >> 32) & 0xffff_ffff;
         let fraction = self.ntp_timestamp & 0xffff_ffff;
@@ -78,10 +76,9 @@ impl ConfigDimensions {
     }
 }
 
-/// Accept the single `/stream` data connection on `listener`, decrypt and frame
-/// the video into Annex-B access units, and forward them on `au_tx` to the
-/// `airplaysrc` element. Returns when the client disconnects (dropping `au_tx`,
-/// which signals EOS to the source).
+/// Accept the single `/stream` data connection, decrypt and frame the video
+/// into Annex-B access units, and forward them on `au_tx`. Returns when the
+/// client disconnects, dropping `au_tx` to signal EOS to the source.
 #[instrument(skip_all, fields(device = %device_name))]
 pub async fn run(
     listener: TcpListener,
@@ -126,16 +123,14 @@ async fn read_loop(
     ntp_clock: &NtpClock,
 ) -> Result<()> {
     let mut packets: u64 = 0;
-    // SPS/PPS from the most recent config packet, pending prepend to the next
-    // (IDR) video frame - they share a timestamp (`raop_rtp_mirror.c`).
+    // SPS/PPS from the last config packet, prepended to the next (IDR) frame
+    // since they share a timestamp.
     let mut pending_sps_pps: Option<Vec<u8>> = None;
-    // Whether the client has signalled it stopped sending video (screen asleep).
-    // Tracked so we notify the app only on transitions.
+    // The client signalled it stopped sending video (screen asleep).
     let mut suspended = false;
     loop {
         let mut header_buf = [0u8; HEADER_LEN];
-        // read_exact errors with UnexpectedEof when the client closes the
-        // connection between packets - the normal end of a session.
+        // UnexpectedEof between packets is the normal end of a session.
         if let Err(err) = stream.read_exact(&mut header_buf).await {
             if err.kind() == std::io::ErrorKind::UnexpectedEof {
                 debug!(packets, "client closed mirror data connection");
@@ -150,12 +145,11 @@ async fn read_loop(
         packets += 1;
 
         match header.packet_type {
-            // SPS/PPS config - unencrypted; carries the image dimensions.
+            // SPS/PPS config, unencrypted. Carries the image dimensions.
             0x01 => {
                 let dims = ConfigDimensions::parse(&header_buf);
-                // The option byte flags whether the video stream is stopping
-                // (client sleeping) - 0x56/0x5e - or (re)starting - 0x16/0x1e
-                // (`raop_rtp_mirror.c`). Notify the app only on transitions.
+                // Option byte: 0x56/0x5e = video stopping (client sleeping),
+                // 0x16/0x1e = (re)starting. Notify only on transitions.
                 let sleeping = matches!(header.option, 0x56 | 0x5e);
                 info!(
                     width = dims.width,
@@ -180,8 +174,7 @@ async fn read_loop(
                     None => warn!(payload = header.payload_size, "unparseable config packet"),
                 }
             }
-            // Video - encrypted. Decrypt, convert to Annex-B, prepend any pending
-            // SPS/PPS, and forward the access unit.
+            // Video, encrypted.
             0x00 | 0x10 => {
                 cipher.decrypt(&mut payload);
                 if !h264::length_prefixed_to_annex_b(&mut payload) {
@@ -200,10 +193,7 @@ async fn read_loop(
                     None => payload,
                 };
                 let remote_pts_ns = header.remote_pts_ns();
-                // When the NTP clock has synced, log the end-to-end latency
-                // (remote capture time -> now) as a diagnostic. This does not
-                // drive PTS - tight A/V sync additionally needs the audio RTCP
-                // mapping and a running-time conversion (see `ntp`).
+                // End-to-end latency is a diagnostic only; it does not drive PTS.
                 let latency_ms = ntp_clock.remote_to_local_ns(remote_pts_ns).map(|local| {
                     let now = std::time::SystemTime::now()
                         .duration_since(std::time::UNIX_EPOCH)
@@ -223,7 +213,7 @@ async fn read_loop(
                     latency_ms,
                     "mirror access unit"
                 );
-                // A send error means the source element/pipeline is gone; end.
+                // A send error means the source element is gone, so end.
                 if au_tx.send(au).is_err() {
                     debug!("access-unit receiver dropped, ending stream reader");
                     return Ok(());
@@ -244,7 +234,6 @@ async fn read_loop(
 mod tests {
     use super::*;
 
-    /// Build a 128-byte header with the given fields, dimensions at 56/60.
     fn make_header(payload_size: u32, ptype: u8, option: u8, w: f32, h: f32) -> [u8; HEADER_LEN] {
         let mut buf = [0u8; HEADER_LEN];
         buf[0..4].copy_from_slice(&payload_size.to_le_bytes());
@@ -268,7 +257,6 @@ mod tests {
 
     #[test]
     fn converts_ntp_timestamp_to_ns() {
-        // 5 seconds + half a second (fraction = 2^31).
         let ntp = (5u64 << 32) | (1u64 << 31);
         let mut buf = [0u8; HEADER_LEN];
         buf[8..16].copy_from_slice(&ntp.to_le_bytes());

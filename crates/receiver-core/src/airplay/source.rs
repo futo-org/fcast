@@ -8,29 +8,25 @@ use url::Url;
 pub struct AccessUnit {
     /// Annex-B byte-stream (start-code-prefixed NALs).
     pub data: Vec<u8>,
-    /// The client's presentation timestamp in nanoseconds (its monotonic clock,
-    /// no fixed epoch). Used for relative PTS so playback follows the client's
-    /// frame cadence rather than network arrival jitter.
+    /// Presentation timestamp in ns on the client's monotonic clock (no fixed
+    /// epoch), used for relative PTS so playback follows the client's cadence.
     pub pts_ns: u64,
 }
 
 /// One decrypted AAC-ELD audio frame handed from the audio receiver to the
-/// source. It is timestamped on arrival by the audio appsrc.
+/// source; timestamped on arrival by the audio appsrc.
 pub struct AudioFrame {
     pub data: Vec<u8>,
 }
 
 /// Per-session state: the video/audio channels (each receiver claimed once by
-/// the Bin) and the abort handles of the session's background tasks, so the
-/// session can be force-ended from either the control-connection handler or the
-/// app.
+/// the Bin) and the session's task abort handles.
 ///
-/// Both channels are created up front at [`try_register`](AirPlayContext::try_register),
-/// even though the audio stream is usually set up later (on demand, when the
-/// client starts playing audio). This lets the Bin create its audio pad when it
-/// starts - a late audio `SETUP` then just begins feeding the existing pad,
-/// avoiding a risky dynamic pad-add on the live pipeline. `audio_tx` is retained
-/// so the audio receiver task can be handed a sender whenever it appears.
+/// Both channels are created up front at
+/// [`try_register`](AirPlayContext::try_register), even though audio is usually
+/// set up later, so the Bin can create its audio pad at start and a late audio
+/// `SETUP` just feeds the existing pad instead of forcing a dynamic pad-add on
+/// the live pipeline.
 #[derive(Default)]
 struct SessionEntry {
     video_rx: Option<std::sync::mpsc::Receiver<AccessUnit>>,
@@ -40,15 +36,7 @@ struct SessionEntry {
 }
 
 /// Shared registry mapping a mirror session's `streamConnectionID` to its
-/// [`SessionEntry`]. Cloneable; the clone shares state.
-///
-/// The registry also enforces the single-mirror policy: [`try_register`] refuses
-/// a second concurrent session, and it exposes [`end_session`] so the app can
-/// tear down a session it decides to refuse (e.g. when other media is already
-/// playing) by aborting its tasks - which closes the client's data connections.
-///
-/// [`try_register`]: Self::try_register
-/// [`end_session`]: Self::end_session
+/// [`SessionEntry`]; clones share state. Enforces the single-mirror policy.
 #[derive(Clone, Default)]
 pub struct AirPlayContext {
     sessions: Arc<Mutex<HashMap<u64, SessionEntry>>>,
@@ -67,11 +55,8 @@ impl AirPlayContext {
         Self::default()
     }
 
-    /// Register a new session, creating both the video and audio channels and
-    /// returning the sender the stream reader uses to deliver video access units
-    /// - or `None` if a *different* mirror session is already active (we serve
-    /// one mirror at a time). The receivers are held until the source Bin claims
-    /// them via [`take_video`](Self::take_video)/[`take_audio`](Self::take_audio).
+    /// Register a session and return the video access-unit sender, or `None` if
+    /// a *different* mirror session is already active (we serve one at a time).
     pub fn try_register(
         &self,
         stream_connection_id: u64,
@@ -89,10 +74,9 @@ impl AirPlayContext {
         Some(video_tx)
     }
 
-    /// A sender for the session's audio channel, handed to the audio receiver
-    /// task when the audio stream is set up (possibly long after the video). The
-    /// original sender is retained in the session so the audio pad stays alive
-    /// until teardown even if audio is never set up.
+    /// A sender for the session's audio channel. The original is retained in
+    /// the session so the audio pad stays alive even if audio is never set
+    /// up.
     pub fn audio_sender(
         &self,
         stream_connection_id: u64,
@@ -103,17 +87,15 @@ impl AirPlayContext {
             .and_then(|entry| entry.audio_tx.clone())
     }
 
-    /// Record a background task's abort handle against a session so
-    /// [`end_session`](Self::end_session) can stop it.
+    /// Record a task's abort handle so [`end_session`](Self::end_session) stops
+    /// it.
     pub fn add_abort(&self, stream_connection_id: u64, handle: tokio::task::AbortHandle) {
         if let Some(entry) = self.sessions.lock().get_mut(&stream_connection_id) {
             entry.aborts.push(handle);
         }
     }
 
-    /// End a session: abort its background tasks and free the slot. Idempotent -
-    /// a session already gone is a no-op. Called by the control handler on
-    /// TEARDOWN/drop and by the app when it refuses a mirror.
+    /// End a session: abort its tasks and free the slot. Idempotent.
     pub fn end_session(&self, stream_connection_id: u64) {
         if let Some(entry) = self.sessions.lock().remove(&stream_connection_id) {
             for handle in entry.aborts {
@@ -184,7 +166,7 @@ pub mod imp {
         )
     });
 
-    /// GStreamer context type used to hand the [`AirPlayContext`] to the element.
+    /// GStreamer context type carrying the [`AirPlayContext`] to the element.
     pub const AIRPLAY_CONTEXT: &str = "fcast.airplay.context";
 
     #[derive(Clone, glib::Boxed)]
@@ -222,8 +204,9 @@ pub mod imp {
         video_rx: Mutex<Option<Receiver<AccessUnit>>>,
         audio_appsrc: Mutex<Option<gst_app::AppSrc>>,
         audio_rx: Mutex<Option<Receiver<AudioFrame>>>,
-        /// `(running_time, remote_ns)` captured on the first video access unit,
-        /// mapping the client clock onto the live running-time timeline.
+        /// `(running_time, remote_ns)` from the first video access unit,
+        /// mapping the client clock onto the live running-time
+        /// timeline.
         base: Mutex<Option<(gst::ClockTime, u64)>>,
         /// Signals the pusher threads to exit.
         stop: Arc<AtomicBool>,
@@ -240,8 +223,7 @@ pub mod imp {
                 return Ok(ctx);
             }
             // The playbin bus uses a *sync* handler, so `set_context` runs
-            // synchronously inside this post - the context is available right
-            // after (see `crate::player`).
+            // synchronously inside this post; the context is available right after.
             let _ = self.obj().post_message(
                 gst::message::NeedContext::builder(AIRPLAY_CONTEXT)
                     .src(&*self.obj())
@@ -252,11 +234,9 @@ pub mod imp {
             })
         }
 
-        /// Map a client (remote) timestamp in nanoseconds onto the pipeline's
-        /// running-time PTS. The first access unit anchors the client clock to
-        /// the current running time; later frames are offset by their delta from
-        /// that anchor. Returns `None` (leave the buffer unstamped) if the
-        /// element has no clock yet.
+        /// Map a client timestamp (ns) onto running-time PTS, anchoring on the
+        /// first access unit. `None` (leave unstamped) if there is no clock
+        /// yet.
         fn compute_pts(&self, remote_ns: u64) -> Option<gst::ClockTime> {
             let mut base = self.base.lock();
             let (base_running, base_remote) = match *base {
@@ -271,9 +251,9 @@ pub mod imp {
             Some(base_running + gst::ClockTime::from_nseconds(delta))
         }
 
-        /// Build the appsrcs and ghost pads for the claimed session. Runs while
-        /// the Bin transitions `Null -> Ready`, so the pads exist before
-        /// `playbin3` links its decoders.
+        /// Build the appsrcs and ghost pads for the claimed session. Must run
+        /// on `Null -> Ready`, so the pads exist before `playbin3`
+        /// links its decoders.
         fn prepare(&self) -> Result<(), gst::ErrorMessage> {
             let session_id = self.session_id.lock().ok_or_else(|| {
                 gst::error_msg!(gst::ResourceError::Settings, ["No AirPlay URI set"])
@@ -307,8 +287,7 @@ pub mod imp {
                     .stream_type(gst_app::AppStreamType::Stream)
                     .is_live(true)
                     .format(gst::Format::Time)
-                    // Timestamp AAC frames on arrival; both streams share the
-                    // one pipeline clock, so this keeps rough A/V alignment.
+                    // Arrival-timestamped; both streams share one pipeline clock.
                     .do_timestamp(true)
                     .caps(&audio_caps())
                     .build();
@@ -326,9 +305,9 @@ pub mod imp {
             Ok(())
         }
 
-        /// Add an appsrc to the Bin and expose its src pad as a ghost pad named
-        /// after the `pad_name` template (both appsrcs' own pads are named
-        /// "src", so the ghost pads must be given distinct names).
+        /// Add an appsrc to the Bin, ghosting its src pad under the
+        /// non-wildcard `pad_name` template - both appsrcs' own pads
+        /// are named "src", so the ghost pads need distinct names.
         fn add_appsrc(
             &self,
             appsrc: &gst_app::AppSrc,
@@ -343,8 +322,6 @@ pub mod imp {
             let templ = bin.pad_template(pad_name).ok_or_else(|| {
                 gst::error_msg!(gst::CoreError::Pad, ["no pad template {pad_name}"])
             })?;
-            // The template names are non-wildcard ("video"/"audio"), so the
-            // ghost pad is named after them - unique within the Bin.
             let ghost =
                 gst::GhostPad::from_template_with_target(&templ, &src_pad).map_err(|_| {
                     gst::error_msg!(gst::CoreError::Pad, ["failed to create ghost pad"])
@@ -394,7 +371,7 @@ pub mod imp {
     }
 
     /// Drain video access units into the video appsrc, stamping PTS from the
-    /// client clock, until the channel closes or we are told to stop.
+    /// client clock.
     fn video_pusher(
         elem: &super::AirPlaySrc,
         appsrc: &gst_app::AppSrc,
@@ -424,8 +401,7 @@ pub mod imp {
         }
     }
 
-    /// Drain AAC-ELD frames into the audio appsrc (arrival-timestamped) until the
-    /// channel closes or we are told to stop.
+    /// Drain AAC-ELD frames into the audio appsrc (arrival-timestamped).
     fn audio_pusher(appsrc: &gst_app::AppSrc, rx: Receiver<AudioFrame>, stop: &Arc<AtomicBool>) {
         loop {
             if stop.load(Ordering::SeqCst) {
@@ -466,8 +442,6 @@ pub mod imp {
 
         fn pad_templates() -> &'static [gst::PadTemplate] {
             static TEMPLATES: LazyLock<Vec<gst::PadTemplate>> = LazyLock::new(|| {
-                // Both pads are created dynamically once the session's streams
-                // are known, so they are `Sometimes`.
                 let video = gst::PadTemplate::new(
                     "video",
                     gst::PadDirection::Src,
@@ -511,8 +485,7 @@ pub mod imp {
             let success = self.parent_change_state(transition)?;
 
             match transition {
-                // appsrcs are live in PAUSED; start pumping once the children
-                // have reached it.
+                // appsrcs are live in PAUSED; pump once the children reach it.
                 gst::StateChange::ReadyToPaused => self.start_pushers(),
                 gst::StateChange::PausedToReady => self.stop_pushers(),
                 _ => {}
@@ -603,8 +576,6 @@ mod tests {
             pts_ns: 42,
         })
         .unwrap();
-        // The audio channel exists from registration; a late audio stream just
-        // grabs a sender for it.
         let atx = ctx.audio_sender(7).expect("audio channel exists");
         atx.send(AudioFrame { data: vec![9, 9] }).unwrap();
 
@@ -623,11 +594,9 @@ mod tests {
             ctx.try_register(8).is_none(),
             "a second, different session must be refused"
         );
-        // Audio senders are only available for a registered session.
         assert!(ctx.audio_sender(8).is_none());
         assert!(ctx.audio_sender(7).is_some());
 
-        // After the session ends, a new one can start.
         ctx.end_session(7);
         assert!(
             ctx.try_register(8).is_some(),

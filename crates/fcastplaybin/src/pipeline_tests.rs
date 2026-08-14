@@ -1,0 +1,325 @@
+/// gst::init plus the elements the APPLICATION registers in production:
+/// the constructor builds fcastaudiostretch unconditionally, and these
+/// tests are their own application.
+fn test_init() {
+    static INIT: std::sync::Once = std::sync::Once::new();
+    INIT.call_once(|| {
+        gst::init().unwrap();
+        fcast_gst_elements::fcastaudiostretch::plugin_init()
+            .expect("registering fcastaudiostretch");
+    });
+}
+
+use super::*;
+use std::time::Instant;
+
+use gst::prelude::*;
+
+use crate::gapless::SwapState;
+
+/// Encode `seconds` of silence to an MP3 file (audio/mpeg, the real fcomp
+/// container). Done once per source so playback can go through the real
+/// `urisourcebin` topology below.
+fn make_mp3_file(path: &std::path::Path, seconds: f64) {
+    // audiotestsrc defaults: 44100 Hz, 1024 samples/buffer.
+    let num_buffers = (seconds * 44100.0 / 1024.0).round() as i32;
+    let src = gst::ElementFactory::make("audiotestsrc")
+        .property("num-buffers", num_buffers)
+        .property("is-live", false)
+        .property_from_str("wave", "silence")
+        .build()
+        .unwrap();
+    let conv = gst::ElementFactory::make("audioconvert").build().unwrap();
+    let enc = gst::ElementFactory::make("lamemp3enc").build().unwrap();
+    let sink = gst::ElementFactory::make("filesink")
+        .property("location", path.to_str().unwrap())
+        .build()
+        .unwrap();
+    let pipeline = gst::Pipeline::new();
+    pipeline.add_many([&src, &conv, &enc, &sink]).unwrap();
+    gst::Element::link_many([&src, &conv, &enc, &sink]).unwrap();
+    pipeline.set_state(gst::State::Playing).unwrap();
+    let bus = pipeline.bus().unwrap();
+    while let Some(msg) = bus.timed_pop(gst::ClockTime::from_seconds(10)) {
+        match msg.view() {
+            gst::MessageView::Eos(_) => break,
+            gst::MessageView::Error(err) => panic!("mp3 encode failed: {err:?}"),
+            _ => {}
+        }
+    }
+    pipeline.set_state(gst::State::Null).unwrap();
+}
+
+/// A unique temp path under the test dir (no wall clock needed).
+fn temp_mp3(tag: &str) -> std::path::PathBuf {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let n = SEQ.fetch_add(1, Ordering::Relaxed);
+    std::env::temp_dir().join(format!(
+        "fcastplaybin-gapless-{}-{tag}-{n}.mp3",
+        std::process::id()
+    ))
+}
+
+/// The real gapless source: `urisourcebin` over a file URI with
+/// `parse-streams`, exactly what `media_source::build_uri_source_with_head`
+/// builds (so decodebin3 gets the stream collection urisourcebin forwards).
+fn uri_source(path: &std::path::Path) -> gst::Element {
+    gst::ElementFactory::make("urisourcebin")
+        .property("uri", format!("file://{}", path.display()))
+        .property("parse-streams", true)
+        .property("use-buffering", true)
+        .build()
+        .unwrap()
+}
+
+fn fake_audio_sinks() -> Sinks {
+    Sinks {
+        video: None,
+        audio: AudioSink::Factory(Box::new(|| {
+            Ok(gst::ElementFactory::make("fakesink")
+                .property("sync", true)
+                .build()?)
+        })),
+    }
+}
+
+/// Gapless handoff smoke test, end to end on a real pipeline: play item A
+/// through `urisourcebin` (the field's gapless source topology), pre-arm
+/// item B, and assert B plays to ITS end rather than being cut off at A's.
+/// Guards the generic swap path. NOTE: this passes for `file://`/`filesrc`
+/// sources. The FIELD bug (an fcomp item cut at the previous item's
+/// declared duration) does NOT reproduce here, which localizes it to
+/// `fcompsrc`'s size/segment/EOS behavior, not the swap itself (a
+/// fcompsrc + fake-companion repro belongs in receiver-core).
+#[test]
+fn gapless_swap_plays_the_next_item_to_its_end() {
+    test_init();
+    let playbin = FcastPlaybin::new(fake_audio_sinks()).unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    playbin.set_event_handler(None, move |event, _generation| match event {
+        PlaybinEvent::PreparedActivated => {
+            let _ = tx.send(Ev::Activated);
+        }
+        PlaybinEvent::EndOfStream => {
+            let _ = tx.send(Ev::Eos);
+        }
+        _ => {}
+    });
+
+    // A is long enough that decodebin3's multiqueue and the decoupling
+    // audio queue cannot swallow it whole, so its EOS is PACED to near its
+    // end (mirroring a real track). Pre-arming early then lands before
+    // A's EOS reaches the output-side hold, the order the field hits.
+    let a_secs = 5.0;
+    let b_secs = 2.0;
+    let a_path = temp_mp3("a");
+    let b_path = temp_mp3("b");
+    make_mp3_file(&a_path, a_secs);
+    make_mp3_file(&b_path, b_secs);
+
+    playbin
+        .load(MediaInput::Element(uri_source(&a_path)), StartPoint::Live)
+        .unwrap();
+    // Pre-arm B BEFORE A's end-of-stream can reach the output hold. The
+    // field pre-arms tens of seconds early; a short test source's input
+    // drains at load (its parsed data fits decodebin3's multiqueue whole),
+    // so the pre-arm has to be up front to win that race. `pending` is
+    // then set when A's EOS drains out, which is what must hold it back.
+    playbin.prepare_next_async(MediaInput::Element(uri_source(&b_path)));
+    let t0 = Instant::now();
+    playbin.play().unwrap();
+
+    let mut activated = false;
+    let eos_elapsed = loop {
+        match rx.recv_timeout(Duration::from_secs(15)) {
+            Ok(Ev::Activated) => activated = true,
+            Ok(Ev::Eos) => break Some(t0.elapsed()),
+            Err(_) => break None,
+        }
+    };
+    let _ = playbin.stop();
+    let _ = std::fs::remove_file(&a_path);
+    let _ = std::fs::remove_file(&b_path);
+
+    let eos_elapsed = eos_elapsed.expect("pipeline never reached EOS (wedged)");
+    assert!(
+        activated,
+        "the prepared item never activated (handoff missed)"
+    );
+    // Gapless success plays A then B back to back (~7s). The bug cuts B off
+    // at A's end, so EOS lands near A's length (~5s) instead. The 6s
+    // threshold sits between the two with margin for buffering slack.
+    assert!(
+        eos_elapsed >= Duration::from_millis(6000),
+        "playback ended after {eos_elapsed:?}, expected ~{}s (A+B): the \
+         next item was cut off at the previous item's segment end",
+        a_secs + b_secs,
+    );
+}
+
+#[derive(PartialEq)]
+enum Ev {
+    Activated,
+    Eos,
+}
+
+/// The duration-refresh edge, end to end through the real bus
+/// translation: a `DURATION_CHANGED` must reach the caller as
+/// [`PlaybinEvent::DurationChanged`] (its cue to re-query), and must be
+/// dropped while a performed swap waits to activate, where the query would
+/// be answered by the successor item.
+///
+/// Posting the message is the deterministic trigger: translation is a bus
+/// SYNC handler, so `post` runs it inline on this thread and the channel is
+/// already settled when it returns. The message carries no payload, so a
+/// synthesized one is indistinguishable from a demuxer's (which is the
+/// whole point of the no-payload contract).
+#[test]
+fn duration_changed_reaches_the_caller_except_mid_activation() {
+    test_init();
+    let playbin = FcastPlaybin::new(fake_audio_sinks()).unwrap();
+
+    let (tx, rx) = mpsc::channel();
+    playbin.set_event_handler(None, move |event, generation| {
+        if matches!(event, PlaybinEvent::DurationChanged) {
+            let _ = tx.send(generation);
+        }
+    });
+
+    let bus = playbin.bus();
+    bus.post(gst::message::DurationChanged::new()).unwrap();
+    rx.try_recv()
+        .expect("a duration-changed on the bus must reach the caller");
+
+    // The swapped-with-pending-activation window (the same predicate the
+    // cancel refusal uses).
+    *playbin.inner.swap_gate.state.lock() = SwapState {
+        pending: Some(42),
+        swapped: true,
+        ..Default::default()
+    };
+    bus.post(gst::message::DurationChanged::new()).unwrap();
+    assert!(
+        rx.try_recv().is_err(),
+        "duration-changed must be dropped while a performed swap waits to activate: \
+         upstream answers for the successor item there"
+    );
+
+    // Leave the gate as found: teardown reads it.
+    *playbin.inner.swap_gate.state.lock() = SwapState::default();
+    let _ = playbin.stop();
+}
+
+/// One kept cue, shaped like what `Inner::park_text_stream`'s appsink hands to
+/// the ring, i.e. a buffer with a pts, text caps and a time segment.
+fn parked_sample(pts: gst::ClockTime) -> gst::Sample {
+    let mut buffer = gst::Buffer::from_slice(b"a cue from the PREVIOUS item".as_slice());
+    {
+        let buffer = buffer.get_mut().expect("a fresh buffer is writable");
+        buffer.set_pts(pts);
+        buffer.set_duration(gst::ClockTime::from_seconds(2));
+    }
+    gst::Sample::builder()
+        .buffer(&buffer)
+        .caps(
+            &gst::Caps::builder("text/x-raw")
+                .field("format", "utf8")
+                .build(),
+        )
+        .segment(&gst::FormattedSegment::<gst::ClockTime>::new())
+        .build()
+}
+
+/// A LOAD must not leave the previous item's text-park memos behind.
+///
+/// Both maps key on the decodebin3 output pad NAME (`text_0`, ...), which is
+/// per-ELEMENT, so every load's fresh core hands out the same names. A leftover
+/// `parked_text_cues` ring is replayed into the NEW item at its first join, and
+/// a leftover `suppress_text_clear` makes the new branch skip its own opening
+/// `Clear`, the one signal that says the previous item's cues are stale.
+///
+/// `unroute_db3_pad` clears them on the normal path, so the case under test is
+/// `Inner::teardown_core`'s straggler entry, where pad-removed never came. The
+/// entries are staged directly rather than parked for real (the trick
+/// `Inner::stage_text_caps_loss` uses), since what is under test is the RESET.
+#[test]
+fn a_load_forgets_the_previous_items_text_park() {
+    test_init();
+    let playbin = FcastPlaybin::new(fake_audio_sinks()).unwrap();
+    let path = temp_mp3("park-reset");
+    make_mp3_file(&path, 1.0);
+
+    // The previous item's leftovers, under the name the NEXT core reuses.
+    playbin
+        .inner
+        .parked_text_cues
+        .lock()
+        .entry("text_0".to_string())
+        .or_default()
+        .push_back((parked_sample(gst::ClockTime::ZERO), Instant::now()));
+    playbin
+        .inner
+        .suppress_text_clear
+        .lock()
+        .insert("text_0".to_string());
+
+    playbin
+        .load(MediaInput::Element(uri_source(&path)), StartPoint::Live)
+        .unwrap();
+
+    let parked = playbin.inner.parked_text_cues.lock().len();
+    let suppressed = playbin.inner.suppress_text_clear.lock().len();
+    let _ = playbin.stop();
+    let _ = std::fs::remove_file(&path);
+
+    assert_eq!(
+        parked, 0,
+        "the load left a text park keyed by a pad name the fresh core reuses; \
+         its cues replay into the new item"
+    );
+    assert_eq!(
+        suppressed, 0,
+        "the load left a clear-suppression keyed by a pad name the fresh core \
+         reuses; the new item's branch swallows its own opening Clear"
+    );
+}
+
+/// The watchdog end to end, without FAST or media: attach a URI that
+/// never produces a stream (the pipeline sits in NULL, so urisourcebin
+/// never starts) and expect the crate to detach it and report
+/// `ExternalSubtitleFailed` on its own.
+#[test]
+fn watchdog_fails_a_subtitle_that_never_materializes() {
+    test_init();
+    let playbin = FcastPlaybin::new(Sinks {
+        video: None,
+        audio: AudioSink::Auto,
+    })
+    .unwrap();
+    playbin.set_external_sub_timeout(Duration::from_millis(200));
+
+    let (tx, rx) = mpsc::channel();
+    playbin.set_event_handler(None, move |event, _generation| {
+        if let PlaybinEvent::ExternalSubtitleFailed { id } = event {
+            let _ = tx.send(id);
+        }
+    });
+
+    let id = playbin
+        .attach_subtitle("file:///nonexistent/fcastplaybin-watchdog-test.srt")
+        .unwrap();
+    assert!(playbin.has_external_subtitles());
+
+    let failed = rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("watchdog should fail the stream-less input");
+    assert_eq!(failed, id);
+
+    // The crate detached the input itself: nothing external remains and
+    // a caller-side detach of the reported id is a (harmless) error.
+    assert!(!playbin.has_external_subtitles());
+    assert!(playbin.subtitle_stream_ids(id).is_empty());
+    assert!(playbin.detach_subtitle(id).is_err());
+}

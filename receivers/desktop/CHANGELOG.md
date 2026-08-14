@@ -11,6 +11,9 @@
  - Wayland subsurface video sink (experimental, enable with `FCAST_VIDEO_SINK=wayland-subsurface`)
  - Debug inspector view (Ctrl+Shift+I)
  - Enable system tray icon on macOS
+ - Bitmap subtitles now render: Blu-ray PGS, DVD (VOBSUB) and DVB subtitle
+   tracks are decoded and drawn instead of being reported as unsupported. Set
+   `FCAST_NO_BITMAP_SUBS=1` to go back to the previous behaviour.
 
 ### Fixes
 

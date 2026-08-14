@@ -122,7 +122,7 @@ impl Drop for OpenGL {
 pub struct Vulkan {
     pub vk: pl_vulkan,
     inst: pl_vk_inst,
-    /// The Vulkan loader; its symbols back the instance/device, so it must outlive them.
+    /// The loader's symbols back the instance/device, so it must outlive them.
     _loader: libloading::Library,
 }
 
@@ -135,10 +135,11 @@ fn makedev(major: u64, minor: u64) -> u64 {
         | (minor & 0x0000_00ff)
 }
 
-/// Find the physical device whose DRM primary or render node is `target` (a `dev_t`), e.g. the
-/// device a Wayland compositor advertised via dmabuf feedback. On multi-GPU systems letting
-/// libplacebo pick a device instead can select a GPU whose exported dmabufs (tiling modifiers)
-/// the compositor cannot import.
+/// Find the physical device whose DRM primary or render node is `target` (a
+/// `dev_t`), e.g. the device a Wayland compositor advertised via dmabuf
+/// feedback. On multi-GPU systems letting libplacebo pick a device instead can
+/// select a GPU whose exported dmabufs (tiling modifiers) the compositor cannot
+/// import.
 #[cfg(feature = "vulkan")]
 unsafe fn find_phys_device_by_drm(inst: pl_vk_inst, target: u64) -> Option<VkPhysicalDevice> {
     unsafe {
@@ -165,8 +166,9 @@ unsafe fn find_phys_device_by_drm(inst: pl_vk_inst, target: u64) -> Option<VkPhy
             let mut props: VkPhysicalDeviceProperties2 = std::mem::zeroed();
             props.sType = VkStructureType::VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2;
             props.pNext = &mut drm as *mut _ as *mut c_void;
-            // Drivers skip unknown pNext structs, so this stays zeroed (hasPrimary/hasRender
-            // false) when VK_EXT_physical_device_drm is unsupported.
+            // Drivers skip unknown pNext structs, so this stays zeroed
+            // (hasPrimary/hasRender false) when VK_EXT_physical_device_drm is
+            // unsupported.
             get_props2(device, &mut props);
 
             let matches = (drm.hasPrimary != 0
@@ -186,9 +188,10 @@ unsafe fn find_phys_device_by_drm(inst: pl_vk_inst, target: u64) -> Option<VkPhy
 
 #[cfg(feature = "vulkan")]
 impl Vulkan {
-    /// Create a Vulkan-backed libplacebo context. When `drm_device` (a `dev_t`) is given, the
-    /// physical device is chosen by matching its DRM node. Pass the compositor's main device to
-    /// guarantee exported dmabufs are importable on multi-GPU systems.
+    /// Create a Vulkan-backed libplacebo context. When `drm_device` (a `dev_t`)
+    /// is given, the physical device is chosen by matching its DRM node.
+    /// Pass the compositor's main device to guarantee exported dmabufs are
+    /// importable on multi-GPU systems.
     pub fn new(log: &Log, drm_device: Option<u64>) -> Option<Self> {
         let loader = ["libvulkan.so.1", "libvulkan.so"]
             .into_iter()

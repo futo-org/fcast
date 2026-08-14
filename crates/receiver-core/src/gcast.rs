@@ -82,7 +82,6 @@ impl State {
     }
 }
 
-// TODO: share with sender sdk
 async fn write_channel_message<T>(
     writer: &mut tokio::io::WriteHalf<TlsStream<TcpStream>>,
     source_id: impl ToString,
@@ -106,7 +105,6 @@ where
     if encoded_len > MAX_MSG_SIZE {
         bail!("Message exceeded maximum length: {encoded_len} > {MAX_MSG_SIZE}");
     }
-    // TODO: reuse buffers
     let mut write_buffer = vec![0u8; MAX_MSG_SIZE];
     cast_message.encode(&mut (&mut write_buffer[..encoded_len] as &mut [u8]))?;
     let serialized_size_be = (encoded_len as u32).to_be_bytes();
@@ -263,8 +261,6 @@ async fn handle_message(
                     );
                     let mut status = state.media_status.write();
                     status.media = Some(media);
-                    // status.player_state = google_cast_protocol::PlayerState::Buffering;
-                    // status.idle_reason = None;
                 }
                 namespaces::Media::Seek {
                     current_time: Some(time),
@@ -304,9 +300,7 @@ async fn handle_message(
                         .msg_tx
                         .operation(origin, crate::Operation::SetSpeed(playback_rate as f32));
                 }
-                // TODO: implement support for these
-                // namespaces::Media::QueueLoad { request_id, items, repeat_mode, start_index, queue_type } => todo!(),
-                // namespaces::Media::QueueUpdate { request_id, media_session_id, jump } => todo!(),
+                // TODO: implement the queue namespace (QueueLoad / QueueUpdate)
                 _ => (),
             }
         }
@@ -473,8 +467,7 @@ pub async fn run_server(
     loop {
         tokio::select! {
             res = listener_stream.select_next_some() => {
-                // Same reasoning as the FCast accept loop: a failed accept is per-connection and
-                // must not end the Chromecast server.
+                // A failed accept is per-connection and must not end the Chromecast server.
                 let (stream, _addr) = match res {
                     Ok(accepted) => accepted,
                     Err(err) => {

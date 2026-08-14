@@ -120,7 +120,8 @@ pub enum _PlaybackState {
     Buffering,
     Playing,
     Paused,
-    /// The media item played through to its natural end (distinct from being stopped).
+    /// The media item played through to its natural end (distinct from being
+    /// stopped).
     Ended,
 }
 
@@ -622,8 +623,8 @@ impl CastingDevice {
 
     /// Load new media.
     ///
-    /// `progress_update_interval_millis`, when set, is applied along with the load (see
-    /// [`Self::set_progress_update_interval`]).
+    /// `progress_update_interval_millis`, when set, is applied along with the
+    /// load (see [`Self::set_progress_update_interval`]).
     #[frb(sync)]
     pub fn load(
         &self,
@@ -633,9 +634,9 @@ impl CastingDevice {
         device_error_converter!(self.0.load(request, progress_update_interval_millis))
     }
 
-    /// Request how often the device reports playback progress, in milliseconds. Settable in any
-    /// playback state and persists for the rest of the connection. Values are floored to 100 ms.
-    /// FCast v4 and Chromecast.
+    /// Request how often the device reports playback progress, in milliseconds.
+    /// Settable in any playback state and persists for the rest of the
+    /// connection. Values are floored to 100 ms. FCast v4 and Chromecast.
     #[frb(sync)]
     pub fn set_progress_update_interval(
         &self,
@@ -717,7 +718,8 @@ impl CastingDevice {
         self.0.set_port(port);
     }
 
-    /// Select (or, with `id = None`, disable) a track of the given type. FCast v4 only.
+    /// Select (or, with `id = None`, disable) a track of the given type. FCast
+    /// v4 only.
     #[frb(sync)]
     pub fn change_track(
         &self,

@@ -8,13 +8,10 @@ use tracing::warn;
 
 use crate::user_agent;
 
-/// How much of the cached bytes each `need-data` pull hands downstream. Big
-/// enough to keep the demuxer fed without thrashing the callback, small
-/// enough that a seek lands promptly.
+/// Bytes handed downstream per `need-data` pull.
 const BYTES_CHUNK: u64 = 256 * 1024;
 
-/// Apply request headers + a browser user-agent to an `fcasthttpsrc`. Shared
-/// by the playbin3 element-setup hook and the fcast per-load source builder.
+/// Apply request headers + a browser user-agent to an `fcasthttpsrc`.
 pub fn configure_http_source(elem: &gst::Element, headers: Option<&HashMap<String, String>>) {
     let mut did_set_user_agent = false;
     if let Some(headers) = headers {
@@ -34,11 +31,9 @@ pub fn configure_http_source(elem: &gst::Element, headers: Option<&HashMap<Strin
     }
 }
 
-/// Build a urisourcebin for an HTTP/file/DASH/HLS/`data:` URI, wired to apply
-/// `headers` to its `fcasthttpsrc` as that element is created, per-load,
-/// scoped to THIS urisourcebin, so there is no global header side channel.
-/// urisourcebin parses its streams (`parse-streams`), so its src pads feed
-/// decodebin3 directly.
+/// Build a urisourcebin for an HTTP/file/DASH/HLS/`data:` URI, applying
+/// `headers` per-load to THIS urisourcebin's `fcasthttpsrc` (no global side
+/// channel). It parses its streams, so its src pads feed decodebin3 directly.
 pub fn build_uri_source(
     uri: &str,
     headers: Option<HashMap<String, String>>,
@@ -46,18 +41,16 @@ pub fn build_uri_source(
     build_uri_source_with_head(uri, headers, None)
 }
 
-/// A prefetched head of the resource (the queue cache's partial entry),
-/// injected into the per-load source element so playback starts from memory
-/// and only the remainder streams.
+/// A prefetched head of the resource, injected into the per-load source
+/// element so playback starts from memory and only the remainder streams.
 pub struct PreloadedHead {
     pub bytes: Bytes,
-    /// Total resource size. Required for the http source (it must know the
-    /// size before its first request); fcomp learns its size itself.
+    /// Total resource size; the http source needs it up front, fcomp does not.
     pub total: Option<u64>,
 }
 
-/// `build_uri_source` plus an optional prefetched head handed to the source
-/// element that urisourcebin creates (fcasthttpsrc or fcompsrc).
+/// `build_uri_source` plus an optional prefetched head for the source element
+/// urisourcebin creates (fcasthttpsrc or fcompsrc).
 pub fn build_uri_source_with_head(
     uri: &str,
     headers: Option<HashMap<String, String>>,
@@ -74,8 +67,7 @@ pub fn build_uri_source_with_head(
             match elem.factory().map(|f| f.name()).as_deref() {
                 Some("fcasthttpsrc") => {
                     configure_http_source(elem, headers.as_ref());
-                    // http needs the total up front, without it the head is
-                    // unusable here and the source just streams normally.
+                    // http needs the total up front; without it the head is unusable.
                     if let Some(head) = head.as_ref()
                         && let Some(total) = head.total
                     {
@@ -101,40 +93,24 @@ pub fn build_uri_source_with_head(
     Ok(usb)
 }
 
-/// Build a source that serves an already-prefetched queue item straight from
-/// memory, so a cached item plays without hitting the network again. The
-/// `bytes` (a refcounted `bytes::Bytes`, cheap to hold) are fed through a
-/// seekable `appsrc` that answers byte-duration and seek queries like an
-/// http source, then parsebin-wrapped so fcastplaybin receives PARSED streams
+/// Build a source that serves an already-prefetched item from memory: a
+/// seekable `appsrc`, parsebin-wrapped so its pads carry PARSED streams
 /// exactly as urisourcebin's `parse-streams=true` would produce.
 pub fn build_bytes_source(bytes: Bytes) -> Result<gst::Element> {
     let appsrc = build_bytes_appsrc(bytes);
     wrap_with_parsebin(appsrc.upcast(), "fcast-bytes-source")
 }
 
-/// Construct just the seekable `appsrc` over `bytes`, without the
-/// parsebin wrap. Split out so it can be unit-tested for byte-accurate
-/// readback independent of typefind/parsebin (which cannot type arbitrary
-/// bytes). `build_bytes_source` is the only production caller and always
-/// wraps the result.
-///
-/// The source is a seekable BYTES source sized to the buffer, so downstream
-/// duration-in-bytes and seek queries behave like a file. `need-data` pushes
-/// the next `BYTES_CHUNK` slice from the current offset (a zero-copy
-/// refcounted `Bytes::slice`, never a copy of the whole buffer) and signals
-/// end-of-stream once the offset reaches the end. `seek-data` just moves the
-/// offset. Both callbacks share the offset behind a `parking_lot::Mutex`.
+/// The seekable BYTES `appsrc` over `bytes`, sized to the buffer so downstream
+/// duration-in-bytes and seek queries behave like a file.
 fn build_bytes_appsrc(bytes: Bytes) -> gst_app::AppSrc {
     let len = bytes.len() as u64;
-    // Shared read cursor. seek-data moves it, need-data advances it.
     let offset = Arc::new(Mutex::new(0u64));
 
     let appsrc = gst_app::AppSrc::builder()
         .format(gst::Format::Bytes)
-        // Seekable, not RandomAccess: seekable is push mode with seek-data,
-        // matching how every network source here behaves. RandomAccess
-        // advertises pull scheduling, which collides with the push-based
-        // feeding when parsebin's typefind activates the chain in pull mode.
+        // Seekable, not RandomAccess: RandomAccess advertises pull scheduling,
+        // which collides with the push-based feeding here.
         .stream_type(gst_app::AppStreamType::Seekable)
         .size(len as i64)
         .build();
@@ -146,17 +122,13 @@ fn build_bytes_appsrc(bytes: Bytes) -> gst_app::AppSrc {
                 let offset = offset.clone();
                 move |appsrc, _hint| {
                     let mut pos = offset.lock();
-                    // At or past the end (including after a seek beyond it):
-                    // signal EOS and stop. A later seek back in-range
-                    // resumes cleanly on the next need-data.
                     if *pos >= len {
                         let _ = appsrc.end_of_stream();
                         return;
                     }
                     let start = *pos;
                     let end = (start + BYTES_CHUNK).min(len);
-                    // Zero-copy: slice() bumps the refcount, from_slice wraps
-                    // the Bytes as the buffer's memory owner without copying.
+                    // Zero-copy: slice bumps the refcount, from_slice takes ownership.
                     let chunk = bytes.slice(start as usize..end as usize);
                     let mut buffer = gst::Buffer::from_slice(chunk);
                     {
@@ -165,8 +137,8 @@ fn build_bytes_appsrc(bytes: Bytes) -> gst_app::AppSrc {
                         buffer.set_offset_end(end);
                     }
                     *pos = end;
-                    // Release the lock before pushing so a re-entrant
-                    // need-data from downstream cannot deadlock.
+                    // MUST release the lock before pushing: a re-entrant
+                    // need-data from downstream would otherwise deadlock.
                     drop(pos);
                     match appsrc.push_buffer(buffer) {
                         Ok(_) => {}
@@ -178,8 +150,8 @@ fn build_bytes_appsrc(bytes: Bytes) -> gst_app::AppSrc {
             .seek_data({
                 let offset = offset.clone();
                 move |_appsrc, new_offset| {
-                    // Accept any offset. An out-of-range value simply makes
-                    // the next need-data emit EOS, no panic and no busy loop.
+                    // Any offset is accepted: an out-of-range one just makes
+                    // the next need-data emit EOS.
                     *offset.lock() = new_offset;
                     true
                 }
@@ -190,9 +162,8 @@ fn build_bytes_appsrc(bytes: Bytes) -> gst_app::AppSrc {
     appsrc
 }
 
-/// Build the WHEP source directly (no `fcastwhep://` urisourcebin dispatch).
-/// `fcastwhepsrcbin` is a URIHandler keyed on the `fcastwhep://` scheme, its
-/// endpoint is set directly here. It emits RTP, so it is parsebin-wrapped.
+/// Build the WHEP source directly. `fcastwhepsrcbin` is a URIHandler keyed on
+/// the `fcastwhep://` scheme. It emits RTP, so it is parsebin-wrapped.
 pub fn build_whep_source(http_url: &str) -> Result<gst::Element> {
     let src = gst::ElementFactory::make("fcastwhepsrcbin")
         .build()
@@ -205,10 +176,8 @@ pub fn build_whep_source(http_url: &str) -> Result<gst::Element> {
     wrap_with_parsebin(src, "fcast-whep-source")
 }
 
-/// Build the fwebrtc source directly, with the signalling channel handed over
-/// as a typed property (a live object that cannot travel through a URI, this
-/// is why fwebrtc MUST be a directly-constructed element). Emits RTP, so it is
-/// parsebin-wrapped.
+/// Build the fwebrtc source directly: its signalling channel is a live object
+/// that cannot travel through a URI. Emits RTP, so it is parsebin-wrapped.
 pub fn build_fwebrtc_source<C: Into<gst::glib::Value>>(channel: C) -> Result<gst::Element> {
     let src = gst::ElementFactory::make("fwebrtcsrc")
         .build()
@@ -217,9 +186,8 @@ pub fn build_fwebrtc_source<C: Into<gst::glib::Value>>(channel: C) -> Result<gst
     wrap_with_parsebin(src, "fcast-fwebrtc-source")
 }
 
-/// Build the AirPlay mirror source directly (no `airplay://` urisourcebin
-/// dispatch). `airplaysrc` emits encoded H.264/AAC, so decodebin3 decodes it
-/// directly, no parsebin wrap needed.
+/// Build the AirPlay mirror source directly. `airplaysrc` emits encoded
+/// H.264/AAC, so decodebin3 takes it without a parsebin wrap.
 #[cfg(feature = "airplay")]
 pub fn build_airplay_mirror_source(mirror_uri: &str) -> Result<gst::Element> {
     let src = gst::ElementFactory::make("airplaysrc")
@@ -233,14 +201,10 @@ pub fn build_airplay_mirror_source(mirror_uri: &str) -> Result<gst::Element> {
 }
 
 /// Wrap a source that emits RTP (or otherwise unparsed) streams so its output
-/// pads carry PARSED streams, mirroring urisourcebin's `parse-streams`: for
-/// each dynamic source pad, spin up a `parsebin` and ghost its parsed output
-/// out of the returned bin. Used for the WHEP/fwebrtc RTP sources, which
-/// today reach decodebin3 through urisourcebin's internal parsebin.
+/// pads carry PARSED streams, mirroring urisourcebin's `parse-streams`.
 ///
-/// `name` is a PREFIX: the bin gets a unique suffix. Two of these can share
-/// one pipeline (a gapless pre-arm adds the next item's source while the
-/// current one still plays), and GStreamer rejects duplicate child names.
+/// `name` is a PREFIX: the bin gets a unique suffix, because two of these can
+/// share one pipeline and GStreamer rejects duplicate child names.
 fn wrap_with_parsebin(source: gst::Element, name: &str) -> Result<gst::Element> {
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -264,8 +228,8 @@ fn wrap_with_parsebin(source: gst::Element, name: &str) -> Result<gst::Element> 
     Ok(bin.upcast())
 }
 
-/// Add a `parsebin` for one source pad and ghost its parsed output pads out of
-/// `bin` (so the enclosing pipeline links them to decodebin3).
+/// Add a `parsebin` for one source pad and ghost its parsed output out of
+/// `bin`.
 fn attach_parsebin(bin: &gst::Bin, srcpad: &gst::Pad) -> Result<()> {
     let parsebin = gst::ElementFactory::make("parsebin")
         .build()
@@ -310,16 +274,13 @@ mod tests {
         static INIT: Once = Once::new();
         INIT.call_once(|| {
             gst::init().unwrap();
-            // Test A decodes a GIF, which decodebin3 autoplugs to fimagedec.
+            // decodebin3 autoplugs fimagedec for the GIF test.
             crate::imagedec::plugin_init().unwrap();
         });
     }
 
-    // --- gapless fcomp handoff repro (the musikkspiller cutoff) --------------
-
-    /// Encode `seconds` of silence to MP3 (audio/mpeg, the fcomp container) at
-    /// a fixed CBR `bitrate` (kbps) and return the bytes, so a fake companion
-    /// provider can serve them.
+    /// `seconds` of silence encoded to CBR MP3 (audio/mpeg, the fcomp
+    /// container), for a fake companion provider to serve.
     fn make_mp3_bytes(seconds: f64) -> Bytes {
         make_mp3_bytes_at(seconds, 128)
     }
@@ -368,9 +329,8 @@ mod tests {
     }
 
     /// Register a fake companion provider on `ctx` serving `(resource_id,
-    /// bytes, reported_size)`. A `reported_size` larger than `bytes.len()`
-    /// reproduces the field's byte-size overshoot (declared duration > real
-    /// audio); equal is the honest case.
+    /// bytes, reported_size)`; `reported_size` > `bytes.len()` fakes a
+    /// byte-size overshoot.
     fn spawn_fake_provider(
         ctx: &crate::fcast::CompanionContext,
         resources: Vec<(u32, Bytes, u64)>,
@@ -420,7 +380,9 @@ mod tests {
                                 request_id: 0,
                                 part: 0,
                                 total_parts: 1,
-                                result: companion::GetResourceResult::Success(chunk),
+                                result: companion::GetResourceResult::Success(bytes::Bytes::from(
+                                    chunk,
+                                )),
                             });
                         }
                     }
@@ -429,19 +391,9 @@ mod tests {
             .unwrap();
     }
 
-    /// Gapless handoff between two `fcomp://` items (fcompsrc + preloaded head
-    /// via `build_uri_source_with_head`, the real field source) through a real
+    /// Gapless handoff between two `fcomp://` items through a real
     /// `FcastPlaybin`: the next item must play to ITS end, not be cut off at
-    /// the previous item's. Guards the fcomp gapless path end to end.
-    ///
-    /// NOTE: this reaches the exact source topology of the musikkspiller cutoff
-    /// but does NOT reproduce it (B plays fully) for any synthesizable A --
-    /// honest sizing, zero-padded byte extent, or a low-bitrate lead-frame
-    /// duration overshoot all pass. streamsynchronizer uses A's DECODED extent
-    /// for the group start, so "declared > decoded" alone does not cut B. The
-    /// field trigger needs a condition this harness lacks (see the memory note
-    /// gapless-fcompsrc-cutoff); feed the real casting bytes to `a_bytes`/
-    /// `b_bytes` below to reproduce deterministically.
+    /// the previous item's.
     #[test]
     fn gapless_fcomp_next_item_plays_to_its_end() {
         use fcast_protocol::companion;
@@ -454,13 +406,11 @@ mod tests {
         };
 
         crate::gstreamer::init_for_tests();
-        // init_for_tests only calls gst::init; fcompsrc is a receiver plugin.
-        // Ignore a duplicate-registration error when run beside other tests.
+        // fcompsrc is a receiver plugin; ignore a duplicate registration.
         let _ = crate::fcompsrc::plugin_init();
 
         // A long enough for its EOS to be paced past the up-front pre-arm; B
-        // longer than any plausible overshoot so a cutoff would be unambiguous.
-        // (Swap these for real casting bytes to chase the field cutoff.)
+        // longer than any plausible overshoot, so a cutoff is unambiguous.
         let a_bytes = make_mp3_bytes(5.0);
         let b_bytes = make_mp3_bytes(4.0);
         let a_len = a_bytes.len() as u64;
@@ -482,8 +432,7 @@ mod tests {
         })
         .unwrap();
 
-        // Provide the fcomp companion context on NeedContext, exactly as
-        // `Player::new`'s message hook does.
+        // Provide the fcomp companion context on NeedContext, as `Player::new` does.
         let comp_ctx = crate::fcompsrc::imp::CompContext(ctx.clone());
         let hook: MessageHook = Box::new(move |msg| {
             if let gst::MessageView::NeedContext(nc) = msg.view() {
@@ -536,8 +485,7 @@ mod tests {
         playbin
             .load(MediaInput::Element(a_src), StartPoint::Live)
             .unwrap();
-        // Pre-arm up front so `pending` is set before A's EOS reaches the hold
-        // (the field pre-arms tens of seconds early).
+        // Pre-arm up front so `pending` is set before A's EOS reaches the hold.
         playbin.prepare_next_async(MediaInput::Element(b_src));
         let t0 = Instant::now();
         playbin.play().unwrap();
@@ -557,8 +505,7 @@ mod tests {
             activated,
             "the prepared fcomp item never activated (handoff missed)"
         );
-        // A (5s) then B's full 4s ~= 9s. A cutoff would end playback near A's
-        // 5s instead.
+        // A (5s) then B's full 4s ~= 9s; a cutoff ends near A's 5s instead.
         assert!(
             eos_elapsed >= Duration::from_millis(7500),
             "playback ended after {eos_elapsed:?}, expected ~9s (A+B): the fcomp \
@@ -566,20 +513,9 @@ mod tests {
         );
     }
 
-    /// Gapless fcomp handoff with a MID-playback pre-arm (the field's timing)
-    /// and a PACED outgoing EOS: the 30s audio decoupling queue is shrunk so a
-    /// short item behaves like a real long track (its decoded EOS reaches the
-    /// output-side hold AFTER the swap, not buffered and released early). The
-    /// next item must play to its end. Guards the mid-playback gapless path.
-    ///
-    /// NOTE: here the outgoing EOS lands while `pending` is still set (the
-    /// output-side activation has not run yet), so the hold drops it on
-    /// `pending` alone and this passes with OR without the retire-at-swap
-    /// hardening. The field's narrower window (an input-side STREAMS_SELECTED
-    /// clearing `pending` BEFORE the paced EOS, which then needs the
-    /// retired-group check) needs decodebin3 to post that early selection,
-    /// which a synthetic single-stream source does not. See the memory note
-    /// gapless-fcompsrc-cutoff.
+    /// Gapless fcomp handoff with a MID-playback pre-arm and a PACED outgoing
+    /// EOS (its decoded EOS reaches the output-side hold AFTER the swap): the
+    /// next item must still play to its end.
     #[test]
     fn gapless_fcomp_survives_a_midplayback_prearm() {
         use fcast_protocol::companion;
@@ -614,11 +550,9 @@ mod tests {
             })),
         })
         .unwrap();
-        // Audio-only, so fcastplaybin's decoupling queue is shallow (the
-        // deep queue is video-only): the outgoing item's EOS reaches the
-        // gapless hold near the sink boundary, so this mid-playback pre-arm
-        // still catches it. With the old unconditional 30s queue the EOS
-        // decoupled ~30s early and this failed (B ended at A's ~5s).
+        // Audio-only, so fcastplaybin's decoupling queue is shallow (the deep
+        // queue is video-only): the outgoing EOS reaches the gapless hold near
+        // the sink boundary, so this mid-playback pre-arm still catches it.
 
         let comp_ctx = crate::fcompsrc::imp::CompContext(ctx.clone());
         let hook: MessageHook = Box::new(move |msg| {
@@ -663,8 +597,8 @@ mod tests {
         let t0 = Instant::now();
         playbin.play().unwrap();
 
-        // Pre-arm MID-playback (2s into A's 5s), the field ordering: the swap
-        // and activation land while A's decoded tail is still draining.
+        // Pre-arm MID-playback (2s into A's 5s): the swap and activation land
+        // while A's decoded tail is still draining.
         let pb2 = playbin.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(2));
@@ -692,8 +626,7 @@ mod tests {
 
         let eos_elapsed = eos_elapsed.expect("pipeline never reached EOS (wedged)");
         assert!(activated, "the prepared fcomp item never activated");
-        // A (5s) then B's full 4s ~= 9s. The bug cuts B when A's paced EOS
-        // reaches the (already-activated) hold, ending playback near A's 5s.
+        // A (5s) then B's full 4s ~= 9s; a cutoff ends near A's 5s instead.
         assert!(
             eos_elapsed >= Duration::from_millis(7500),
             "playback ended after {eos_elapsed:?}, expected ~9s (A+B): the next \
@@ -701,9 +634,8 @@ mod tests {
         );
     }
 
-    /// A tiny in-memory animated GIF (mirrors imagedec's test helper): four
-    /// full-canvas 16x16 frames of different shades, 100ms delay each. Gives
-    /// Test A real container bytes to typefind, parse, and decode.
+    /// A tiny in-memory animated GIF: `frames` full-canvas 16x16 frames of
+    /// different shades, 100ms delay each.
     fn make_gif(frames: u32) -> Vec<u8> {
         use image::codecs::gif::{GifEncoder, Repeat};
         let mut out = Vec::new();
@@ -725,9 +657,8 @@ mod tests {
         out
     }
 
-    /// A few MB of a deterministic pseudorandom byte pattern (a simple
-    /// xorshift so the test needs no rng dependency). Used to prove
-    /// byte-accurate readback through the appsrc.
+    /// A deterministic pseudorandom byte pattern (xorshift, so no rng
+    /// dependency).
     fn pseudorandom_bytes(len: usize) -> Vec<u8> {
         let mut out = Vec::with_capacity(len);
         let mut state: u64 = 0x9e37_79b9_7f4a_7c15;
@@ -741,10 +672,8 @@ mod tests {
         out
     }
 
-    /// Test A: a GIF served from `build_bytes_source` must feed
-    /// typefind + parsebin + decodebin3 exactly like a file source, yielding
-    /// decoded RGBA video samples. Proves the appsrc-in-a-parsebin-bin is a
-    /// drop-in seekable source for the real decode path.
+    /// A GIF served from `build_bytes_source` must feed typefind + parsebin +
+    /// decodebin3 exactly like a file source, yielding decoded RGBA samples.
     #[test]
     fn bytes_source_decodes_gif_through_decodebin3() {
         init();
@@ -768,8 +697,7 @@ mod tests {
             .add_many([&source, &db3, appsink.upcast_ref::<gst::Element>()])
             .unwrap();
 
-        // The bytes-source bin exposes its parsed src pad dynamically (through
-        // parsebin's ghost pad), so link into decodebin3 on pad-added.
+        // The bin's parsed src pad appears dynamically, so link on pad-added.
         let db3_weak = db3.downgrade();
         source.connect_pad_added(move |_, pad| {
             let Some(db3) = db3_weak.upgrade() else {
@@ -778,7 +706,6 @@ mod tests {
             let sink = db3.request_pad_simple("sink_%u").unwrap();
             pad.link(&sink).unwrap();
         });
-        // decodebin3's decoded output is likewise dynamic.
         let appsink_weak = appsink.downgrade();
         db3.connect_pad_added(move |_, pad| {
             if pad.direction() != gst::PadDirection::Src {
@@ -796,9 +723,6 @@ mod tests {
 
         pipeline.set_state(gst::State::Playing).unwrap();
 
-        // A decoded RGBA sample at the GIF's dimensions proves the whole
-        // typefind -> parsebin -> decodebin3 -> fimagedec chain ran off the
-        // in-memory appsrc.
         let sample = appsink
             .try_pull_sample(gst::ClockTime::from_seconds(10))
             .expect("decoded RGBA sample from the bytes source");
@@ -807,17 +731,13 @@ mod tests {
         assert_eq!(s.get::<i32>("height").unwrap(), 16);
         let buffer = sample.buffer().unwrap();
         let map = buffer.map_readable().unwrap();
-        // RGBA 16x16 = 1024 bytes of decoded video.
         assert_eq!(map.size(), 16 * 16 * 4);
 
         pipeline.set_state(gst::State::Null).unwrap();
     }
 
-    /// Test B: byte-accurate sequential readback. Drive the raw appsrc helper
-    /// through `appsrc ! appsink`, pull every buffer to EOS, and assert the
-    /// concatenation equals the input and buffer offsets are monotonic and
-    /// gap-free. This validates the need-data chunking and the size/EOS
-    /// bookkeeping without typefind (which cannot type random bytes).
+    /// Byte-accurate sequential readback through the raw appsrc: the pulled
+    /// buffers concatenate back to the input, with monotonic gap-free offsets.
     #[test]
     fn bytes_appsrc_reads_back_verbatim() {
         init();
@@ -841,8 +761,6 @@ mod tests {
             match appsink.try_pull_sample(gst::ClockTime::from_seconds(10)) {
                 Some(sample) => {
                     let buffer = sample.buffer().unwrap();
-                    // Offsets are monotonic and contiguous (no gaps, no
-                    // rewind) across the sequential read.
                     assert_eq!(
                         buffer.offset(),
                         expected_offset,
@@ -858,8 +776,6 @@ mod tests {
                     readback.extend_from_slice(map.as_slice());
                 }
                 None => {
-                    // No more samples within the timeout: EOS must have
-                    // arrived by now.
                     assert!(appsink.is_eos(), "readback stalled before EOS");
                     break;
                 }

@@ -44,8 +44,8 @@ macro_rules! read_packet {
 }
 
 /// Like [`read_packet!`] but reads straight into the reader's spare capacity
-/// (`spare_capacity_mut` + `commit`) — the zero-copy receive path the receiver uses. No
-/// scratch buffer, so there is no `$buf` argument.
+/// (`spare_capacity_mut` + `commit`), the zero-copy receive path the receiver
+/// uses. No scratch buffer, so there is no `$buf` argument.
 macro_rules! read_packet_zerocopy {
     ($stream:expr, $reader:expr) => {{
         loop {
@@ -61,7 +61,7 @@ macro_rules! read_packet_zerocopy {
                     let spare = $reader.spare_capacity_mut();
                     assert!(
                         !spare.is_empty(),
-                        "spare capacity empty — would read as EOF"
+                        "spare capacity empty, would read as EOF"
                     );
                     let n = $stream.read(spare).await.expect("read failed");
                     assert_ne!(n, 0, "stream closed before a full packet arrived");
@@ -324,10 +324,10 @@ async fn tls_upgrade_roundtrip() {
 
 #[tokio::test]
 async fn tcp_zerocopy_varied_sizes() {
-    // Exercises the zero-copy receive path over a real socket: several packets of very
-    // different sizes — including one far larger than any single TCP segment — written back
-    // to back so they split and coalesce across reads arbitrarily. All must reassemble in
-    // order and byte-for-byte.
+    // Exercises the zero-copy receive path over a real socket. Packets of very
+    // different sizes, one far larger than a TCP segment, are written back to
+    // back so they split and coalesce across reads arbitrarily. All must
+    // reassemble in order and byte-for-byte.
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -337,7 +337,7 @@ async fn tcp_zerocopy_varied_sizes() {
             Opcode::SetVolume,
             serde_json::to_vec(&SetVolumeMessage { volume: 0.5 }).unwrap(),
         ),
-        // ~40 KiB body: forces assembly across many reads / TCP segments.
+        // ~40 KiB body forces assembly across many reads / TCP segments.
         (
             Opcode::PlaybackError,
             (0..40_000u32).map(|i| (i % 253) as u8).collect(),
@@ -376,9 +376,9 @@ async fn tcp_zerocopy_varied_sizes() {
 
 #[tokio::test]
 async fn tls_zerocopy_large_packet_after_upgrade() {
-    // The receiver's real transport is TLS. Drive the zero-copy path over an upgraded TLS
-    // stream with a large packet followed by a tiny one (the reader must keep working after
-    // a big read), mirroring `tls_upgrade_roundtrip`'s handshake sequence.
+    // The receiver's real transport is TLS. Drive the zero-copy path over an
+    // upgraded TLS stream with a large packet followed by a tiny one. The
+    // reader must keep working after a big read.
     let (acceptor, fingerprint) = server_tls();
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -393,7 +393,7 @@ async fn tls_zerocopy_large_packet_after_upgrade() {
         let mut buf = [0u8; 8 * 1024];
         let mut reader = new_reader();
 
-        // Plaintext Version exchange, then upgrade — same as tls_upgrade_roundtrip.
+        // Plaintext Version exchange, then upgrade.
         let packet = read_packet!(stream, reader, buf);
         assert_eq!(packet[0], Opcode::Version as u8);
         let body = serde_json::to_vec(&VersionMessage { version: 4 }).unwrap();

@@ -98,8 +98,9 @@ impl SabrTrackBuffer {
     }
 
     /// Await either a buffer-change notification or the deadline, re-checking
-    /// `pred` each wake. The `Notified` future is registered (`enable`) *before*
-    /// `pred` runs, so a notification racing the check is never lost.
+    /// `pred` each wake. The `Notified` future is registered (`enable`)
+    /// *before* `pred` runs, so a notification racing the check is never
+    /// lost.
     async fn await_pred<T>(
         &self,
         deadline: Instant,

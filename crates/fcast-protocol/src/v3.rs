@@ -174,15 +174,17 @@ pub struct PlaylistContent {
     pub variant: ContentType,
     pub items: Vec<MediaItem>,
     /// Start position of the first item to play from the playlist
-    pub offset: Option<u64>, // int or float?
+    pub offset: Option<u64>,
     /// The desired volume (0-1)
     pub volume: Option<f64>,
     /// The factor to multiply playback speed by (defaults to 1.0)
     pub speed: Option<f64>,
-    /// Count of media items should be pre-loaded forward from the current view index
+    /// Count of media items should be pre-loaded forward from the current view
+    /// index
     #[serde(rename = "forwardCache")]
     pub forward_cache: Option<u64>,
-    /// Count of media items should be pre-loaded backward from the current view index
+    /// Count of media items should be pre-loaded backward from the current view
+    /// index
     #[serde(rename = "backwardCache")]
     pub backward_cache: Option<u64>,
     pub metadata: Option<MetadataObject>,

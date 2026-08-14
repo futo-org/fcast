@@ -1,12 +1,11 @@
 //! Port of [PlayFair](https://github.com/EstebanKubata/playfair) `modified_md5.c`.
 //!
-//! A heavily-modified MD5 used by FairPlay's session-key derivation. The wrinkle
-//! versus stock MD5 is the register rotation and the block-word swap at i==31.
-//! All arithmetic is 32-bit wrapping, matching C `uint32_t` semantics.
+//! A heavily-modified MD5 used by FairPlay's session-key derivation. The
+//! wrinkle versus stock MD5 is the register rotation and the block-word swap at
+//! i==31. All arithmetic is 32-bit wrapping, matching C `uint32_t` semantics.
 
-/// Standard MD5 K constants: floor(2^32 * |sin(i+1)|). The C code computes these
-/// at runtime via `(int)(long long)((1LL<<32)*fabs(sin(i+1)))`; these are the
-/// well-known precomputed values. Validated byte-exact by the `STAGE_md5` test.
+/// Standard MD5 K constants: floor(2^32 * |sin(i+1)|). The C code computes
+/// these at runtime. Validated byte-exact by the `STAGE_md5` test.
 #[rustfmt::skip]
 const K: [u32; 64] = [
     0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee, 0xf57c0faf, 0x4787c62a, 0xa8304613, 0xfd469501,
@@ -27,7 +26,8 @@ const SHIFT: [u32; 64] = [
     6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21, 6, 10, 15, 21,
 ];
 
-// TODO: use more descriptive names for the functions and variables in this module
+// TODO: use more descriptive names for the functions and variables in this
+// module
 
 fn f(b: u32, c: u32, d: u32) -> u32 {
     (b & c) | (!b & d)

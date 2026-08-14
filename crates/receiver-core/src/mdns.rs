@@ -9,29 +9,25 @@ use crate::{GCAST_TCP_PORT, Mdns, Raop, gcast, raop};
 #[cfg(feature = "airplay")]
 use crate::{airplay, message::AirPlay};
 
-/// The local hostname, used both for the default broadcast names and to expand
-/// the `{hostname}` variable in a configured name.
+/// The local hostname; also expands the `{hostname}` variable in a configured
+/// name.
 pub fn hostname() -> String {
     gethostname::gethostname().to_string_lossy().into_owned()
 }
 
-/// The default FCast instance name, `FCast-<hostname>`. Used when the config
-/// does not override [`crate::Settings::fcast_name`].
+/// The default FCast instance name, `FCast-<hostname>`.
 pub fn fcast_device_name() -> String {
     format!("FCast-{}", hostname())
 }
 
-/// The default Google Cast display name, `Chromecast-<hostname>`. Used when the
-/// config does not override [`crate::Settings::chromecast_name`].
+/// The default Google Cast display name, `Chromecast-<hostname>`.
 pub fn chromecast_device_name() -> String {
     format!("Chromecast-{}", hostname())
 }
 
-/// Advertise the `_fcast._tcp` service under `name` on the given (actually
-/// bound) port. This is registered only once the listening port is committed,
-/// so a second instance that can't bind the default port never advertises a
-/// duplicate record. The gcast/raop/airplay registrations on the same daemon
-/// are independent.
+/// Advertise `_fcast._tcp` under `name`. Call only once the listening port is
+/// committed, so a second instance that can't bind the default port never
+/// advertises a duplicate record.
 pub fn register_fcast(
     daemon: &ServiceDaemon,
     name: &str,
@@ -107,10 +103,8 @@ pub fn start_daemon(
         msg_tx.mdns(msg);
     }
 
-    // The `_fcast._tcp` service is registered later, from `register_fcast`, once
-    // the listening port is committed. Registering it here (at the default port,
-    // before binding) would make a second instance advertise a duplicate record
-    // on a port it may not even bind.
+    // `_fcast._tcp` is registered later, from `register_fcast`, once the listening
+    // port is committed.
 
     if settings.google_cast_enabled() {
         let gcast_props = HashMap::from([

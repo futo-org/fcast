@@ -156,7 +156,8 @@ pub fn is_tiff(_len: usize, buf: InferenceBuffer) -> bool {
     magic == &[0x49, 0x49, 0x2A, 0x00] || magic == &[0x4D, 0x4D, 0x00, 0x2A]
 }
 
-// IsISOBMFF checks whether the given buffer represents ISO Base Media File Format data
+// IsISOBMFF checks whether the given buffer represents ISO Base Media File
+// Format data
 fn is_isobmff(len: usize, buf: InferenceBuffer) -> bool {
     if len < 16 {
         return false;
@@ -170,7 +171,8 @@ fn is_isobmff(len: usize, buf: InferenceBuffer) -> bool {
     len >= ftyp_length
 }
 
-/// GetFtyp returns the major brand, minor version and compatible brands of the ISO-BMFF data
+/// GetFtyp returns the major brand, minor version and compatible brands of the
+/// ISO-BMFF data
 fn get_ftyp(_len: usize, buf: &[u8; 64]) -> Option<(&[u8], &[u8], impl Iterator<Item = &[u8]>)> {
     if buf.len() < 16 {
         return None;

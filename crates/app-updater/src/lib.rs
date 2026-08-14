@@ -253,7 +253,7 @@ mod imp {
         use std::process::Command;
 
         if let Ok(path) = super::starting_binary::STARTING_BINARY.cloned() {
-            // NOTE: for updates; the new exe is expected to be named the same as the current one
+            // The new exe must have the same name as the current one.
             if let Err(err) = Command::new(path).spawn() {
                 error!(?err, "failed to restart app");
             }

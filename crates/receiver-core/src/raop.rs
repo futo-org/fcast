@@ -179,20 +179,18 @@ mod alacdec_imp {
         }
     }
 
-    /// Whether `Decoder::decode_packet::<i16>` can handle this stream.
-    ///
-    /// It asserts `S::bits() >= bit_depth`, so a sender announcing a deeper
-    /// stream in its SDP would panic the streaming thread. Reject at
-    /// negotiation instead.
+    /// Whether `Decoder::decode_packet::<i16>` can handle this stream: it
+    /// asserts `S::bits() >= bit_depth`, so a deeper stream must be
+    /// rejected at negotiation, not decoded.
     pub(super) fn is_decodable_as_i16(info: &alac::StreamInfo) -> bool {
         info.bit_depth() <= 16
     }
 
     impl AudioDecoderImpl for FcAlacDec {
         fn set_format(&self, caps: &gst::Caps) -> Result<(), gst::LoggableError> {
-            // Everything below derives from the `fmtp` line of the sender's
-            // RTSP ANNOUNCE. None of it may panic: a malformed announcement has
-            // to fail negotiation, not abort the streaming thread.
+            // Derived from the `fmtp` line of the sender's RTSP ANNOUNCE: a malformed
+            // announcement has to fail negotiation, not abort the streaming
+            // thread.
             let Some(s) = caps.structure(0) else {
                 return Err(gst::loggable_error!(CAT, "caps have no structure"));
             };
@@ -271,9 +269,7 @@ mod alacdec_imp {
             } = &mut *state;
             match decoder {
                 Some(decoder) => {
-                    // The payload comes off the network, so a corrupt or
-                    // truncated packet is expected input. Drop the frame and
-                    // keep the stream alive rather than erroring the pipeline.
+                    // Corrupt packets off the network are expected: drop the frame.
                     let samples = match decoder.decode_packet::<i16>(&inbuf_map, output_buffer) {
                         Ok(samples) => samples,
                         Err(err) => {
@@ -340,7 +336,8 @@ mod raopdepay_imp {
 
     #[derive(Default)]
     struct State {
-        /// SDP `fmtp`, exposed on the src caps so the ALAC decoder can configure.
+        /// SDP `fmtp`, exposed on the src caps so the ALAC decoder can
+        /// configure.
         fmtp: Option<String>,
     }
 
@@ -513,7 +510,8 @@ fn encode_base64(input: &[u8]) -> String {
 #[allow(unused)]
 #[derive(Debug, Clone)]
 struct RtpInfo {
-    /// Sequence number of the first packet that is a direct result of the request.
+    /// Sequence number of the first packet that is a direct result of the
+    /// request.
     seq: u16,
     /// RTP timestamp corresponding to the start time.
     rtptime: u32,
@@ -682,11 +680,7 @@ impl ControlReceiver {
             let header = NoSsrcRtpHeader::parse(&buf[..length]);
 
             match header.payload_type {
-                RTP_SYNC_PAYLOAD_TYPE => {
-                    // let time = duration_from_ntp(&buf[8..16]);
-                    // let timestamp = u32::from_be_bytes(buf[16..20].try_into().unwrap());
-                    // debug!("{:?} - {:?}-{:?}", header.sequence_number, time, timestamp);
-                }
+                RTP_SYNC_PAYLOAD_TYPE => {}
                 RTP_RESENT_DATA_PAYLOAD_TYPE => (),
                 payload_type => trace!(payload_type, "received packet with unknown payload type"),
             }
@@ -827,9 +821,6 @@ impl TimingManager {
     async fn run(&mut self) -> Result<()> {
         let mut recv_buf = [0; 32];
         let mut send_interval = tokio::time::interval(Duration::from_secs(3));
-
-        // let mut base_local = None;
-        // let mut base_remote = None;
 
         while !self.shutdown.is_shutdown() {
             tokio::select! {
@@ -972,7 +963,6 @@ impl Player {
         let mut _notify_shutdown: Option<Sender<()>> = None;
         let mut encryption: Option<Encryption> = None;
         let mut cipher: Option<Aes128> = None;
-        // let control_tx: Option<mpsc::Sender<ControlSenderCommand>> = None;
         let mut current_volume = 1.0;
         let mut time_start = 0;
         let mut position = 0;
@@ -1081,16 +1071,6 @@ impl Player {
                         shutdown: Shutdown::new(notify_shutdown_sender.subscribe()),
                     };
 
-                    // TODO:
-                    // let (control_server_tx, control_server_rx) = mpsc::channel(4);
-                    // let mut control_sender = ControlSender {
-                    //     control_server_rx,
-                    //     socket: c_sock.clone(),
-                    //     shutdown: Shutdown::new(notify_shutdown_sender.subscribe()),
-                    // };
-
-                    // control_tx = Some(control_server_tx);
-
                     let mut control_receiver = ControlReceiver {
                         socket: control_sock.clone(),
                         player_tx: self.player_tx.clone(),
@@ -1111,14 +1091,6 @@ impl Player {
                             error!(cause = ?err, "connection error");
                         }
                     });
-
-                    // TODO:
-                    // tokio::spawn(async move {
-                    //     // Process the connection. If an error is encountered, log it.
-                    //     if let Err(err) = control_sender.run().await {
-                    //         error!(cause = ?err, "connection error");
-                    //     }
-                    // });
 
                     tokio::spawn(async move {
                         if let Err(err) = control_receiver.run().await {
@@ -1241,10 +1213,9 @@ impl Handler {
                 }
             };
 
-            // A peer can put anything on the wire, so a non-request message is
-            // not a bug in us. Dropping it keeps the session alive; unwinding
-            // here would skip the `SenderDisconnected` notification below and
-            // leave `current_media` occupied for the rest of the process.
+            // A peer can put anything on the wire. Dropping keeps the session alive;
+            // unwinding here would skip the `SenderDisconnected` notification
+            // and leave `current_media` occupied.
             let request = match maybe_request {
                 Some(Message::Request(request)) => request,
                 Some(Message::Response(_)) => {
@@ -1598,9 +1569,8 @@ impl Handler {
                     self.connection.write_response(&response).await?;
                     Ok(())
                 }
-                // `rtsp_types::Method` has no variants for HTTP verbs, so any
-                // stray `GET`/`POST` on this port arrives here. Answer 405
-                // rather than panicking the session task.
+                // `rtsp_types::Method` has no variants for HTTP verbs, so a stray `GET`/`POST` on
+                // this port arrives here. Answer 405 rather than panicking the session task.
                 other => {
                     warn!(method = other, "Rejecting unsupported RTSP method");
                     let response =
@@ -1666,13 +1636,10 @@ pub struct Configuration {
     pub hw_addr: [u8; 6],
 }
 
-/// Convert an AirPlay-family `volume:` value (gain in decibels, nominal range
-/// `[-30.0, 0.0]`, with `-144.0` meaning muted) into GStreamer's linear volume
-/// scale (`0.0`..=`1.0`).
-///
-/// Shared by RAOP and AirPlay mirroring: it is the same wire field with the
-/// same semantics, so it must produce the same loudness on both. See
-/// <https://openairplay.github.io/airplay-spec/audio/volume_control.html>.
+/// Convert an AirPlay-family `volume:` value (dB gain, nominal `[-30.0, 0.0]`,
+/// `-144.0` = muted) into GStreamer's linear scale (`0.0`..=`1.0`). Shared by
+/// RAOP and AirPlay mirroring: same wire field, so it must produce the same
+/// loudness on both. See <https://openairplay.github.io/airplay-spec/audio/volume_control.html>.
 pub(crate) fn airplay_volume_to_linear(db: f64) -> f64 {
     if db <= -30.0 {
         return 0.0;
@@ -1709,14 +1676,11 @@ pub fn txt_properties() -> HashMap<String, String> {
         (s!(TXT_DEVICE_MODEL), s!("FCast")),
         (s!(TXT_SERVER_VERSION), s!("105.1")),
         (s!(TXT_SUPPORTED_TRANSPORT), s!("UDP")),
-        // 0 = text
-        // 1 = artwork
-        // 2 = progress
+        // 0 = text, 1 = artwork, 2 = progress
         (s!(TXT_SUPPORTED_METADATA), s!("0,1,2")),
         (s!(TXT_AUDIO_SAMPLE_SIZE), s!("16")),
         (s!(TXT_AUDIO_SAMPLING_RATE), SAMPLING_RATE.to_string()),
-        // 0 = no encryption
-        // 1 = RSA
+        // 0 = no encryption, 1 = RSA
         (s!(TXT_ENCRYPTION_TYPE), s!("0,1")),
         // 1 = ALAC
         (s!(TXT_AUDIO_CODECS), s!("1")),
@@ -1951,14 +1915,11 @@ mod tests {
         assert_eq!(result, plaintext);
     }
 
-    // --- Volume ---------------------------------------------------------------
-
     #[test]
     fn airplay_volume_maps_db_to_linear() {
-        // Mute signal and the bottom of the range are silence.
+        // -144.0 is the mute signal.
         assert_eq!(airplay_volume_to_linear(-144.0), 0.0);
         assert_eq!(airplay_volume_to_linear(-30.0), 0.0);
-        // 0 dB is full volume.
         assert_eq!(airplay_volume_to_linear(0.0), 1.0);
         // -15 dB → 10^(-0.75) ≈ 0.1778.
         let mid = airplay_volume_to_linear(-15.0);
@@ -1967,14 +1928,11 @@ mod tests {
 
     #[test]
     fn volume_curve_is_logarithmic_and_bounded() {
-        // RAOP used to apply a linear ramp (`1.0 - db / -30.0`), putting -15 dB
-        // at 0.5 where AirPlay's logarithmic curve puts it at 0.178 — the same
-        // slider position, roughly 9 dB apart, on one shared wire field.
+        // A linear ramp (`1.0 - db / -30.0`) would put -15 dB at 0.5 instead of 0.178.
         let mid = airplay_volume_to_linear(-15.0);
         assert!(mid < 0.25, "-15 dB looks like the old linear ramp: {mid}");
 
-        // RAOP also clamped to `0.0..=10.0`, so an out-of-spec positive gain
-        // let a sender ask for up to 10x amplification.
+        // An out-of-spec positive gain must clamp to 1.0, never amplify.
         for db in [0.5, 3.0, 30.0, 144.0] {
             assert_eq!(airplay_volume_to_linear(db), 1.0, "db={db}");
         }
@@ -1989,10 +1947,8 @@ mod tests {
         }
     }
 
-    // --- ALAC stream configuration --------------------------------------------
-
-    /// A well-formed fmtp line, per the `alac` crate's own test vector, with
-    /// `bit_depth` in field 3.
+    /// A well-formed fmtp line (the `alac` crate's test vector), `bit_depth` in
+    /// field 3.
     fn fmtp(bit_depth: u8) -> String {
         format!("4096 0 {bit_depth} 40 10 14 2 255 0 0 44100")
     }
@@ -2003,9 +1959,8 @@ mod tests {
         assert_eq!(sixteen.bit_depth(), 16);
         assert!(alacdec_imp::is_decodable_as_i16(&sixteen));
 
-        // A sender can legitimately announce this; decoding it into `i16`
-        // trips an assertion inside the `alac` crate, so `set_format` has to
-        // refuse it before any audio flows.
+        // A sender may legitimately announce this; decoding it into `i16` trips an alac
+        // assertion.
         let twenty_four = alac::StreamInfo::from_sdp_format_parameters(&fmtp(24)).unwrap();
         assert_eq!(twenty_four.bit_depth(), 24);
         assert!(!alacdec_imp::is_decodable_as_i16(&twenty_four));
@@ -2013,8 +1968,7 @@ mod tests {
 
     #[test]
     fn malformed_alac_fmtp_is_an_error_not_a_panic() {
-        // `set_format` maps each of these to a negotiation failure; they used
-        // to reach `.unwrap()`.
+        // `set_format` maps each of these to a negotiation failure.
         for params in [
             "",
             "not-a-config",
@@ -2028,14 +1982,9 @@ mod tests {
         }
     }
 
-    // --- RTSP request dispatch ------------------------------------------------
-
-    /// A `Handler` driven over a real loopback socket.
-    ///
-    /// The `_`-prefixed fields are liveness guards, not decoration. Dropping
-    /// `_notify_shutdown` in particular closes the broadcast, which makes
-    /// `Shutdown::recv()` return immediately and tears the handler down before
-    /// it ever reads a request.
+    /// A `Handler` driven over a real loopback socket. The `_`-prefixed fields
+    /// are liveness guards: dropping `_notify_shutdown` closes the
+    /// broadcast and tears the handler down at once.
     struct HandlerHarness {
         client: TcpStream,
         _notify_shutdown: broadcast::Sender<()>,
@@ -2110,8 +2059,8 @@ mod tests {
     async fn unknown_rtsp_method_is_rejected_and_the_session_survives() {
         let mut harness = HandlerHarness::spawn().await;
 
-        // `rtsp_types::Method` has no variants for HTTP verbs, so this parses
-        // as `Method::Extension("GET")` — the shape that used to hit `todo!()`.
+        // `rtsp_types::Method` has no HTTP verbs, so this parses as
+        // `Method::Extension("GET")`.
         harness
             .send("GET rtsp://127.0.0.1/info RTSP/1.0\r\nCSeq: 1\r\n\r\n")
             .await;
@@ -2120,11 +2069,9 @@ mod tests {
             StatusCode::MethodNotAllowed
         );
 
-        // The part that actually regressed. A panic here unwinds out of
-        // `handler.run()`, so `handle_sender` never posts
-        // `Raop::SenderDisconnected` and `Application::current_media` stays
-        // occupied — rejecting every later RAOP sender for the process
-        // lifetime. Serving a second request proves the session is still live.
+        // A panic here unwinds out of `handler.run()`, so `handle_sender` never posts
+        // `Raop::SenderDisconnected` and `Application::current_media` stays occupied
+        // forever.
         harness
             .send("OPTIONS rtsp://127.0.0.1/ RTSP/1.0\r\nCSeq: 2\r\n\r\n")
             .await;
@@ -2139,7 +2086,7 @@ mod tests {
     async fn non_request_rtsp_message_is_ignored_and_the_session_survives() {
         let mut harness = HandlerHarness::spawn().await;
 
-        // A peer may put a response on the wire; this used to be `unreachable!()`.
+        // A peer may put a response on the wire.
         harness.send("RTSP/1.0 200 OK\r\nCSeq: 1\r\n\r\n").await;
         harness
             .send("OPTIONS rtsp://127.0.0.1/ RTSP/1.0\r\nCSeq: 2\r\n\r\n")

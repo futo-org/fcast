@@ -1,0 +1,36 @@
+# Two branches whose buffers differ in size by five orders of magnitude: 64 KiB per
+# video frame, one single byte per audio packet. Every other file in the suite uses
+# bytes_per_buffer = 64 on every stream.
+#
+# Buffer size is the knob that reaches the multiqueue's BYTE limit (see
+# StreamSpec::bytes_per_buffer), and decodebin3's multiqueue enforces bytes, buffers
+# and time independently. At 25 fps over 600 ms the video branch pushes ~960 KiB and
+# hits the byte limit long before it holds anything like a full second of data, so
+# the video queue throttles on bytes while the audio queue - 30 buffers of one byte -
+# cannot hit a byte or buffer limit at all and only ever fills on TIME.
+#
+# That asymmetry is the point. Which limit a queue trips decides when it applies
+# backpressure to the source, and a shared source with one throttled and one
+# unthrottled branch is how an interleave skews: the video task blocks in
+# multiqueue while the audio task runs to EOS. Real media is exactly this lopsided
+# (a 4K intra frame against an AAC packet), and it is the ordinary shape of the
+# half-ended-group wedge ragged_durations.toml describes, reached through
+# backpressure instead of through durations.
+#
+# NOTE: no top-level bytes_per_buffer on purpose - it is applied to every stream at
+# registration whatever the individual entries say, which would erase the asymmetry.
+key = "lopsidedbuffers"
+duration_ms = 600
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "video_0"
+kind = "video"
+fps = 25
+keyframe_interval = 25
+bytes_per_buffer = 65536
+
+[[stream]]
+id = "audio_0"
+kind = "audio"
+bytes_per_buffer = 1

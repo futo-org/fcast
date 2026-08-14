@@ -1,0 +1,14 @@
+# Audio with no video and no text: the whole video half of the topology stays
+# unbuilt. No video sink ever prerolls, and the
+# audio sink is the only clock provider in the pipeline.
+#
+# The suite's other files all carry video, so this is the only one that proves a
+# load with no video stream reaches PLAYING and EOS at all.
+key = "audioonly"
+duration_ms = 1000
+bytes_per_buffer = 64
+pacing = "as_fast_as_possible"
+
+[[stream]]
+id = "audio_0"
+kind = "audio"

@@ -27,7 +27,8 @@ const BROWSERS: &[&str] = &[
     "Chrome/138.0.0.0 Mobile Safari/537.36",
 ];
 
-// Use one UA string for each domain, helps against bot detection for certain websites
+// Use one UA string for each domain, helps against bot detection for certain
+// websites
 static CACHE: LazyLock<Mutex<HashMap<String, String>>> =
     LazyLock::new(|| Mutex::new(HashMap::new()));
 

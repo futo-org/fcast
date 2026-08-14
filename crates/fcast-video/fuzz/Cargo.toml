@@ -1,0 +1,69 @@
+[package]
+name = "fcast-video-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+# Its own workspace root. The tree's root workspace lists its members by name
+# and a fuzz crate is not one of them: cargo-fuzz builds with sanitizer flags
+# and a nightly-only profile, which has no business in a `cargo build
+# --workspace`.
+[workspace]
+
+[dependencies]
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+fcast-video = { path = ".." }
+gst = { package = "gstreamer", version = "0.25", features = ["v1_26"] }
+
+[lib]
+name = "fcast_video_fuzz"
+path = "src/lib.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pgs_decode"
+path = "fuzz_targets/pgs_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pgs_decode_structured"
+path = "fuzz_targets/pgs_decode_structured.rs"
+test = false
+doc = false
+bench = false
+
+# Not a fuzz target: writes `seeds/<target>/` from the decoders' own checked-in
+# fixtures. Built and run by hand, see the README.
+[[bin]]
+name = "dvb_decode"
+path = "fuzz_targets/dvb_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "vobsub_decode"
+path = "fuzz_targets/vobsub_decode.rs"
+test = false
+doc = false
+bench = false
+
+# Not a fuzz target: writes `seeds/<target>/` from the decoders' own checked-in
+# fixtures. Built and run by hand; see `README.md`.
+[[bin]]
+name = "seed_corpus"
+path = "src/bin/seed_corpus.rs"
+test = false
+doc = false
+bench = false
+
+[profile.release]
+debug = 1

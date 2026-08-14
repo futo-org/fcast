@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rcore = { package = "receiver-core", path = "../../../crates/receiver-core", features = ["fhs"] }
+rcore = { package = "receiver-ui", path = "../../../crates/receiver-ui", features = ["fhs"] }
 anyhow.workspace = true
 mimalloc.workspace = true
 fiatlux.path = "../../../crates/fiatlux"

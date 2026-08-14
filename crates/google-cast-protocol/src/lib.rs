@@ -183,8 +183,8 @@ pub enum IdleReason {
     /// The media playback completed
     #[serde(rename = "FINISHED")]
     Finished,
-    /// The media was interrupted due to an error; for example, if the player
-    /// could not download the media due to network issues
+    /// The media was interrupted due to an error, for example a network
+    /// failure while downloading
     #[serde(rename = "ERROR")]
     Error,
 }
@@ -230,9 +230,8 @@ pub struct MediaStatus {
     #[serde(rename = "playerState")]
     pub player_state: PlayerState,
     /// optional If the playerState is IDLE and the reason it became IDLE is
-    /// known, this property is provided. If the player is IDLE because it
-    /// just started, this property will not be provided; if the player is
-    /// in any other state this property should not be provided.
+    /// known, this property is provided. It is absent when the player is IDLE
+    /// because it just started, and should be absent in any other state.
     #[serde(rename = "idleReason")]
     pub idle_reason: Option<IdleReason>,
     /// The current position of the media player since the beginning of the
@@ -250,7 +249,7 @@ pub struct MediaStatus {
     /// * 16  Skip forward
     /// * 32  Skip backward
     ///
-    /// Combinations are described as summations; for example,
+    /// Combinations are summations, for example
     /// Pause+Seek+StreamVolume+Mute == 15.
     #[serde(rename = "supportedMediaCommands")]
     pub supported_media_commands: u64,
@@ -527,7 +526,8 @@ pub mod namespaces {
         Pause {
             /// ID of the media session to be paused
             ///
-            /// Type seems to either be an integer or a string depending on the sender implementation.
+            /// Type seems to either be an integer or a string depending on the
+            /// sender implementation.
             #[serde(rename = "mediaSessionId")]
             media_session_id: serde_json::Value,
             /// ID of the request, to use to correlate request/response
@@ -625,8 +625,6 @@ pub mod namespaces {
             media_session_id: String,
             jump: Option<i32>,
         },
-        /// https://developers.google.com/cast/docs/media/messages#InvalidPlayerState
-        ///
         /// <https://developers.google.com/cast/docs/media/messages#InvalidPlayerState>
         #[serde(rename = "INVALID_PLAYER_STATE")]
         InvalidPlayerState {

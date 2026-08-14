@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-rcore = { package = "receiver-core", path = "../../../crates/receiver-core", features = ["android"] }
+rcore = { package = "receiver-ui", path = "../../../crates/receiver-ui", features = ["android"] }
 env_logger.workspace = true
 # common = { path = "../common" }
 anyhow.workspace = true

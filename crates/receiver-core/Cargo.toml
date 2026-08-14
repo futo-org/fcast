@@ -9,6 +9,7 @@ tokio.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
 fcastplaybin = { path = "../fcastplaybin" }
 fcast-gst-elements = { path = "../fcast-gst-elements" }
+gst-subparse.workspace = true
 fcast-runtime = { path = "../fcast-runtime" }
 fcast-video = { path = "../fcast-video" }
 fcast-protocol = { path = "../../crates/fcast-protocol", features = ["tokio-receiver"] }
@@ -39,17 +40,18 @@ gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", r
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 rand = { workspace = true, features = ["std_rng"] }
 tracing-tracy = { version = "=0.11.2", optional = true }
-pango = { version = "0.22.0", features = ["v1_44"] }
+pango.workspace = true
 hayro-jpeg2000 = "0.3"
 jxl-oxide = { version = "0.12", features = ["image"] }
 oneshot = { version = "0.2", features = ["std"] }
-libplacebo.path = "../libplacebo"
+# Re-export only (see `render`). Optional so a test build of this crate never
+# builds the C libplacebo.
+libplacebo = { path = "../libplacebo", optional = true }
 toml_edit.workspace = true
 directories.workspace = true
 headers = "0.4"
 mime = "0.3"
 regex.workspace = true
-gst-webrtc.workspace = true
 self_cell.workspace = true
 image = { workspace = true, features = [
     "decode",
@@ -84,15 +86,9 @@ google-cast-protocol = { path = "../google-cast-protocol" }
 rcgen.workspace = true
 uuid.workspace = true
 
-glow.workspace = true
+# Re-export only (see `render`).
+glow = { workspace = true, optional = true }
 
-
-[dependencies.slint]
-workspace = true
-features = [
-    "compat-1-2",
-    "std",
-]
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tracing-gstreamer.workspace = true
@@ -105,7 +101,6 @@ inhibit-screensaver.path = "../inhibit-screensaver"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 image = { workspace = true, features = ["encode"] }
-objc2-app-kit = { version = "0.3.2", features = ["NSCursor"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin_egl_sys = { version = "0.7.1" }
@@ -115,9 +110,9 @@ libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ] }
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
-i-slint-backend-winit = { workspace = true, optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
+android-activity = "0.6"
 gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.25" }
 glutin_egl_sys = { version = "0.7.1" }
 tracing-gstreamer.workspace = true
@@ -134,9 +129,6 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = [ "log
 receiver-resources.path = "../receiver-resources"
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image", "embedded-libheif" ] }
 
-[build-dependencies]
-slint-build.workspace = true
-
 [dev-dependencies]
 hyper = { workspace = true, features = ["server"] }
 http-body-util = "0.1.1"
@@ -146,29 +138,27 @@ ctor = "0.2"
 # Encoders are excluded from shipping builds (binary size); tests encode
 # their own image fixtures.
 image = { workspace = true, features = ["encode"] }
+# The driver's transport fixtures. This crate is the only one that can see both
+# them and the decoders they are fed to (fcastplaybin cannot depend on
+# fcast-video), which is what `the_drivers_bitmap_fixtures_decode` needs.
+fcasttest = { path = "../fcasttest" }
 
 
 [features]
 default = []
+# The GPU render surface this crate re-exports for the receiver binaries
+# (`SwapchainSink`/`VideoSink`/`egl`/`glow`/`libplacebo`). OFF by default: this
+# crate's own tests drive pipelines, never a GPU, and leaving it on made every
+# `cargo test -p receiver-core` build the C libplacebo. `receiver-ui` — the only
+# consumer that renders — turns it on.
+render = ["dep:libplacebo", "dep:glow", "fcast-video/render"]
 airplay = ["dep:plist", "dep:ctr", "dep:apple-fairplay"]
-desktop = [
-    # "slint/accessibility", Disabled because it causes too many allocations during playback
-    "slint/backend-winit",
-    "slint/renderer-femtovg",
-    "static-gst-plugins",
-    "wayland-subsurface",
-]
-wayland-subsurface = [
-    # gui.rs uses i-slint-backend-winit directly; the sink and its wayland/vulkan
-    # deps come in through fcast-video.
-    "dep:i-slint-backend-winit",
-    "fcast-video/wayland-subsurface",
-]
-systray = ["slint/system-tray"]
-kms-backend = ["slint/backend-linuxkms"]
-android = ["slint/backend-android-activity-06", "slint/renderer-skia"]
+desktop = ["static-gst-plugins"]
+systray = []
+kms-backend = []
+android = []
 tracy = ["dep:tracing-tracy"]
 static-gst-plugins = ["dep:gst-plugin-dav1d", "dep:gst-plugin-rtp"]
 # Enable when linking against a fully static gstreamer-full build
 static-gstreamer = []
-fhs = ["slint/renderer-femtovg"]
+fhs = []

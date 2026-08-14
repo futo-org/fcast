@@ -15,21 +15,12 @@ use libplacebo::Vulkan;
 use libplacebo::{OpenGL, Renderer, Swapchain, SwapchainFrame, libplacebo_sys::*};
 use tracing::{debug, warn};
 
-use crate::video::{MasteringDisplayInfo, Overlay, Rotation};
+use crate::video::{MasteringDisplayInfo, Overlay, OverlaySpace, Rotation};
 
-#[derive(Debug, Clone, Copy, clap::ValueEnum)]
-pub enum RenderProfile {
-    Fast,
-    Balanced,
-    HighQuality,
-}
-
-#[derive(Clone, Copy)]
-pub struct RenderingOptions {
-    pub profile: RenderProfile,
-    pub visualize_lut: bool,
-    pub show_clipping: bool,
-}
+// The settings themselves are plain data and live in `render_options`, which
+// compiles without the `render` feature. Re-exported here so `placebo::
+// RenderProfile` / `placebo::RenderingOptions` keep resolving unchanged.
+pub use crate::render_options::{RenderProfile, RenderingOptions};
 
 fn gst_matrix_to_placebo(matrix: gst_video::VideoColorMatrix) -> pl_color_system {
     match matrix {
@@ -385,9 +376,10 @@ impl PlaceboContext {
         })
     }
 
-    /// A windowless Vulkan context: it has no swapchain and can't present, but renders into
-    /// (dmabuf-exported) textures. Used by the Wayland subsurface sink. `drm_device` (a `dev_t`,
-    /// e.g. the compositor's dmabuf-feedback main device) pins the GPU selection so exported
+    /// A windowless Vulkan context: it has no swapchain and can't present, but
+    /// renders into (dmabuf-exported) textures. Used by the Wayland
+    /// subsurface sink. `drm_device` (a `dev_t`, e.g. the compositor's
+    /// dmabuf-feedback main device) pins the GPU selection so exported
     /// dmabufs are importable on multi-GPU systems.
     #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
     pub fn new_vulkan(
@@ -581,13 +573,14 @@ impl PlaceboContext {
                 priv_: std::ptr::null_mut(),
             };
 
-            // `pl_plane_data` describes components in *memory order* (component_map maps the
-            // n-th component in memory to a color channel). For planar/biplanar YUV memory
-            // order coincides with component index order, but packed formats don't (BGRA
-            // stores B first while B is component 2), so sort by the component's byte offset
-            // into the pixel. The stable sort keeps index order for planar formats where all
-            // offsets are 0. Padding bytes that aren't a component (the X in xRGB/BGRx) are
-            // expressed via component_pad.
+            // `pl_plane_data` describes components in *memory order* (component_map maps
+            // the n-th component in memory to a color channel). For
+            // planar/biplanar YUV memory order coincides with component index
+            // order, but packed formats don't (BGRA stores B first while B is
+            // component 2), so sort by the component's byte offset
+            // into the pixel. The stable sort keeps index order for planar formats where
+            // all offsets are 0. Padding bytes that aren't a component (the X
+            // in xRGB/BGRx) are expressed via component_pad.
             let poffsets = frame_info.format.poffset();
             let mut comps = [(0u32, 0u32); 4];
             let mut components = 0;
@@ -624,20 +617,30 @@ impl PlaceboContext {
     }
 
     /// Upload each overlay into a reusable texture and build the matching
-    /// `pl_overlay`/`pl_overlay_part` lists. The returned parts must be kept alive alongside the
-    /// overlays for the duration of the `pl_render_image` call (the overlays hold raw pointers into
-    /// the parts vec).
+    /// `pl_overlay`/`pl_overlay_part` lists, split by coordinate space. The
+    /// returned parts must be kept alive alongside the overlays for the
+    /// duration of the `pl_render_image` call (the overlays hold raw
+    /// pointers into the parts vec).
     ///
-    /// Overlays are addressed in *source-frame* coordinates (`PL_OVERLAY_COORDS_SRC_FRAME`) and set
-    /// on the source image, so libplacebo scales AND rotates them together with the video (matching
-    /// the frame's `rotation`) for free.
-    fn upload_overlays(&mut self, overlays: &[Overlay]) -> (Vec<pl_overlay>, Vec<pl_overlay_part>) {
+    /// [`OverlaySpace::SrcFrame`] overlays are addressed in *source-frame*
+    /// coordinates (`PL_OVERLAY_COORDS_SRC_FRAME`) and belong on the source
+    /// image, so libplacebo scales AND rotates them together with the video
+    /// (matching the frame's `rotation`) for free. [`OverlaySpace::Window`]
+    /// overlays are addressed in *destination-frame* coordinates
+    /// (`PL_OVERLAY_COORDS_DST_FRAME`) and belong on the destination, so they
+    /// composite at native display resolution, unscaled and upright.
+    ///
+    /// Returns `(source-image overlays, destination-frame overlays, parts)`.
+    fn upload_overlays(
+        &mut self,
+        overlays: &[Overlay],
+    ) -> (Vec<pl_overlay>, Vec<pl_overlay>, Vec<pl_overlay_part>) {
         if self.overlay_textures.len() < overlays.len() {
             self.overlay_textures.resize(overlays.len(), ptr::null());
         }
 
         let mut parts = Vec::with_capacity(overlays.len());
-        let mut texs = Vec::with_capacity(overlays.len());
+        let mut texs: Vec<(pl_tex, OverlaySpace)> = Vec::with_capacity(overlays.len());
         for (i, ov) in overlays.iter().enumerate() {
             let mut plane = libplacebo::new_plane();
             let plane_data = pl_plane_data {
@@ -678,7 +681,8 @@ impl PlaceboContext {
                     x1: ov.width as f32,
                     y1: ov.height as f32,
                 },
-                // Source-frame pixel placement; libplacebo maps it through the same
+                // Pixel placement in the overlay's own space; for source-frame
+                // overlays libplacebo maps it through the same
                 // scale/letterbox/rotation as the video.
                 dst: pl_rect2df {
                     x0: ov.x as f32,
@@ -688,15 +692,19 @@ impl PlaceboContext {
                 },
                 color: [1.0, 1.0, 1.0, 1.0],
             });
-            texs.push(self.overlay_textures[i]);
+            texs.push((self.overlay_textures[i], ov.space));
         }
 
-        let mut pl_overlays = Vec::with_capacity(parts.len());
-        for (part, &tex) in parts.iter().zip(texs.iter()) {
-            pl_overlays.push(pl_overlay {
+        let mut source_overlays = Vec::with_capacity(parts.len());
+        let mut destination_overlays = Vec::with_capacity(parts.len());
+        for (part, &(tex, space)) in parts.iter().zip(texs.iter()) {
+            let entry = pl_overlay {
                 tex,
                 mode: pl_overlay_mode::PL_OVERLAY_NORMAL,
-                coords: pl_overlay_coords::PL_OVERLAY_COORDS_SRC_FRAME,
+                coords: match space {
+                    OverlaySpace::SrcFrame => pl_overlay_coords::PL_OVERLAY_COORDS_SRC_FRAME,
+                    OverlaySpace::Window => pl_overlay_coords::PL_OVERLAY_COORDS_DST_FRAME,
+                },
                 repr: pl_color_repr {
                     sys: pl_color_system::PL_COLOR_SYSTEM_RGB,
                     levels: pl_color_levels::PL_COLOR_LEVELS_FULL,
@@ -712,30 +720,41 @@ impl PlaceboContext {
                 color: overlay_color_space(),
                 parts: part as *const pl_overlay_part,
                 num_parts: 1,
-            });
+            };
+            match space {
+                OverlaySpace::SrcFrame => source_overlays.push(entry),
+                OverlaySpace::Window => destination_overlays.push(entry),
+            }
         }
 
-        (pl_overlays, parts)
+        (source_overlays, destination_overlays, parts)
     }
 
-    /// Attach `overlays` to the source `image` (in source-frame coordinates) if any, then render it
-    /// into `destination`. Overlays ride the image through the renderer, so they scale and rotate
-    /// with the video (`image.rotation`). The overlay/part vecs are kept alive across the
-    /// `pl_render_image` call because `pl_frame.overlays` holds borrowed pointers.
+    /// Attach `overlays` to the frame their coordinate space belongs to, then
+    /// render `image` into `destination`. Source-frame overlays ride the
+    /// image through the renderer, so they scale and rotate with the video
+    /// (`image.rotation`); window-space overlays sit on the destination and
+    /// do neither. The overlay/part vecs are kept alive across the
+    /// `pl_render_image` call because `pl_frame.overlays` holds borrowed
+    /// pointers.
     fn render_image_with_overlays(
         &mut self,
         image: &mut pl_frame,
-        destination: &pl_frame,
+        destination: &mut pl_frame,
         overlays: &[Overlay],
     ) {
-        let (pl_overlays, _parts) = if overlays.is_empty() {
-            (Vec::new(), Vec::new())
+        let (source_overlays, destination_overlays, _parts) = if overlays.is_empty() {
+            (Vec::new(), Vec::new(), Vec::new())
         } else {
             self.upload_overlays(overlays)
         };
-        if !pl_overlays.is_empty() {
-            image.overlays = pl_overlays.as_ptr();
-            image.num_overlays = pl_overlays.len() as i32;
+        if !source_overlays.is_empty() {
+            image.overlays = source_overlays.as_ptr();
+            image.num_overlays = source_overlays.len() as i32;
+        }
+        if !destination_overlays.is_empty() {
+            destination.overlays = destination_overlays.as_ptr();
+            destination.num_overlays = destination_overlays.len() as i32;
         }
 
         unsafe {
@@ -972,11 +991,13 @@ impl PlaceboContext {
         Ok(())
     }
 
-    /// Zero-copy render of a VideoToolbox IOSurface frame. Mirrors [`render_dmabuf`]: import each
-    /// plane's IOSurface into a `GL_TEXTURE_RECTANGLE`, wrap it with `pl_opengl_wrap`, then render.
+    /// Zero-copy render of a VideoToolbox IOSurface frame. Mirrors
+    /// [`render_dmabuf`]: import each plane's IOSurface into a
+    /// `GL_TEXTURE_RECTANGLE`, wrap it with `pl_opengl_wrap`, then render.
     ///
-    /// Runs inside `SwapchainSink::render` where Slint's CGL context (the same one libplacebo
-    /// was created against) is current, so no context sharing and no sync meta are needed.
+    /// Runs inside `SwapchainSink::render` where Slint's CGL context (the same
+    /// one libplacebo was created against) is current, so no context
+    /// sharing and no sync meta are needed.
     #[cfg(target_os = "macos")]
     fn render_iosurface(
         &mut self,
@@ -1015,9 +1036,9 @@ impl PlaceboContext {
         let mut image = create_pl_frame(n_planes, info, &frame_info, mdi);
         image.rotation = rotation_to_pl(rotation);
 
-        // GL texture guards: each backs one `image.planes[i].texture`. They must outlive the
-        // render call and be dropped only after the `pl_tex` wrappers are destroyed (the wrapper
-        // does not own the GL object).
+        // GL texture guards: each backs one `image.planes[i].texture`. They must
+        // outlive the render call and be dropped only after the `pl_tex`
+        // wrappers are destroyed (the wrapper does not own the GL object).
         let mut plane_textures: SmallVec<[iosurface::PlaneTexture; 4]> = SmallVec::new();
 
         let import_result = (|| {
@@ -1077,8 +1098,9 @@ impl PlaceboContext {
 
         self.render_image_with_overlays(&mut image, destination, overlays);
 
-        // Destroy the pl_tex wrappers first, then drop `plane_textures` (which deletes the GL
-        // textures). Order matters: the wrapper references the GL object.
+        // Destroy the pl_tex wrappers first, then drop `plane_textures` (which deletes
+        // the GL textures). Order matters: the wrapper references the GL
+        // object.
         unsafe { destroy_textures(self.gpu(), n_planes, &mut image.planes) };
         drop(plane_textures);
 

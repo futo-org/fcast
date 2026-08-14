@@ -32,8 +32,8 @@ mod imp {
     const DEFAULT_COMPRESS: bool = false;
     const DEFAULT_IRADIO_MODE: bool = true;
     const DEFAULT_KEEP_ALIVE: bool = true;
-    /// Buffer size when serving the preloaded head from memory, sized like a
-    /// typical network chunk so downstream behaves identically.
+    /// Buffer size when serving the preloaded head, sized like a typical
+    /// network chunk so downstream behaves identically.
     const PRELOADED_HEAD_CHUNK: u64 = 256 * 1024;
 
     #[derive(Debug, Clone)]
@@ -48,10 +48,10 @@ mod imp {
         cookies: Vec<String>,
         iradio_mode: bool,
         keep_alive: bool,
-        /// Already-downloaded first bytes of the resource (the queue prefetch
-        /// cache's head). Served from memory before any network request, the
-        /// first read past it opens the connection at that offset. Only valid
-        /// together with `preloaded_size` and a range-capable server.
+        /// Already-downloaded first bytes of the resource, served from memory
+        /// before any network request. The first read past it opens the
+        /// connection at that offset. Only valid together with `preloaded_size`
+        /// and a range-capable server.
         preloaded_head: Option<glib::Bytes>,
         /// Total size of the resource the head belongs to (0 = no head).
         preloaded_size: u64,
@@ -100,13 +100,13 @@ mod imp {
             size: Option<u64>,
             caps: Option<gst::Caps>,
             tags: Option<gst::TagList>,
-            /// Reads at `position` come from the preloaded head instead of
-            /// the network. Set on start/seek when the position falls inside
-            /// the head, cleared when the first read past it opens the real
-            /// connection there.
+            /// Reads at `position` come from the preloaded head, not the
+            /// network. Set on start/seek when the position falls inside the
+            /// head, cleared when the first read past it opens the connection.
             serving_head: bool,
             /// Range end requested by the active seek segment, carried so the
-            /// lazy head-to-network transition re-requests the same range.
+            /// lazy head-to-network transition re-requests the same
+            /// range.
             stop: Option<u64>,
         },
     }
@@ -190,7 +190,7 @@ mod imp {
                 return Ok(client.clone());
             }
 
-            // Attempt to acquire an existing client context from another element instance
+            // Try to acquire an existing client context from another element.
             let mut q = gst::query::Context::new(REQWEST_CLIENT_CONTEXT);
             if self.obj().src_pad().peer_query(&mut q) {
                 if let Some(context) = q.context_owned() {
@@ -204,7 +204,7 @@ mod imp {
                 );
             }
 
-            // Hopefully now, self.set_context will have been synchronously called
+            // set_context should have been called synchronously by now.
             if let Some(client) = self.external_client.lock().clone() {
                 gst::debug!(CAT, imp = self, "Using shared client");
                 *client_guard = Some(client.clone());
@@ -223,7 +223,6 @@ mod imp {
                 })?,
             }));
 
-            // Share created client with other elements.
             gst::debug!(CAT, imp = self, "Sharing new client with other elements");
             let mut context = gst::Context::new(REQWEST_CLIENT_CONTEXT, true);
             {
@@ -281,7 +280,7 @@ mod imp {
             headers.typed_insert(settings.user_agent.parse::<UserAgent>().unwrap());
 
             if !settings.compress {
-                // Compression is the default
+                // Compression is the default, so opt out explicitly.
                 headers.insert(
                     header::ACCEPT_ENCODING,
                     "identity".parse::<HeaderValue>().unwrap(),
@@ -362,11 +361,9 @@ mod imp {
                 headers.insert("icy-metadata", "1".parse().unwrap());
             }
 
-            // Add all headers for the request here
             let req = req.headers(headers);
 
             let req = if let Some(ref user_id) = settings.user_id {
-                // HTTP auth available
                 req.basic_auth(user_id, settings.user_pw.clone())
             } else {
                 req
@@ -533,9 +530,9 @@ mod imp {
             })
         }
 
-        /// A Started state that serves `position..` from the preloaded head,
-        /// with no connection open yet. Only built when the settings carry a
-        /// head (which implies a range-capable server and a known size).
+        /// A Started state serving `position..` from the preloaded head, with
+        /// no connection open yet. Only built when the settings carry a
+        /// head, which implies a range-capable server and a known size.
         fn head_state(&self, uri: Url, position: u64, stop: Option<u64>) -> Option<State> {
             let settings = self.settings.lock();
             let head = settings.preloaded_head.as_ref()?;
@@ -578,7 +575,6 @@ mod imp {
             *canceller = Canceller::Handle(abort_handle);
             drop(canceller);
 
-            // Wrap in a timeout
             let future = async {
                 if timeout == 0 {
                     future.await
@@ -596,7 +592,6 @@ mod imp {
                 }
             };
 
-            // And make abortable
             let future = async {
                 match future::Abortable::new(future, abort_registration).await {
                     Ok(res) => res.map_err(Some),
@@ -606,7 +601,6 @@ mod imp {
 
             let res = fcast_runtime::RUNTIME.block_on(future);
 
-            /* Clear out the canceller */
             let mut canceller = self.canceller.lock();
             if matches!(*canceller, Canceller::Cancelled) {
                 return Err(None);
@@ -975,8 +969,8 @@ mod imp {
 
             gst::debug!(CAT, imp = self, "Starting for URI {}", uri);
 
-            // With a preloaded head there is nothing to request yet: serve
-            // from memory and open the connection at the first byte past it.
+            // With a preloaded head there is nothing to request yet. Serve from
+            // memory and open the connection at the first byte past it.
             if let Some(head_state) = self.head_state(uri.clone(), 0, None) {
                 *state = head_state;
                 return Ok(());
@@ -1003,12 +997,15 @@ mod imp {
 
             match query.view_mut() {
                 QueryViewMut::Scheduling(q) => {
-                    q.set(
-                        gst::SchedulingFlags::SEQUENTIAL | gst::SchedulingFlags::BANDWIDTH_LIMITED,
-                        1,
-                        -1,
-                        0,
-                    );
+                    // SEEKABLE follows `is_seekable` (the server's own range
+                    // support) and is independent of the scheduling MODES, which
+                    // stay push-only. Twin of the note in `fcompsrc`.
+                    let mut flags =
+                        gst::SchedulingFlags::SEQUENTIAL | gst::SchedulingFlags::BANDWIDTH_LIMITED;
+                    if BaseSrcImpl::is_seekable(self) {
+                        flags |= gst::SchedulingFlags::SEEKABLE;
+                    }
+                    q.set(flags, 1, -1, 0);
                     q.add_scheduling_modes([gst::PadMode::Push]);
                     true
                 }
@@ -1063,10 +1060,9 @@ mod imp {
         ) -> Result<CreateSuccess, gst::FlowError> {
             let mut state = self.state.lock();
 
-            // Preloaded-head mode: serve from memory. The first read past the
-            // head (or past the seek range) either ends the stream or opens
-            // the real connection at the current position, after which the
-            // normal network path below takes over.
+            // Preloaded-head mode: serve from memory. The first read past the head
+            // (or past the seek range) either ends the stream or opens the real
+            // connection, after which the network path below takes over.
             if let State::Started {
                 ref uri,
                 position,
@@ -1306,7 +1302,7 @@ mod tests {
         });
     }
 
-    /// Our custom test harness around the HTTP source
+    /// Test harness around the HTTP source.
     #[derive(Debug)]
     struct Harness {
         src: gst::Element,
@@ -1315,7 +1311,7 @@ mod tests {
         _rt: tokio::runtime::Runtime,
     }
 
-    /// Messages sent from our test harness
+    /// Messages sent from the test harness.
     #[allow(clippy::enum_variant_names)]
     #[derive(Debug, Clone)]
     enum Message {
@@ -1336,10 +1332,9 @@ mod tests {
     }
 
     impl Harness {
-        /// Creates a new HTTP source and test harness around it
-        ///
-        /// `http_func`: Function to generate HTTP responses based on a request
-        /// `setup_func`: Setup function for the HTTP source, should only set properties and similar
+        /// Creates an HTTP source and a harness around it. `http_func`
+        /// generates the responses, `setup_func` may only set
+        /// properties and similar.
         fn new<
             F: FnMut(
                     hyper::Request<hyper::body::Incoming>,
@@ -1354,16 +1349,12 @@ mod tests {
             use hyper::{server::conn::http1, service::service_fn};
             use std::sync::{Arc, Mutex};
 
-            // Create the HTTP source
             let src = gst::ElementFactory::make("fcasthttpsrc").build().unwrap();
 
-            // Sender/receiver for the messages we generate from various places for the tests
-            //
-            // Sending to this sender will block until the corresponding item was received from the
-            // receiver, which allows us to handle everything as if it is running in a single thread
+            // Rendezvous channel: sending blocks until the item is received, so
+            // the whole test behaves as if it ran on a single thread.
             let (sender, receiver) = mpsc::sync_channel(0);
 
-            // Sink pad that receives everything the source is generating
             let pad = gst::Pad::builder(gst::PadDirection::Sink)
                 .name("sink")
                 .chain_function({
@@ -1394,21 +1385,16 @@ mod tests {
                 gst::BusSyncReply::Drop
             });
 
-            // Activate the pad so that it can be used now
             pad.set_active(true).unwrap();
 
-            // Create the tokio runtime used for the HTTP server in this test
             let rt = tokio::runtime::Builder::new_multi_thread()
                 .enable_all()
                 .build()
                 .unwrap();
 
-            // Create an HTTP sever that listens on localhost on some random, free port
+            // Listen on localhost on a random free port.
             let addr = std::net::SocketAddr::from(([127, 0, 0, 1], 0));
 
-            // Whenever a new client is connecting, a new service function is requested. For each
-            // client we use the same service function, which simply calls the function used by the
-            // test
             let http_func = Arc::new(Mutex::new(http_func));
             let service = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                 let http_func = http_func.clone();
@@ -1417,10 +1403,7 @@ mod tests {
 
             let (local_addr_sender, local_addr_receiver) = tokio::sync::oneshot::channel();
 
-            // Spawn the server in the background so that it can handle requests
             rt.spawn(async move {
-                // Bind the server, retrieve the local port that was selected in the end and set this as
-                // the location property on the source
                 let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
                 let local_addr = listener.local_addr().unwrap();
 
@@ -1443,7 +1426,6 @@ mod tests {
             let local_addr = rt.block_on(local_addr_receiver).unwrap();
             src.set_property("location", format!("http://{local_addr}/"));
 
-            // Let the test setup anything needed on the HTTP source now
             setup_func(&src);
 
             Harness {
@@ -1580,9 +1562,8 @@ mod tests {
             }
         }
 
-        /// Wait until a buffer is available or EOS was reached
-        ///
-        /// This function will panic on errors.
+        /// Wait until a buffer is available or EOS was reached. Panics on
+        /// errors.
         fn wait_buffer_or_eos(&mut self) -> Option<gst::Buffer> {
             loop {
                 match self.receiver.as_mut().unwrap().recv().unwrap() {
@@ -1617,7 +1598,7 @@ mod tests {
             }
         }
 
-        /// Run some code asynchronously on another thread with the HTTP source
+        /// Run some code asynchronously on another thread with the HTTP source.
         fn run<F: FnOnce(&gst::Element) + Send + 'static>(&self, func: F) {
             self.src.call_async(move |src| func(src));
         }
@@ -1625,14 +1606,11 @@ mod tests {
 
     impl Drop for Harness {
         fn drop(&mut self) {
-            // Shut down everything that was set up for this test harness
-            // and wait until the tokio runtime exited
             let bus = self.src.bus().unwrap();
             bus.set_flushing(true);
 
-            // Drop the receiver first before setting the state so that
-            // any threads that might still be blocked on the sender
-            // are immediately unblocked
+            // Drop the receiver BEFORE the state change, or threads still blocked
+            // on the sender never wake up.
             self.receiver.take().unwrap();
 
             self.pad.set_active(false).unwrap();
@@ -1646,8 +1624,6 @@ mod tests {
 
         init();
 
-        // Set up a harness that returns "Hello World" for any HTTP request and checks if the
-        // default headers are all sent
         let mut h = Harness::new(
             |req| {
                 let headers = req.headers();
@@ -1662,18 +1638,14 @@ mod tests {
             },
         );
 
-        // Set the HTTP source to Playing so that everything can start
         h.run(|src| {
             src.set_state(gst::State::Playing).unwrap();
         });
 
-        // And now check if the data we receive is exactly what we expect it to be
         let expected_output = "Hello World";
         let mut cursor = Cursor::new(expected_output);
 
         while let Some(buffer) = h.wait_buffer_or_eos() {
-            // On the first buffer also check if the duration reported by the HTTP source is what we
-            // would expect it to be
             if cursor.position() == 0 {
                 assert_eq!(
                     h.src.query_duration::<gst::format::Bytes>(),
@@ -1681,15 +1653,12 @@ mod tests {
                 );
             }
 
-            // Map the buffer readable and check if it contains exactly the data we would expect at
-            // this point after reading everything else we read in previous runs
             let map = buffer.map_readable().unwrap();
             let mut read_buf = vec![0; map.size()];
             assert_eq!(cursor.read(&mut read_buf).unwrap(), map.size());
             assert_eq!(&*map, &*read_buf);
         }
 
-        // Check if everything was read
         assert_eq!(cursor.position(), 11);
     }
 
@@ -1697,11 +1666,9 @@ mod tests {
     fn test_preloaded_head() {
         init();
 
-        // The injected head bytes DIFFER from anything the server would
-        // produce for that range, and the server asserts it is only ever
-        // asked for the range PAST the head boundary. Both together prove
-        // the head region was served from memory and the remainder was
-        // stitched seamlessly from the network.
+        // The injected head bytes differ from what the server produces, and the
+        // server asserts it is only ever asked for the range past the head,
+        // proving the head came from memory and the tail was stitched on.
         const TOTAL: usize = 1000;
         const HEAD: usize = 600;
         let head: Vec<u8> = (0..HEAD).map(|i| (i % 251) as u8).collect();
@@ -1752,7 +1719,7 @@ mod tests {
         let mut checked_size = false;
         while let Some(buffer) = h.wait_buffer_or_eos() {
             // The size must be answerable from the preloaded metadata alone,
-            // before any connection was made.
+            // before any connection is made.
             if !checked_size {
                 assert_eq!(
                     h.src.query_duration::<gst::format::Bytes>(),
@@ -1773,8 +1740,6 @@ mod tests {
 
         init();
 
-        // Set up a harness that returns "Hello World" for any HTTP request and override various
-        // default properties to check if the corresponding headers are set correctly
         let mut h = Harness::new(
             |req| {
                 let headers = req.headers();
@@ -1793,18 +1758,14 @@ mod tests {
             },
         );
 
-        // Set the HTTP source to Playing so that everything can start
         h.run(|src| {
             src.set_state(gst::State::Playing).unwrap();
         });
 
-        // And now check if the data we receive is exactly what we expect it to be
         let expected_output = "Hello World";
         let mut cursor = Cursor::new(expected_output);
 
         while let Some(buffer) = h.wait_buffer_or_eos() {
-            // On the first buffer also check if the duration reported by the HTTP source is what we
-            // would expect it to be
             if cursor.position() == 0 {
                 assert_eq!(
                     h.src.query_duration::<gst::format::Bytes>(),
@@ -1812,15 +1773,12 @@ mod tests {
                 );
             }
 
-            // Map the buffer readable and check if it contains exactly the data we would expect at
-            // this point after reading everything else we read in previous runs
             let map = buffer.map_readable().unwrap();
             let mut read_buf = vec![0; map.size()];
             assert_eq!(cursor.read(&mut read_buf).unwrap(), map.size());
             assert_eq!(&*map, &*read_buf);
         }
 
-        // Check if everything was read
         assert_eq!(cursor.position(), 11);
     }
 
@@ -1830,8 +1788,6 @@ mod tests {
 
         init();
 
-        // Set up a harness that returns "Hello World" for any HTTP request and check if the
-        // extra-headers property works correctly for setting additional headers
         let mut h = Harness::new(
             |req| {
                 let headers = req.headers();
@@ -1869,18 +1825,14 @@ mod tests {
             },
         );
 
-        // Set the HTTP source to Playing so that everything can start
         h.run(|src| {
             src.set_state(gst::State::Playing).unwrap();
         });
 
-        // And now check if the data we receive is exactly what we expect it to be
         let expected_output = "Hello World";
         let mut cursor = Cursor::new(expected_output);
 
         while let Some(buffer) = h.wait_buffer_or_eos() {
-            // On the first buffer also check if the duration reported by the HTTP source is what we
-            // would expect it to be
             if cursor.position() == 0 {
                 assert_eq!(
                     h.src.query_duration::<gst::format::Bytes>(),
@@ -1888,15 +1840,12 @@ mod tests {
                 );
             }
 
-            // Map the buffer readable and check if it contains exactly the data we would expect at
-            // this point after reading everything else we read in previous runs
             let map = buffer.map_readable().unwrap();
             let mut read_buf = vec![0; map.size()];
             assert_eq!(cursor.read(&mut read_buf).unwrap(), map.size());
             assert_eq!(&*map, &*read_buf);
         }
 
-        // Check if everything was read
         assert_eq!(cursor.position(), 11);
     }
 
@@ -1906,8 +1855,6 @@ mod tests {
 
         init();
 
-        // Set up a harness that returns "Hello World" for any HTTP request and check if the
-        // cookies property can be used to set cookies correctly
         let mut h = Harness::new(
             |req| {
                 let headers = req.headers();
@@ -1927,18 +1874,14 @@ mod tests {
             },
         );
 
-        // Set the HTTP source to Playing so that everything can start
         h.run(|src| {
             src.set_state(gst::State::Playing).unwrap();
         });
 
-        // And now check if the data we receive is exactly what we expect it to be
         let expected_output = "Hello World";
         let mut cursor = Cursor::new(expected_output);
 
         while let Some(buffer) = h.wait_buffer_or_eos() {
-            // On the first buffer also check if the duration reported by the HTTP source is what we
-            // would expect it to be
             if cursor.position() == 0 {
                 assert_eq!(
                     h.src.query_duration::<gst::format::Bytes>(),
@@ -1946,15 +1889,12 @@ mod tests {
                 );
             }
 
-            // Map the buffer readable and check if it contains exactly the data we would expect at
-            // this point after reading everything else we read in previous runs
             let map = buffer.map_readable().unwrap();
             let mut read_buf = vec![0; map.size()];
             assert_eq!(cursor.read(&mut read_buf).unwrap(), map.size());
             assert_eq!(&*map, &*read_buf);
         }
 
-        // Check if everything was read
         assert_eq!(cursor.position(), 11);
     }
 
@@ -1964,9 +1904,6 @@ mod tests {
 
         init();
 
-        // Set up a harness that returns "Hello World" for any HTTP request and check if the
-        // iradio-mode property works correctly, and especially the icy- headers are parsed correctly
-        // and put into caps/tags
         let mut h = Harness::new(
             |req| {
                 let headers = req.headers();
@@ -1986,18 +1923,14 @@ mod tests {
             },
         );
 
-        // Set the HTTP source to Playing so that everything can start
         h.run(|src| {
             src.set_state(gst::State::Playing).unwrap();
         });
 
-        // And now check if the data we receive is exactly what we expect it to be
         let expected_output = "Hello World";
         let mut cursor = Cursor::new(expected_output);
 
         while let Some(buffer) = h.wait_buffer_or_eos() {
-            // On the first buffer also check if the duration reported by the HTTP source is what we
-            // would expect it to be
             if cursor.position() == 0 {
                 assert_eq!(
                     h.src.query_duration::<gst::format::Bytes>(),
@@ -2005,15 +1938,12 @@ mod tests {
                 );
             }
 
-            // Map the buffer readable and check if it contains exactly the data we would expect at
-            // this point after reading everything else we read in previous runs
             let map = buffer.map_readable().unwrap();
             let mut read_buf = vec![0; map.size()];
             assert_eq!(cursor.read(&mut read_buf).unwrap(), map.size());
             assert_eq!(&*map, &*read_buf);
         }
 
-        // Check if everything was read
         assert_eq!(cursor.position(), 11);
 
         let srcpad = h.src.static_pad("src").unwrap();
@@ -2050,8 +1980,6 @@ mod tests {
 
         init();
 
-        // Set up a harness that returns "Hello World" for any HTTP request and check if the
-        // audio/L16 content type is parsed correctly and put into the caps
         let mut h = Harness::new(
             |_req| {
                 hyper::Response::builder()
@@ -2064,18 +1992,14 @@ mod tests {
             },
         );
 
-        // Set the HTTP source to Playing so that everything can start
         h.run(|src| {
             src.set_state(gst::State::Playing).unwrap();
         });
 
-        // And now check if the data we receive is exactly what we expect it to be
         let expected_output = "Hello World";
         let mut cursor = Cursor::new(expected_output);
 
         while let Some(buffer) = h.wait_buffer_or_eos() {
-            // On the first buffer also check if the duration reported by the HTTP source is what we
-            // would expect it to be
             if cursor.position() == 0 {
                 assert_eq!(
                     h.src.query_duration::<gst::format::Bytes>(),
@@ -2083,15 +2007,12 @@ mod tests {
                 );
             }
 
-            // Map the buffer readable and check if it contains exactly the data we would expect at
-            // this point after reading everything else we read in previous runs
             let map = buffer.map_readable().unwrap();
             let mut read_buf = vec![0; map.size()];
             assert_eq!(cursor.read(&mut read_buf).unwrap(), map.size());
             assert_eq!(&*map, &*read_buf);
         }
 
-        // Check if everything was read
         assert_eq!(cursor.position(), 11);
 
         let srcpad = h.src.static_pad("src").unwrap();
@@ -2113,8 +2034,6 @@ mod tests {
 
         init();
 
-        // Set up a harness that returns "Hello World" for any HTTP request
-        // but requires authentication first
         let mut h = Harness::new(
             |req| {
                 let headers = req.headers();
@@ -2136,18 +2055,14 @@ mod tests {
             },
         );
 
-        // Set the HTTP source to Playing so that everything can start
         h.run(|src| {
             src.set_state(gst::State::Playing).unwrap();
         });
 
-        // And now check if the data we receive is exactly what we expect it to be
         let expected_output = "Hello World";
         let mut cursor = Cursor::new(expected_output);
 
         while let Some(buffer) = h.wait_buffer_or_eos() {
-            // On the first buffer also check if the duration reported by the HTTP source is what we
-            // would expect it to be
             if cursor.position() == 0 {
                 assert_eq!(
                     h.src.query_duration::<gst::format::Bytes>(),
@@ -2155,15 +2070,12 @@ mod tests {
                 );
             }
 
-            // Map the buffer readable and check if it contains exactly the data we would expect at
-            // this point after reading everything else we read in previous runs
             let map = buffer.map_readable().unwrap();
             let mut read_buf = vec![0; map.size()];
             assert_eq!(cursor.read(&mut read_buf).unwrap(), map.size());
             assert_eq!(&*map, &*read_buf);
         }
 
-        // Check if everything was read
         assert_eq!(cursor.position(), 11);
     }
 
@@ -2171,7 +2083,6 @@ mod tests {
     fn test_404_error() {
         init();
 
-        // Harness that always returns 404 and we check if that is mapped to the correct error code
         let mut h = Harness::new(
             |_req| {
                 hyper::Response::builder()
@@ -2196,7 +2107,6 @@ mod tests {
     fn test_403_error() {
         init();
 
-        // Harness that always returns 403 and we check if that is mapped to the correct error code
         let mut h = Harness::new(
             |_req| {
                 hyper::Response::builder()
@@ -2221,7 +2131,6 @@ mod tests {
     fn test_network_error() {
         init();
 
-        // Harness that always fails with a network error
         let mut h = Harness::new(
             |_req| unreachable!(),
             |src| {
@@ -2245,7 +2154,6 @@ mod tests {
 
         init();
 
-        // Harness that checks if seeking in Ready state works correctly
         let mut h = Harness::new(
             |req| {
                 let headers = req.headers();
@@ -2266,11 +2174,9 @@ mod tests {
                         panic!("Received an unexpected Range header")
                     }
                 } else {
-                    // `panic!("Received no Range header")` should be called here but due to a bug
-                    // in `basesrc` we cant do that here. If we do a seek in READY state, basesrc
-                    // will do a `start()` call without seek. Once we get seek forwarded, the call
-                    // with seek is made. This issue has to be solved.
-                    // issue link: https://gitlab.freedesktop.org/gstreamer/gstreamer/issues/413
+                    // Cannot assert on a missing Range header. A seek in READY
+                    // makes basesrc start() without the seek first.
+                    // https://gitlab.freedesktop.org/gstreamer/gstreamer/issues/413
                     let mut data_full = vec![0; 8192];
                     for (i, d) in data_full.iter_mut().enumerate() {
                         *d = (i % 256) as u8;
@@ -2324,8 +2230,8 @@ mod tests {
 
         init();
 
-        // Harness that checks if seeking in Playing state after having received a buffer works
-        // correctly
+        // Harness that checks if seeking in Playing state after having received a
+        // buffer works correctly
         let mut h = Harness::new(
             |req| {
                 let headers = req.headers();
@@ -2365,11 +2271,9 @@ mod tests {
             src.set_state(gst::State::Playing).unwrap();
         });
 
-        //wait for a buffer
         let buffer = h.wait_buffer_or_eos().unwrap();
         assert_eq!(buffer.offset(), 0);
 
-        //seek to a position after a buffer is Received
         h.run(|src| {
             src.seek_simple(gst::SeekFlags::FLUSH, 123.bytes()).unwrap();
         });
@@ -2400,8 +2304,8 @@ mod tests {
 
         init();
 
-        // Harness that checks if seeking in Playing state after having received a buffer works
-        // correctly
+        // Harness that checks if seeking in Playing state after having received a
+        // buffer works correctly
         let mut h = Harness::new(
             |req| {
                 let headers = req.headers();
@@ -2441,11 +2345,9 @@ mod tests {
             src.set_state(gst::State::Playing).unwrap();
         });
 
-        //wait for a buffer
         let buffer = h.wait_buffer_or_eos().unwrap();
         assert_eq!(buffer.offset(), 0);
 
-        //seek to a position after a buffer is Received
         let start = 123.bytes();
         let stop = 131.bytes();
         h.run(move |src| {
@@ -2485,8 +2387,6 @@ mod tests {
     fn test_cookies() {
         init();
 
-        // Set up a harness that returns "Hello World" for any HTTP request and sets a cookie in our
-        // client
         let mut h = Harness::new(
             |_req| {
                 hyper::Response::builder()
@@ -2499,7 +2399,6 @@ mod tests {
             },
         );
 
-        // Set the HTTP source to Playing so that everything can start
         h.run(|src| {
             src.set_state(gst::State::Playing).unwrap();
         });
@@ -2510,8 +2409,7 @@ mod tests {
         }
         assert_eq!(num_bytes, 11);
 
-        // Set up a second harness that returns "Hello World" for any HTTP request that checks if our
-        // client provides the cookie that was set in the previous request
+        // The second request must carry the cookie set by the first.
         let mut h2 = Harness::new(
             |req| {
                 let headers = req.headers();
@@ -2533,7 +2431,6 @@ mod tests {
         let context = h.src.context("fcast.reqwest.client").expect("No context");
         h2.src.set_context(&context);
 
-        // Set the HTTP source to Playing so that everything can start
         h2.run(|src| {
             src.set_state(gst::State::Playing).unwrap();
         });

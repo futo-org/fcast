@@ -1,9 +1,6 @@
-//! AirPlay mirror audio: AAC-ELD over RTP/UDP.
-//!
-//! Mirror audio is a separate stream from the video (`type 96` in `SETUP`,
-//! versus `type 110` for video). It arrives as RTP/UDP packets - a 12-byte RTP
-//! header followed by an AES-128-CBC-encrypted AAC-ELD (enhanced low delay) frame (`raop_rtp.c`,
-//! `raop_buffer.c`):
+//! AirPlay mirror audio: AAC-ELD over RTP/UDP, a stream separate from the video
+//! (`type 96` in `SETUP`, versus `type 110`). Each packet is a 12-byte RTP
+//! header followed by an AES-128-CBC-encrypted AAC-ELD frame:
 //!
 //! ```text
 //! [0]      0x80
@@ -14,15 +11,9 @@
 //! [12..]   encrypted AAC-ELD frame
 //! ```
 //!
-//! Two quirks (`raop_rtp.c`): the stream opens with "no data" packets whose
-//! payload is the 4-byte marker `00 68 34 00`, and every frame is transmitted
-//! three times with incrementing sequence numbers - so we de-duplicate by
-//! keeping only strictly-newer sequence numbers.
-//!
-//! This task only receives, decrypts and de-duplicates; the decrypted AAC-ELD
-//! frames are handed to the `airplaysrc` Bin's audio appsrc (via the shared
-//! [`AirPlayContext`](super::source::AirPlayContext)) so they decode inside the
-//! shared `playbin3` pipeline alongside the video - one clock, one volume.
+//! Two quirks: the stream opens with "no data" packets whose payload is the
+//! 4-byte marker `00 68 34 00`, and every frame is transmitted three times with
+//! incrementing sequence numbers - hence the strictly-newer de-duplication.
 
 use std::{sync::mpsc::Sender, time::Duration};
 
@@ -43,13 +34,12 @@ type Aes128CbcDec = cbc::Decryptor<Aes128>;
 /// AAC-ELD compression type (`ct`) in the `SETUP` audio stream.
 pub const CT_AAC_ELD: u8 = 8;
 
-/// End the audio session if no packet arrives for this long (the client stops
-/// sending on teardown; UDP gives us no explicit close).
+/// End the audio session after this long with no packet; UDP has no explicit
+/// close, and the client simply stops sending on teardown.
 const IDLE_TIMEOUT: Duration = Duration::from_secs(10);
 
-/// Decrypt an audio payload in place-ish: AES-128-CBC over the whole 16-byte
-/// blocks (IV reset per packet), the trailing partial block left as plaintext
-/// (`raop_buffer.c`).
+/// Decrypt an audio payload: AES-128-CBC over the whole 16-byte blocks (IV
+/// reset per packet), leaving the trailing partial block as plaintext.
 fn decrypt(cipher: &Aes128, aesiv: &[u8; 16], payload: &[u8]) -> Vec<u8> {
     let block_len = payload.len() & !0xf;
     let mut out = payload.to_vec();
@@ -68,9 +58,8 @@ fn seq_newer(seq: u16, last: u16) -> bool {
 }
 
 /// Receive, decrypt and de-duplicate the mirror audio stream, handing each
-/// decrypted AAC-ELD frame to `frame_tx` (the `airplaysrc` audio appsrc). Ends
-/// when the client stops sending (idle timeout), the socket errors, or the
-/// source drops the receiver.
+/// AAC-ELD frame to `frame_tx`. Ends on idle timeout, socket error, or a
+/// dropped receiver.
 #[instrument(skip_all, fields(device = %device_name))]
 pub async fn run(
     socket: UdpSocket,
@@ -112,7 +101,7 @@ pub async fn run(
         }
         let packet = &buf[..n];
         let payload = &packet[12..n];
-        // Skip "no data" marker packets sent while the stream warms up.
+        // Skip the "no data" marker packets sent while the stream warms up.
         if payload.is_empty() || (payload.len() == 4 && payload == [0x00, 0x68, 0x34, 0x00]) {
             continue;
         }
@@ -143,16 +132,13 @@ mod tests {
     fn seq_newer_handles_wraparound() {
         assert!(seq_newer(5, 4));
         assert!(!seq_newer(4, 5));
-        assert!(!seq_newer(4, 4)); // duplicate
-        // wraparound: 1 is newer than 65535
+        assert!(!seq_newer(4, 4));
         assert!(seq_newer(1, 0xffff));
         assert!(!seq_newer(0xffff, 1));
     }
 
     #[test]
     fn decrypt_leaves_partial_block_plaintext() {
-        // 20-byte payload: 16 encrypted + 4 plaintext tail. With a known key/iv
-        // the tail must pass through unchanged.
         let key = [0x11u8; 16];
         let iv = [0x22u8; 16];
         let cipher = Aes128::new(GenericArray::from_slice(&key));

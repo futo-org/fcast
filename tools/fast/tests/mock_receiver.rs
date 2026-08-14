@@ -3,7 +3,9 @@ use std::{collections::HashSet, net::SocketAddr, path::PathBuf, sync::Arc, time:
 use fast::{PlaylistItem, Receive, Send, Step, engine::run_case};
 use fcast_protocol::{
     Opcode, PacketReader, PlaybackErrorMessage, PlaybackState, ReadResult, SeekMessage,
-    SetSpeedMessage, SetVolumeMessage, VersionMessage, companion,
+    SetSpeedMessage, SetVolumeMessage, VersionMessage,
+    bytes::Bytes,
+    companion,
     v2::{PlaybackUpdateMessage as V2PlaybackUpdateMessage, VolumeUpdateMessage},
     v3::{
         AVCapabilities, EventMessage, EventObject, EventSubscribeObject, EventType,
@@ -1514,7 +1516,8 @@ async fn run_companion_mock(
                 }
             }
             Ok(Opcode::Resource) => {
-                let Ok(resp) = companion::ResourceResponse::parse(&body) else {
+                let Ok(resp) = companion::ResourceResponse::parse(Bytes::copy_from_slice(&body))
+                else {
                     continue;
                 };
                 if let companion::GetResourceResult::Success(bytes) = resp.result {

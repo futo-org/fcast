@@ -82,9 +82,10 @@ impl FhsPixmapSink {
             "fourcc={fourcc:#010x} ({width}x{height}) egl-importable modifiers={modifiers:#018x?}"
         );
 
-        // libplacebo's single-tex dma-buf import only carries plane 0, so multi-plane modifiers
-        // (for example AMD with DCC) fail with EGL_BAD_MATCH.
-        // Probe each modifier in preference order and pick the first that produces a single-plane BO.
+        // libplacebo's single-tex dma-buf import only carries plane 0, so multi-plane
+        // modifiers (for example AMD with DCC) fail with EGL_BAD_MATCH.
+        // Probe each modifier in preference order and pick the first that produces a
+        // single-plane BO.
         for &modifier in &modifiers {
             let candidate = match self.gbm.create_bo(width, height, fourcc, &[modifier]) {
                 Ok(b) => b,
@@ -191,7 +192,8 @@ impl FhsPixmapSink {
         let stride = unsafe { gbm_bo_get_stride(bo) };
         let offset = unsafe { gbm_bo_get_offset(bo, 0) };
         let modifier = unsafe { gbm_bo_get_modifier(bo) };
-        // libplacebo dup's this on import, and the fiatlux client closes it after sending
+        // libplacebo dup's this on import, and the fiatlux client closes it after
+        // sending
         let fd = unsafe { gbm_bo_get_fd(bo) };
         if fd < 0 {
             return Err(anyhow!("gbm_bo_get_fd failed"));

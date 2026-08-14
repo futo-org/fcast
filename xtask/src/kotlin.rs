@@ -8,30 +8,29 @@ use crate::{sh, workspace};
 
 #[derive(Subcommand)]
 pub enum KotlinCommand {
-    /// Build the native libraries and generate the UniFFI Kotlin bindings into
-    /// `<src_dir>` (`jniLibs/` + `kotlin/`). This is the raw input consumed by
-    /// the `sdk/sender/android` Gradle project; it does not produce an `.aar`.
+    /// Build the native libs + UniFFI Kotlin bindings into `<src_dir>`
+    /// (`jniLibs/` + `kotlin/`). Raw input for the `sdk/sender/android`
+    /// Gradle project, no `.aar`.
     BuildAndroidLibrary {
         #[clap(long)]
         release: bool,
         #[clap(long)]
         src_dir: Utf8PathBuf,
     },
-    /// Drive the `sdk/sender/android` Gradle project: generate the native libs +
-    /// bindings into `<module_dir>/src`, run its Gradle wrapper, then optionally
-    /// copy the resulting `.aar` to `--out` (e.g. grayjay's `app/aar/`).
-    ///
-    /// Pass `--gradle-task publishToMavenCentral` to build and publish the SDK to
-    /// Maven Central instead of just assembling a drop-in aar.
+    /// Drive the `sdk/sender/android` Gradle project: generate libs + bindings
+    /// into `<module_dir>/src`, run its Gradle wrapper, then optionally
+    /// copy the `.aar` to `--out`. `--gradle-task publishToMavenCentral`
+    /// publishes instead.
     BuildAar {
         #[clap(long)]
         release: bool,
-        /// Path to the Gradle module (defaults to the in-repo `sdk/sender/android`).
+        /// Path to the Gradle module (defaults to the in-repo
+        /// `sdk/sender/android`).
         #[clap(long, default_value = "sdk/sender/android")]
         module_dir: Utf8PathBuf,
-        /// Optional destination for the produced `.aar`: a directory (the aar
-        /// keeps its Gradle-assigned name) or an explicit `*.aar` file path.
-        /// Omit when the Gradle task publishes rather than assembles.
+        /// Destination for the produced `.aar`: a directory or an explicit
+        /// `*.aar` path. Omit when the Gradle task publishes rather
+        /// than assembles.
         #[clap(long)]
         out: Option<Utf8PathBuf>,
         /// Gradle task to run.
@@ -63,7 +62,8 @@ fn build_for_android_target(
     built_lib_path(target, profile, package_name)
 }
 
-/// Path to the `.so` a given profile/target produces under the workspace target dir.
+/// Path to the `.so` a given profile/target produces under the workspace target
+/// dir.
 fn built_lib_path(target: &str, profile: &str, package_name: &str) -> Result<Utf8PathBuf> {
     let profile_dir_name = if profile == "dev" { "debug" } else { profile };
     let package_camel = package_name.replace('-', "_");
@@ -127,12 +127,9 @@ fn build_android_library(release: bool, src_dir: Utf8PathBuf) -> Result<()> {
         package_name,
     )?;
 
-    // uniffi_bindgen reconstructs the interface from the `UNIFFI_META_*` symbols
-    // in the library. The `release-small` profile has `strip = "symbols"`, which
-    // removes them (the FFI functions survive, so the app loads but fails the
-    // API-checksum check for any changed method). Generate from an unstripped
-    // build instead: for release, a separate (unstripped, un-optimized) aarch64
-    // lib; for dev the (already unstripped) aarch64 lib we just built.
+    // uniffi_bindgen rebuilds the interface from the library's `UNIFFI_META_*`
+    // symbols, which `release-small` strips (the app then loads but fails the
+    // API-checksum check). Generate from an unstripped build instead.
     let uniffi_lib_path = if release {
         build_unstripped_meta_lib(package_name)?
     } else {
@@ -145,10 +142,8 @@ fn build_android_library(release: bool, src_dir: Utf8PathBuf) -> Result<()> {
 }
 
 /// Build an unstripped aarch64 library purely so `uniffi_bindgen` can read its
-/// metadata. Uses the `dev` profile: the `UNIFFI_META_*` symbols are emitted the
-/// same regardless of optimization, so this needs neither LTO nor `opt-level`
-/// (unlike a `release`-derived profile, whose fat LTO dominated build time).
-/// Not copied into `jniLibs`.
+/// metadata. `dev` profile: the `UNIFFI_META_*` symbols don't depend on
+/// optimization, and a release-derived profile's fat LTO dominated build time.
 fn build_unstripped_meta_lib(package_name: &str) -> Result<Utf8PathBuf> {
     let sh = sh();
     let _p = sh.push_dir(workspace::root_path()?);
@@ -163,7 +158,8 @@ fn build_unstripped_meta_lib(package_name: &str) -> Result<Utf8PathBuf> {
     built_lib_path("aarch64-linux-android", "dev", package_name)
 }
 
-/// Drive the `sdk/sender/android` Gradle project to assemble (or publish) the aar.
+/// Drive the `sdk/sender/android` Gradle project to assemble (or publish) the
+/// aar.
 fn build_aar(
     release: bool,
     module_dir: Utf8PathBuf,
@@ -172,15 +168,12 @@ fn build_aar(
 ) -> Result<()> {
     let sh = sh();
 
-    // Resolve workspace-relative paths up front, while the cwd is still the
-    // workspace root — the Gradle step below pushes into the module dir, where
-    // `cargo metadata` (used by `workspace::*`) would fail.
+    // Resolve workspace-relative paths while the cwd is still the workspace root,
+    // the Gradle step pushes into the module dir, where `cargo metadata` fails.
     let fallback_android_home = workspace::root_path()?.join(crate::android::ANDROID_HOME_PATH);
 
-    // 1. Generate the native libs + UniFFI bindings into the layout the Gradle
-    //    project consumes (`<module_dir>/src`). This overwrites the generated
-    //    `.so` + `fcast_sender_sdk.kt` and leaves hand-written sources (e.g.
-    //    `Discovery.kt`) untouched.
+    // 1. Generate libs + bindings into the layout Gradle consumes; overwrites the
+    //    generated `.so`/`.kt` and leaves hand-written sources untouched.
     build_android_library(release, module_dir.join("src"))?;
 
     // 2. Run the requested Gradle task with the project's own wrapper.
@@ -192,15 +185,13 @@ fn build_aar(
     }
     {
         let _dir = sh.push_dir(&module_dir);
-        // Point the Android Gradle plugin at the SDK xtask can provision, unless
-        // the environment already sets ANDROID_HOME.
+        // Point the Android Gradle plugin at the SDK xtask can provision.
         let _env = (std::env::var_os("ANDROID_HOME").is_none() && fallback_android_home.exists())
             .then(|| sh.push_env("ANDROID_HOME", fallback_android_home.as_str()));
         cmd!(sh, "./gradlew {gradle_task}").run()?;
     }
 
-    // 3. Optionally locate the produced aar and copy it to `out`. Skipped when
-    //    the task publishes rather than assembles a drop-in aar.
+    // 3. Optionally copy the produced aar to `out` (skipped when publishing).
     if let Some(out) = out {
         let aar = find_built_aar(&module_dir)?;
         let dest = if out.extension() == Some("aar") {
@@ -219,9 +210,8 @@ fn build_aar(
     Ok(())
 }
 
-/// Find the most recently built `.aar` under `<root>/**/build/outputs/aar/`,
-/// preferring a `release` variant. Searching the output dir avoids hard-coding
-/// the Gradle module name.
+/// The most recently built `.aar` under `<root>/**/build/outputs/aar/`,
+/// preferring a `release` variant (avoids hard-coding the Gradle module name).
 fn find_built_aar(root: &Utf8Path) -> Result<Utf8PathBuf> {
     fn collect(dir: &Utf8Path, out: &mut Vec<Utf8PathBuf>) {
         let Ok(entries) = std::fs::read_dir(dir) else {

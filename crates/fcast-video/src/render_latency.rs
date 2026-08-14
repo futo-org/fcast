@@ -12,12 +12,12 @@ const PERCENTILE: f32 = 0.95;
 const GROW_MARGIN: Duration = Duration::from_millis(2);
 /// Shrink only once the reservation drops this far below the applied value...
 const SHRINK_MARGIN: Duration = Duration::from_millis(5);
-/// ...and has stayed low this long. Grow eagerly, shrink lazily: a brief calm
-/// between busy stretches must not trigger a reconfig.
+/// ...and has stayed low this long. Grow eagerly, shrink lazily, so a brief
+/// calm between busy stretches does not trigger a reconfig.
 const SHRINK_COOLDOWN: Duration = Duration::from_secs(2);
 /// Re-evaluate at most this often.
 const POLL_INTERVAL: Duration = Duration::from_millis(250);
-/// Clamp: a reservation beyond a few frame durations is pathological, capping it
+/// A reservation beyond a few frame durations is pathological. Capping it
 /// bounds the presentation delay we impose.
 const MAX_DELAY: Duration = Duration::from_millis(80);
 
@@ -62,11 +62,12 @@ impl LatencyDeque {
     }
 }
 
-/// Tracks recent video render cost and derives the sink `render-delay` to apply.
-/// See the module docs.
+/// Tracks recent video render cost and derives the sink `render-delay` to
+/// apply. See the module docs.
 pub struct RenderLatencyTracker {
     samples: LatencyDeque,
-    /// The delay currently set on the sink (starts at the base-sink default, 0).
+    /// The delay currently set on the sink (starts at the base-sink default,
+    /// 0).
     applied: Duration,
     /// Last time [`poll`](Self::poll) evaluated (rate limiter).
     last_poll: Option<Instant>,
@@ -90,7 +91,8 @@ impl RenderLatencyTracker {
     }
 
     /// Worst-case reservation over the window (a high percentile, so a single
-    /// slow frame does not pin the delay high). `None` until the window is warm.
+    /// slow frame does not pin the delay high). `None` until the window is
+    /// warm.
     fn reservation(&self) -> Option<Duration> {
         if self.samples.len() < WINDOW / 2 {
             return None;

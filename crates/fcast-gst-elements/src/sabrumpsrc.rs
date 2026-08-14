@@ -35,8 +35,8 @@ mod imp {
         appsrc: gst_app::AppSrc,
         role: Role,
         alternates: Vec<SabrFormat>,
-        /// Set by the appsrc `enough-data` signal and cleared by `need-data`.
-        /// The feeder paces on this in its own loop, not by blocking inside
+        /// Set by `enough-data`, cleared by `need-data`. The feeder paces on
+        /// this in its own loop rather than blocking inside
         /// `push_buffer`, so it stays responsive to seeks while paused.
         enough: Arc<AtomicBool>,
     }
@@ -47,8 +47,7 @@ mod imp {
         session: Option<SabrSession>,
         branches: Vec<Branch>,
         running: Option<Arc<AtomicBool>>,
-        /// The session pump task plus one feeder task per branch, all running on
-        /// the shared tokio runtime. Aborted on teardown.
+        /// The session pump plus one feeder per branch, on the shared runtime.
         tasks: Vec<JoinHandle<()>>,
         /// Bumped on each seek so feeders abandon their current position and
         /// re-feed from the session's new one.
@@ -105,9 +104,8 @@ mod imp {
                     if let Some(running) = self.state.lock().running.as_ref() {
                         running.store(false, Ordering::Release);
                     }
-                    // Tear down unconditionally. Even if the parent transition
-                    // errors (e.g. a stuck live pipeline), the session pump must
-                    // be released or it keeps polling forever.
+                    // Unconditional. Even if the parent transition errors, the
+                    // session pump must be released or it polls forever.
                     let ret = self.parent_change_state(transition);
                     self.stop_streaming();
                     ret
@@ -148,15 +146,13 @@ mod imp {
             let element = self.obj();
             let bin: &gst::Bin = element.upcast_ref();
 
-            // Shared across both live branches: the first buffer's PTS, used to
-            // rebase absolute media timestamps to a zero-based timeline so the
-            // sinks can schedule them. One offset also keeps A/V in sync.
+            // The first buffer's PTS, shared across branches so rebasing to a
+            // zero-based timeline keeps A/V on one origin.
             let live_offset = Arc::new(AtomicI64::new(i64::MIN));
 
-            // Each branch's parsebin exposes exactly one elementary stream, so
-            // we know up front how many ghost src pads the bin will grow. Track
-            // them so we can emit `no-more-pads` once they're all present,
-            // letting decodebin3/playbin3 finalise linking deterministically.
+            // Each branch's parsebin exposes exactly one elementary stream, so the
+            // ghost pad count is known up front. Track it to emit `no-more-pads`
+            // once they are all present.
             let expected_pads = usize::from(!spec.video_formats.is_empty())
                 + usize::from(!spec.audio_formats.is_empty());
             let exposed_pads = Arc::new(AtomicUsize::new(0));
@@ -196,8 +192,7 @@ mod imp {
             }
 
             let mut state = self.state.lock();
-            // Release any previous session so its pump task exits. Otherwise the
-            // old pump keeps polling (and logging) forever after being replaced.
+            // Release any previous session, or its pump keeps polling forever.
             if let Some(old) = state.session.take() {
                 old.release();
             }
@@ -212,11 +207,9 @@ mod imp {
 
     impl SabrumpSrc {
         /// Build one `appsrc → parsebin` branch and ghost the parsed elementary
-        /// pads out of the bin, wiring up seek handling on the appsrc.
-        /// `parsebin` typefinds the container from the bytes (fMP4 → qtdemux,
-        /// WebM → matroskademux internally), so a branch works regardless of
-        /// which container the server's ABR delivers. YouTube commonly pairs
-        /// AAC/MP4 audio with VP9/AV1 WebM video.
+        /// pads out of the bin. `parsebin` typefinds the container from the
+        /// bytes, so a branch works whichever container the server's
+        /// ABR delivers.
         #[allow(clippy::too_many_arguments)]
         fn build_branch(
             &self,
@@ -239,35 +232,30 @@ mod imp {
 
             let appsrc = gst_app::AppSrc::builder()
                 .stream_type(stream_type)
-                // TIME format so the demuxer is driven with a time segment (like
-                // DASH), and seeks are expressed and handled in time.
+                // TIME format so the demuxer is driven with a time segment and
+                // seeks are expressed in time.
                 .format(gst::Format::Time)
-                // Live sources must not block preroll. With is_live=false a live
-                // stream that hasn't produced a decodable buffer wedges the
-                // pipeline in async PAUSED, so it can never be torn down.
+                // With is_live=false a live stream that has not produced a
+                // decodable buffer wedges the pipeline in async PAUSED, so it can
+                // never be torn down.
                 .is_live(is_live)
                 .do_timestamp(false)
-                // No caps. parsebin typefinds the container (fMP4/WebM) from the
-                // pushed bytes, so we don't assert a container the ABR-selected
-                // format might not match.
+                // No caps. parsebin typefinds the container from the pushed bytes,
+                // so never assert one the ABR-selected format might not match.
                 .build();
-            // Do NOT block inside push_buffer for pacing. While paused the queue
-            // fills and a blocked push can't observe seeks (the flush wakes it
-            // unreliably when paused). Instead pace in the feeder loop off the
-            // enough-data/need-data signals, so the feeder always stays
-            // responsive to the seek generation.
+            // Do NOT block inside push_buffer for pacing. While paused, a blocked
+            // push cannot observe seeks. Pace in the feeder loop instead.
             appsrc.set_property("block", false);
             appsrc.set_property("max-bytes", 8_000_000u64);
             if seekable {
                 appsrc.set_duration(gst::ClockTime::from_useconds(duration_us as u64));
             }
 
-            // `enough` starts true so the feeder waits for the first need-data
-            // rather than racing ahead before the pipeline is prerolling.
+            // Starts true so the feeder waits for the first need-data rather than
+            // racing ahead before the pipeline is prerolling.
             let enough = Arc::new(AtomicBool::new(true));
 
-            // Reposition the session when the appsrc is seeked. Pace feeding via
-            // the demand signals.
+            // Reposition the session on seek. Pace feeding via the demand signals.
             {
                 let elem_weak = self.obj().downgrade();
                 let enough_need = enough.clone();
@@ -309,13 +297,9 @@ mod imp {
                     let Some(bin) = bin_weak.upgrade() else {
                         return;
                     };
-                    // Create the ghost from our `src_%u` template with an
-                    // explicit unique name. Every parsebin names its first src
-                    // pad `src_0`, so a template-derived name would just reuse
-                    // the target's `src_0` and collide across branches. We
-                    // assign `src_<n>` from the shared counter ourselves (as
-                    // demuxers do for their `%u` sometimes-pads), which also
-                    // drives no-more-pads.
+                    // Explicit unique name. Every parsebin names its first src pad
+                    // `src_0`, so a template-derived name would collide across
+                    // branches. The shared counter also drives no-more-pads.
                     let idx = exposed_pads.fetch_add(1, Ordering::AcqRel);
                     let Some(templ) = bin.pad_template("src_%u") else {
                         gst::warning!(CAT, "missing src_%u pad template");
@@ -333,9 +317,8 @@ mod imp {
 
                     add_diag_probe(&ghost, role);
 
-                    // Live streams carry absolute media timestamps. Rebase them
-                    // to a zero-based timeline (shared offset across branches)
-                    // so the sinks can schedule them.
+                    // Live streams carry absolute media timestamps; rebase them so
+                    // the sinks can schedule them.
                     if is_live {
                         add_live_rebase_probe(&ghost, live_offset.clone());
                     }
@@ -349,8 +332,7 @@ mod imp {
                         return;
                     }
 
-                    // Once every branch has exposed its stream, tell downstream
-                    // no further pads are coming.
+                    // Once every branch exposed its stream, no more pads are coming.
                     if idx + 1 >= expected_pads {
                         bin.no_more_pads();
                     }
@@ -379,8 +361,6 @@ mod imp {
             state.running = Some(running.clone());
             let seek_gen = state.seek_gen.clone();
 
-            // The session pump and the per-branch feeders all run as tasks on
-            // the shared runtime, not dedicated threads.
             let mut tasks = Vec::new();
             tasks.push(fcast_runtime::RUNTIME.spawn({
                 let session = session.clone();
@@ -413,8 +393,8 @@ mod imp {
                 }
                 (std::mem::take(&mut state.tasks), state.session.clone())
             };
-            // Release first so the tasks observe shutdown and unwind at their
-            // next await. Abort as a backstop for any stuck on I/O.
+            // Release FIRST so tasks unwind at their next await. Abort is only the
+            // backstop for one stuck on I/O.
             if let Some(session) = session {
                 session.release();
             }
@@ -424,11 +404,10 @@ mod imp {
             self.state.lock().running = None;
         }
 
-        /// Reposition the SABR session to `target_us` (called from an appsrc
-        /// `seek-data` callback). appsrc has already flushed itself. We just
-        /// move the session and bump the generation so feeders re-feed.
-        /// Coalesces the two per-branch seek callbacks via `restart`'s return
-        /// value.
+        /// Reposition the session to `target_us` from an appsrc `seek-data`
+        /// callback. appsrc has already flushed itself, so this only moves the
+        /// session and bumps the generation. `restart`'s return value coalesces
+        /// the two per-branch callbacks.
         fn reposition(&self, target_us: i64) {
             let (session, seek_gen) = {
                 let state = self.state.lock();
@@ -443,11 +422,10 @@ mod imp {
             }
         }
 
-        /// Forward a seek event to every branch's appsrc so they all flush and
-        /// reposition. The pipeline seek only reaches one branch's ghost pad, so
-        /// without this the other branch's feeder can stay blocked in
-        /// `push_buffer` and never notice the seek. Deduped by seqnum since both
-        /// ghost pads may fire the same seek.
+        /// Forward a seek to every branch's appsrc. The pipeline seek reaches
+        /// only one ghost pad, leaving the other branch's feeder
+        /// unaware. Deduped by seqnum, since both ghost pads may fire
+        /// the same seek.
         fn forward_seek_to_all(&self, event: &gst::Event) {
             let appsrcs = {
                 let mut state = self.state.lock();
@@ -467,9 +445,8 @@ mod imp {
         }
     }
 
-    /// Add probes to a ghost pad. Forward SEEK events into every branch's
-    /// appsrc (so the appsrcs, not the demuxer, handle the seek) and answer
-    /// SEEKING queries as seekable.
+    /// Forward SEEK events into every branch's appsrc (so the appsrcs, not the
+    /// demuxer, handle them) and answer SEEKING queries as seekable.
     fn add_seek_probes(
         ghost: &gst::GhostPad,
         elem_weak: glib::WeakRef<super::SabrumpSrc>,
@@ -484,7 +461,7 @@ mod imp {
                 if let Some(elem) = elem_weak.upgrade() {
                     elem.imp().forward_seek_to_all(event);
                 }
-                // Handled here. Don't let the demuxer attempt a byte seek.
+                // Handled, so the demuxer never attempts a byte seek.
                 return gst::PadProbeReturn::Handled;
             }
             gst::PadProbeReturn::Ok
@@ -508,10 +485,8 @@ mod imp {
         });
     }
 
-    /// Log the first segment event and first few buffers out of the demuxer, so
-    /// we can see the actual timestamps a stream carries (esp. live, whose
-    /// media timestamps are absolute and may need rebasing before the sink will
-    /// schedule them).
+    /// Log the first segment event and first few buffers out of the demuxer, to
+    /// see the timestamps a stream actually carries.
     fn add_diag_probe(ghost: &gst::GhostPad, role: Role) {
         let count = std::sync::Arc::new(AtomicU64::new(0));
         ghost.add_probe(
@@ -543,11 +518,9 @@ mod imp {
     }
 
     /// Rebase absolute live media timestamps to a zero-based timeline. Live
-    /// SABR fragments carry absolute PTS/DTS (wall-clock-ish, ~1e13 ns), which
-    /// the sinks would schedule ~days in the future. We force a zero-based TIME
-    /// segment and subtract a single shared offset (the first buffer's PTS seen
-    /// on either branch) from every buffer, so playback starts at running-time 0
-    /// and video/audio stay aligned to the same origin.
+    /// SABR fragments carry wall-clock-ish PTS/DTS that the sinks would
+    /// schedule days out. One shared offset (the first buffer's PTS on
+    /// either branch) keeps video and audio on the same origin.
     fn add_live_rebase_probe(ghost: &gst::GhostPad, offset: Arc<AtomicI64>) {
         ghost.add_probe(
             gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM,
@@ -555,8 +528,8 @@ mod imp {
                 match &mut info.data {
                     Some(gst::PadProbeData::Event(event)) => {
                         if let gst::EventView::Segment(_) = event.view() {
-                            // Replace with a plain zero-based, open-ended TIME
-                            // segment so rebased buffers schedule from 0.
+                            // Plain zero-based open-ended TIME segment, so rebased
+                            // buffers schedule from 0.
                             let seg = gst::FormattedSegment::<gst::ClockTime>::new();
                             *event = gst::event::Segment::new(seg.as_ref());
                         }
@@ -592,19 +565,14 @@ mod imp {
 
     enum PushOutcome {
         Ok,
-        /// Transient: the appsrc is flushing (seek in progress) or still holds a
-        /// stale EOS from a previous end-of-stream that a pending seek's flush
-        /// hasn't cleared yet. Loop back to `'restart` and retry. Do NOT exit,
-        /// or a post-EOS seek would permanently kill the feeder.
+        /// Transient (appsrc flushing, or a stale EOS a pending seek's flush
+        /// has not cleared): retry via `'restart`. Do NOT exit, or a
+        /// post-EOS seek would permanently kill the feeder.
         Retry,
         /// A real downstream error. Stop feeding.
         Stop,
     }
 
-    /// Per-track feeder: push the init segment, then push media segments in
-    /// sequence order, advancing the session's demand window as it consumes.
-    /// Restarts from the top (re-pushing init, like DASH) whenever a seek bumps
-    /// `seek_gen`.
     /// Result of waiting for appsrc demand before a push.
     enum Demand {
         /// appsrc wants data. Go ahead and push.
@@ -615,14 +583,10 @@ mod imp {
         Stop,
     }
 
-    /// Whether the feed loop should restart from the top. It restarts when a
-    /// client seek bumped our `seek_gen`, when the *server* repositioned the
-    /// stream (a `SABR_SEEK` or live-window clamp) bumping the session's seek
-    /// generation, or when the server switched us to a different format among
-    /// the alternates (ABR), after which the pump fills a *different* buffer. In
-    /// every case the feeder's sequence cursor and/or buffer is stale, so it
-    /// must re-resolve from the top. Otherwise it waits forever for data that
-    /// will never arrive on the buffer it is watching.
+    /// Whether the feed loop must restart from the top. A client seek, a server
+    /// reposition, or an ABR format switch each leave the feeder's sequence
+    /// cursor and/or buffer stale, and it would otherwise wait forever for data
+    /// that never arrives on the buffer it watches.
     fn should_restart(
         session: &SabrSession,
         role: Role,
@@ -638,10 +602,9 @@ mod imp {
                 .is_some_and(|k| k != format.key())
     }
 
-    /// Wait (in our own loop, checking the seek generation each tick) until the
-    /// appsrc asks for more data. This replaces blocking inside `push_buffer`,
-    /// so a paused pipeline (queue full → `enough` stays set) never traps the
-    /// feeder where it can't see a seek.
+    /// Wait until the appsrc asks for more data, checking the seek generation
+    /// each tick. Replaces blocking inside `push_buffer`, which would trap
+    /// the feeder where it cannot see a seek while the pipeline is paused.
     #[allow(clippy::too_many_arguments)]
     async fn await_demand(
         session: &SabrSession,
@@ -667,6 +630,9 @@ mod imp {
         }
     }
 
+    /// Per-track feeder. Push the init segment, then media segments in sequence
+    /// order. Restarts from the top, re-pushing init, whenever `seek_gen`
+    /// moves.
     #[allow(clippy::too_many_arguments)]
     async fn feed(
         session: SabrSession,
@@ -678,10 +644,9 @@ mod imp {
         enough: Arc<AtomicBool>,
         elem: glib::WeakRef<super::SabrumpSrc>,
     ) {
-        // Re-resolved on each (re)start. `adopt_server_format` can switch the
-        // session to a different format among the alternates (server-side ABR),
-        // after which the pump fills that format's buffer. A feeder pinned to
-        // the original buffer would then wait forever.
+        // Re-resolved on each (re)start. Server-side ABR can switch the session to
+        // another alternate, after which the pump fills THAT format's buffer and a
+        // feeder pinned to the original would wait forever.
         let mut format = match session
             .active_format(role)
             .or_else(|| alternates.first().cloned())
@@ -691,10 +656,8 @@ mod imp {
         };
         let mut buffer = session.buffer_for(&format);
 
-        // Snapshot the server-seek generation. When the server repositions us,
-        // the sequence cursor becomes stale, so we re-sync from the buffer front
-        // and flush the appsrc. Unlike a client seek, nothing else flushed the
-        // queued, now-stale buffers.
+        // A server reposition makes the sequence cursor stale, and unlike a client
+        // seek nothing else flushes the queued buffers.
         let mut last_server_gen = session.server_seek_generation();
 
         'restart: loop {
@@ -706,9 +669,8 @@ mod imp {
                 last_server_gen = server_gen;
                 flush_appsrc(&appsrc);
             }
-            // Follow a server-side format switch (see `format`/`buffer` above).
-            // Re-point at the newly chosen format's buffer before re-priming
-            // with its init segment.
+            // Follow a server-side format switch. Re-point at the new format's
+            // buffer before re-priming with its init segment.
             if let Some(active) = session.active_format(role)
                 && active.key() != format.key()
             {
@@ -724,19 +686,14 @@ mod imp {
             let generation = seek_gen.load(Ordering::Acquire);
             gst::debug!(CAT, "feeder {role:?} (re)start gen={generation}");
 
-            // Acquire the init segment (ftyp+moov) to open a fresh fragmented
-            // stream after each (re)start. VOD announces a dedicated init
-            // segment. Live fragments are self-initializing (each carries the
-            // init as a prefix), so fall back to extracting that prefix from the
-            // first complete media segment. If neither shows up, give up rather
-            // than spin forever. A hung feeder never prerolls, wedging the
-            // pipeline so it can't even be torn down.
+            // A fresh fragmented stream needs an init segment (ftyp+moov) after
+            // every (re)start. VOD announces a dedicated one, live fragments are
+            // self-initializing so it comes from the first media segment's prefix.
+            // Give up rather than spin, a hung feeder never prerolls and wedges the
+            // pipeline beyond teardown.
             let mut init_waits = 0u32;
-            // Whether media segments are self-initializing (each carries a
-            // ftyp+moov prefix to strip). Only true when we sourced the init
-            // from a media segment's prefix (live). A dedicated init segment
-            // (VOD) means media segments carry no prefix, so skip re-parsing
-            // each one.
+            // Media segments carry a ftyp+moov prefix to strip only when the init
+            // came from one (live); VOD segments never do.
             let mut self_init = false;
             let init_bytes: Bytes = loop {
                 if !running.load(Ordering::Acquire) || session.is_released() {
@@ -752,10 +709,9 @@ mod imp {
                 ) {
                     continue 'restart;
                 }
-                // Must wait for the init to be *complete*. It is announced (with
-                // no bytes yet) before its MEDIA parts arrive, and the async UMP
-                // reader yields between parts, so an un-gated read here can push
-                // a truncated `moov` and wedge the demuxer with bogus atom sizes.
+                // Must wait for the init to be COMPLETE. It is announced before its
+                // MEDIA parts arrive, and pushing a truncated `moov` wedges the
+                // demuxer with bogus atom sizes.
                 if let Some(init) = buffer.init_segment()
                     && init.is_complete()
                 {
@@ -858,14 +814,10 @@ mod imp {
                     ) {
                         continue 'restart;
                     }
-                    // The pump can discard this exact segment (a truncated
-                    // response with incomplete pending dropped at end of
-                    // `consume`, or a content-length mismatch at MEDIA_END) and
-                    // re-announce the sequence as a fresh `Arc`. That bumps
-                    // neither the seek nor the epoch generation, so
-                    // `should_restart` won't catch it. Watch for the swap
-                    // directly and re-await the sequence rather than block
-                    // forever on an `Arc` that will never complete.
+                    // The pump can discard this exact segment and re-announce the
+                    // sequence as a fresh `Arc`, which bumps no generation and so
+                    // escapes `should_restart`. Watch for the swap directly, or
+                    // block forever on an `Arc` that never completes.
                     match buffer.get(seq) {
                         Some(cur) if Arc::ptr_eq(&cur, &segment) => {}
                         _ => {
@@ -900,11 +852,8 @@ mod imp {
                     Demand::Restart => continue 'restart,
                     Demand::Stop => return,
                 }
-                // Strip any self-init prefix (ftyp+moov) so we don't re-push the
-                // moov mid-stream. Only self-initializing (live) segments carry
-                // one. VOD segments never do, so skip the parse there. Slicing
-                // the frozen `Bytes` is zero-copy and `Buffer::from_slice` wraps
-                // it without copying the payload.
+                // Strip any self-init prefix so the moov is not re-pushed
+                // mid-stream. Slicing the frozen `Bytes` is zero-copy.
                 let seg_bytes = segment.bytes();
                 let payload = if self_init {
                     let strip = mp4_init_prefix_length(&seg_bytes).min(seg_bytes.len());
@@ -926,10 +875,8 @@ mod imp {
 
                 next_seq = Some(seq + 1);
 
-                // Advance the demand window and playhead so the pump fetches
-                // ahead and old segments can be evicted. Cheap window bump: the
-                // active format stays with the session (`adopt_server_format`),
-                // so no need to re-send the alternates list every segment.
+                // Advance the demand window and playhead so the pump fetches ahead
+                // and old segments can be evicted.
                 session.set_playback_position(segment.end_us());
                 session.advance_demand(role, segment.end_us());
 
@@ -943,10 +890,8 @@ mod imp {
                         "feeder {role:?} reached end (seq={seq}); EOS, awaiting seek"
                     );
                     let _ = appsrc.end_of_stream();
-                    // Do NOT exit the feeder task. A seek after EOS (very common
-                    // for short videos that fully buffer) must be able to
-                    // re-feed. Wait for a generation bump, then restart from the
-                    // new pos.
+                    // Do NOT exit the feeder task. A seek after EOS must still be
+                    // able to re-feed. Wait for a generation bump, then restart.
                     loop {
                         if !running.load(Ordering::Acquire) || session.is_released() {
                             return;
@@ -968,12 +913,9 @@ mod imp {
         }
     }
 
-    /// Length of the fragmented-MP4 init prefix (`ftyp`/`moov`/`free`/…) at the
-    /// start of `data`, i.e. the offset of the first media box (`styp`, `sidx`,
-    /// `moof`, `mdat`, `emsg`). Returns 0 when `data` already starts with media
-    /// (normal VOD segments) or can't be parsed. Live SABR fragments are
-    /// self-initializing (each carries this prefix), so it doubles as both the
-    /// init source and the amount to strip from each media segment.
+    /// Length of the fragmented-MP4 init prefix (`ftyp`/`moov`/…) at the start
+    /// of `data`, i.e. the offset of the first media box. Returns 0 when
+    /// `data` already starts with media or cannot be parsed.
     fn mp4_init_prefix_length(data: &[u8]) -> usize {
         let mut pos = 0usize;
         while pos + 8 <= data.len() {
@@ -1001,22 +943,18 @@ mod imp {
         0
     }
 
-    /// Flush the appsrc (and everything downstream) after a *server*-initiated
-    /// seek. Client seeks already flush via the forwarded seek event. A server
-    /// seek doesn't, so the appsrc still holds queued buffers on the now-stale
-    /// timeline. Flush them before re-priming with a fresh init segment, so we
-    /// don't splice a second `moov` behind old media. Only ever runs on an
-    /// actual server reposition, so it can't affect steady-state playback.
+    /// Flush the appsrc after a SERVER-initiated seek, which (unlike a client
+    /// seek) leaves queued buffers on a stale timeline. They must go before
+    /// re-priming, or a second `moov` is spliced in behind old media.
     fn flush_appsrc(appsrc: &gst_app::AppSrc) {
-        // reset_time=false: the two branch feeders flush independently, so
-        // resetting the pipeline running-time from either would desync A/V.
+        // reset_time=false because the branch feeders flush independently, so resetting
+        // the running-time from either would desync A/V.
         let _ = appsrc.send_event(gst::event::FlushStart::new());
         let _ = appsrc.send_event(gst::event::FlushStop::new(false));
     }
 
-    /// Surface a fatal streaming failure as a bus `ERROR` (so the application
-    /// sees a real error) rather than a silent `EOS` that looks like a clean
-    /// end. Still EOS the appsrc afterward to unblock anything waiting on it.
+    /// Surface a fatal failure as a bus `ERROR` rather than a silent `EOS` that
+    /// looks like a clean end, then EOS the appsrc to unblock its waiters.
     fn fail_stream(elem: &glib::WeakRef<super::SabrumpSrc>, appsrc: &gst_app::AppSrc, msg: &str) {
         gst::error!(CAT, "sabrump stream failed: {msg}");
         if let Some(elem) = elem.upgrade() {
@@ -1061,11 +999,11 @@ mod imp {
 
     // --- reqwest client for the SABR transport ---
 
-    /// Build the reqwest client `sabrump` sends SABR requests through. The
-    /// timeouts bound every phase. Without them a stalled endpoint blocks the
-    /// pump indefinitely (it only re-checks shutdown between UMP parts) with no
-    /// error, backoff, or recovery. `read_timeout` resets on each successful
-    /// read, so it detects a stall without capping a healthy streaming response.
+    /// Build the reqwest client SABR requests go through. The timeouts bound
+    /// every phase. Without them a stalled endpoint blocks the pump forever
+    /// with no error or recovery. `read_timeout` resets on each successful
+    /// read, so it catches a stall without capping a healthy streaming
+    /// response.
     fn build_reqwest_client() -> Result<reqwest::Client, String> {
         reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))

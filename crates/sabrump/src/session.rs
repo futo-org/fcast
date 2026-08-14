@@ -1,20 +1,21 @@
 //! The SABR session pump.
 //!
 //! A background async task drives the request/response loop: it builds a
-//! `VideoPlaybackAbrRequest`, POSTs it through the [`SabrTransport`], streams the
-//! UMP response into per-format [`SabrTrackBuffer`]s, and honours the server's
-//! readahead / backoff / redirect / seek directives before issuing the next
-//! request.
+//! `VideoPlaybackAbrRequest`, POSTs it through the [`SabrTransport`], streams
+//! the UMP response into per-format [`SabrTrackBuffer`]s, and honours the
+//! server's readahead / backoff / redirect / seek directives before issuing the
+//! next request.
 //!
 //! Consumers (e.g. a gstreamer source element) declare what they want via
 //! [`SabrSession::set_demand`] and pull completed segments out of the buffers
 //! returned by [`SabrSession::buffer_for`].
 
 // Times are kept as plain `i64` micro/milliseconds rather than `time::Duration`
-// on purpose. They mirror the wire protocol's integer fields, several use signed
-// sentinels (`NO_US = i64::MIN`, live-head `player_time`) that `Duration` can't
-// represent, they participate in signed arithmetic (deltas that can go negative),
-// and some live in `AtomicI64`. `Duration` would fit none of those cleanly.
+// on purpose. They mirror the wire protocol's integer fields, several use
+// signed sentinels (`NO_US = i64::MIN`, live-head `player_time`) that
+// `Duration` can't represent, they participate in signed arithmetic (deltas
+// that can go negative), and some live in `AtomicI64`. `Duration` would fit
+// none of those cleanly.
 
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
@@ -404,8 +405,9 @@ impl SabrSession {
         pump(self.shared.clone()).await;
     }
 
-    /// Convenience: consume a cloned handle into the pump future, so callers can
-    /// `runtime.spawn(session.clone().into_pump())` without borrowing lifetimes.
+    /// Convenience: consume a cloned handle into the pump future, so callers
+    /// can `runtime.spawn(session.clone().into_pump())` without borrowing
+    /// lifetimes.
     pub async fn into_pump(self) {
         self.run().await;
     }
@@ -489,9 +491,9 @@ impl SabrSession {
     /// Advance only the `from_us` of the existing demand for `role`. A cheap
     /// readahead-window bump for a consumer feeding in sequence order, with no
     /// format re-selection and no allocation, unlike
-    /// [`SabrSession::set_demand_alternates`]. A no-op if there is no demand for
-    /// `role` or `from_us` is unchanged. Format selection stays with the pump
-    /// (see `adopt_server_format`).
+    /// [`SabrSession::set_demand_alternates`]. A no-op if there is no demand
+    /// for `role` or `from_us` is unchanged. Format selection stays with
+    /// the pump (see `adopt_server_format`).
     pub fn advance_demand(&self, role: Role, from_us: i64) {
         let mut state = self.shared.state.lock();
         match state.demand_mut(role).as_mut() {
@@ -505,7 +507,8 @@ impl SabrSession {
         self.shared.state.lock().playback_position_us = position_us;
     }
 
-    /// Seek to `from_us`. If already buffered, just re-anchor, otherwise restart.
+    /// Seek to `from_us`. If already buffered, just re-anchor, otherwise
+    /// restart.
     pub fn seek_to(&self, from_us: i64) {
         let mut state = self.shared.state.lock();
         let demands: Vec<Demand> = [state.video_demand.clone(), state.audio_demand.clone()]
@@ -1354,6 +1357,14 @@ fn on_next_request_policy(shared: &Arc<Shared>, policy: NextRequestPolicy) {
         state.target_audio_readahead_ms = policy.target_audio_readahead_ms as i64;
     }
     if policy.backoff_time_ms > 0 {
+        // LOUD: a server backoff paired with an empty response is the server
+        // refusing the session (stale po_token/spc, throttling), and unlogged
+        // it reads as the pump dying silently until the feeder's init timeout
+        // (field: one empty response, 10.5 s of nothing, fatal).
+        log::warn!(
+            "sabr: server directed a backoff of {} ms",
+            policy.backoff_time_ms
+        );
         state.server_backoff_until_ms = now_ms() + policy.backoff_time_ms as i64;
         state.backoff_until_ms = state.backoff_until_ms.max(state.server_backoff_until_ms);
     }

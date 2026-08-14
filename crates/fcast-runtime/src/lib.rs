@@ -1,8 +1,8 @@
 //! The single shared tokio runtime for the receiver and its GStreamer elements.
 //!
-//! Declaring the runtime in one small crate that everything depends on means all
-//! FCast crates spawn their async work on the same thread pool, rather than each
-//! standing up its own.
+//! Declaring the runtime in one small crate that everything depends on means
+//! all FCast crates spawn their async work on the same thread pool, rather than
+//! each standing up its own.
 
 use std::sync::LazyLock;
 

@@ -5,28 +5,22 @@ use xshell::{cmd, Shell};
 
 use crate::{sh, workspace};
 
-/// The exact flutter_rust_bridge version the plugin is built against.
-///
-/// The codegen binary, the `flutter_rust_bridge` Dart package, the
-/// `flutter_rust_bridge_hooks` build hook, and the plugin's Rust crate must
-/// all carry this version (a mismatch fails at app startup). A codegen binary
-/// rewrites the manifest pins to its own version when it runs, so the pins
-/// are re-asserted from this constant instead of trusting the manifests
-/// (which is how a stray 2.12.0 run once downgraded them).
+/// The exact flutter_rust_bridge version the plugin is built against: the
+/// codegen binary, both Dart packages and the Rust crate must all carry it (a
+/// mismatch fails at app startup). Re-asserted from here rather than trusted,
+/// because a stray codegen run rewrites the manifest pins to its own version.
 const FRB_VERSION: &str = "2.13.0-beta.5";
 
 #[derive(Subcommand)]
 pub enum FlutterCommand {
     /// Regenerate the flutter_rust_bridge + freezed bindings for the Flutter
-    /// plugin at `sdk/sender/flutter-plugin`.
-    ///
-    /// The generated files (`lib/src/rust/*.dart`, `rust/src/frb_generated.rs`)
-    /// are git-ignored; run this after a fresh checkout, after editing
+    /// plugin at `sdk/sender/flutter-plugin`. The generated files are
+    /// git-ignored: run after a fresh checkout, after editing
     /// `rust/src/api.rs`, and in CI before `flutter pub publish`.
     Generate {
-        /// Comma-separated cargo features to generate bindings for. Must match
-        /// the features the app builds with (see the plugin's `hook/build.dart`
-        /// and README). Defaults to everything.
+        /// Comma-separated cargo features to generate bindings for; must match
+        /// what the app builds with (see the plugin's
+        /// `hook/build.dart`).
         #[clap(long, default_value = "fcast,chromecast,logging")]
         features: String,
     },
@@ -54,8 +48,7 @@ fn generate(features: &str) -> Result<()> {
     let sh = sh();
     let _p = sh.push_dir(plugin_dir()?);
 
-    // Repair any pin drift (e.g. from a stray manual codegen run) before
-    // resolving dependencies.
+    // Repair any pin drift before resolving dependencies.
     enforce_frb_pins(&sh)?;
 
     println!("Generating bindings for features [{features}] with codegen {FRB_VERSION}");
@@ -70,9 +63,8 @@ fn generate(features: &str) -> Result<()> {
     )
     .run()?;
 
-    // The enforced binary rewrites the pins with its own (correct) version,
-    // so drift here means a different codegen ran and the generated files are
-    // suspect. Fail loudly instead of repairing silently.
+    // The pinned binary rewrites the pins with its own version, so drift here
+    // means a different codegen ran and the generated files are suspect.
     if let Some(file) = drifted_manifest(&sh)? {
         bail!(
             "{file} no longer pins flutter_rust_bridge {FRB_VERSION} after codegen. The \
@@ -84,12 +76,9 @@ fn generate(features: &str) -> Result<()> {
     Ok(())
 }
 
-/// Absolute path to the version-pinned codegen binary, installed under the
-/// workspace `target/` directory on first use.
-///
-/// Deliberately NOT resolved from `PATH`: dev machines often carry another
-/// frb codegen version, and running that one silently rewrites the manifest
-/// pins to its own version. The install directory is version-addressed, so
+/// Absolute path to the version-pinned codegen binary, installed under
+/// `target/` on first use. Deliberately NOT resolved from `PATH`: another frb
+/// version there silently rewrites the manifest pins. Version-addressed, so
 /// bumping [`FRB_VERSION`] installs the new codegen automatically.
 fn codegen_binary(sh: &Shell) -> Result<Utf8PathBuf> {
     let root = workspace::root_path()?
@@ -129,9 +118,8 @@ fn enforce_frb_pins(sh: &Shell) -> Result<()> {
     Ok(())
 }
 
-/// Set the value of the manifest line starting with `key` (module-level or
-/// indented) to `value`, preserving indentation. Missing keys are an error so
-/// a manifest refactor can't silently disable the pin.
+/// Set the manifest line starting with `key` to `value`, preserving indent. A
+/// missing key is an error so a manifest refactor can't silently drop the pin.
 fn rewrite_pin(sh: &Shell, file: &str, key: &str, value: &str) -> Result<()> {
     let content = sh.read_file(file)?;
     let mut lines = Vec::new();

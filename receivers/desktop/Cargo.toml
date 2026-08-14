@@ -5,7 +5,7 @@ edition = "2024"
 license = "GPL-3.0-only"
 
 [dependencies]
-rcore = { package = "receiver-core", path = "../../crates/receiver-core", features = ["desktop"] }
+rcore = { package = "receiver-ui", path = "../../crates/receiver-ui", features = ["desktop"] }
 anyhow.workspace = true
 
 [features]

@@ -1,0 +1,72 @@
+--- a/subprojects/gst-plugins-good/ext/adaptivedemux2/gstadaptivedemuxutils.h
++++ b/subprojects/gst-plugins-good/ext/adaptivedemux2/gstadaptivedemuxutils.h
+@@ -67,6 +67,7 @@
+ void gst_event_store_deinit(GstEventStore *store);
+ 
+ void gst_event_store_flush(GstEventStore *store);
++void gst_event_store_flush_invalidated(GstEventStore *store);
+ 
+ void gst_event_store_insert_event (GstEventStore *store, GstEvent * event, gboolean delivered);
+ GstEvent *gst_event_store_get_next_pending (GstEventStore *store);
+--- a/subprojects/gst-plugins-good/ext/adaptivedemux2/gstadaptivedemuxutils.c
++++ b/subprojects/gst-plugins-good/ext/adaptivedemux2/gstadaptivedemuxutils.c
+@@ -534,6 +534,44 @@
+   store->events_pending = FALSE;
+ }
+ 
++/* Drop only the sticky events a flush invalidates, i.e. the ones a GstPad
++ * itself drops on FLUSH_STOP (see gst_pad_send_event_unchecked()), and keep
++ * the rest.
++ *
++ * CAPS is the one that matters. Upstream will NOT send its caps again just
++ * because this side forgot it: its own sticky event has not changed and its
++ * peer pad has not changed either, so nothing makes it re-push. A store that
++ * has been fully flushed therefore has no caps left to hand to the next output
++ * slot, and the track goes out with a segment and buffers and no caps at all -
++ * which downstream cannot build anything from. */
++void
++gst_event_store_flush_invalidated (GstEventStore * store)
++{
++  guint i;
++  GArray *events = store->events;
++  gboolean events_pending = FALSE;
++
++  for (i = 0; i < events->len;) {
++    PadEvent *ev = &g_array_index (events, PadEvent, i);
++    GstEventType type =
++        ev->event ? GST_EVENT_TYPE (ev->event) : GST_EVENT_UNKNOWN;
++
++    if (ev->event == NULL || type == GST_EVENT_EOS
++        || type == GST_EVENT_SEGMENT || type == GST_EVENT_STREAM_GROUP_DONE) {
++      if (ev->event)
++        gst_event_unref (ev->event);
++      g_array_remove_index (events, i);
++      continue;
++    }
++
++    if (!ev->delivered)
++      events_pending = TRUE;
++    i++;
++  }
++
++  store->events_pending = events_pending;
++}
++
+ void
+ gst_event_store_deinit (GstEventStore * store)
+ {
+--- a/subprojects/gst-plugins-good/ext/adaptivedemux2/gstadaptivedemux-track.c
++++ b/subprojects/gst-plugins-good/ext/adaptivedemux2/gstadaptivedemux-track.c
+@@ -43,7 +43,11 @@
+       gst_vec_deque_get_length (track->queue));
+   gst_vec_deque_clear (track->queue);
+ 
+-  gst_event_store_flush (&track->sticky_events);
++  /* NOT gst_event_store_flush(): a flush does not invalidate the track's caps,
++   * and nothing upstream will send it again once this store has dropped it. A
++   * track that is deselected and then re-selected would otherwise be given a
++   * fresh output slot with a segment and buffers and no caps. */
++  gst_event_store_flush_invalidated (&track->sticky_events);
+ 
+   gst_segment_init (&track->input_segment, GST_FORMAT_TIME);
+   track->lowest_input_time = GST_CLOCK_STIME_NONE;

@@ -6,6 +6,7 @@ use crate::{
 };
 use anyhow::{Context, bail};
 use bitflags::bitflags;
+use bytes::Bytes;
 use fcast_protocol::{
     Opcode, PlaybackErrorMessage, SeekMessage, SetSpeedMessage, SetVolumeMessage, VersionMessage,
     companion,
@@ -15,14 +16,10 @@ use fcast_protocol::{
     v3::{self, InitialReceiverMessage, ReceiverCapabilities},
     v4,
 };
-use parking_lot::Mutex;
 use serde::Serialize;
 use tokio::{
     net::TcpStream,
-    sync::{
-        broadcast::Receiver,
-        mpsc::{UnboundedReceiver, UnboundedSender},
-    },
+    sync::{broadcast::Receiver, mpsc::UnboundedReceiver},
 };
 use tokio_rustls::TlsAcceptor;
 use tracing::{debug, error, instrument, trace, warn};
@@ -168,7 +165,6 @@ impl Packet {
             Packet::SetSpeed(set_speed_msg) => serde_json::to_string(&set_speed_msg)?.into_bytes(),
             Packet::Version(version_msg) => serde_json::to_string(&version_msg)?.into_bytes(),
             Packet::Initial(initial_msg) => serde_json::to_string(&initial_msg)?.into_bytes(),
-            // Packet::CompanionHello(hello_response) => hello_response.serialize().to_vec(),
             _ => Vec::new(),
         };
 
@@ -191,7 +187,8 @@ pub enum SessionVersion {
     },
 }
 
-/// Messages where higher versions can be translated to lower versions of the same message
+/// Messages where higher versions can be translated to lower versions of the
+/// same message
 #[derive(Debug, PartialEq)]
 pub enum TranslatableMessage {
     PlaybackUpdate(v3::PlaybackUpdateMessage),
@@ -256,7 +253,7 @@ pub enum V4Message {
         serialized_msg: fcast_protocol::v4::ConstructedMessage<'static>,
     },
     /// A receiver-initiated message for every v4 sender (no initiator to
-    /// exclude), e.g. the autoplay advance's QueueItemSelected.
+    /// exclude).
     Broadcast {
         serialized_msg: fcast_protocol::v4::ConstructedMessage<'static>,
     },
@@ -303,11 +300,16 @@ enum StateError {
     InvalidUnionType,
 }
 
-enum DriverEvent<'a> {
+enum DriverEvent {
     Tick,
     Packet {
         opcode: Opcode,
-        body: Option<&'a [u8]>,
+        /// The packet body, owned as a refcounted view of the read window.
+        ///
+        /// Owned rather than borrowed so `Opcode::Resource` can carry its
+        /// payload out to the companion channel without copying it;
+        /// every other opcode just derefs to `&[u8]`.
+        body: Option<Bytes>,
     },
     ToSender(Arc<ReceiverToSenderMessage>),
     InternalMirroringAnswer {
@@ -390,17 +392,7 @@ fn round_progress_interval(micros: u64) -> Duration {
     Duration::from_micros(steps * STEP_MICROS)
 }
 
-use v4::flat::{CompanionResourceInfoResponse, QueueInsert as FlatQueueInsert};
-
-self_cell::self_cell!(
-    pub struct ResourceInfoResponseCell {
-        owner: Vec<u8>,
-        #[covariant]
-        dependent: CompanionResourceInfoResponse,
-    }
-
-    impl {Debug, PartialEq}
-);
+use v4::flat::QueueInsert as FlatQueueInsert;
 
 self_cell::self_cell!(
     pub struct QueueInsertCell {
@@ -509,119 +501,14 @@ impl KeyEventFlags {
     }
 }
 
-type CompanionMsgSender = UnboundedSender<CompanionMessage>;
-type CompanionMsgReceiver = UnboundedReceiver<CompanionMessage>;
+// The companion-resource contract moved to fcast-gst-elements alongside
+// `fcompsrc`, its only in-pipeline consumer. Re-exported here so every existing
+// call site (`crate::fcast::CompanionContext`, ...) keeps resolving.
+pub use fcast_gst_elements::companion_ctx::{
+    CompanionContext, CompanionMessage, FeedbackSender, ResourceInfoResponseCell,
+};
 
-pub enum FeedbackSender<T> {
-    // TODO: is this the most efficient solution?
-    Channel(tokio::sync::mpsc::UnboundedSender<T>),
-}
-
-impl<T> FeedbackSender<T> {
-    fn send(&self, obj: T) {
-        match self {
-            FeedbackSender::Channel(sender) => {
-                let _ = sender.send(obj);
-            }
-        }
-    }
-}
-
-pub enum CompanionMessage {
-    GetResourceInfo {
-        id: companion::ResourceId,
-        feedback: FeedbackSender<ResourceInfoResponseCell>,
-    },
-    GetResource {
-        id: companion::ResourceId,
-        read_head: Option<v4::flat::ResourceReadHead>,
-        feedback: FeedbackSender<companion::ResourceResponse>,
-    },
-}
-
-#[derive(Clone)]
-pub struct CompanionProviderHandle {
-    tx: CompanionMsgSender,
-}
-
-impl CompanionProviderHandle {
-    pub fn get_resource_info(
-        &self,
-        resource_id: companion::ResourceId,
-    ) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<ResourceInfoResponseCell>> {
-        let (feedback, rx) = tokio::sync::mpsc::unbounded_channel();
-        self.tx.send(CompanionMessage::GetResourceInfo {
-            id: resource_id,
-            feedback: FeedbackSender::Channel(feedback),
-        })?;
-        Ok(rx)
-    }
-
-    pub fn get_resource(
-        &self,
-        resource_id: companion::ResourceId,
-        read_head: Option<v4::flat::ResourceReadHead>,
-    ) -> anyhow::Result<tokio::sync::mpsc::UnboundedReceiver<companion::ResourceResponse>> {
-        let (feedback, rx) = tokio::sync::mpsc::unbounded_channel();
-        self.tx.send(CompanionMessage::GetResource {
-            id: resource_id,
-            read_head,
-            feedback: FeedbackSender::Channel(feedback),
-        })?;
-        Ok(rx)
-    }
-}
-
-#[derive(Default)]
-struct InnerCompanionContext {
-    providers: HashMap<companion::ProviderId, CompanionProviderHandle>,
-}
-
-impl InnerCompanionContext {
-    fn register_provider(&mut self, tx: CompanionMsgSender) -> companion::ProviderId {
-        let mut id = 0;
-        while self.providers.contains_key(&id) {
-            id += 1;
-        }
-
-        let handle = CompanionProviderHandle { tx };
-        self.providers.insert(id, handle);
-
-        id
-    }
-
-    pub fn unregister_provider(&mut self, id: companion::ProviderId) {
-        debug!(id, "Unregistering provider");
-        self.providers.remove(&id);
-    }
-}
-
-#[derive(Clone)]
-pub struct CompanionContext(Arc<Mutex<InnerCompanionContext>>);
-
-impl std::fmt::Debug for CompanionContext {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("CompanionContext").finish()
-    }
-}
-
-impl CompanionContext {
-    pub fn new() -> Self {
-        Self(Arc::new(Mutex::new(InnerCompanionContext::default())))
-    }
-
-    pub fn register_provider(&self, tx: CompanionMsgSender) -> companion::ProviderId {
-        self.0.lock().register_provider(tx)
-    }
-
-    pub fn unregister_provider(&self, id: companion::ProviderId) {
-        self.0.lock().unregister_provider(id)
-    }
-
-    pub fn get_provider(&self, id: companion::ProviderId) -> Option<CompanionProviderHandle> {
-        self.0.lock().providers.get(&id).cloned()
-    }
-}
+use fcast_gst_elements::companion_ctx::{CompanionMsgReceiver, CompanionMsgSender};
 
 macro_rules! err_body {
     ($res:expr) => {
@@ -731,19 +618,18 @@ impl State {
                 if version == SessionVersion::V3 {
                     Action::SendInitial
                 } else {
-                    // v1/v2 have no Initial message, but the sender still
-                    // needs the current volume to start in sync (volume
-                    // only broadcasts on change).
+                    // v1/v2 have no Initial message, so seed the volume (it only
+                    // broadcasts on change).
                     Action::SendVolume
                 }
             }
-            // TODO: technically v2 doesn't need to accept VersionMessage before starting the session
+            // TODO: technically v2 doesn't need to accept VersionMessage before starting the
+            // session
             _ => return Err(StateError::IllegalOpcode(opcode)),
         })
     }
 
     /// Handle those packets that are common for v{1, 2, 3}
-    // TODO: should it return option or error variant like Unsupported?
     #[instrument(skip_all)]
     fn handle_packet_common(
         &mut self,
@@ -773,7 +659,6 @@ impl State {
                 let msg = option_err_json!(SetVolumeMessage, option_err_body!(body));
                 Action::Op(Operation::SetVolume(msg.volume as f32))
             }
-            // Ignore
             Opcode::PlaybackUpdate
             | Opcode::VolumeUpdate
             | Opcode::PlayUpdate
@@ -1012,8 +897,7 @@ impl State {
                 let msg = union!(packet.payload_as_add_subtitle_source());
                 let url = msg.url();
                 if url.is_empty() {
-                    // The spec gives an empty URL no meaning; there is
-                    // nothing to attach.
+                    // The spec gives an empty URL no meaning.
                     Action::Error {
                         kind: v4::flat::ErrorKind::MalformedBody,
                     }
@@ -1070,10 +954,10 @@ impl State {
     fn handle_packet_v4(
         &mut self,
         opcode: Opcode,
-        body: Option<&[u8]>,
+        body: Option<Bytes>,
     ) -> Result<Action, StateError> {
         Ok(match opcode {
-            Opcode::Flatbuf => self.handle_flat_packet_v4(body.ok_or(StateError::MissingBody)?)?,
+            Opcode::Flatbuf => self.handle_flat_packet_v4(&body.ok_or(StateError::MissingBody)?)?,
             Opcode::Ping => Action::Pong,
             Opcode::Pong => Action::None,
             Opcode::Resource => {
@@ -1122,13 +1006,19 @@ impl State {
 
                 match &self.variant {
                     StateVariant::WaitingForVersion => {
-                        return self.handle_packet_uninit(opcode, stringify!(body));
+                        return self.handle_packet_uninit(opcode, stringify!(body.as_deref()));
                     }
                     StateVariant::Active { version } => {
                         return match version {
-                            SessionVersion::V1 => self.handle_packet_v1(opcode, stringify!(body)),
-                            SessionVersion::V2 => self.handle_packet_v2(opcode, stringify!(body)),
-                            SessionVersion::V3 => self.handle_packet_v3(opcode, stringify!(body)),
+                            SessionVersion::V1 => {
+                                self.handle_packet_v1(opcode, stringify!(body.as_deref()))
+                            }
+                            SessionVersion::V2 => {
+                                self.handle_packet_v2(opcode, stringify!(body.as_deref()))
+                            }
+                            SessionVersion::V3 => {
+                                self.handle_packet_v3(opcode, stringify!(body.as_deref()))
+                            }
                             SessionVersion::V4 { .. } => self.handle_packet_v4(opcode, body),
                         };
                     }
@@ -1257,31 +1147,10 @@ enum CompanionQueueItem {
     GetResource(FeedbackSender<companion::ResourceResponse>),
 }
 
-pub enum InternalMessage {
-    Answer { sdp: String },
-}
-
-pub struct MirroringOfferRx(
-    pub std::sync::Arc<parking_lot::Mutex<Option<tokio::sync::mpsc::UnboundedReceiver<String>>>>,
-);
-
-impl Clone for MirroringOfferRx {
-    fn clone(&self) -> Self {
-        Self(self.0.clone())
-    }
-}
-
-impl std::fmt::Debug for MirroringOfferRx {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_tuple("MirroringOfferRx").finish()
-    }
-}
-
-impl PartialEq for MirroringOfferRx {
-    fn eq(&self, _other: &Self) -> bool {
-        false
-    }
-}
+// Both live with the signaller that consumes them
+// (fcast-gst-elements::fwebrtcsrc); re-exported so
+// `crate::fcast::InternalMessage` and friends still resolve.
+pub use fcast_gst_elements::fwebrtcsrc::{InternalMessage, MirroringOfferRx};
 
 pub struct InitialV4State {
     pub play_data: Arc<WrappedPlayMessage>,
@@ -1299,12 +1168,11 @@ pub struct SessionDriver {
     req_id_gen: companion::RequestIdGenerator,
     mirroring_offer_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     receiver_info: Arc<ReceiverInfo>,
-    // TODO: this should be updated in the time between new updates happen and when the state is sent out
+    // TODO: not refreshed between accept and handshake, so an update in that window is
+    // missed
     initial_v4_state: Option<InitialV4State>,
-    /// Volume at accept time, sent once the session activates so the
-    /// sender's UI starts in sync. Same staleness caveat as
-    /// `initial_v4_state`: a change in the accept-to-handshake window is
-    /// missed, the window is milliseconds.
+    /// Volume at accept time, sent once the session activates. Same staleness
+    /// caveat as `initial_v4_state`.
     initial_volume: f32,
     pending_tls_upgrade: bool,
 }
@@ -1461,9 +1329,8 @@ impl SessionDriver {
 
         self.send_bin_msg(Opcode::Flatbuf, &msg).await?;
 
-        // Volume seed, same reason as the play state below: it only
-        // broadcasts on change, so a freshly connected sender would
-        // otherwise start with a stale idea of the level.
+        // Volume seed: it only broadcasts on change, so a fresh sender would start with
+        // a stale level.
         let volume_msg = v4::MessageBuilder::new().volume_changed(self.initial_volume);
         self.send_bin_msg(Opcode::Flatbuf, &volume_msg).await?;
 
@@ -1482,10 +1349,8 @@ impl SessionDriver {
         Ok(())
     }
 
-    /// Seed a newly active v1/v2/v3 session with the receiver's current
-    /// volume (v4 gets it in `finish_tls_upgrade`). Volume only broadcasts
-    /// on change, so without this a sender connecting between changes never
-    /// learns the level and its UI starts out of sync.
+    /// Seed a v1/v2/v3 session with the current volume (v4 gets it in
+    /// `finish_tls_upgrade`); volume only broadcasts on change.
     async fn send_connect_volume(&mut self) -> anyhow::Result<()> {
         let StateVariant::Active { version } = &self.state.variant else {
             return Ok(());
@@ -1593,7 +1458,6 @@ impl SessionDriver {
                     self.pending_tls_upgrade = true;
                 }
                 Action::RespondCompanionHello => {
-                    // let (id, mut rx) = self.companion_ctx.register_provider(self.internal_companion_tx.clone());
                     let id = self
                         .companion_ctx
                         .register_provider(self.internal_companion_tx.clone());
@@ -1805,7 +1669,8 @@ impl SessionDriver {
                         let (opcode, body) = match packet.len() {
                             0 => bail!("Received packet with no opcode (size=0)"),
                             1 => (packet[0], None),
-                            _ => (packet[0], Some(&packet[1..])),
+                            // A view of the same bytes, not a copy of them.
+                            _ => (packet[0], Some(packet.slice(1..))),
                         };
 
                         let Ok(opcode) = Opcode::try_from(opcode) else {
@@ -1945,13 +1810,13 @@ mod tests {
             ),
             (
                 Opcode::Version,
-                Some(v2_json.as_bytes()),
+                Some(Bytes::copy_from_slice(v2_json.as_bytes())),
                 Action::SendVolume,
                 SessionVersion::V2,
             ),
             (
                 Opcode::Version,
-                Some(v3_json.as_bytes()),
+                Some(Bytes::copy_from_slice(v3_json.as_bytes())),
                 Action::SendInitial,
                 SessionVersion::V3,
             ),
@@ -1975,7 +1840,7 @@ mod tests {
             vec![(
                 DriverEvent::Packet {
                     opcode: Opcode::Version,
-                    body: Some(b"{"),
+                    body: Some(Bytes::from_static(b"{")),
                 },
                 Err(StateError::InvalidJson),
             )],
@@ -1992,7 +1857,7 @@ mod tests {
                 (
                     DriverEvent::Packet {
                         opcode: Opcode::Version,
-                        body: Some(v2_json.as_bytes()),
+                        body: Some(Bytes::copy_from_slice(v2_json.as_bytes())),
                     },
                     Ok(Action::SendVolume),
                 ),
@@ -2022,8 +1887,46 @@ mod tests {
     fn advance_flatbuf(state: &mut State, body: &[u8]) -> Result<Action, StateError> {
         state.advance(DriverEvent::Packet {
             opcode: Opcode::Flatbuf,
-            body: Some(body),
+            body: Some(Bytes::copy_from_slice(body)),
         })
+    }
+
+    #[test]
+    fn v4_resource_payload_reaches_the_companion_channel_without_a_copy() {
+        // A companion resource response is media: up to half a megabyte per packet, on
+        // its way to a decoder. The driver must hand the received bytes on by
+        // sharing them, not by copying them out of the packet - that copy was
+        // 10% of the receiver's allocation volume under a seek storm.
+        let mut state = v4_state();
+
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&7u32.to_le_bytes()); // request_id
+        packet.push(0); // part
+        packet.push(1); // total_parts
+        packet.push(0x01); // GetResourceResult::Success
+        let payload_offset = packet.len();
+        packet.extend_from_slice(&[0x5Au8; 64 * 1024]);
+
+        let body = Bytes::from(packet);
+        let payload_ptr = body[payload_offset..].as_ptr();
+
+        let res = state.advance(DriverEvent::Packet {
+            opcode: Opcode::Resource,
+            body: Some(body),
+        });
+
+        let Ok(Action::Companion(CompanionResponse::ResourceResponse(resp))) = res else {
+            panic!("expected a companion resource response, got {res:?}");
+        };
+        let companion::GetResourceResult::Success(chunk) = resp.result else {
+            panic!("expected a success result");
+        };
+
+        assert_eq!(chunk.len(), 64 * 1024);
+        assert!(
+            std::ptr::eq(chunk.as_ptr(), payload_ptr),
+            "resource payload was copied on its way to the companion channel"
+        );
     }
 
     #[test]

@@ -26,7 +26,8 @@ enum Command {
         #[arg(value_delimiter = ' ', num_args = 1..)]
         tests: Vec<String>,
     },
-    /// Run test cases in a random order forever, until interrupted or one fails.
+    /// Run test cases in a random order forever, until interrupted or one
+    /// fails.
     Stress,
 }
 

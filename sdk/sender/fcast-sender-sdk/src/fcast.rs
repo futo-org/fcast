@@ -392,9 +392,9 @@ macro_rules! json_from_body {
     };
 }
 
-/// Read a `QueuePosition` off any flatbuffer message that carries one (`QueueInsert`,
-/// `QueueRemove`, `QueueItemSelected`). They share the same `position_type()` /
-/// `position_as_index()` accessors.
+/// Read a `QueuePosition` off any flatbuffer message that carries one
+/// (`QueueInsert`, `QueueRemove`, `QueueItemSelected`). They share the same
+/// `position_type()` / `position_as_index()` accessors.
 macro_rules! read_queue_position {
     ($msg:expr) => {
         match $msg.position_type() {
@@ -790,13 +790,15 @@ impl DeviceStateMachine {
     }
 }
 
-/// The SDK's mirror of the receiver's queue, reconstructed from the `Load`, `QueueInsert`,
-/// `QueueRemove`, and `QueueItemSelected` broadcasts (and updated optimistically for this sender's
-/// own mutations, since the receiver only relays those to *other* senders). The mutation methods
-/// replicate the receiver's accept/reject rules (`application.rs`) and report whether the mirror
-/// changed, so a command the receiver refuses (an out-of-range position, removing the playing item,
-/// inserting into an empty or full queue) leaves the mirror in agreement with the receiver instead
-/// of desyncing it. Best-effort: a fresh `Load` resyncs it.
+/// The SDK's mirror of the receiver's queue, reconstructed from the `Load`,
+/// `QueueInsert`, `QueueRemove`, and `QueueItemSelected` broadcasts (and
+/// updated optimistically for this sender's own mutations, since the receiver
+/// only relays those to *other* senders). The mutation methods replicate the
+/// receiver's accept/reject rules (`application.rs`) and report whether the
+/// mirror changed, so a command the receiver refuses (an out-of-range position,
+/// removing the playing item, inserting into an empty or full queue) leaves the
+/// mirror in agreement with the receiver instead of desyncing it. Best-effort:
+/// a fresh `Load` resyncs it.
 #[derive(Default)]
 struct QueueMirror {
     active: bool,
@@ -838,8 +840,8 @@ impl QueueMirror {
         if !self.active {
             return false;
         }
-        // The receiver refuses inserts into an empty or full queue (capped at 256 items) and
-        // positions past the end (`Back` appends).
+        // The receiver refuses inserts into an empty or full queue (capped at 256
+        // items) and positions past the end (`Back` appends).
         if self.items.is_empty() || self.items.len() > u8::MAX as usize {
             return false;
         }
@@ -866,8 +868,8 @@ impl QueueMirror {
             return false;
         }
         let idx = self.resolve(position);
-        // The receiver refuses out-of-range positions and removal of the currently playing item, so
-        // the mirror must keep them too.
+        // The receiver refuses out-of-range positions and removal of the currently
+        // playing item, so the mirror must keep them too.
         if idx >= self.items.len() || Some(idx as u32) == self.current_index {
             return false;
         }
@@ -885,9 +887,9 @@ impl QueueMirror {
             return false;
         }
         let idx = self.resolve(position);
-        // The receiver refuses out-of-range selects rather than clamping. A same-index select is
-        // accepted receiver-side (it restarts the item) but leaves the snapshot unchanged, so it
-        // isn't re-emitted.
+        // The receiver refuses out-of-range selects rather than clamping. A same-index
+        // select is accepted receiver-side (it restarts the item) but leaves
+        // the snapshot unchanged, so it isn't re-emitted.
         if idx >= self.items.len() || Some(idx as u32) == self.current_index {
             return false;
         }
@@ -896,8 +898,8 @@ impl QueueMirror {
     }
 }
 
-/// The SDK's mirror of the available tracks and current selection, built from `TracksAvailable` and
-/// the per-type `ChangeTrack` relays.
+/// The SDK's mirror of the available tracks and current selection, built from
+/// `TracksAvailable` and the per-type `ChangeTrack` relays.
 #[derive(Default)]
 struct TrackMirror {
     tracks: Vec<MediaTrack>,
@@ -933,9 +935,9 @@ fn to_v4_queue_position(position: QueuePosition) -> v4::QueuePosition {
     }
 }
 
-/// Convert a received flatbuffer `MediaItem` into the public [`MediaItem`]. Received items are
-/// always URL-sourced (companion items arrive as companion URLs), and headers / typed metadata are
-/// stripped by the receiver relay.
+/// Convert a received flatbuffer `MediaItem` into the public [`MediaItem`].
+/// Received items are always URL-sourced (companion items arrive as companion
+/// URLs), and headers / typed metadata are stripped by the receiver relay.
 fn media_item_from_flat(item: &v4::flat::MediaItem<'_>) -> MediaItem {
     MediaItem {
         content_type: item.container().to_owned(),
@@ -982,8 +984,9 @@ fn receiver_error_from_flat(kind: v4::flat::ErrorKind) -> ReceiverError {
     }
 }
 
-/// Convert the legacy lossy [`QueueItem`] into a [`QueueEntry`], carrying its title/thumbnail
-/// through so the deprecated queue API still populates the richer wire fields.
+/// Convert the legacy lossy [`QueueItem`] into a [`QueueEntry`], carrying its
+/// title/thumbnail through so the deprecated queue API still populates the
+/// richer wire fields.
 fn queue_item_to_entry(item: QueueItem) -> QueueEntry {
     let (content_type, source, request_headers, metadata) = match item {
         QueueItem::Url {
@@ -1027,15 +1030,17 @@ fn queue_item_to_entry(item: QueueItem) -> QueueEntry {
     }
 }
 
-/// Internal locator for an `AddSubtitleSource` command. Either a ready URL, or a companion source
-/// that resolves to an `fcomp://` URL at send time (once the provider ID is known).
+/// Internal locator for an `AddSubtitleSource` command. Either a ready URL, or
+/// a companion source that resolves to an `fcomp://` URL at send time (once the
+/// provider ID is known).
 #[derive(Debug, Clone, PartialEq)]
 enum SubtitleCommandSource {
     Url(String),
     Companion(CompanionSource),
 }
 
-/// Backing bytes for a registered companion source. An opened file (path/fd) or an in-memory buffer.
+/// Backing bytes for a registered companion source. An opened file (path/fd) or
+/// an in-memory buffer.
 enum CompanionData {
     File(std::fs::File),
     Bytes(std::io::Cursor<Vec<u8>>),
@@ -1065,7 +1070,8 @@ impl CompanionData {
         }
     }
 
-    /// The raw fd of a file-backed source, for the fd-reuse guard. `None` for in-memory bytes.
+    /// The raw fd of a file-backed source, for the fd-reuse guard. `None` for
+    /// in-memory bytes.
     #[cfg(unix)]
     fn raw_fd(&self) -> Option<i32> {
         use std::os::fd::AsRawFd as _;
@@ -1079,7 +1085,8 @@ impl CompanionData {
 struct WrappedCompanionSource {
     data: CompanionData,
     content_type: String,
-    /// Cached at registration. Companion resources are treated as immutable for the session.
+    /// Cached at registration. Companion resources are treated as immutable for
+    /// the session.
     len: u64,
 }
 
@@ -1095,15 +1102,18 @@ struct InnerDevice {
     signaller: Option<Arc<dyn crate::device::FWRTCSignaller>>,
     queue_mirror: QueueMirror,
     track_mirror: TrackMirror,
-    /// Set when this sender dispatches a load and cleared by the first Buffering/Playing update
-    /// that follows it. While set, an inbound `StopPlayback` relay is ambiguous: the receiver may
-    /// have relayed another sender's stop of the *previous* media before processing our load, so
-    /// playback-scoped state (in particular the companion sources the new load needs) must not be
-    /// dropped for it.
+    /// Set when this sender dispatches a load and cleared by the first
+    /// Buffering/Playing update that follows it. While set, an inbound
+    /// `StopPlayback` relay is ambiguous: the receiver may have relayed
+    /// another sender's stop of the *previous* media before processing our
+    /// load, so playback-scoped state (in particular the companion sources
+    /// the new load needs) must not be dropped for it.
     load_in_flight: bool,
-    /// Companion-source commands that arrived before the receiver assigned the companion provider
-    /// ID. The `Connected` event precedes the `CompanionHelloResponse` carrying the ID, so a load
-    /// issued right at connect time lands in this window. Replayed in order once the ID arrives.
+    /// Companion-source commands that arrived before the receiver assigned the
+    /// companion provider ID. The `Connected` event precedes the
+    /// `CompanionHelloResponse` carrying the ID, so a load issued right at
+    /// connect time lands in this window. Replayed in order once the ID
+    /// arrives.
     pending_companion_cmds: Vec<Command>,
 }
 
@@ -1132,18 +1142,20 @@ impl InnerDevice {
         }
     }
 
-    /// Reconstruct the full queue snapshot from the mirror and, when a queue is active, forward it
-    /// to the event handler. The SDK keeps no queue state of its own beyond the transient mirror
-    /// needed to assemble this snapshot.
+    /// Reconstruct the full queue snapshot from the mirror and, when a queue is
+    /// active, forward it to the event handler. The SDK keeps no queue
+    /// state of its own beyond the transient mirror needed to assemble this
+    /// snapshot.
     fn emit_queue_changed(&mut self) {
         if let Some(snapshot) = self.queue_mirror.snapshot() {
             self.event_handler.queue_changed(snapshot);
         }
     }
 
-    /// Deactivate the queue mirror and, if a queue was being tracked, emit one final empty snapshot
-    /// so apps holding a previous [`QueueState`] learn the queue is gone. A stop or single-item
-    /// load ends it with no relay to the originator, so this local emission is the only signal.
+    /// Deactivate the queue mirror and, if a queue was being tracked, emit one
+    /// final empty snapshot so apps holding a previous [`QueueState`] learn
+    /// the queue is gone. A stop or single-item load ends it with no relay
+    /// to the originator, so this local emission is the only signal.
     fn clear_queue_mirror(&mut self) {
         if self.queue_mirror.active {
             self.queue_mirror.clear();
@@ -1151,17 +1163,19 @@ impl InnerDevice {
         }
     }
 
-    /// Assemble the aggregated track list from the mirror and forward it to the event handler.
+    /// Assemble the aggregated track list from the mirror and forward it to the
+    /// event handler.
     fn emit_tracks_changed(&mut self) {
         self.event_handler
             .tracks_changed(self.track_mirror.snapshot());
     }
 
-    /// Resolve a media item's locator to a plain URL, registering a companion source (and taking
-    /// ownership of any transferred fd) when needed.
+    /// Resolve a media item's locator to a plain URL, registering a companion
+    /// source (and taking ownership of any transferred fd) when needed.
     ///
-    /// The returned item always carries a [`MediaLocator::Url`], so it is safe to retain in the
-    /// queue mirror and re-emit to the app: no consumed file descriptor lingers in it.
+    /// The returned item always carries a [`MediaLocator::Url`], so it is safe
+    /// to retain in the queue mirror and re-emit to the app: no consumed
+    /// file descriptor lingers in it.
     fn resolve_media_item(&mut self, item: MediaItem) -> anyhow::Result<MediaItem> {
         let source = match item.source {
             MediaLocator::Url { url } => MediaLocator::Url { url },
@@ -1172,9 +1186,9 @@ impl InnerDevice {
         Ok(MediaItem { source, ..item })
     }
 
-    /// Build a v4 wire item. `item` is expected to already be resolved to a URL locator (see
-    /// [`Self::resolve_media_item`]). The companion arm resolves the source itself in case a caller
-    /// skips that step.
+    /// Build a v4 wire item. `item` is expected to already be resolved to a URL
+    /// locator (see [`Self::resolve_media_item`]). The companion arm
+    /// resolves the source itself in case a caller skips that step.
     fn build_v4_media_item(&mut self, item: MediaItem) -> anyhow::Result<v4::MediaItem> {
         let source_url = match item.source {
             MediaLocator::Url { url } => url,
@@ -1196,9 +1210,10 @@ impl InnerDevice {
 
     async fn load_rich_queue(&mut self, queue: Queue) -> anyhow::Result<()> {
         let autoplay = queue.autoplay;
-        // The wire index is a u8 and the receiver refuses out-of-range start indexes, so clamp to
-        // the last item instead of letting `as u8` wrap to an arbitrary in-range value. The mirror
-        // below reuses the clamped index, keeping both views on the same item.
+        // The wire index is a u8 and the receiver refuses out-of-range start indexes,
+        // so clamp to the last item instead of letting `as u8` wrap to an
+        // arbitrary in-range value. The mirror below reuses the clamped index,
+        // keeping both views on the same item.
         let start_index = queue.start_index.map(|i| {
             i.min(queue.items.len().saturating_sub(1) as u32)
                 .min(u8::MAX as u32) as u8
@@ -1206,8 +1221,8 @@ impl InnerDevice {
         let mut wire_items = Vec::with_capacity(queue.items.len());
         let mut entries = Vec::with_capacity(queue.items.len());
         for entry in queue.items {
-            // Resolve companion sources up front so the fd is consumed exactly once and only the
-            // resulting URL is kept in the mirror.
+            // Resolve companion sources up front so the fd is consumed exactly once and
+            // only the resulting URL is kept in the mirror.
             let resolved = self.resolve_media_item(entry.item)?;
             let wire_item = self.build_v4_media_item(resolved.clone())?;
             wire_items.push((wire_item, entry.playback_duration));
@@ -1228,12 +1243,13 @@ impl InnerDevice {
     /// Assume ownership of a raw file descriptor transferred through
     /// [`CompanionSourceDescriptor::Fd`].
     ///
-    /// Guards the transfer as far as a plain integer allows: negative and dead descriptors are
-    /// rejected up front, and a descriptor this device already holds open is rejected *without*
-    /// being consumed. While the SDK holds a descriptor open the kernel cannot reassign its number,
-    /// so a second arrival of the same number can only be a duplicate use of an already-transferred
-    /// descriptor, and double-closing it would tear down whatever unrelated file the number later
-    /// gets recycled to.
+    /// Guards the transfer as far as a plain integer allows: negative and dead
+    /// descriptors are rejected up front, and a descriptor this device
+    /// already holds open is rejected *without* being consumed. While the
+    /// SDK holds a descriptor open the kernel cannot reassign its number,
+    /// so a second arrival of the same number can only be a duplicate use of an
+    /// already-transferred descriptor, and double-closing it would tear
+    /// down whatever unrelated file the number later gets recycled to.
     #[cfg(unix)]
     fn take_fd_ownership(&self, fd: i32) -> std::io::Result<std::fs::File> {
         use std::os::fd::{FromRawFd as _, OwnedFd};
@@ -1255,19 +1271,22 @@ impl InnerDevice {
             ));
         }
         // SAFETY: the caller transferred ownership of `fd` to the SDK (see
-        // `CompanionSourceDescriptor::Fd`), and the checks above rejected the descriptors we
-        // provably must not own. From here the SDK closes it exactly once: immediately below if it
-        // turns out to be dead, or when the registered source is dropped (stop/session end).
+        // `CompanionSourceDescriptor::Fd`), and the checks above rejected the
+        // descriptors we provably must not own. From here the SDK closes it
+        // exactly once: immediately below if it turns out to be dead, or when
+        // the registered source is dropped (stop/session end).
         let file = unsafe { std::fs::File::from(OwnedFd::from_raw_fd(fd)) };
-        // Catch garbage descriptors from foreign callers with a clean error instead of failing at
-        // serve time. On error `file` drops here, and closing a dead fd is a harmless no-op.
+        // Catch garbage descriptors from foreign callers with a clean error instead of
+        // failing at serve time. On error `file` drops here, and closing a dead
+        // fd is a harmless no-op.
         file.metadata()?;
         Ok(file)
     }
 
-    /// Close a descriptor whose transfer failed before it could be registered. Ownership passed to
-    /// the SDK the moment the app handed the descriptor over, so it must still be closed exactly
-    /// once on failure.  The exception is a number currently owned by a registered source: that
+    /// Close a descriptor whose transfer failed before it could be registered.
+    /// Ownership passed to the SDK the moment the app handed the descriptor
+    /// over, so it must still be closed exactly once on failure.  The
+    /// exception is a number currently owned by a registered source: that
     /// value is a duplicate reference and the real owner closes it.
     fn discard_companion_descriptor(&self, descriptor: &CompanionSourceDescriptor) {
         #[cfg(unix)]
@@ -1279,8 +1298,8 @@ impl InnerDevice {
                     .values()
                     .any(|s| s.data.raw_fd() == Some(fd))
             {
-                // SAFETY: same ownership transfer as `take_fd_ownership`. The descriptor was never
-                // registered, so this is its only owner.
+                // SAFETY: same ownership transfer as `take_fd_ownership`. The descriptor was
+                // never registered, so this is its only owner.
                 drop(unsafe { OwnedFd::from_raw_fd(fd) });
             }
         }
@@ -1322,8 +1341,9 @@ impl InnerDevice {
         Ok(id)
     }
 
-    /// A v4 session is up but the receiver has not assigned the companion provider ID yet (the
-    /// window between its introduction and its `CompanionHelloResponse`).
+    /// A v4 session is up but the receiver has not assigned the companion
+    /// provider ID yet (the window between its introduction and its
+    /// `CompanionHelloResponse`).
     fn awaiting_companion_provider_id(&self) -> bool {
         matches!(
             self.state_machine.variant,
@@ -1356,8 +1376,8 @@ impl InnerDevice {
         }
     }
 
-    /// Release the transferred file descriptors of a command that will never execute (see
-    /// [`Self::discard_companion_descriptor`]).
+    /// Release the transferred file descriptors of a command that will never
+    /// execute (see [`Self::discard_companion_descriptor`]).
     fn discard_command_descriptors(&self, cmd: &Command) {
         match cmd {
             Command::Load {
@@ -1526,10 +1546,10 @@ impl InnerDevice {
 
                 let msg = v4::MessageBuilder::new().load_single(item);
                 self.send_bytes(Opcode::Flatbuf, &msg).await?;
-                // TODO: only emit this once it's actually changed on the receiver
-                // self.event_handler.source_changed(Source::Url {
-                //     url: match type_ {
-                //         LoadType::Url { url } => url,
+                // TODO: only emit this once it's actually changed on the
+                // receiver self.event_handler.
+                // source_changed(Source::Url {     url: match
+                // type_ {         LoadType::Url { url } => url,
                 //         LoadType::Content { .. } => todo!(),
                 //     },
                 //     content_type,
@@ -2047,21 +2067,24 @@ impl InnerDevice {
         Ok(())
     }
 
-    /// Drop all playback-scoped state: registered companion sources (which closes the file
-    /// descriptors / files they own) and the queue mirror (emitting its final empty snapshot).
+    /// Drop all playback-scoped state: registered companion sources (which
+    /// closes the file descriptors / files they own) and the queue mirror
+    /// (emitting its final empty snapshot).
     ///
-    /// Called whenever playback stops, whether initiated locally ([`Self::stop_playback`]) or by
-    /// another sender (an unambiguous inbound `StopPlayback` relay, [`Action::PlaybackStopped`]). A
-    /// stop clears the receiver's current item and queue, so no companion resource can still be
-    /// requested afterwards and nothing may be left open.
+    /// Called whenever playback stops, whether initiated locally
+    /// ([`Self::stop_playback`]) or by another sender (an unambiguous
+    /// inbound `StopPlayback` relay, [`Action::PlaybackStopped`]). A
+    /// stop clears the receiver's current item and queue, so no companion
+    /// resource can still be requested afterwards and nothing may be left
+    /// open.
     fn clear_playback_scoped_state(&mut self) {
         self.companion_sources.clear();
         self.clear_queue_mirror();
     }
 
-    /// Ask a v4 receiver to report playback progress every `interval_millis` milliseconds (floored
-    /// to 100 ms, the receiver's granularity). Older receivers have no such message, so the request
-    /// is skipped there.
+    /// Ask a v4 receiver to report playback progress every `interval_millis`
+    /// milliseconds (floored to 100 ms, the receiver's granularity). Older
+    /// receivers have no such message, so the request is skipped there.
     async fn send_progress_update_interval(&mut self, interval_millis: u64) -> anyhow::Result<()> {
         match self.state_machine.variant {
             StateVariant::V4 { .. } => {
@@ -2090,8 +2113,8 @@ impl InnerDevice {
         self.event_handler.playback_stopped();
         self.event_handler
             .playback_state_changed(PlaybackState::Idle);
-        // Our own stop is ordered after any load we dispatched, so there is no ambiguity to
-        // preserve.
+        // Our own stop is ordered after any load we dispatched, so there is no
+        // ambiguity to preserve.
         self.load_in_flight = false;
         self.clear_playback_scoped_state();
 
@@ -2310,14 +2333,15 @@ impl InnerDevice {
                     v4::MessageBuilder::new().add_subtitle_source(&url, select, name.as_deref());
                 self.send_bytes(Opcode::Flatbuf, &msg).await?;
             }
-            // TODO: update the local queue to keep track of open companion files and close them when they're not needed
+            // TODO: update the local queue to keep track of open companion files and close them
+            // when they're not needed
             Command::QueueRemove { position } => {
                 let msg = v4::MessageBuilder::new().queue_remove(to_v4_queue_position(position));
                 self.send_bytes(Opcode::Flatbuf, &msg).await?;
-                // The receiver relays queue mutations only to *other* senders, so mirror our own
-                // change locally. The mirror applies the receiver's accept/reject rules, so a
-                // mutation the receiver will refuse (reported via `command_error`) is not
-                // reflected.
+                // The receiver relays queue mutations only to *other* senders, so mirror our
+                // own change locally. The mirror applies the receiver's
+                // accept/reject rules, so a mutation the receiver will refuse
+                // (reported via `command_error`) is not reflected.
                 if self.queue_mirror.remove(&position) {
                     self.emit_queue_changed();
                 }
@@ -2725,8 +2749,9 @@ impl CastingDevice for FCastDevice {
             }
         };
         if result.is_ok() {
-            // Queued after the load command, so the receiver applies the interval right after it
-            // processes the load. Skipped by the worker on receivers without the message (v2/v3).
+            // Queued after the load command, so the receiver applies the interval right
+            // after it processes the load. Skipped by the worker on receivers
+            // without the message (v2/v3).
             if let Some(interval_millis) = progress_update_interval_millis {
                 self.send_command(Command::SetProgressUpdateInterval(interval_millis))?;
             }
@@ -2968,8 +2993,8 @@ impl CastingDevice for FCastDevice {
     }
 }
 
-/// Minimal async byte sink, so [`serve_resource`] can write to an in-memory buffer in tests, not
-/// only a live [`NetworkStream`].
+/// Minimal async byte sink, so [`serve_resource`] can write to an in-memory
+/// buffer in tests, not only a live [`NetworkStream`].
 #[allow(async_fn_in_trait)]
 trait ByteSink {
     async fn write_all(&mut self, buf: &[u8]) -> std::io::Result<()>;
@@ -2985,12 +3010,13 @@ impl ByteSink for NetworkStream {
     }
 }
 
-/// Answer a companion `GetResource` that cannot be fulfilled, with a single terminal `NotFound`
-/// frame.
+/// Answer a companion `GetResource` that cannot be fulfilled, with a single
+/// terminal `NotFound` frame.
 ///
-/// `NotFound` is the wire's only "no data" result (see [`companion::GetResourceResult`]), so it
-/// doubles as the answer to a request that names nothing readable. Being precise about the reason
-/// matters far less than answering at all: the requester is blocked on the response, and the
+/// `NotFound` is the wire's only "no data" result (see
+/// [`companion::GetResourceResult`]), so it doubles as the answer to a request
+/// that names nothing readable. Being precise about the reason matters far less
+/// than answering at all: the requester is blocked on the response, and the
 /// receiver's image fetch blocks on it with no timeout whatsoever.
 async fn send_resource_not_found<S: ByteSink>(
     stream: &mut S,
@@ -3015,13 +3041,15 @@ async fn send_resource_not_found<S: ByteSink>(
     Ok(())
 }
 
-/// Answer one companion `GetResource`: the requested byte range (the whole resource when
-/// `read_head` is `None`) split into `MAX_RESOURCE_READ_SIZE` parts.
+/// Answer one companion `GetResource`: the requested byte range (the whole
+/// resource when `read_head` is `None`) split into `MAX_RESOURCE_READ_SIZE`
+/// parts.
 ///
-/// Every request gets exactly one answer, terminated by a frame whose `part` is `total_parts - 1`
-/// (that is what releases the requester's pending entry). An unknown resource, a range naming no
-/// readable bytes (an empty resource, or one starting at or past EOF), and a range too large for
-/// the 255 parts the wire format can carry are all answered with `NotFound`.
+/// Every request gets exactly one answer, terminated by a frame whose `part` is
+/// `total_parts - 1` (that is what releases the requester's pending entry). An
+/// unknown resource, a range naming no readable bytes (an empty resource, or
+/// one starting at or past EOF), and a range too large for the 255 parts the
+/// wire format can carry are all answered with `NotFound`.
 async fn serve_resource<S: ByteSink>(
     stream: &mut S,
     source: Option<&mut WrappedCompanionSource>,
@@ -3123,6 +3151,8 @@ fn wrapped_playlist_index(current: usize, jump: i32, length: usize) -> Option<us
 
 #[cfg(test)]
 mod tests {
+    use fcast_protocol::bytes::Bytes;
+
     use super::*;
 
     // --- companion resource serving ---
@@ -3149,7 +3179,8 @@ mod tests {
         }
     }
 
-    /// Split a captured sink back into the `ResourceResponse` frames it carries.
+    /// Split a captured sink back into the `ResourceResponse` frames it
+    /// carries.
     fn parse_frames(mut buf: &[u8]) -> Vec<companion::ResourceResponse> {
         let mut out = Vec::new();
         while !buf.is_empty() {
@@ -3160,14 +3191,14 @@ mod tests {
             assert_eq!(buf[HEADER_LENGTH - 1], Opcode::Resource as u8);
             let body_len = size - 1;
             let body = &buf[HEADER_LENGTH..HEADER_LENGTH + body_len];
-            out.push(companion::ResourceResponse::parse(body).unwrap());
+            out.push(companion::ResourceResponse::parse(Bytes::copy_from_slice(body)).unwrap());
             buf = &buf[HEADER_LENGTH + body_len..];
         }
         out
     }
 
-    /// Concatenate success-frame payloads, asserting parts are ordered `0..len` and agree on
-    /// `total_parts`.
+    /// Concatenate success-frame payloads, asserting parts are ordered `0..len`
+    /// and agree on `total_parts`.
     fn reassemble(frames: &[companion::ResourceResponse]) -> Vec<u8> {
         let mut payload = Vec::new();
         for (i, frame) in frames.iter().enumerate() {
@@ -3246,13 +3277,15 @@ mod tests {
         assert_eq!(frames[0].result, companion::GetResourceResult::NotFound);
     }
 
-    /// Every `GetResource` must be answered, and the answer must terminate the request.
+    /// Every `GetResource` must be answered, and the answer must terminate the
+    /// request.
     ///
-    /// Zero-byte ranges used to emit no frames at all, which parks the requester on a response that
-    /// never arrives: `fcompsrc` eats a 2.5s stall and then errors, and the receiver's companion
-    /// image fetch awaits the channel with no timeout, so it hangs outright. Reachable from a
-    /// caller as soon as it registers an empty resource (`SubtitleContent::Data` with no bytes) or
-    /// seeks to EOF.
+    /// Zero-byte ranges used to emit no frames at all, which parks the
+    /// requester on a response that never arrives: `fcompsrc` eats a 2.5s
+    /// stall and then errors, and the receiver's companion image fetch
+    /// awaits the channel with no timeout, so it hangs outright. Reachable from
+    /// a caller as soon as it registers an empty resource
+    /// (`SubtitleContent::Data` with no bytes) or seeks to EOF.
     #[tokio::test]
     async fn serve_resource_always_answers_and_terminates() {
         // (name, resource length, read head)
@@ -3276,8 +3309,9 @@ mod tests {
             let frames = parse_frames(&serve(Some(&mut src), *head).await);
             assert!(!frames.is_empty(), "{name}: request went unanswered");
             let last = frames.last().unwrap();
-            // The requester releases its pending entry on the frame whose part is the last one, so
-            // an answer that never marks itself final leaves the request dangling.
+            // The requester releases its pending entry on the frame whose part is the last
+            // one, so an answer that never marks itself final leaves the
+            // request dangling.
             assert_eq!(
                 last.part,
                 last.total_parts.saturating_sub(1),
@@ -3503,6 +3537,97 @@ mod tests {
         );
     }
 
+    fn init_v4() -> DeviceStateMachine {
+        let mut state_machine = DeviceStateMachine::new(false);
+        assert_eq!(
+            state_machine.handle_packet(Opcode::Version, Some(br#"{"version":4}"#)),
+            Action::UpgradeToTls
+        );
+        state_machine
+    }
+
+    /// The exact bytes receiver-core's `send_v4_message` puts on the wire for
+    /// `V4Message::ProgressUpdated` (crates/receiver-core/src/fcast.rs:1380)
+    /// must decode into a `ProgressChanged` action carrying position and
+    /// duration in seconds.
+    #[test]
+    fn v4_progress_changed_decodes_position_and_duration() {
+        let mut state_machine = init_v4();
+        let msg = v4::MessageBuilder::new().progress_changed(
+            v4::flat::Time::new(12_500_000),
+            v4::flat::Time::new(90_000_000),
+        );
+        assert_eq!(
+            state_machine.handle_packet(Opcode::Flatbuf, Some(&msg)),
+            Action::ProgressChanged {
+                pos: 12.5,
+                dur: 90.0
+            }
+        );
+    }
+
+    /// An absent position/duration field is reported as zero rather than
+    /// failing the packet.
+    #[test]
+    fn v4_progress_changed_defaults_absent_fields_to_zero() {
+        let mut state_machine = init_v4();
+        let msg = v4::MessageBuilder::new().progress_changed_raw(None, None);
+        assert_eq!(
+            state_machine.handle_packet(Opcode::Flatbuf, Some(&msg)),
+            Action::ProgressChanged { pos: 0.0, dur: 0.0 }
+        );
+    }
+
+    /// Track events and progress ride the *same* v4 flatbuf path
+    /// (`Opcode::Flatbuf` -> `handle_flat_packet_v4`), and v3 carries no track
+    /// messages at all. So a session that surfaces "Tracks available" is
+    /// necessarily a v4 session whose flatbuf decoding works, which means
+    /// progress decodes too. This pins that diagnostic invariant: the
+    /// two cannot regress independently without failing here.
+    #[test]
+    fn v4_tracks_and_progress_decode_on_the_same_session() {
+        let mut state_machine = init_v4();
+
+        let tracks = v4::MessageBuilder::new().tracks_available(
+            [v4::MediaTrack {
+                id: 7,
+                title: Some("English".into()),
+                iso_639: "eng".into(),
+                metadata: Some(v4::MediaTrackMetadata::Subtitle),
+            }]
+            .into_iter(),
+        );
+        assert_eq!(
+            state_machine.handle_packet(Opcode::Flatbuf, Some(&tracks)),
+            Action::TracksAvailable(vec![crate::device::MediaTrack {
+                id: 7,
+                title: Some("English".to_owned()),
+                language: "eng".to_owned(),
+                typ: crate::device::MediaTrackType::Subtitle,
+            }])
+        );
+
+        let progress = v4::MessageBuilder::new().progress_changed(
+            v4::flat::Time::new(1_000_000),
+            v4::flat::Time::new(2_000_000),
+        );
+        assert_eq!(
+            state_machine.handle_packet(Opcode::Flatbuf, Some(&progress)),
+            Action::ProgressChanged { pos: 1.0, dur: 2.0 }
+        );
+    }
+
+    /// v3 has no track messages, so tracks can only ever have come from a v4
+    /// session.
+    #[test]
+    fn v3_has_no_track_messages() {
+        let mut state_machine = init_with_version(VersionCode::V3);
+        assert_eq!(
+            state_machine.handle_packet(Opcode::Flatbuf, Some(&[])),
+            Action::Quit(QuitReason::UnsupportedOpcode)
+        );
+    }
+
     #[test]
     fn require_v4_refuses_insecure_downgrade() {
         for body in [
@@ -3654,9 +3779,9 @@ mod tests {
 
     #[test]
     fn wrapped_playlist_index_empty_playlist_is_none() {
-        // Regression: `load(Playlist([]))` then `playlist_item_next()` reached `current %= 0`
-        // (divide-by-zero) and `playlist_item_previous()` reached `0usize - 1` (underflow). Both
-        // must now be a safe no-op, not a panic.
+        // Regression: `load(Playlist([]))` then `playlist_item_next()` reached `current
+        // %= 0` (divide-by-zero) and `playlist_item_previous()` reached `0usize
+        // - 1` (underflow). Both must now be a safe no-op, not a panic.
         assert_eq!(wrapped_playlist_index(0, 0, 0), None);
         assert_eq!(wrapped_playlist_index(0, 1, 0), None);
         assert_eq!(wrapped_playlist_index(0, -1, 0), None);
@@ -3666,7 +3791,8 @@ mod tests {
     fn wrapped_playlist_index_forward_wraps() {
         assert_eq!(wrapped_playlist_index(0, 1, 5), Some(1));
         assert_eq!(wrapped_playlist_index(4, 1, 5), Some(0)); // past the end
-        assert_eq!(wrapped_playlist_index(3, 4, 5), Some(2)); // multi-step past end
+        assert_eq!(wrapped_playlist_index(3, 4, 5), Some(2)); // multi-step past
+                                                              // end
     }
 
     #[test]

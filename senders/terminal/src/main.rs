@@ -308,7 +308,8 @@ fn resolve_target(
     }
 }
 
-/// Block until a receiver advertising `name` is discovered (or `timeout_secs` elapses).
+/// Block until a receiver advertising `name` is discovered (or `timeout_secs`
+/// elapses).
 fn discover_by_name(context: &CastContext, name: &str, timeout_secs: u64) -> DeviceInfo {
     println!("Looking for receiver `{name}` (up to {timeout_secs}s)...");
 

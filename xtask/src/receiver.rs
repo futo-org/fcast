@@ -62,9 +62,9 @@ pub enum ReceiverCommand {
     Check(CargoSubcmdArgs),
     /// `cargo clippy` the desktop receiver against a static GStreamer.
     Clippy(CargoSubcmdArgs),
-    /// `cargo test` receiver-core against a static GStreamer (links + runs the
-    /// test binary). Args after `--` are forwarded to the libtest harness,
-    /// e.g. `-- --nocapture` or a test-name filter.
+    /// `cargo test` receiver-core against a static GStreamer. Args after `--`
+    /// go to the libtest harness, e.g. `-- --nocapture` or a test-name
+    /// filter.
     Test(CargoSubcmdArgs),
     #[cfg(target_os = "windows")]
     BuildWindowsInstaller(crate::gstreamer::GstreamerArgs),
@@ -79,8 +79,8 @@ pub struct CargoSubcmdArgs {
     /// Check/lint the release profile instead of the default fast debug build.
     #[arg(long)]
     pub release: bool,
-    /// Extra args appended to the inner cargo invocation (everything after `--`),
-    /// e.g. `-- --message-format=json` for editor integration (rustic/eglot).
+    /// Extra args appended to the inner cargo invocation (everything after
+    /// `--`).
     #[arg(last = true)]
     pub args: Vec<String>,
 }
@@ -89,8 +89,7 @@ pub struct CargoSubcmdArgs {
 pub struct RunStaticArgs {
     #[command(flatten)]
     pub gst: crate::gstreamer::GstreamerArgs,
-    /// Build the receiver in release instead of the default fast debug build
-    /// (receiver side only; GStreamer is controlled by --gst-buildtype).
+    /// Build the receiver in release (GStreamer follows --gst-buildtype).
     #[arg(long)]
     pub release: bool,
     /// Arguments forwarded to the receiver binary (everything after `--`).
@@ -121,12 +120,9 @@ impl ReceiverArgs {
     pub fn run(self) -> Result<()> {
         let sh = sh();
         let root_path = workspace::root_path()?;
-        // Run from the workspace root so the receiver build's relative paths
-        // (target/gstreamer-src, target/<triple>/…) resolve correctly even when
-        // invoked from a subdirectory — e.g. rust-analyzer / rustic launching us
-        // inside a crate. push_dir covers the xshell commands; set_current_dir
-        // covers the std::fs / std::process::Command calls that bypass the shell
-        // (the source-reuse `.git` check and the `run` binary exec).
+        // Run from the workspace root so the receiver build's relative paths resolve
+        // even when invoked from a subdirectory (rust-analyzer / rustic). Both chdir
+        // and push_dir: the latter misses the std::fs / Command calls.
         std::env::set_current_dir(&root_path)
             .map_err(|e| anyhow::anyhow!("chdir to workspace root {root_path}: {e}"))?;
         let _p = sh.push_dir(root_path.clone());
@@ -265,13 +261,10 @@ impl ReceiverArgs {
             }
             #[cfg(target_os = "windows")]
             ReceiverCommand::BuildWindowsInstaller(static_args) => {
-                // scope=Full (the mac/win default): gstreamer, the glib/pango
-                // stack, codecs and the GIO TLS module are ALL statically
-                // linked into the binary — no GStreamer dev kit is involved
-                // and no runtime DLLs are bundled beyond the MSVC redists.
-                // NEEDS VALIDATION on a Windows box: check the exe imports
-                // with `dumpbin /dependents` — anything beyond OS DLLs and
-                // the redists indicates a dep that escaped the static build.
+                // scope=Full (the mac/win default): gstreamer, the glib/pango stack,
+                // codecs and the GIO TLS module are ALL statically linked, no dev kit
+                // and no bundled DLLs beyond the MSVC redists. NEEDS VALIDATION on a
+                // Windows box: `dumpbin /dependents` must show only OS DLLs + redists.
                 let binary = static_args
                     .build()?
                     .ok_or_else(|| anyhow!("--clean/--gstreamer-only produce no binary"))?;
@@ -343,12 +336,9 @@ impl ReceiverArgs {
 
                 sh.create_dir(&build_dir_root)?;
 
-                // scope=Full (the macOS default): gstreamer, the glib/pango
-                // stack, codecs and the GIO TLS module are ALL statically
-                // linked — no GStreamer.framework dev kit, no dylib bundling,
-                // no install_name_tool rewriting. Only OS frameworks may
-                // remain dynamic; anything else means a dep escaped the
-                // static build, so fail loudly instead of shipping it.
+                // scope=Full (the macOS default): gstreamer, the glib/pango stack,
+                // codecs and the GIO TLS module are ALL static, no framework dev kit,
+                // no dylib bundling. Anything non-OS left dynamic is a failure.
                 let mut static_args = static_args;
                 static_args.no_default_features = true; // no systray on macOS
                 let binary = static_args
@@ -360,7 +350,7 @@ impl ReceiverArgs {
                 if !leftover.is_empty() {
                     anyhow::bail!(
                         "static build still links non-system dylibs: {leftover:?}\n\
-                         These would dangle on user machines — fix the static build \
+                         These would dangle on user machines. Fix the static build \
                          instead of bundling them."
                     );
                 }
