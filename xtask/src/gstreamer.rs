@@ -72,6 +72,21 @@ const ENABLE_COMMON: &[(Plugins, &str)] = &[(Plugins::Base, "vorbis"), (Plugins:
 /// and device providers (unused here). Recheck on a gst bump: a newly added
 /// element is silently excluded.
 const FULL_ELEMENTS: &[(&str, &[&str])] = &[
+    // fcastplaybin builds the graph itself out of these four, so playbin,
+    // playbin3, playsink, subtitleoverlay and the v1 decodebin/uridecodebin pair
+    // (~385K of object code) never link. Subtitle cues are rasterized by the
+    // video sink against the display size, so no overlay element is autoplugged.
+    // NB the meson trim in xtask/patches/playback-drop-unused-sources.patch
+    // assumes this row exists: removing it breaks the link, not just the size.
+    (
+        "playback",
+        &[
+            "decodebin3",
+            "parsebin",
+            "streamsynchronizer",
+            "urisourcebin",
+        ],
+    ),
     // h264parse/h265parse are needed; the niche sibling parsers never link.
     (
         "videoparsersbad",
@@ -271,6 +286,12 @@ const DISABLE_COMMON: &[(Plugins, &str)] = &[
     // SVG: a discoverable librsvg links dynamically, defeating the static build
     // (its .pc also leaks a bare `-no_compact_unwind` ld flag that breaks clang).
     (Plugins::Bad, "rsvg"),
+    // C subtitle parsers. receiver-core registers gst-subparse-rs and ranks
+    // subparse/ssaparse to NONE, so decodebin3 already never autoplugs these,
+    // and the Rust plugin carries its own rssubparse_typefind at the same
+    // MARGINAL rank over the same extension set. Only the cue-IR path the
+    // renderer needs comes out of the Rust ones.
+    (Plugins::Base, "subparse"),
     // redundant codecs (libav provides decode)
     (Plugins::Bad, "openh264"),
     (Plugins::Bad, "fdkaac"),
@@ -2407,6 +2428,9 @@ fn link_args(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Vec<
 
     // gstreamer-full's pkg-config omits the internal helper libs (riff, fft,
     // codecparsers, …) many plugins reference; --gc-sections drops the unused.
+    // Order must be stable across runs: these land in `cargo rustc -- <args>`,
+    // which cargo hashes into the unit fingerprint. A varying order mints a new
+    // build-dir per build and leaks a full copy of the binary every time.
     for (name, path) in &archives {
         if name.ends_with("-1.0.a") {
             out.push(path.to_string());
@@ -2443,9 +2467,15 @@ fn link_args(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Vec<
 
 /// Map every `.a` basename -> absolute path across the build tree. Includes
 /// non-`lib*` archives: meson drops the prefix for some libs on MSVC.
-fn find_archives(build_dir: &Utf8Path) -> Result<std::collections::HashMap<String, String>> {
-    let mut map = std::collections::HashMap::new();
-    for entry in walk(build_dir) {
+/// BTreeMap, not HashMap: callers iterate this to build link args, and
+/// HashMap's per-process random order would change them on every run.
+fn find_archives(build_dir: &Utf8Path) -> Result<std::collections::BTreeMap<String, String>> {
+    let mut map = std::collections::BTreeMap::new();
+    // Sorted so a duplicate basename resolves to the same path every run:
+    // read_dir order is unspecified, and the winner ends up in the link args.
+    let mut entries = walk(build_dir);
+    entries.sort_unstable();
+    for entry in entries {
         if let Some(name) = entry.file_name().and_then(|n| n.to_str()) {
             if name.ends_with(".a") {
                 map.entry(name.to_string())
@@ -2566,4 +2596,49 @@ fn vcvars_env(sh: &Rc<Shell>) -> Result<Vec<(String, String)>> {
         bail!("vcvars64.bat did not set LIB, the Windows SDK may be missing");
     }
     Ok(env)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The paths from `find_archives` end up in `cargo rustc -- <args>`, which
+    /// cargo folds into the unit fingerprint. Any run-to-run variation mints a
+    /// fresh build directory and leaks a full copy of the receiver binary.
+    #[test]
+    fn find_archives_is_order_stable() {
+        let root = std::env::temp_dir().join(format!("xtask-archives-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // Two dirs holding the same basename, plus enough distinct names that a
+        // randomized hash order would show up.
+        for dir in ["a", "b", "c/d"] {
+            let d = root.join(dir);
+            std::fs::create_dir_all(&d).unwrap();
+            for n in 0..8 {
+                std::fs::write(d.join(format!("libgst{n}-1.0.a")), b"").unwrap();
+            }
+            std::fs::write(d.join("libdup.a"), b"").unwrap();
+        }
+        let root = Utf8PathBuf::from_path_buf(root).unwrap();
+
+        let first = find_archives(&root).unwrap();
+        let names: Vec<&str> = first.keys().map(String::as_str).collect();
+        let mut sorted = names.clone();
+        sorted.sort_unstable();
+        assert_eq!(names, sorted, "keys must iterate in a stable sorted order");
+
+        for _ in 0..4 {
+            let again = find_archives(&root).unwrap();
+            assert_eq!(
+                first.iter().collect::<Vec<_>>(),
+                again.iter().collect::<Vec<_>>(),
+                "repeated scans must yield identical name -> path pairs"
+            );
+        }
+
+        // A duplicate basename resolves to the lexicographically first path.
+        assert_eq!(first["libdup.a"], root.join("a/libdup.a").as_str());
+
+        std::fs::remove_dir_all(&root).unwrap();
+    }
 }

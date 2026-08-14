@@ -1,0 +1,28 @@
+diff --git a/subprojects/gst-plugins-base/gst/playback/meson.build b/subprojects/gst-plugins-base/gst/playback/meson.build
+index 5915e69..6314385 100644
+--- a/subprojects/gst-plugins-base/gst/playback/meson.build
++++ b/subprojects/gst-plugins-base/gst/playback/meson.build
+@@ -45,6 +45,23 @@ if get_option('playback').disabled()
+   subdir_done()
+ endif
+ 
++# fcast: the receiver whitelists this plugin down to decodebin3, parsebin,
++# urisourcebin and streamsynchronizer (xtask FULL_ELEMENTS), so playbin,
++# playbin3, playsink, subtitleoverlay and the v1 decodebin/uridecodebin pair are
++# dead code that only --gc-sections was dropping. Compiling just the reachable
++# set skips ~900K of C. gstplaybackplugin.c goes too: its plugin_init references
++# the dropped element registrations. playback_sources is left alone above so the
++# doc file list stays complete.
++playback_sources = [
++  'gstdecodebin3.c',
++  'gsturisourcebin.c',
++  'gstparsebin.c',
++  'gstplaybackelement.c',
++  'gstplaybackutils.c',
++  'gstplay-enum.c',
++  'gststreamsynchronizer.c'
++]
++
+ gstplayback = library('gstplayback',
+   playback_sources,
+   c_args : gst_plugins_base_args + ['-DCOLORSPACE="videoconvert"'],
