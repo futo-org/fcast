@@ -71,6 +71,7 @@ const PLAYBACK: Plugin = Plugin {
         "decodebin3-refcount-input-fix-release-uaf",
         "decodebin3-tolerate-non-update-intermediary-collection",
         "decodebin3-outputless-slot-keeps-its-output",
+        "decodebin3-serialize-collection-message-posts",
     ],
     element: "decodebin3",
 };

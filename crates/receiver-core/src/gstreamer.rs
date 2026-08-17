@@ -123,6 +123,11 @@ pub(crate) fn init_for_tests() {
         // Elements every fcastplaybin pipeline builds must be registered here too,
         // or tests fail on a missing factory rather than on what they assert.
         fcast_gst_elements::fcastaudiostretch::plugin_init().unwrap();
+        // Registered HERE and not per test. Re-registering replaces the
+        // factory in the registry, and a parallel test whose pipeline is
+        // mid-flight then reads the replaced factory through
+        // gst_element_get_factory, a deterministic SIGSEGV.
+        fcast_gst_elements::fcompsrc::plugin_init().unwrap();
     });
 }
 

@@ -285,46 +285,34 @@ mod tests {
         make_mp3_bytes_at(seconds, 128)
     }
 
+    /// Synthesized in-process rather than encoded through
+    /// audiotestsrc ! lamemp3enc: the static gstreamer-full deliberately culls
+    /// both (test/encode elements, see xtask/src/gstreamer.rs DISABLE_COMMON),
+    /// and this suite only ever runs against that build.
+    ///
+    /// An MPEG-1 Layer III frame whose side info is all zeros carries no main
+    /// data (every part2_3_length is 0) and decodes as silence, so a valid
+    /// header plus zeros is a complete CBR frame. 1152 samples per frame.
     fn make_mp3_bytes_at(seconds: f64, bitrate_kbps: i32) -> Bytes {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static SEQ: AtomicU64 = AtomicU64::new(0);
-        let n = SEQ.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("fcomp-gapless-{}-{n}.mp3", std::process::id()));
-        // audiotestsrc defaults: 44100 Hz, 1024 samples/buffer.
-        let num_buffers = (seconds * 44100.0 / 1024.0).round() as i32;
-        let src = gst::ElementFactory::make("audiotestsrc")
-            .property("num-buffers", num_buffers)
-            .property("is-live", false)
-            .property_from_str("wave", "silence")
-            .build()
-            .unwrap();
-        let conv = gst::ElementFactory::make("audioconvert").build().unwrap();
-        let enc = gst::ElementFactory::make("lamemp3enc")
-            .property_from_str("target", "bitrate")
-            .property("cbr", true)
-            .property("bitrate", bitrate_kbps)
-            .build()
-            .unwrap();
-        let sink = gst::ElementFactory::make("filesink")
-            .property("location", path.to_str().unwrap())
-            .build()
-            .unwrap();
-        let pipeline = gst::Pipeline::new();
-        pipeline.add_many([&src, &conv, &enc, &sink]).unwrap();
-        gst::Element::link_many([&src, &conv, &enc, &sink]).unwrap();
-        pipeline.set_state(gst::State::Playing).unwrap();
-        let bus = pipeline.bus().unwrap();
-        while let Some(msg) = bus.timed_pop(gst::ClockTime::from_seconds(10)) {
-            match msg.view() {
-                gst::MessageView::Eos(_) => break,
-                gst::MessageView::Error(e) => panic!("mp3 encode failed: {e:?}"),
-                _ => {}
-            }
+        const RATE: f64 = 44100.0;
+        const BITRATES: [i32; 14] = [
+            32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320,
+        ];
+        let bitrate_index = BITRATES
+            .iter()
+            .position(|&b| b == bitrate_kbps)
+            .expect("a valid MPEG-1 Layer III bitrate") as u8
+            + 1;
+        let frame_len = (144_000 * bitrate_kbps as usize) / RATE as usize;
+        let frames = (seconds * RATE / 1152.0).round() as usize;
+        let mut bytes = vec![0u8; frames * frame_len];
+        for frame in bytes.chunks_exact_mut(frame_len) {
+            // Sync, MPEG-1, Layer III, no CRC; 44100 Hz; stereo, original.
+            frame[0] = 0xFF;
+            frame[1] = 0xFB;
+            frame[2] = bitrate_index << 4;
+            frame[3] = 0x04;
         }
-        pipeline.set_state(gst::State::Null).unwrap();
-        let bytes = std::fs::read(&path).unwrap();
-        let _ = std::fs::remove_file(&path);
         Bytes::from(bytes)
     }
 
@@ -406,8 +394,6 @@ mod tests {
         };
 
         crate::gstreamer::init_for_tests();
-        // fcompsrc is a receiver plugin; ignore a duplicate registration.
-        let _ = crate::fcompsrc::plugin_init();
 
         // A long enough for its EOS to be paced past the up-front pre-arm; B
         // longer than any plausible overshoot, so a cutoff is unambiguous.
@@ -528,7 +514,6 @@ mod tests {
         };
 
         crate::gstreamer::init_for_tests();
-        let _ = crate::fcompsrc::plugin_init();
 
         let a_bytes = make_mp3_bytes(5.0);
         let b_bytes = make_mp3_bytes(4.0);
