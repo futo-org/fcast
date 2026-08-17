@@ -1,7 +1,12 @@
 import { Icons, FText } from "../../../../ui-components/std-widgets.slint";
-import { Assets } from "../globals.slint";
+import { Assets, Bridge, AppState } from "../globals.slint";
 
 export component LoadingMediaView inherits Rectangle {
+    // A server-directed backoff fills the bar with the wait; otherwise it sweeps.
+    property <bool> backing-off: Bridge.source-backoff-remaining-ms > 0
+        && Bridge.source-backoff-total-ms > 0;
+    property <int> backoff-seconds: Math.ceil(Bridge.source-backoff-remaining-ms / 1000.0);
+
     Image {
         source: Assets.background-dark;
         width: 100%;
@@ -10,10 +15,57 @@ export component LoadingMediaView inherits Rectangle {
 
     VerticalLayout {
         alignment: center;
+        spacing: 14px;
 
         FText {
-            text: @tr("Loading media...");
+            text: root.backing-off
+                ? @tr("Waiting until media is available")
+                : @tr("Loading media...");
             horizontal-alignment: center;
+        }
+
+        if root.backing-off: FText {
+            text: @tr("ETA {}s", root.backoff-seconds);
+            horizontal-alignment: center;
+            font-size: 13px;
+            opacity: 70%;
+        }
+
+        // Guarded by app-state, not opacity: the view stays in the tree at
+        // opacity 0 and an always-on animation-tick() would redraw forever.
+        if Bridge.app-state == AppState.LoadingMedia: HorizontalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 220px;
+                height: 4px;
+                border-radius: 2px;
+                background: #ffffff26;
+                clip: true;
+
+                // Two separate elements so a mode switch recreates the bar:
+                // a fresh element takes its initial width instantly, while a
+                // shared one would tween across modes (a new countdown slid
+                // down from the sweep width instead of starting empty).
+                if root.backing-off: Rectangle {
+                    height: 100%;
+                    border-radius: 2px;
+                    background: #ffffffcc;
+                    x: 0px;
+                    // Fills left to right as the wait elapses.
+                    width: parent.width * (1.0 - Bridge.source-backoff-remaining-ms / Bridge.source-backoff-total-ms);
+                    // Smooth over the 250ms countdown ticks.
+                    animate width { duration: 250ms; }
+                }
+
+                if !root.backing-off: Rectangle {
+                    height: 100%;
+                    border-radius: 2px;
+                    background: #ffffffcc;
+                    width: parent.width * 0.35;
+                    x: -self.width + (parent.width + self.width) * mod(animation-tick(), 1.6s) / 1.6s;
+                }
+            }
         }
     }
 }

@@ -199,6 +199,10 @@ pub enum Message {
         item: MediaItemId,
         epoch: u64,
     },
+    /// One tick of the "server busy" backoff countdown shown by the GUI.
+    SourceBackoffTick {
+        epoch: u64,
+    },
     Raop(Raop),
     #[cfg(feature = "airplay")]
     AirPlay(AirPlay),

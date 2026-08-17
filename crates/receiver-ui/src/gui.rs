@@ -467,6 +467,13 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
         UpdateGuiCommand::SetImageViaPlayer(via_player) => bridge.set_image_via_player(via_player),
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),
         UpdateGuiCommand::SetSeekPending(pending) => bridge.set_seek_pending(pending),
+        UpdateGuiCommand::SetSourceBackoff {
+            remaining_ms,
+            total_ms,
+        } => {
+            bridge.set_source_backoff_remaining_ms(remaining_ms.min(i32::MAX as u64) as i32);
+            bridge.set_source_backoff_total_ms(total_ms.min(i32::MAX as u64) as i32);
+        }
         UpdateGuiCommand::SetPlaybackRate(rate) => bridge.set_playback_rate(rate),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         UpdateGuiCommand::SetUpdateState(state) => bridge.set_updater_state(state),

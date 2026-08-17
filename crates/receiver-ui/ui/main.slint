@@ -115,6 +115,29 @@ export component MainWindow inherits Window {
 
         if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Raop: RaopView { }
 
+        // A mid-playback server backoff would otherwise look like a silent
+        // freeze; part of video-obstructed.
+        if Bridge.app-state == AppState.Playing && Bridge.source-backoff-remaining-ms > 0: Rectangle {
+            width: backoff-pill.preferred-width + 28px;
+            height: 34px;
+            x: (parent.width - self.width) / 2;
+            y: 24px;
+            border-radius: 17px;
+            background: #000000B0;
+
+            backoff-pill := HorizontalLayout {
+                alignment: center;
+                padding-left: 14px;
+                padding-right: 14px;
+
+                FText {
+                    vertical-alignment: center;
+                    font-size: 13px;
+                    text: @tr("Waiting until media is available (ETA {}s)", Math.ceil(Bridge.source-backoff-remaining-ms / 1000.0));
+                }
+            }
+        }
+
         idle-view := IdleView {
             opacity: Bridge.app-state == AppState.Idle ? 100% : 0%;
             visible: self.opacity > 0%;

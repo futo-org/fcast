@@ -656,13 +656,17 @@ impl Inner {
                 return None;
             }
             MessageView::Element(element) => {
-                // fimagedec announces what it is decoding (format,
-                // dimensions, animated or still) for load classification.
                 let s = element.structure()?;
-                if s.name() != "fcast-image-stream" {
-                    return None;
+                match s.name().as_str() {
+                    // fimagedec announces what it is decoding (format,
+                    // dimensions, animated or still) for load classification.
+                    "fcast-image-stream" => PlaybinEvent::ImageStream(s.to_owned()),
+                    // sabrumpsrc reports server-directed backoffs (0 = ended).
+                    "sabrump-status" => PlaybinEvent::SourceBackoff {
+                        remaining_ms: s.get::<i64>("backoff-ms").ok()?.max(0) as u64,
+                    },
+                    _ => return None,
                 }
-                PlaybinEvent::ImageStream(s.to_owned())
             }
             _ => return None,
         };

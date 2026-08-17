@@ -148,6 +148,12 @@ pub enum UpdateGuiCommand {
     SetImageViaPlayer(bool),
     SetIsLive(bool),
     SetSeekPending(bool),
+    /// Server-directed source backoff countdown ("server busy, retrying in
+    /// Ns"). `remaining_ms == 0` clears it, `total_ms` sizes the bar.
+    SetSourceBackoff {
+        remaining_ms: u64,
+        total_ms: u64,
+    },
     SetPlaybackRate(f32),
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     SetUpdateState(UiUpdaterState),
@@ -223,6 +229,7 @@ pub struct GuiController {
     playback_state: GuiPlaybackState,
     playback_rate: f32,
     is_live: bool,
+    backoff_active: bool,
     is_visible: GuiIsVisible,
 }
 
@@ -233,6 +240,7 @@ impl GuiController {
             playback_state: GuiPlaybackState::default(),
             playback_rate: -1.0,
             is_live: false,
+            backoff_active: false,
             is_visible,
         }
     }
@@ -422,6 +430,20 @@ impl GuiController {
             self.send(UpdateGuiCommand::SetIsLive(is_live));
             self.is_live = is_live;
         }
+    }
+
+    /// Update the "server busy" countdown. `remaining_ms == 0` clears it.
+    /// Repeated clears are swallowed so stop/load paths can clear blindly.
+    pub fn set_source_backoff(&mut self, remaining_ms: u64, total_ms: u64) {
+        let active = remaining_ms > 0;
+        if !active && !self.backoff_active {
+            return;
+        }
+        self.backoff_active = active;
+        self.send(UpdateGuiCommand::SetSourceBackoff {
+            remaining_ms,
+            total_ms,
+        });
     }
 
     pub fn set_seek_pending(&self, pending: bool) {

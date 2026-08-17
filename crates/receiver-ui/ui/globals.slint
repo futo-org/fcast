@@ -108,6 +108,10 @@ export global Bridge {
     in property <bool> image-via-player: false;
     in property <int> video-frame-width;
     in property <int> video-frame-height;
+    // Server-directed source backoff countdown ("server busy, retrying in
+    // Ns"). remaining == 0 means none; total sizes the drain bar.
+    in property <int> source-backoff-remaining-ms: 0;
+    in property <int> source-backoff-total-ms: 0;
     // True from launch until the FCast port is committed. Drives the startup
     // screen (spinner / port-conflict prompt) shown over the idle background.
     in property <bool> starting-up: true;
@@ -174,6 +178,7 @@ export global Bridge {
         || player-variant != UiPlayerVariant.Video
         || playback-state != GuiPlaybackState.Playing
         || controls-overlay-visible
+        || source-backoff-remaining-ms > 0
         || should-show-toast-overlay()
         || show-inspector
         || starting-up

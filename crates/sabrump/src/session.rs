@@ -331,6 +331,13 @@ impl SabrSession {
         self.shared.state.lock().fatal.clone()
     }
 
+    /// Milliseconds until the active backoff (server-directed, error, or
+    /// empty-response) expires, 0 when none. Consumers extend their own
+    /// deadlines by this instead of declaring a waiting session dead.
+    pub fn backoff_remaining_ms(&self) -> i64 {
+        (self.shared.state.lock().backoff_until_ms - now_ms()).max(0)
+    }
+
     pub fn set_listener(&self, listener: Option<Arc<SabrSessionListener>>) {
         *self.shared.listener.lock() = listener;
     }

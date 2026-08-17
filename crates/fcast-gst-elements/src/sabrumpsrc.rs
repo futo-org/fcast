@@ -10,13 +10,15 @@ mod imp {
             Arc, LazyLock,
             atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering},
         },
-        time::Duration,
+        time::{Duration, Instant},
     };
 
     use bytes::Bytes;
     use gst::{glib, prelude::*, subclass::prelude::*};
     use parking_lot::Mutex;
-    use sabrump::{SabrFormat, SabrSession, SabrStreamSpec, SabrTransport, spec::Role};
+    use sabrump::{
+        SabrFormat, SabrSession, SabrSessionEvent, SabrStreamSpec, SabrTransport, spec::Role,
+    };
     use tokio::task::JoinHandle;
 
     static CAT: LazyLock<gst::DebugCategory> = LazyLock::new(|| {
@@ -28,8 +30,12 @@ mod imp {
     });
 
     const AWAIT_TIMEOUT: Duration = Duration::from_millis(500);
-    /// Feeder loops at 20ms. Give up on a never-arriving init after ~10s.
-    const INIT_WAIT_LIMIT: u32 = 500;
+    /// Give up on a never-arriving init after a minute. Extended past any
+    /// active session backoff so a server-directed wait cannot go fatal
+    /// mid-backoff (field: a 15.2s backoff outlived the old 10s limit).
+    const INIT_WAIT_LIMIT: Duration = Duration::from_secs(60);
+    /// Slack past a backoff expiry for the retried request to deliver the init.
+    const INIT_BACKOFF_GRACE: Duration = Duration::from_secs(10);
 
     struct Branch {
         appsrc: gst_app::AppSrc,
@@ -139,6 +145,28 @@ mod imp {
             let client = build_reqwest_client()
                 .map_err(|msg| glib::Error::new(gst::ResourceError::OpenRead, &msg))?;
             let session = SabrSession::new(spec.clone(), SabrTransport::http(client));
+
+            // Surface backoff directives as bus element messages so the app can
+            // show a "server busy" countdown instead of an unexplained stall.
+            // The session emits them only while starved. Runs on the pump task,
+            // so it must stay cheap and non-blocking.
+            {
+                let elem_weak = self.obj().downgrade();
+                session.set_listener(Some(Arc::new(move |event| {
+                    let backoff_ms = match event {
+                        SabrSessionEvent::Backoff { delay_ms } => delay_ms,
+                        SabrSessionEvent::BackoffEnded => 0,
+                        _ => return,
+                    };
+                    let Some(elem) = elem_weak.upgrade() else {
+                        return;
+                    };
+                    let s = gst::Structure::builder("sabrump-status")
+                        .field("backoff-ms", backoff_ms)
+                        .build();
+                    let _ = elem.post_message(gst::message::Element::builder(s).src(&elem).build());
+                })));
+            }
 
             let duration_us = spec.duration_us;
             let is_live = spec.is_live;
@@ -691,7 +719,8 @@ mod imp {
             // self-initializing so it comes from the first media segment's prefix.
             // Give up rather than spin, a hung feeder never prerolls and wedges the
             // pipeline beyond teardown.
-            let mut init_waits = 0u32;
+            let mut init_deadline = Instant::now() + INIT_WAIT_LIMIT;
+            let mut backoff_logged = false;
             // Media segments carry a ftyp+moov prefix to strip only when the init
             // came from one (live); VOD segments never do.
             let mut self_init = false;
@@ -731,8 +760,26 @@ mod imp {
                     fail_stream(&elem, &appsrc, &err);
                     return;
                 }
-                init_waits += 1;
-                if init_waits >= INIT_WAIT_LIMIT {
+                // Respect an active backoff: the server told the session to
+                // wait, so the init cannot arrive before it expires. Push the
+                // deadline past it rather than dying mid-wait.
+                let backoff_ms = session.backoff_remaining_ms();
+                if backoff_ms > 0 {
+                    let extended = Instant::now()
+                        + Duration::from_millis(backoff_ms as u64)
+                        + INIT_BACKOFF_GRACE;
+                    if extended > init_deadline {
+                        init_deadline = extended;
+                    }
+                    if !backoff_logged {
+                        backoff_logged = true;
+                        gst::info!(
+                            CAT,
+                            "feeder {role:?} waiting out a {backoff_ms}ms session backoff"
+                        );
+                    }
+                }
+                if Instant::now() >= init_deadline {
                     fail_stream(
                         &elem,
                         &appsrc,

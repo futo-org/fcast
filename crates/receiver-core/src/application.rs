@@ -462,6 +462,11 @@ pub struct Application {
     gui_seek_hold: Option<GuiSeekHold>,
     /// Bumped per pipeline load so a stale `LoadStallCheck` watchdog no-ops.
     load_watchdog_epoch: u64,
+    /// Active server-directed source backoff (deadline, total ms), shown by
+    /// the GUI as a "server busy" countdown.
+    source_backoff: Option<(Instant, u64)>,
+    /// Bumped per backoff change/clear so a stale `SourceBackoffTick` no-ops.
+    source_backoff_epoch: u64,
     /// Detects a silently wedged pipeline and drives recovery. Lever:
     /// `FCAST_NO_FREEZE_WATCHDOG`.
     freeze_watchdog: freeze_watchdog::FreezeWatchdog,
@@ -751,6 +756,8 @@ impl Application {
             seek_quiet_epoch: 0,
             gui_seek_hold: None,
             load_watchdog_epoch: 0,
+            source_backoff: None,
+            source_backoff_epoch: 0,
             freeze_watchdog: freeze_watchdog::FreezeWatchdog::new(),
             current_image_id: 0,
             image_via_player: false,
@@ -1161,6 +1168,7 @@ impl Application {
         self.current_thumbnail_id += 1;
         self.current_image_id += 1;
         self.current_image_download_id += 1;
+        self.clear_source_backoff();
 
         if continue_to_play == ContinueToPlay::No {
             self.gui.set_media_title("".to_owned());
@@ -1672,6 +1680,7 @@ impl Application {
             });
         }
         self.is_loading_media = true;
+        self.clear_source_backoff();
 
         // A pipeline load should reach a steady PAUSED quickly; dump diagnostics if
         // not.
@@ -3099,6 +3108,14 @@ impl Application {
         }
     }
 
+    /// Drop any "server busy" countdown (new load, stop, or the load
+    /// prerolled). Safe to call blindly, repeated clears are swallowed.
+    fn clear_source_backoff(&mut self) {
+        self.source_backoff_epoch += 1;
+        self.source_backoff = None;
+        self.gui.set_source_backoff(0, 0);
+    }
+
     /// Resolve a wire subtitle track id: ids `>= EXTERNAL_TRACK_ID_BASE` name a
     /// catalog entry, smaller ids are `Player::streams` indices, `None` is
     /// "off".
@@ -3624,6 +3641,8 @@ impl Application {
                     return Ok(());
                 }
                 self.player.uri_loaded();
+                // Preroll finished, so data arrived: any countdown is stale.
+                self.clear_source_backoff();
             }
             player::PlayerEvent::RequestState(state) => self.player.request_state(state),
             player::PlayerEvent::QueueSeek(seek) => self.player.queue_seek(seek),
@@ -3746,6 +3765,30 @@ impl Application {
             }
             player::PlayerEvent::StreamTagsUpdated => {
                 self.update_tracks(false);
+            }
+            player::PlayerEvent::SourceBackoff { remaining_ms } => {
+                self.source_backoff_epoch += 1;
+                if remaining_ms == 0 {
+                    self.source_backoff = None;
+                    self.gui.set_source_backoff(0, 0);
+                } else {
+                    debug!(remaining_ms, "Source entered a server-directed backoff");
+                    let deadline = Instant::now() + Duration::from_millis(remaining_ms);
+                    self.source_backoff = Some((deadline, remaining_ms));
+                    self.gui.set_source_backoff(remaining_ms, remaining_ms);
+                    // Drive the countdown; a stale epoch makes the ticks no-ops.
+                    let epoch = self.source_backoff_epoch;
+                    let msg_tx = self.msg_tx.clone();
+                    tokio::spawn(async move {
+                        loop {
+                            tokio::time::sleep(Duration::from_millis(250)).await;
+                            msg_tx.send(Message::SourceBackoffTick { epoch });
+                            if Instant::now() >= deadline {
+                                break;
+                            }
+                        }
+                    });
+                }
             }
             player::PlayerEvent::ImageStream(info) => {
                 debug!(?info, "Image stream announced by fimagedec");
@@ -4815,6 +4858,19 @@ impl Application {
                 {
                     self.player
                         .log_load_stall_diagnostics(&format!("item{item}"));
+                }
+            }
+            Message::SourceBackoffTick { epoch } => {
+                if epoch == self.source_backoff_epoch
+                    && let Some((deadline, total_ms)) = self.source_backoff
+                {
+                    let remaining = deadline
+                        .saturating_duration_since(Instant::now())
+                        .as_millis() as u64;
+                    self.gui.set_source_backoff(remaining, total_ms);
+                    if remaining == 0 {
+                        self.source_backoff = None;
+                    }
                 }
             }
             Message::Raop(event) => return self.handle_raop_event(event),

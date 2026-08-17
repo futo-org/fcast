@@ -378,6 +378,13 @@ pub enum PlaybinEvent {
     /// The caller uses it to classify the load as an image and feed its
     /// inspector; animations otherwise look like ordinary video streams.
     ImageStream(gst::Structure),
+    /// The media source is throttled: its server directed a backoff of
+    /// `remaining_ms` before the next request (posted by `sabrumpsrc` while
+    /// starved). `remaining_ms == 0` means the backoff ended. The caller shows
+    /// this as a "server busy" countdown instead of an unexplained stall.
+    SourceBackoff {
+        remaining_ms: u64,
+    },
     /// A prepared next input
     /// ([`FcastPlaybin::prepare_next_async`](crate::FcastPlaybin::prepare_next_async))
     /// went live: the current item drained and decodebin3 switched to the

@@ -1,10 +1,14 @@
 //! End-to-end pump test driven by a canned transport that replays UMP bytes.
 
-use std::time::{Duration, Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
+use parking_lot::Mutex;
 use prost::Message;
 use sabrump::{
-    PartType, SabrFormat, SabrSession, SabrStreamSpec, SabrTransport,
+    PartType, SabrFormat, SabrSession, SabrSessionEvent, SabrStreamSpec, SabrTransport,
     proto::{
         ByteRange, FormatId, FormatInitializationMetadata, LiveMetadata, MediaHeader, MediaType,
         NextRequestPolicy, SabrSeek, VideoPlaybackAbrRequest,
@@ -528,6 +532,76 @@ async fn live_keepalive_seek_does_not_clear_buffer() {
         "keep-alive seek wiped an already-buffered segment"
     );
     assert_eq!(buffer.get(100).unwrap().to_vec(), b"LIVE-SEG100");
+
+    session.release();
+}
+
+#[tokio::test]
+async fn honours_a_server_backoff_before_the_next_request() {
+    // Field failure: the server answered the first request with no media and a
+    // directed backoff; the wait must be visible (feeders extend their init
+    // deadline by it, the GUI shows a countdown), the next request must not
+    // fire early, and the directed wait must never be treated as fatal.
+    let mut backoff_only = Vec::new();
+    let policy = NextRequestPolicy {
+        backoff_time_ms: 700,
+        ..Default::default()
+    };
+    ump_part(
+        &mut backoff_only,
+        PartType::NextRequestPolicy,
+        &policy.encode_to_vec(),
+    );
+
+    let (transport, requests) = SabrTransport::canned(vec![backoff_only, build_response()]);
+    let session = SabrSession::new(spec(), transport);
+    let video = video_format();
+    let buffer = session.buffer_for(&video);
+
+    // 0 marks BackoffEnded.
+    let events: Arc<Mutex<Vec<i64>>> = Arc::new(Mutex::new(Vec::new()));
+    {
+        let events = events.clone();
+        session.set_listener(Some(Arc::new(move |event| match event {
+            SabrSessionEvent::Backoff { delay_ms } => events.lock().push(delay_ms),
+            SabrSessionEvent::BackoffEnded => events.lock().push(0),
+            _ => {}
+        })));
+    }
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    let started = Instant::now();
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(3), || session.backoff_remaining_ms()
+            > 0)
+        .await,
+        "the directed backoff never became visible"
+    );
+    assert_eq!(requests.lock().len(), 1, "request fired during the backoff");
+    assert!(session.fatal_error().is_none());
+
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            buffer.get(2).map(|s| s.is_complete()).unwrap_or(false)
+        })
+        .await,
+        "media never arrived after the backoff"
+    );
+    assert!(
+        started.elapsed() >= Duration::from_millis(700),
+        "the second request did not wait out the backoff"
+    );
+    assert_eq!(requests.lock().len(), 2);
+    assert!(session.fatal_error().is_none());
+
+    let seen = events.lock().clone();
+    assert!(
+        seen.first().is_some_and(|d| *d > 0),
+        "no Backoff event, got: {seen:?}"
+    );
+    assert!(seen.contains(&0), "no BackoffEnded event, got: {seen:?}");
 
     session.release();
 }

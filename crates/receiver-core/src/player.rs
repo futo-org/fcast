@@ -471,6 +471,13 @@ pub enum PlayerEvent {
     /// fimagedec announced what the current load decodes to: the load is an
     /// image (still or animation) rendered through the video pipeline.
     ImageStream(ImageStreamInfo),
+    /// The media source is throttled: its server directed a backoff of
+    /// `remaining_ms` before the next request (sabrumpsrc, only while
+    /// starved). 0 means the backoff ended. Shown as a "server busy"
+    /// countdown in the GUI.
+    SourceBackoff {
+        remaining_ms: u64,
+    },
     /// A pre-armed next item ([`Player::prepare_next`]) went live: the
     /// current item drained and the pipeline switched gaplessly. Stamped
     /// with the PREPARED generation; the application validates it against
@@ -825,17 +832,22 @@ impl Player {
                     true
                 }
                 MessageView::Element(_) => {
-                    if let Ok(mp) = gst_pbutils::MissingPluginMessage::parse(msg) {
-                        // qtdemux exposes non-media metadata streams (unknown atoms) as `meta/*`;
-                        // decodebin then reports "no decoder" for them even though none is
-                        // needed. Note it for the follow-up warning and don't cry wolf.
-                        if missing_plugin_is_ignorable(msg) {
-                            debug!(detail = %mp.installer_detail(), "Ignoring missing plugin for non-media stream");
-                            missing_plugins.saw_ignorable.store(true, Ordering::SeqCst);
-                        } else {
-                            error!(detail = %mp.installer_detail(), desc = %mp.description(), "GStreamer missing plugin");
-                            missing_plugins.saw_real.store(true, Ordering::SeqCst);
-                        }
+                    // Consume ONLY missing-plugin reports. Other element
+                    // messages (fcast-image-stream, sabrump-status) belong to
+                    // fcastplaybin's translation and must fall through; a
+                    // blanket `true` here silently ate them.
+                    let Ok(mp) = gst_pbutils::MissingPluginMessage::parse(msg) else {
+                        return false;
+                    };
+                    // qtdemux exposes non-media metadata streams (unknown atoms) as `meta/*`;
+                    // decodebin then reports "no decoder" for them even though none is
+                    // needed. Note it for the follow-up warning and don't cry wolf.
+                    if missing_plugin_is_ignorable(msg) {
+                        debug!(detail = %mp.installer_detail(), "Ignoring missing plugin for non-media stream");
+                        missing_plugins.saw_ignorable.store(true, Ordering::SeqCst);
+                    } else {
+                        error!(detail = %mp.installer_detail(), desc = %mp.description(), "GStreamer missing plugin");
+                        missing_plugins.saw_real.store(true, Ordering::SeqCst);
                     }
                     true
                 }
@@ -1022,6 +1034,7 @@ impl Player {
                 height: s.get::<i32>("height").unwrap_or(0),
                 animated: s.get::<bool>("animated").unwrap_or(false),
             }),
+            E::SourceBackoff { remaining_ms } => PlayerEvent::SourceBackoff { remaining_ms },
             E::PreparedActivated => PlayerEvent::GaplessActivated,
             E::PreparedFailed { generation } => PlayerEvent::GaplessPrepareFailed { generation },
             E::PreparedCancelled { generation } => PlayerEvent::GaplessCancelled { generation },
