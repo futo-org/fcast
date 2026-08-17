@@ -106,9 +106,29 @@ fn main() {
             // tests/network_stream.rs is `#![cfg]`'d on both) and
             // fcast-gst-elements' textoverlay (the fcasttextoverlay unit tests).
             // sabrump/serde gates no test but is how every dependent builds it.
+            //
+            // nextest when installed: the suites are dominated by wall-clock
+            // waits (realtime-paced pipelines, protocol cadences), and cargo
+            // runs their ~30 binaries one after another. nextest runs every
+            // test as its own process in parallel, cutting the lane from ~7
+            // minutes to ~2, and its slow-timeout turns a wedged pipeline
+            // into a failure instead of a hang (see .config/nextest.toml).
+            // The lane has no doc-tests, so nothing is lost by the switch.
+            let probe = cmd!(sh, "cargo nextest --version")
+                .quiet()
+                .ignore_stdout()
+                .ignore_stderr()
+                .run();
+            let subcommand = if probe.is_ok() {
+                "nextest run"
+            } else {
+                println!(">> cargo-nextest not installed, falling back to serial cargo test");
+                "test"
+            };
+            let subcommand: Vec<&str> = subcommand.split(' ').collect();
             cmd!(
                 sh,
-                "cargo test --all-targets
+                "cargo {subcommand...} --all-targets
                  -p fcast-video -p fcastplaybin -p fcast-gst-elements -p fcasttest
                  -p fcast-runtime -p fcast-protocol -p sabrump -p google-cast-protocol
                  -p apple-fairplay -p app-updater -p inhibit-screensaver -p xtask
