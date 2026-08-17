@@ -309,10 +309,9 @@ impl Inner {
     /// pipeline before `route_db3_pad` can link a stream into it, even when
     /// the activation itself is deferred (see [`ChainJoinJob`]).
     ///
-    /// The chain is ONE element now, so there is no internal link left to make
-    /// here. The deleted overlay's src-to-sink link was the
-    /// only one, and it was made on the first join and kept across membership
-    /// changes.
+    /// The chain is `fpb-vqueue ! sink` (see `Inner::video_entry`). The
+    /// internal edge is made on the first attach and kept across membership
+    /// changes, the same treatment the deleted overlay's edge had.
     ///
     /// Nothing here blocks on a state or stream lock: `gst_bin_add` takes the
     /// bin's object lock and changes no child state.
@@ -327,8 +326,19 @@ impl Inner {
             return Ok(());
         }
         self.pipeline
-            .add(&self.video_sink)
+            .add_many([&self.video_entry, &self.video_sink])
             .context("adding the video chain")?;
+        // First attach only: the `vqueue ! sink` edge is kept across
+        // membership changes, like the deleted overlay's edge before it.
+        if self
+            .video_entry
+            .static_pad("src")
+            .is_some_and(|pad| pad.peer().is_none())
+        {
+            self.video_entry
+                .link(&self.video_sink)
+                .context("linking the video chain")?;
+        }
         Ok(())
     }
 
@@ -358,17 +368,27 @@ impl Inner {
         if let Some(base_time) = base_time {
             self.video_sink.set_base_time(base_time);
         }
+        // Sink before queue (downstream up): the queue's task pushes the
+        // moment it activates, and a push into a still-READY sink returns
+        // FLUSHING, which parks the task with nothing to resume it.
         if let Err(err) = self.video_sink.set_state(join) {
             warn!(?err, element = %self.video_sink.name(), "failed to activate the video sink");
         }
+        self.video_entry.set_locked_state(false);
+        if let Err(err) = self.video_entry.set_state(join) {
+            warn!(?err, element = %self.video_entry.name(), "failed to activate the video queue");
+        }
         // Cluster (d) of the four surgery sites, relink half: both ends of the
         // freshly joined edge stay in the graph, so a FLUSHING latched on
-        // either is a chain that will never render.
+        // either is a chain that will never render. The sink pad rides along:
+        // the internal `vqueue ! sink` edge never unlinks, but a flush
+        // latches it all the same.
         let relinked: Vec<gst::Pad> = self
-            .video_sink
+            .video_entry
             .static_pad("sink")
             .into_iter()
             .flat_map(|pad| pad.peer().into_iter().chain(std::iter::once(pad)))
+            .chain(self.video_sink.static_pad("sink"))
             .collect();
         Self::flow_census(FlowStage::EnsureVideoChain, &relinked);
         Ok(())
@@ -428,7 +448,7 @@ impl Inner {
         // with `FCAST_READY_BEFORE_UNLINK_VIDEO` the READY step runs first and
         // can drop the link itself, so a peer read after it would be `None`
         // and the census below would silently survey nothing.
-        let entry = self.video_sink.static_pad("sink");
+        let entry = self.video_entry.static_pad("sink");
         let peer = entry.as_ref().and_then(|pad| pad.peer());
         let unlink = || {
             if let (Some(pad), Some(peer)) = (entry.as_ref(), peer.as_ref()) {
@@ -436,10 +456,15 @@ impl Inner {
             }
         };
         // READY: aborts any clock/preroll wait, unwinding a blocked
-        // streaming thread out of the branch.
+        // streaming thread out of the branch. Sink before queue: the sink's
+        // READY returns the queue task's in-flight push as FLUSHING, so the
+        // queue's pad deactivation is not left waiting on a thread parked
+        // inside the sink's preroll.
         let ready = || {
             self.video_sink.set_locked_state(false);
             let _ = self.video_sink.set_state(gst::State::Ready);
+            self.video_entry.set_locked_state(false);
+            let _ = self.video_entry.set_state(gst::State::Ready);
         };
         if ready_first {
             ready();
@@ -448,13 +473,15 @@ impl Inner {
             unlink();
             ready();
         }
-        // Cluster (d) of the four surgery sites. The video sink's own pad
-        // leaves the pipeline just below, but its PEER (a streamsynchronizer
+        // Cluster (d) of the four surgery sites. The chain's own pads
+        // leave the pipeline just below, but their PEER (a streamsynchronizer
         // src pad) stays, and a FLUSHING latched there is what the next
         // `ensure_video_chain` would relink into.
         let surveyed: Vec<gst::Pad> = peer.into_iter().collect();
         Self::flow_census(FlowStage::RemoveVideoChain, &surveyed);
-        let _ = self.pipeline.remove(&self.video_sink);
+        let _ = self
+            .pipeline
+            .remove_many([&self.video_entry, &self.video_sink]);
         debug!("removed the video chain from the pipeline");
     }
 
@@ -506,8 +533,9 @@ impl Inner {
         // Two deselect dispatches in a row would otherwise leak the first
         // probe onto a pad this one is about to stop tracking.
         self.clear_video_park_probe();
+        // The chain's entry is the queue; its peer is the feeding ssync pad.
         let feeding = self
-            .video_sink
+            .video_entry
             .static_pad("sink")
             .and_then(|pad| pad.peer());
         if let Some(feeding) = feeding
@@ -765,6 +793,17 @@ impl FcastPlaybin {
         aqueue.set_property("max-size-bytes", 0u32);
         aqueue.set_property("max-size-buffers", 0u32);
 
+        // Head of the video chain, playsink's video-queue parity (see
+        // `Inner::video_entry`). 3 buffers like playsink's, so it holds at
+        // most 3 decoded frames of pool surfaces; time cap 0 is what makes
+        // the latency query answer max=unlimited. NOT added to the pipeline
+        // here: it joins and leaves with the video sink
+        // (`attach_video_chain`/`remove_video_chain`).
+        let vqueue = make("queue", "fpb-vqueue")?;
+        vqueue.set_property("max-size-time", 0u64);
+        vqueue.set_property("max-size-bytes", 0u32);
+        vqueue.set_property("max-size-buffers", 3u32);
+
         let token_src = make("appsrc", "fpb-token-src")?;
         token_src.set_property_from_str("format", "time");
         let token_sink = make("fakesink", "fpb-token-sink")?;
@@ -853,6 +892,8 @@ impl FcastPlaybin {
             // The audio branch's head is the decoupling queue. ssync links here.
             audio_entry: aqueue,
             volume,
+            // The video branch's head. ssync links here (see `Inner::video_entry`).
+            video_entry: vqueue,
             events: Mutex::new(None),
             subtitle_consumer: Mutex::new(None),
             unsupported_text_reported: Mutex::new(std::collections::HashSet::new()),

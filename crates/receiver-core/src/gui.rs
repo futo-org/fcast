@@ -432,6 +432,13 @@ impl GuiController {
         }
     }
 
+    /// Whether the "server busy" countdown is currently shown. The
+    /// application's low-on-data gate keeps updating a shown countdown even
+    /// after the buffer recovers, rather than letting it freeze mid-bar.
+    pub fn source_backoff_shown(&self) -> bool {
+        self.backoff_active
+    }
+
     /// Update the "server busy" countdown. `remaining_ms == 0` clears it.
     /// Repeated clears are swallowed so stop/load paths can clear blindly.
     pub fn set_source_backoff(&mut self, remaining_ms: u64, total_ms: u64) {

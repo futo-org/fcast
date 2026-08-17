@@ -1753,9 +1753,9 @@ impl Inner {
                     inner.ensure_video_chain()?;
                 }
                 let entry = inner
-                    .video_sink
+                    .video_entry
                     .static_pad("sink")
-                    .ok_or_else(|| anyhow!("the video sink has no sink pad"))?;
+                    .ok_or_else(|| anyhow!("fpb-vqueue sink missing"))?;
                 ss_src.link(&entry).context("linking video chain")?;
                 if deferred_join {
                     // AFTER the link, which cannot race: the only thread that

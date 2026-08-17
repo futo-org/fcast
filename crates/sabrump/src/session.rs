@@ -68,6 +68,17 @@ const THROUGHPUT_MIN_SPEEDUP: i64 = 2;
 const LIVE_POLL_MS: i64 = 1_000;
 const DEFAULT_LIVE_SEGMENT_US: i64 = 5_000_000;
 const SABR_SEEK_SLACK_US: i64 = 30_000_000;
+/// Rejoin a live stream at the head after this long without any new media.
+/// Spans several segment cadences plus a few server-directed backoffs, so a
+/// healthy edge-paced session never trips it.
+const LIVE_STALL_REJOIN_MS: i64 = 20_000;
+/// A stalled position at least this far behind the live window end is a DVR
+/// viewer: the stall rejoin re-requests THAT position instead of yanking them
+/// to the head.
+const DVR_REJOIN_SLACK_US: i64 = 60_000_000;
+/// Consecutive positional (DVR) rejoins without media before escalating to a
+/// live-head rejoin anyway, the recovery of last resort.
+const MAX_DVR_REJOINS: i32 = 2;
 /// Sentinel `player_time` for the initial live-head request (before any
 /// `LiveMetadata` arrives). Must be exactly JS `Number.MAX_SAFE_INTEGER`
 /// (2^53 - 1) expressed in microseconds. The SABR server rejects any other
@@ -128,6 +139,10 @@ struct State {
     seek_pending_us: Option<i64>,
     last_sabr_seek_us: i64,
     restart_epoch: i32,
+    /// Request the live-head sentinel again (stall recovery). Cleared once the
+    /// server places us (a SABR_SEEK or new media).
+    rejoin_live_head: bool,
+    live_stall_rejoin_ms: i64,
 
     target_video_readahead_ms: i64,
     target_audio_readahead_ms: i64,
@@ -188,6 +203,11 @@ struct PumpLocal {
     backoff_notified: bool,
     backoff_shown: bool,
     last_wait_log_ms: i64,
+    /// When the current run of empty live responses started, 0 when none.
+    live_stall_since_ms: i64,
+    /// Positional (DVR) stall rejoins since the last media, for the
+    /// escalation to a live-head rejoin.
+    dvr_rejoins: i32,
     media_bytes: i64,
     media_us_delivered: i64,
     throughput_bytes_per_sec: i64,
@@ -260,6 +280,8 @@ impl SabrSession {
             seek_pending_us: None,
             last_sabr_seek_us: NO_US,
             restart_epoch: 0,
+            rejoin_live_head: false,
+            live_stall_rejoin_ms: LIVE_STALL_REJOIN_MS,
             target_video_readahead_ms: DEFAULT_READAHEAD_MS,
             target_audio_readahead_ms: DEFAULT_READAHEAD_MS,
             backoff_until_ms: 0,
@@ -350,6 +372,13 @@ impl SabrSession {
 
     pub fn set_initial_bandwidth(&self, bytes_per_sec: i64) {
         self.shared.state.lock().initial_bandwidth = bytes_per_sec;
+    }
+
+    /// Override how long a live stream may go without new media before the
+    /// session abandons its position and rejoins at the live head. `<= 0`
+    /// disables the backstop.
+    pub fn set_live_stall_rejoin_ms(&self, ms: i64) {
+        self.shared.state.lock().live_stall_rejoin_ms = ms;
     }
 
     /// The buffer for a format, creating it on first use.
@@ -554,6 +583,7 @@ impl SabrSession {
         state.restart_from_us = from_us;
         state.last_action_ms = now_ms();
         state.restart_epoch += 1;
+        state.rejoin_live_head = false;
         state.format_complete.clear();
         state.format_no_progress.clear();
 
@@ -852,9 +882,12 @@ async fn perform_request(shared: &Arc<Shared>, local: &mut PumpLocal) -> Result<
         local.empty_responses = 0;
         local.substituted_responses = 0;
         local.consecutive_redirects = 0;
+        local.live_stall_since_ms = 0;
+        local.dvr_rejoins = 0;
         let mut state = shared.state.lock();
         state.error_backoff_until_ms = 0;
         state.backoff_until_ms = state.server_backoff_until_ms;
+        state.rejoin_live_head = false;
     }
 
     let aborting = shared.state.lock().aborting;
@@ -864,8 +897,13 @@ async fn perform_request(shared: &Arc<Shared>, local: &mut PumpLocal) -> Result<
             clamp_to_seekable_window(shared);
         }
         if !advanced && !redirected {
-            let mut state = shared.state.lock();
-            state.backoff_until_ms = state.backoff_until_ms.max(now_ms() + LIVE_POLL_MS);
+            {
+                let mut state = shared.state.lock();
+                state.backoff_until_ms = state.backoff_until_ms.max(now_ms() + LIVE_POLL_MS);
+            }
+            if !aborting {
+                maybe_rejoin_after_stall(shared, local);
+            }
         }
         return Ok(());
     }
@@ -927,6 +965,10 @@ async fn consume(
     let mut pending: HashMap<i32, (Arc<SabrSegment>, Arc<SabrTrackBuffer>)> = HashMap::new();
     let mut redirect: Option<String> = None;
     let mut seek_to_us: Option<i64> = None;
+    // Whether this response carried any media bytes at all (duplicates
+    // included), the signal that tells a positional refusal apart from a
+    // keep-alive seek echo (see `apply_sabr_seek`).
+    let bytes_at_start = local.media_bytes;
 
     let result: Result<(), PumpStep> = async {
         loop {
@@ -1113,7 +1155,8 @@ async fn consume(
     }
 
     if let Some(seek) = seek_to_us {
-        apply_sabr_seek(shared, seek, requested_position_us);
+        let empty_response = local.media_bytes == bytes_at_start;
+        apply_sabr_seek(shared, seek, requested_position_us, empty_response);
     }
     Ok(false)
 }
@@ -1691,7 +1734,7 @@ fn request_position_us(shared: &Arc<Shared>, state: &State) -> i64 {
     if let Some(s) = state.seek_pending_us {
         return s;
     }
-    if shared.is_live && state.live_metadata.is_none() {
+    if shared.is_live && (state.live_metadata.is_none() || state.rejoin_live_head) {
         return LIVE_HEAD_PLAYER_TIME_US;
     }
     let mut earliest = i64::MAX;
@@ -1715,7 +1758,22 @@ fn request_position_us(shared: &Arc<Shared>, state: &State) -> i64 {
     if !shared.is_live {
         return earliest;
     }
-    state.playback_position_us.min(earliest)
+    let mut position = state.playback_position_us.min(earliest);
+    // Never report a live position past the advertised seekable window end.
+    // The buffered frontier legitimately runs ahead of it (the server serves
+    // readahead past the window on join), but reporting a player time out
+    // there reads as an invalid playhead and the server answers with a
+    // corrective SABR_SEEK plus empty media forever instead of the next
+    // segment (field: livestream-fail livelock, frozen at 10s).
+    if let Some(lm) = state.live_metadata
+        && lm.max_seekable_timescale > 0
+    {
+        let window_end = ticks_to_us(lm.max_seekable_time_ticks, lm.max_seekable_timescale);
+        if window_end > 0 {
+            position = position.min(window_end);
+        }
+    }
+    position
 }
 
 fn update_progress(shared: &Arc<Shared>, format: &Option<SabrFormat>, requested_us: i64) {
@@ -1808,8 +1866,15 @@ fn evict_consumed_segments(shared: &Arc<Shared>) {
     }
 }
 
-fn apply_sabr_seek(shared: &Arc<Shared>, seek_to_us: i64, _requested_position_us: i64) {
+fn apply_sabr_seek(
+    shared: &Arc<Shared>,
+    seek_to_us: i64,
+    _requested_position_us: i64,
+    empty_response: bool,
+) {
     let mut state = shared.state.lock();
+    // A seek means the server heard us; a pending live-head rejoin is placed.
+    state.rejoin_live_head = false;
     if shared.is_live
         && let Some(lm) = state.live_metadata
     {
@@ -1845,6 +1910,17 @@ fn apply_sabr_seek(shared: &Arc<Shared>, seek_to_us: i64, _requested_position_us
         });
     if near_position || already_buffered {
         state.last_sabr_seek_us = seek_to_us;
+        // Ack a backward correction in the reported position ONLY when the
+        // response carried no media: that is the server refusing the reported
+        // position, re-sending the same seek and serving nothing until the
+        // player time complies (field: livestream-fail livelock). A backward
+        // seek riding along WITH media is the keep-alive echo of the segment
+        // just served; acking that pins the reported position at the segment
+        // start and the server re-serves the same segment forever (field: DVR
+        // live stream frozen at 5s). Buffers and demands stay put either way.
+        if empty_response && shared.is_live && seek_to_us < state.playback_position_us {
+            state.playback_position_us = seek_to_us;
+        }
         return;
     }
 
@@ -1915,11 +1991,87 @@ fn clamp_to_seekable_window(shared: &Arc<Shared>) {
             ticks_to_us(lm.max_seekable_time_ticks, lm.max_seekable_timescale),
         )
     };
+    // `empty_response=true`: a self-imposed clamp has no response to inspect,
+    // and adopting the bound into the reported position is the intent.
     if position < window_start {
-        apply_sabr_seek(shared, window_start, position);
+        apply_sabr_seek(shared, window_start, position, true);
     } else if position > window_end + SABR_SEEK_SLACK_US {
-        apply_sabr_seek(shared, window_end, position);
+        apply_sabr_seek(shared, window_end, position, true);
     }
+}
+
+/// Live stall backstop. Whatever the server's reason for refusing a session
+/// (a position dispute, stale cookie state, ...), a live stream that got no
+/// media for `live_stall_rejoin_ms` despite polling is dead where it stands,
+/// so abandon the session position and re-place: at the current position for
+/// a DVR viewer, else at the live head with the sentinel player time (the
+/// join path that provably works). Reuses the genuine-server-seek machinery:
+/// the timeline is discontinuous, so buffers are dropped and consumers must
+/// resync from the new front.
+fn maybe_rejoin_after_stall(shared: &Arc<Shared>, local: &mut PumpLocal) {
+    // max(1): now_ms() is 0 for the process's first millisecond, which would
+    // collide with the "no stall running" sentinel and never start the clock.
+    let now = now_ms().max(1);
+    if local.live_stall_since_ms == 0 {
+        local.live_stall_since_ms = now;
+        return;
+    }
+    let stalled_ms = now - local.live_stall_since_ms;
+    let threshold = shared.state.lock().live_stall_rejoin_ms;
+    if threshold <= 0 || stalled_ms < threshold {
+        return;
+    }
+    local.live_stall_since_ms = 0;
+    {
+        let mut state = shared.state.lock();
+        // A position well behind the window end is a DVR viewer: re-request
+        // THAT position (seek_pending pins the request until a covering
+        // segment lands) instead of yanking them to the head. Escalate to the
+        // head after MAX_DVR_REJOINS dry attempts, the last resort.
+        let window_end = state.live_metadata.and_then(|lm| {
+            (lm.max_seekable_timescale > 0)
+                .then(|| ticks_to_us(lm.max_seekable_time_ticks, lm.max_seekable_timescale))
+        });
+        let position = state.playback_position_us;
+        let dvr_target = window_end.and_then(|end| {
+            (position > 0
+                && end - position > DVR_REJOIN_SLACK_US
+                && local.dvr_rejoins < MAX_DVR_REJOINS)
+                .then_some(position)
+        });
+        match dvr_target {
+            Some(target) => {
+                local.dvr_rejoins += 1;
+                log::warn!(
+                    "sabr: live media stalled for {stalled_ms}ms, rejoining at the DVR position \
+                     (attempt {})",
+                    local.dvr_rejoins
+                );
+                state.rejoin_live_head = false;
+                state.seek_pending_us = Some(target);
+                state.restart_from_us = target;
+                reanchor_demands(&mut state, target);
+            }
+            None => {
+                log::warn!(
+                    "sabr: live media stalled for {stalled_ms}ms, rejoining at the live head"
+                );
+                state.rejoin_live_head = true;
+                state.seek_pending_us = None;
+            }
+        }
+        state.resume_position_us = None;
+        state.last_sabr_seek_us = NO_US;
+        state.restart_epoch += 1;
+        state.format_complete.clear();
+        state.format_no_progress.clear();
+        state.last_action_ms = now;
+    }
+    for buffer in shared.buffers.lock().values() {
+        buffer.clear();
+    }
+    shared.server_seek_generation.fetch_add(1, Ordering::AcqRel);
+    self_notify(shared);
 }
 
 fn first_sequence_of_run(buffer: &SabrTrackBuffer, from_us: i64) -> i32 {

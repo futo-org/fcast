@@ -274,11 +274,12 @@ fn parked_drain_pokes_are_bounded_and_the_edge_drain_still_runs() {
     let events = load_and_play(&playbin, &media.uri());
     let _id = attach_and_flow(&playbin, &events, &subs.uri());
 
-    // The audio decoupling queue plus the live text branch's queue.
+    // The audio decoupling queue, the video chain's queue, and the live
+    // text branch's queue.
     assert_eq!(
         children_of_factory(playbin.pipeline(), "queue"),
-        2,
-        "expected the audio queue and the text branch queue"
+        3,
+        "expected the audio, video-chain and text branch queues"
     );
 
     settle_paused(&playbin, &events);
@@ -295,7 +296,7 @@ fn parked_drain_pokes_are_bounded_and_the_edge_drain_still_runs() {
     }
     assert_eq!(
         children_of_factory(playbin.pipeline(), "queue"),
-        2,
+        3,
         "the postponed disposal should leave the text queue in the pipeline for now"
     );
 
@@ -393,7 +394,8 @@ fn parked_drain_pokes_are_bounded_and_the_edge_drain_still_runs() {
     playbin.play().expect("resume");
     let deadline = Instant::now() + DRAIN_BOUND;
     loop {
-        if children_of_factory(playbin.pipeline(), "queue") == 1 {
+        // The text branch's queue is gone; the audio and video-chain queues stay.
+        if children_of_factory(playbin.pipeline(), "queue") == 2 {
             break;
         }
         assert!(

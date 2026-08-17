@@ -3116,6 +3116,20 @@ impl Application {
         self.gui.set_source_backoff(0, 0);
     }
 
+    /// Whether a server-directed backoff deserves the "server busy" countdown:
+    /// only when the pipeline is low on buffered media, so the wait may
+    /// actually interrupt playback. Live sources at their edge are directed to
+    /// back off routinely while holding many seconds of runway; those waits
+    /// are pacing, not trouble. When no element can report a level, err on
+    /// showing.
+    fn source_backoff_worth_showing(&self) -> bool {
+        const RUNWAY_THRESHOLD: gst::ClockTime = gst::ClockTime::from_seconds(3);
+        match self.player.buffered_ahead() {
+            Some(ahead) => ahead < RUNWAY_THRESHOLD,
+            None => true,
+        }
+    }
+
     /// Resolve a wire subtitle track id: ids `>= EXTERNAL_TRACK_ID_BASE` name a
     /// catalog entry, smaller ids are `Player::streams` indices, `None` is
     /// "off".
@@ -3775,7 +3789,15 @@ impl Application {
                     debug!(remaining_ms, "Source entered a server-directed backoff");
                     let deadline = Instant::now() + Duration::from_millis(remaining_ms);
                     self.source_backoff = Some((deadline, remaining_ms));
-                    self.gui.set_source_backoff(remaining_ms, remaining_ms);
+                    // Only shown while low on buffered media: a live source at
+                    // its edge gets routine pacing backoffs while holding many
+                    // seconds of runway, and showing those reads as trouble
+                    // where there is none. The ticks below re-check, so a
+                    // backoff that outlives the buffer surfaces the moment
+                    // the runway runs low.
+                    if self.source_backoff_worth_showing() {
+                        self.gui.set_source_backoff(remaining_ms, remaining_ms);
+                    }
                     // Drive the countdown; a stale epoch makes the ticks no-ops.
                     let epoch = self.source_backoff_epoch;
                     let msg_tx = self.msg_tx.clone();
@@ -4867,7 +4889,16 @@ impl Application {
                     let remaining = deadline
                         .saturating_duration_since(Instant::now())
                         .as_millis() as u64;
-                    self.gui.set_source_backoff(remaining, total_ms);
+                    // Once shown, keep counting down (recovering runway must
+                    // not freeze the bar); otherwise show only when the
+                    // runway has run low. A clear is always delivered (and
+                    // swallowed by the GUI when nothing is shown).
+                    if remaining == 0
+                        || self.gui.source_backoff_shown()
+                        || self.source_backoff_worth_showing()
+                    {
+                        self.gui.set_source_backoff(remaining, total_ms);
+                    }
                     if remaining == 0 {
                         self.source_backoff = None;
                     }

@@ -334,6 +334,7 @@ impl WakeRescue {
 pub(crate) struct Teardown {
     pipeline: gst::Pipeline,
     video_sink: gst::Element,
+    video_entry: gst::Element,
     inputs: Vec<gst::Element>,
     disposals: Vec<TextDisposal>,
     /// Pads of live text branches, plus the decodebin3 sink pads of every
@@ -385,6 +386,7 @@ impl Teardown {
         let Teardown {
             pipeline,
             video_sink,
+            video_entry,
             inputs,
             disposals,
             text_pads,
@@ -422,6 +424,12 @@ impl Teardown {
         // belonged to is gone.
         if video_sink.parent().is_none() {
             let _ = video_sink.set_state(gst::State::Null);
+        }
+        // Same treatment for the chain's queue: it parks at READY outside
+        // the pipeline between video items, and disposing it there trips the
+        // same CRITICAL.
+        if video_entry.parent().is_none() {
+            let _ = video_entry.set_state(gst::State::Null);
         }
     }
 
@@ -593,6 +601,7 @@ impl Drop for Inner {
         let teardown = Teardown {
             pipeline: self.pipeline.clone(),
             video_sink: self.video_sink.clone(),
+            video_entry: self.video_entry.clone(),
             disposals: std::mem::take(&mut *self.deferred_text_disposal.lock()),
             text_pads: self.live_text_downstream_pads(),
             db3_sink_pads: {

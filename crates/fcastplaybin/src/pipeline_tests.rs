@@ -286,6 +286,140 @@ fn a_load_forgets_the_previous_items_text_park() {
     );
 }
 
+/// The video chain must never cap the pipeline's max latency below a live
+/// audio sink's min. Field: live SABR, the pwaudiosink declares min 235ms
+/// while the queue-less video branch could absorb 33ms (one decoded frame),
+/// so latency configuration failed ("Impossible to configure latency",
+/// "clock problem"), the video sink fell back to zero processing latency and
+/// QoS-dropped most frames. The chain's head queue (`fpb-vqueue`, non-leaky,
+/// no time cap) answers the latency query with max=unlimited, playsink's own
+/// video-chain shape. Guards the queue's config: a time cap or a leaky mode
+/// added later turns max finite again and re-breaks live A/V.
+#[test]
+fn video_chain_reports_unbounded_max_latency() {
+    test_init();
+    let playbin = FcastPlaybin::new(fake_audio_sinks()).unwrap();
+    let inner = &playbin.inner;
+    inner.attach_video_chain().unwrap();
+
+    // The internal edge is up: queue into sink.
+    let entry_src = inner.video_entry.static_pad("src").unwrap();
+    assert_eq!(
+        entry_src.peer(),
+        inner.video_sink.static_pad("sink"),
+        "the chain must be vqueue ! sink"
+    );
+
+    // A live upstream with a BOUNDED max, the shape a live source hands the
+    // chain. Bounded matters: an unlimited upstream would mask a
+    // wrongly-capped queue.
+    let upstream_max = gst::ClockTime::from_mseconds(33);
+    let templ = gst::PadTemplate::new(
+        "src",
+        gst::PadDirection::Src,
+        gst::PadPresence::Always,
+        &gst::Caps::new_any(),
+    )
+    .unwrap();
+    let feeding = gst::Pad::builder_from_template(&templ)
+        .query_function(move |_pad, _parent, query| {
+            if let gst::QueryViewMut::Latency(q) = query.view_mut() {
+                q.set(true, gst::ClockTime::ZERO, upstream_max);
+                return true;
+            }
+            false
+        })
+        .build();
+    feeding.set_active(true).unwrap();
+    let chain_entry = inner.video_entry.static_pad("sink").unwrap();
+    feeding.link(&chain_entry).unwrap();
+
+    let mut query = gst::query::Latency::new();
+    assert!(
+        inner
+            .video_entry
+            .static_pad("src")
+            .unwrap()
+            .query(&mut query),
+        "the chain's queue must answer the latency query"
+    );
+    let (live, min, max) = query.result();
+    assert!(live, "liveness must pass through the chain");
+    assert_eq!(min, gst::ClockTime::ZERO, "the queue must not raise min");
+    assert_eq!(
+        max, None,
+        "the video chain must report an unlimited max latency; a finite max \
+         caps the pipeline below a live audio sink's min and playback opens \
+         with a QoS drop storm"
+    );
+
+    let _ = feeding.unlink(&chain_entry);
+    let _ = playbin.stop();
+}
+
+/// `buffered_ahead` must count appsrc queue levels: the SABR source buffers
+/// its media in per-track appsrcs, and the receiver gates its "server busy"
+/// countdown on this runway measurement, so dropping the appsrc arm would
+/// silently under-report the buffer and re-show the pill during healthy live
+/// playback. appsrc accepts pushes before it starts (its queue is independent
+/// of the streaming task), so the level here is deterministic.
+#[test]
+fn buffered_ahead_reads_appsrc_levels() {
+    test_init();
+    let playbin = FcastPlaybin::new(fake_audio_sinks()).unwrap();
+
+    let src = gst::ElementFactory::make("appsrc")
+        .property_from_str("format", "time")
+        .build()
+        .unwrap();
+    playbin.inner.pipeline.add(&src).unwrap();
+
+    // Block the (unlinked) src pad so the source task parks on its first
+    // push instead of erroring with NOT_LINKED and draining the queue.
+    let src_pad = src.static_pad("src").unwrap();
+    src_pad
+        .add_probe(
+            gst::PadProbeType::BLOCK | gst::PadProbeType::BUFFER,
+            |_pad, _info| gst::PadProbeReturn::Ok,
+        )
+        .unwrap();
+    // Started (READY->PAUSED) because the time-level accounting only runs
+    // once the segment is initialized; pushes before start count bytes only.
+    src.set_state(gst::State::Paused).unwrap();
+
+    // 4 x 500ms of timestamped media. The task pops at most the first buffer
+    // into the blocked pad, so at least 1.5s stays queued.
+    for i in 0..4u64 {
+        let mut buffer = gst::Buffer::with_size(256).unwrap();
+        {
+            let buffer = buffer.get_mut().unwrap();
+            buffer.set_pts(gst::ClockTime::from_mseconds(i * 500));
+            buffer.set_duration(gst::ClockTime::from_mseconds(500));
+        }
+        let ret = src.emit_by_name::<gst::FlowReturn>("push-buffer", &[&buffer]);
+        assert_eq!(ret, gst::FlowReturn::Ok);
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let level = loop {
+        match playbin.buffered_ahead() {
+            Some(level) => break level,
+            None if Instant::now() >= deadline => {
+                panic!("appsrc queue level never counted toward the buffered runway")
+            }
+            None => std::thread::sleep(Duration::from_millis(10)),
+        }
+    };
+    assert!(
+        level >= gst::ClockTime::from_mseconds(1_500),
+        "queued appsrc media under-reported: {level}"
+    );
+
+    // Unwinds the task parked in the blocked probe (pad deactivation flushes it).
+    let _ = src.set_state(gst::State::Null);
+    let _ = playbin.stop();
+}
+
 /// The watchdog end to end, without FAST or media: attach a URI that
 /// never produces a stream (the pipeline sits in NULL, so urisourcebin
 /// never starts) and expect the crate to detach it and report

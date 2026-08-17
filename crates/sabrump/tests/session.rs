@@ -299,6 +299,94 @@ fn sabr_seek_part(out: &mut Vec<u8>, media_time: i64, timescale: i32) {
     ump_part(out, PartType::SabrSeek, &seek.encode_to_vec());
 }
 
+/// The join response of the live-wedge scenario: window `[0s,10s]`, segments
+/// 100 (1s..6s) and 101 (6s..11s), i.e. a buffered frontier 1s PAST the
+/// advertised window end, as live SABR servers really serve on join.
+fn live_two_segments_response() -> Vec<u8> {
+    let mut out = Vec::new();
+    live_metadata_part(&mut out);
+    emit_segment(
+        &mut out,
+        ITAG,
+        LMT,
+        1,
+        100,
+        false,
+        1000,
+        5000,
+        b"LIVE-SEG100",
+    );
+    emit_segment(
+        &mut out,
+        ITAG,
+        LMT,
+        2,
+        101,
+        false,
+        6000,
+        5000,
+        b"LIVE-SEG101",
+    );
+    out
+}
+
+/// A `LiveMetadata` part with a `[0, window_end_ms]` seekable window and the
+/// head 10s past it, for DVR-shaped scenarios.
+fn live_metadata_part_windowed(out: &mut Vec<u8>, window_end_ms: i64) {
+    let lm = LiveMetadata {
+        head_sequence_number: 1000,
+        head_sequence_time_ms: window_end_ms + 10_000,
+        min_seekable_time_ticks: 0,
+        min_seekable_timescale: 1000,
+        max_seekable_time_ticks: window_end_ms,
+        max_seekable_timescale: 1000,
+        ..Default::default()
+    };
+    ump_part(out, PartType::LiveMetadata, &lm.encode_to_vec());
+}
+
+/// The join response of the DVR-wedge scenario: a wide `[0s,200s]` window
+/// (the requested position sits deep inside it) and segments 100/101.
+fn dvr_two_segments_response() -> Vec<u8> {
+    let mut out = Vec::new();
+    live_metadata_part_windowed(&mut out, 200_000);
+    emit_segment(
+        &mut out,
+        ITAG,
+        LMT,
+        1,
+        100,
+        false,
+        1000,
+        5000,
+        b"LIVE-SEG100",
+    );
+    emit_segment(
+        &mut out,
+        ITAG,
+        LMT,
+        2,
+        101,
+        false,
+        6000,
+        5000,
+        b"LIVE-SEG101",
+    );
+    out
+}
+
+/// The live-head sentinel a live join (or stall rejoin) request must carry,
+/// in ms (JS `Number.MAX_SAFE_INTEGER`).
+const LIVE_HEAD_SENTINEL_MS: i64 = 9_007_199_254_740_991;
+
+fn player_time_ms(body: &[u8]) -> Option<i64> {
+    VideoPlaybackAbrRequest::decode(body)
+        .expect("decode request")
+        .client_abr_state
+        .expect("client abr state")
+        .player_time_ms
+}
+
 async fn wait_until<F: Fn() -> bool>(timeout: Duration, cond: F) -> bool {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {
@@ -532,6 +620,391 @@ async fn live_keepalive_seek_does_not_clear_buffer() {
         "keep-alive seek wiped an already-buffered segment"
     );
     assert_eq!(buffer.get(100).unwrap().to_vec(), b"LIVE-SEG100");
+
+    session.release();
+}
+
+#[tokio::test]
+async fn live_request_position_is_clamped_to_the_window_end() {
+    // Field failure (livestream-fail): the server serves readahead past its
+    // advertised seekable window on join, and the feeders report the buffered
+    // frontier as the playback position. Reporting that frontier as the player
+    // time reads as a playhead past the live edge, and the server answers with
+    // corrective seeks + empty media instead of the next segment. The reported
+    // position must be clamped to the window end.
+    let (transport, requests) = SabrTransport::canned(vec![live_two_segments_response()]);
+    let session = SabrSession::new(live_spec(), transport);
+    let video = video_format();
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    // What the feeders would report after pushing both segments: the frontier.
+    session.set_playback_position(11_000_000);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(3), || requests.lock().len() >= 2).await,
+        "second request never fired"
+    );
+    let bodies = requests.lock().clone();
+    // The join request carries the live-head sentinel.
+    assert_eq!(player_time_ms(&bodies[0]), Some(LIVE_HEAD_SENTINEL_MS));
+    // The follow-up reports at most the window end (10s), not the 11s frontier.
+    assert_eq!(player_time_ms(&bodies[1]), Some(10_000));
+
+    session.release();
+}
+
+#[tokio::test]
+async fn live_backward_seek_in_an_empty_response_is_acked() {
+    // Field failure (livestream-fail): after serving ~10s of readahead the
+    // server decided the reported position was past the allowed live edge and
+    // answered every request with a corrective backward SABR_SEEK, zero media,
+    // and a directed backoff, while the session re-sent the same rejected
+    // position forever (playback froze at 10s once the buffer drained). The
+    // correction must not flush buffers (the keep-alive rule), but it MUST be
+    // acked in the next reported position so the server resumes serving.
+    let mut correction = Vec::new();
+    live_metadata_part(&mut correction);
+    // Backward to 6s, the start of the newest buffered segment, mirroring the
+    // field servers' constant correction target.
+    sabr_seek_part(&mut correction, 6000, 1000);
+    let policy = NextRequestPolicy {
+        backoff_time_ms: 300,
+        ..Default::default()
+    };
+    ump_part(
+        &mut correction,
+        PartType::NextRequestPolicy,
+        &policy.encode_to_vec(),
+    );
+
+    let mut recovery = Vec::new();
+    live_metadata_part(&mut recovery);
+    emit_segment(
+        &mut recovery,
+        ITAG,
+        LMT,
+        1,
+        102,
+        false,
+        11_000,
+        5000,
+        b"LIVE-SEG102",
+    );
+
+    let (transport, requests) =
+        SabrTransport::canned(vec![live_two_segments_response(), correction, recovery]);
+    let session = SabrSession::new(live_spec(), transport);
+    let video = video_format();
+    let buffer = session.buffer_for(&video);
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    session.set_playback_position(11_000_000);
+    let _pump = spawn_pump(&session);
+
+    // Segment 102 arriving proves the post-correction response was reached,
+    // i.e. the session did not livelock on the rejected position.
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            buffer.get(102).map(|s| s.is_complete()).unwrap_or(false)
+        })
+        .await,
+        "session never recovered after the corrective seek"
+    );
+
+    // The request after the correction reports the acked position.
+    let bodies = requests.lock().clone();
+    assert_eq!(player_time_ms(&bodies[2]), Some(6_000));
+
+    // And the correction flushed nothing and signalled no discontinuity.
+    assert!(buffer.get(100).is_some(), "correction wiped segment 100");
+    assert!(buffer.get(101).is_some(), "correction wiped segment 101");
+    assert_eq!(session.server_seek_generation(), 0);
+
+    session.release();
+}
+
+#[tokio::test]
+async fn live_keepalive_seek_with_media_is_not_acked() {
+    // Field failure (a DVR live stream frozen at 5s): the server answers each
+    // request with the segment CONTAINING the reported player time plus a
+    // SABR_SEEK back to that segment's start. Acking that echo pins the
+    // reported position at the segment start, so the server re-serves the
+    // same segment forever. Only a backward seek in an EMPTY response (a
+    // positional refusal) may be acked; one riding along with media must not
+    // move the reported position.
+    let mut echo = Vec::new();
+    live_metadata_part(&mut echo);
+    // The same segment 101 again (duplicate media bytes) plus a seek to its
+    // start, the keep-alive echo shape.
+    emit_segment(
+        &mut echo,
+        ITAG,
+        LMT,
+        1,
+        101,
+        false,
+        6000,
+        5000,
+        b"LIVE-SEG101",
+    );
+    sabr_seek_part(&mut echo, 6000, 1000);
+
+    let mut next = Vec::new();
+    live_metadata_part(&mut next);
+    emit_segment(
+        &mut next,
+        ITAG,
+        LMT,
+        1,
+        102,
+        false,
+        11_000,
+        5000,
+        b"LIVE-SEG102",
+    );
+
+    let (transport, requests) =
+        SabrTransport::canned(vec![live_two_segments_response(), echo, next]);
+    let session = SabrSession::new(live_spec(), transport);
+    let video = video_format();
+    let buffer = session.buffer_for(&video);
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    session.set_playback_position(11_000_000);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(5), || {
+            buffer.get(102).map(|s| s.is_complete()).unwrap_or(false)
+        })
+        .await,
+        "the session never progressed past the keep-alive echo"
+    );
+
+    // The request after the echo must NOT report the seek target (6s): the
+    // position stays at the clamped frontier, so the server serves the NEXT
+    // segment instead of the same one again.
+    let bodies = requests.lock().clone();
+    assert_eq!(player_time_ms(&bodies[2]), Some(10_000));
+    assert!(buffer.get(100).is_some());
+    assert!(buffer.get(101).is_some());
+    assert_eq!(session.server_seek_generation(), 0);
+
+    session.release();
+}
+
+#[tokio::test]
+async fn live_dvr_stall_rejoins_at_the_position() {
+    // A viewer deep in the DVR window (window end 200s, playing at 11s) whose
+    // stream stalls must be re-placed at THEIR position, not yanked to the
+    // live head.
+    let mut placement = Vec::new();
+    live_metadata_part_windowed(&mut placement, 200_000);
+    emit_segment(
+        &mut placement,
+        ITAG,
+        LMT,
+        1,
+        102,
+        false,
+        11_000,
+        5000,
+        b"LIVE-SEG102",
+    );
+
+    let (transport, requests) = SabrTransport::canned(vec![
+        dvr_two_segments_response(),
+        Vec::new(),
+        Vec::new(),
+        placement,
+    ]);
+    let session = SabrSession::new(live_spec(), transport);
+    session.set_live_stall_rejoin_ms(100);
+    let video = video_format();
+    let buffer = session.buffer_for(&video);
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    session.set_playback_position(11_000_000);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(6), || {
+            buffer.get(102).map(|s| s.is_complete()).unwrap_or(false)
+        })
+        .await,
+        "placement media never arrived after the DVR stall rejoin"
+    );
+
+    // The rejoin request re-asked for the DVR position, not the head sentinel.
+    let bodies = requests.lock().clone();
+    assert_eq!(player_time_ms(&bodies[3]), Some(11_000));
+    // And it was a real rejoin: stale media dropped, consumers told to resync.
+    assert!(
+        buffer.get(100).is_none(),
+        "stale segment survived the rejoin"
+    );
+    assert!(session.server_seek_generation() >= 1);
+
+    session.release();
+}
+
+#[tokio::test]
+async fn healthy_live_cadence_never_trips_the_stall_rejoin() {
+    // Media arriving between empty polls must keep resetting the stall clock.
+    // Without the reset-on-advance every healthy live stream would silently
+    // flush its buffers and rejoin every LIVE_STALL_REJOIN_MS. The threshold
+    // here is far below the 1s poll gap, so any run of TWO empty polls
+    // without media in between would trip it; the healthy cadence has runs
+    // of exactly one.
+    let media = |seq: i32, start_ms: i64| {
+        let mut out = Vec::new();
+        live_metadata_part(&mut out);
+        emit_segment(
+            &mut out,
+            ITAG,
+            LMT,
+            1,
+            seq,
+            false,
+            start_ms,
+            5000,
+            b"LIVE-SEG",
+        );
+        out
+    };
+    // Two cycles only: segment 103 fills the 20s default readahead target
+    // exactly, so the pump goes idle afterwards and no tail of default-empty
+    // responses can trip the shortened threshold after the cadence ends.
+    let (transport, requests) = SabrTransport::canned(vec![
+        live_two_segments_response(),
+        Vec::new(),
+        media(102, 11_000),
+        Vec::new(),
+        media(103, 16_000),
+    ]);
+    let session = SabrSession::new(live_spec(), transport);
+    session.set_live_stall_rejoin_ms(100);
+    let video = video_format();
+    let buffer = session.buffer_for(&video);
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    session.set_playback_position(11_000_000);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(10), || {
+            buffer.get(103).map(|s| s.is_complete()).unwrap_or(false)
+        })
+        .await,
+        "the alternating cadence never played out"
+    );
+
+    let generation = session.server_seek_generation();
+    let sentinel_sent = requests
+        .lock()
+        .iter()
+        .skip(1)
+        .any(|b| player_time_ms(b) == Some(LIVE_HEAD_SENTINEL_MS));
+    let kept_media = buffer.get(100).is_some();
+    session.release();
+
+    assert_eq!(generation, 0, "a healthy cadence tripped the stall rejoin");
+    assert!(
+        !sentinel_sent,
+        "a healthy cadence re-sent the join sentinel"
+    );
+    assert!(kept_media, "a healthy cadence flushed buffered media");
+}
+
+#[tokio::test]
+async fn live_dvr_rejoins_escalate_to_the_head() {
+    // A server that stays dry through repeated DVR-position rejoins gets the
+    // recovery of last resort: a live-head rejoin with the sentinel.
+    let (transport, requests) = SabrTransport::canned(vec![dvr_two_segments_response()]);
+    let session = SabrSession::new(live_spec(), transport);
+    session.set_live_stall_rejoin_ms(100);
+    let video = video_format();
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    session.set_playback_position(11_000_000);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(15), || {
+            requests
+                .lock()
+                .iter()
+                .skip(1)
+                .any(|b| player_time_ms(b) == Some(LIVE_HEAD_SENTINEL_MS))
+        })
+        .await,
+        "the stall never escalated to a live-head rejoin"
+    );
+    // The DVR-position attempts came first.
+    let bodies = requests.lock().clone();
+    assert!(
+        bodies.iter().any(|b| player_time_ms(b) == Some(11_000)),
+        "no DVR-position rejoin before the head escalation"
+    );
+
+    session.release();
+}
+
+#[tokio::test]
+async fn live_stall_rejoins_at_the_head() {
+    // Backstop for any server refusal mode: a live session that gets no media
+    // for the stall threshold abandons its position, clears its buffers, bumps
+    // the server-seek generation (so feeders resync from the new front), and
+    // re-requests the live-head sentinel exactly like a fresh join.
+    let mut placement = Vec::new();
+    live_metadata_part(&mut placement);
+    emit_segment(
+        &mut placement,
+        ITAG,
+        LMT,
+        1,
+        200,
+        false,
+        20_000,
+        5000,
+        b"LIVE-SEG200",
+    );
+
+    // Two empty responses: the first starts the stall clock, the second (one
+    // live-poll later) trips the threshold and triggers the rejoin.
+    let (transport, requests) = SabrTransport::canned(vec![
+        live_two_segments_response(),
+        Vec::new(),
+        Vec::new(),
+        placement,
+    ]);
+    let session = SabrSession::new(live_spec(), transport);
+    session.set_live_stall_rejoin_ms(100);
+    let video = video_format();
+    let buffer = session.buffer_for(&video);
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    session.set_playback_position(11_000_000);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(6), || {
+            buffer.get(200).map(|s| s.is_complete()).unwrap_or(false)
+        })
+        .await,
+        "placement media never arrived after the stall rejoin"
+    );
+
+    // The rejoin request re-used the live-head sentinel.
+    let bodies = requests.lock().clone();
+    assert_eq!(player_time_ms(&bodies[3]), Some(LIVE_HEAD_SENTINEL_MS));
+    // Stale pre-stall media was dropped and consumers were told to resync.
+    assert!(
+        buffer.get(100).is_none(),
+        "stale segment survived the rejoin"
+    );
+    assert!(session.server_seek_generation() >= 1);
 
     session.release();
 }

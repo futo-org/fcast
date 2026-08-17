@@ -317,9 +317,23 @@ struct Inner {
     /// Head of the audio chain (the decoupling queue's sink pad).
     audio_entry: gst::Element,
     volume: gst::Element,
-    /// The video output chain, which is now the caller's
-    /// video sink and nothing else (subtitleoverlay sat in front of it until
-    /// then; cues leave through [`Inner::subtitle_consumer`] now). It lives in
+    /// Head of the video chain: a small queue (`fpb-vqueue`, playsink's
+    /// video-chain queue parity) in front of the caller's sink. Two jobs.
+    /// LATENCY: a non-leaky queue with no time cap answers the latency query
+    /// with max=unlimited, so the video branch never caps the pipeline's max
+    /// latency below a live audio sink's min (field: live SABR, audio min
+    /// 235ms vs video max 33ms, "Impossible to configure latency", the video
+    /// sink then runs with zero processing latency and QoS-drops most frames).
+    /// DECOUPLING: it absorbs the pushes a deselect parks, the same job
+    /// `fpb-aqueue` does for audio (see `lift_deselected_video_sink`).
+    /// Joins and leaves the pipeline in lockstep with `video_sink`; the
+    /// internal `vqueue ! sink` edge is made on the first attach and kept
+    /// across membership changes.
+    video_entry: gst::Element,
+    /// The video output chain's sink: the caller's video sink, behind
+    /// [`Inner::video_entry`]'s queue (subtitleoverlay sat in front of it
+    /// until its deletion; cues leave through [`Inner::subtitle_consumer`]
+    /// now). It lives in
     /// the pipeline ONLY while the item has a routed video stream
     /// (`ensure_video_chain`/`remove_video_chain`), exactly like the
     /// per-load audio sink: an absent chain cannot hang a video-less

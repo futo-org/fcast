@@ -104,16 +104,16 @@ impl FcastPlaybin {
     /// Best-effort "buffered ahead of the playhead" duration. In STREAM mode
     /// (the receiver's default) the buffering query exposes no ranges, but the
     /// queue elements still track how much media is queued: queue2,
-    /// downloadbuffer and queue expose it element-wide, multiqueue per sink
-    /// pad. Returns the deepest level found (the network-side buffer),
-    /// `None` if nothing reports one. Poll it to size a buffered-ahead nub on
-    /// the scrubber.
+    /// downloadbuffer, queue and appsrc (the SABR source's per-track feed
+    /// buffer) expose it element-wide, multiqueue per sink pad. Returns the
+    /// deepest level found (the network-side buffer), `None` if nothing
+    /// reports one. Poll it to size a buffered-ahead nub on the scrubber.
     pub fn buffered_ahead(&self) -> Option<gst::ClockTime> {
         let mut best: Option<u64> = None;
         let mut it = self.inner.pipeline.iterate_recurse();
         while let Ok(Some(elem)) = it.next() {
             let level_ns = match elem.factory().map(|f| f.name()).as_deref() {
-                Some("queue2" | "downloadbuffer" | "queue") => elem
+                Some("queue2" | "downloadbuffer" | "queue" | "appsrc") => elem
                     .find_property("current-level-time")
                     .map(|_| elem.property::<u64>("current-level-time")),
                 Some("multiqueue") => elem

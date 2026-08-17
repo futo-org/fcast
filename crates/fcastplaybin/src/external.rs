@@ -1799,11 +1799,7 @@ impl FcastPlaybin {
             }) else {
                 return;
             };
-            let fed_baseline = input
-                .external
-                .as_ref()
-                .map(|e| e.fed_baseline)
-                .unwrap_or(0);
+            let fed_baseline = input.external.as_ref().map(|e| e.fed_baseline).unwrap_or(0);
             let sids = input.stream_ids();
             // Only meaningful while this input's stream is still WANTED: a
             // selection that moved on owns its own replay. `applied` alone
