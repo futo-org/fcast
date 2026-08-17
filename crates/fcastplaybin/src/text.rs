@@ -391,9 +391,18 @@ impl Inner {
             })
     }
 
+    /// TEST FAULT INJECTION: swallow one cue if a staged loss is armed (see
+    /// [`Inner::stage_cue_loss`]). True means the caller drops the cue.
+    pub(crate) fn stage_consume_cue_loss(&self) -> bool {
+        use std::sync::atomic::Ordering;
+        self.stage_cue_loss
+            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
+            .is_ok()
+    }
+
     /// The sticky SEGMENT the live text branch's TAIL carries: the consumer
     /// branch's own appsink sink pad.
-    fn text_tail_segment(&self) -> Option<gst::event::Segment<gst::Event>> {
+    pub(crate) fn text_tail_segment(&self) -> Option<gst::event::Segment<gst::Event>> {
         let routing = self.routing.lock();
         let entry = routing
             .routed
@@ -616,6 +625,15 @@ impl Inner {
                         );
                         return;
                     }
+                }
+                if let (Some(id), SubtitleFeedItem::Cue { .. }) = (external, &item) {
+                    // TEST FAULT INJECTION (see `Inner::stage_cue_loss`).
+                    if inner.stage_consume_cue_loss() {
+                        return;
+                    }
+                    // Delivery evidence (see `Inner::external_cues_fed`),
+                    // counted only for cues that actually reach the consumer.
+                    *inner.external_cues_fed.lock().entry(id).or_insert(0) += 1;
                 }
                 inner.feed_subtitle(item);
             }

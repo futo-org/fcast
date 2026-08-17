@@ -198,6 +198,17 @@ struct Inner {
     /// function every removal path funnels through, so an epoch that dies
     /// takes its bit with it.
     replay_inflight: Mutex<std::collections::HashSet<(ExternalSubId, u32)>>,
+    /// Cues actually handed to the subtitle consumer, per external input.
+    /// The delivery evidence `verify_replay` requires beside segment
+    /// alignment: alignment cannot prove a buffer survived the trip (the
+    /// multiqueue destroys in-flight items across a flush, and a buffer
+    /// arriving ahead of its segment dies silently in `item_from_sample`),
+    /// so a verify that concludes on alignment alone declares a silent
+    /// branch converged and nothing ever redelivers. Bumped where an
+    /// external's cue is fed (the appsink callback and the park replay),
+    /// compared against `ExternalInput::fed_baseline`, cleared in
+    /// `remove_input`.
+    external_cues_fed: Mutex<std::collections::HashMap<ExternalSubId, u64>>,
     /// Replays owed once the pipeline is playing again, because a flushing
     /// seek cannot be delivered to one at rest in PAUSED. See
     /// [`FcastPlaybin::replay_subtitle`].
@@ -468,6 +479,10 @@ struct Inner {
     /// length: an env var would strip the caps of every other pipeline in the
     /// test binary's thread pool.
     stage_text_caps_loss: std::sync::atomic::AtomicBool,
+    /// TEST FAULT INJECTION: swallow the next N external cues at the feed
+    /// sites instead of delivering them, staging in-flight destruction
+    /// (buffers lost, events kept). Per instance, one unit per cue.
+    stage_cue_loss: std::sync::atomic::AtomicU32,
     /// Branches [`Inner::stage_join_hold_ms`] is holding at NULL, with the
     /// instant each may be brought up. Released by the next text poll.
     ///

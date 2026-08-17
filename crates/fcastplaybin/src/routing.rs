@@ -1293,6 +1293,10 @@ impl Inner {
                 .replay_inflight
                 .lock()
                 .remove(&(external.id, external.epoch));
+            // The delivery-evidence count dies with the input: a re-attach
+            // under the same id starts at a zero baseline, and stale counts
+            // would satisfy its verification with the OLD tenure's cues.
+            inner.external_cues_fed.lock().remove(&external.id);
         }
         if let Some(sig) = input.pad_added_sig {
             input.element.disconnect(sig);

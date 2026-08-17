@@ -1302,6 +1302,10 @@ impl Inner {
             return;
         }
         let mut joined: Option<String> = None;
+        // The external whose stream this call joined, so the park-replayed
+        // cues below count as its delivery evidence (see
+        // [`Inner::external_cues_fed`]).
+        let mut joined_external: Option<crate::ExternalSubId> = None;
         // Why each candidate was refused, reported below when nothing joined.
         let mut refusals: Vec<String> = Vec::new();
         // Degradation reports formed under the routing lock and emitted after it, the
@@ -1689,6 +1693,7 @@ impl Inner {
                     consumer_branch_live = true;
                     routed.appsink = Some(appsink);
                     joined = sid.map(|s| s.to_string());
+                    joined_external = external;
                 }
                 Err(err) => {
                     warn!(
@@ -1856,6 +1861,14 @@ impl Inner {
         // the cues the branch would have delivered (`Inner::item_from_sample`
         // already ran).
         for item in replay_cues {
+            if let (Some(id), SubtitleFeedItem::Cue { .. }) = (joined_external, &item) {
+                // TEST FAULT INJECTION (see `Inner::stage_cue_loss`).
+                if inner.stage_consume_cue_loss() {
+                    continue;
+                }
+                // Delivery evidence (see `Inner::external_cues_fed`).
+                *inner.external_cues_fed.lock().entry(id).or_insert(0) += 1;
+            }
             inner.feed_subtitle(item);
         }
         for (sid, caps) in unsupported {
@@ -2099,6 +2112,16 @@ impl FcastPlaybin {
         self.inner
             .stage_text_caps_loss
             .store(true, Ordering::SeqCst);
+    }
+
+    /// TEST FAULT INJECTION: swallow the next `count` external cues at the
+    /// feed sites instead of delivering them, staging the multiqueue's
+    /// in-flight destruction (buffers lost, events kept; see
+    /// [`Inner::stage_cue_loss`]). Per instance so it is safe under a test
+    /// binary's thread pool. Not part of the public API.
+    #[doc(hidden)]
+    pub fn stage_text_cue_loss(&self, count: u32) {
+        self.inner.stage_cue_loss.store(count, Ordering::SeqCst);
     }
 
     /// Text-branch joins that linked into a still-INACTIVE branch (see

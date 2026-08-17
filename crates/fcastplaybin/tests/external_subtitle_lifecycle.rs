@@ -1964,8 +1964,16 @@ fn attach_then_seek_baseline_survives_a_burst_still_in_flight() {
 
 /// Attach DURING a seek: the attach lands between the seek request and the
 /// pipeline settling on the new origin, so the input joins while the timeline
-/// underneath it is still moving. Every cue must still carry the video's
-/// final origin.
+/// underneath it is still moving. Every cue delivered ONCE THE VIDEO SETTLED
+/// on the sought origin must carry it.
+///
+/// Not "every cue ever": the worker can refuse the caller's seek (pipeline
+/// not settled) and hand it back as `QueueSeek`, and while the machine holds
+/// it parked the attach's join replay legitimately aligns to the still-
+/// current pre-seek timeline. A cue delivered in that gap is on the timeline
+/// the video actually showed, and the seek's flush Clears it moments later.
+/// The baseline below puts that gap on the far side of the assertion, the
+/// `attach_then_seek` settled-baseline lesson applied to the parked-seek gap.
 #[test]
 fn attaching_during_a_seek_still_lands_on_the_sought_timeline() {
     init();
@@ -1998,12 +2006,15 @@ fn attaching_during_a_seek_still_lands_on_the_sought_timeline() {
         origin,
         "after attaching during a seek",
     );
+    // Anything recorded up to here rode the parked-seek gap (see the doc
+    // comment); the contract starts at the settled origin.
+    let already = tapped_with_prefix(&tap, "DRSK").len();
     harness.play();
 
     let sid = harness.materialized(id);
     harness.select_and_confirm(id, &sid);
-    let cues = harness.wait_for_cue(&tap, "DRSK", 0, "after attaching during a seek");
-    assert_origins(&cues, origin, "attach-during-seek");
+    let cues = harness.wait_for_cue(&tap, "DRSK", already, "after attaching during a seek");
+    assert_origins(&cues[already..], origin, "attach-during-seek");
 
     harness.assert_worker_alive("after attaching during a seek");
     harness.shutdown();
@@ -2053,6 +2064,36 @@ fn detaching_during_a_seek_completes_both() {
     harness.assert_video_advances("after detaching during a seek");
     harness.assert_worker_alive("after detaching during a seek");
     harness.assert_no_error("after detaching during a seek");
+    harness.shutdown();
+    main.unregister();
+    subs.unregister();
+}
+
+/// The aligned-but-silent starvation, staged: decodebin3's multiqueue can
+/// destroy an external's whole cue burst in flight while its SEGMENT
+/// survives (the C12 family the caps rescue belongs to), leaving a seated,
+/// aligned branch that delivers nothing. A verification that concludes on
+/// alignment alone declares that branch converged and the silence is
+/// permanent (the `detaching_during_a_seek` flake's dominant shape). The
+/// crate's cue-loss injection swallows the initial burst, the park replay
+/// and the first replay redelivery (~140 cues); only a verification that
+/// demands DELIVERY evidence keeps replaying until the budget drains and a
+/// cue actually crosses. Red under `FCAST_NO_REPLAY_DELIVERY_EVIDENCE`.
+#[test]
+fn a_destroyed_burst_is_redelivered_until_a_cue_arrives() {
+    init();
+    let main = main_item("extlifeburstlossmain");
+    let subs = sub_item("extlifeburstlosssubs", "BLST");
+
+    let harness = Harness::new();
+    harness.load_and_play(&main.uri());
+    let tap = harness.tap_overlay_text();
+    // Past the unfixed path's total (~140) and short of a full chain's
+    // (~350), so the old code goes silent and the new one delivers.
+    harness.playbin.stage_text_cue_loss(200);
+    let _ = harness.attach_and_select(&subs.uri());
+    harness.wait_for_cue(&tap, "BLST", 0, "after the staged burst loss");
+    harness.assert_worker_alive("after the staged burst loss");
     harness.shutdown();
     main.unregister();
     subs.unregister();

@@ -106,6 +106,10 @@ pub(crate) struct ExternalInput {
     /// [`FcastPlaybin::replay_outcome`] and by the lane fallback, the same two
     /// paths that discharge `replay_inflight`.
     replay_seek_outstanding: bool,
+    /// [`Inner::external_cues_fed`] read at the last replay hand-off, so
+    /// `verify_replay` can require the chain to have actually delivered a
+    /// cue rather than concluding on segment alignment alone.
+    fed_baseline: u64,
 }
 
 /// Replay flushing seeks actually HANDED OFF (to the replay lane, or run
@@ -877,6 +881,29 @@ impl Inner {
                 .any(|routed| routed.db3_src_pad.stream_id().as_deref() == Some(sid.as_str()))
         })
     }
+
+    /// Whether one of this input's text streams is JOINED to a consumer
+    /// branch (routed, downstream wired, sticky STREAM_START naming it).
+    /// The same read `verify_replay` calls `delivered`.
+    fn external_branch_joined(&self, id: ExternalSubId, epoch: u32) -> bool {
+        let routing = self.routing.lock();
+        let Some(input) = routing.inputs.iter().find(|i| {
+            i.external
+                .as_ref()
+                .is_some_and(|e| e.id == id && e.epoch == epoch)
+        }) else {
+            return false;
+        };
+        let sids = input.stream_ids();
+        routing.routed.iter().any(|routed| {
+            routed.kind == StreamKind::Text
+                && routed.downstream.is_some()
+                && routed
+                    .db3_src_pad
+                    .sticky_event::<gst::event::StreamStart>(0)
+                    .is_some_and(|event| sids.iter().any(|sid| *sid == event.stream_id()))
+        })
+    }
 }
 
 impl FcastPlaybin {
@@ -945,6 +972,7 @@ impl FcastPlaybin {
             task_dead: false,
             last_origin: gst::ClockTime::ZERO,
             replay_seek_outstanding: false,
+            fed_baseline: 0,
         };
         Inner::add_input(&self.inner, element, generation, Some(external))?;
         info!(?id, uri, "attached external subtitle input");
@@ -1240,6 +1268,7 @@ impl FcastPlaybin {
                     task_dead: false,
                     last_origin: gst::ClockTime::ZERO,
                     replay_seek_outstanding: false,
+                    fed_baseline: 0,
                 }),
             )
         });
@@ -1371,6 +1400,16 @@ impl FcastPlaybin {
                 external.last_origin = origin;
                 // The replay seek restarts the source task.
                 external.task_dead = false;
+                // The delivery-evidence window opens at the hand-off: the
+                // chain's verification requires the fed count to move past
+                // this (see `Inner::external_cues_fed`).
+                external.fed_baseline = self
+                    .inner
+                    .external_cues_fed
+                    .lock()
+                    .get(&id)
+                    .copied()
+                    .unwrap_or(0);
             }
         }
         // ZERO THE PAD OFFSET this input's text branches carry, before the seek
@@ -1635,20 +1674,35 @@ impl FcastPlaybin {
         // was ever recorded, see `external_stream_outputless`).
         let unservable = inner.external_stream_slotless(id, epoch)
             || inner.external_stream_outputless(id, epoch);
-        if unservable && epoch > 0 {
-            warn!(
-                ?id,
-                epoch, attempt, "a re-attached external still has no decodebin3 slot; failing it"
-            );
-            inner.queue_job(Job::FailSub { id, epoch });
-            return;
-        }
-        if unservable {
+        // A JOINED branch whose tail never received a SEGMENT after a whole
+        // chain of flushing replays is just as unservable: the multiqueue
+        // destroyed the segment in flight (C12 family, the sibling of the
+        // rescued CAPS) and a replay cannot re-send what dies inside the
+        // slot, so left alone the reconcile pass re-emits a doomed chain
+        // every 2 s for the rest of the item. Scoped to a joined branch so a
+        // slow caller's not-yet-joined input keeps the mild arm below.
+        // Lever: `FCAST_NO_SEGMENTLESS_TAIL_ESCALATION`.
+        let segmentless = std::env::var_os("FCAST_NO_SEGMENTLESS_TAIL_ESCALATION").is_none()
+            && inner.external_branch_joined(id, epoch)
+            && inner.text_tail_segment().is_none();
+        if (unservable || segmentless) && epoch > 0 {
             warn!(
                 ?id,
                 epoch,
                 attempt,
-                "the external's stream never reached a decodebin3 output; re-attaching it"
+                segmentless,
+                "a re-attached external still cannot deliver; failing it"
+            );
+            inner.queue_job(Job::FailSub { id, epoch });
+            return;
+        }
+        if unservable || segmentless {
+            warn!(
+                ?id,
+                epoch,
+                attempt,
+                segmentless,
+                "the external's stream cannot deliver through decodebin3; re-attaching it"
             );
             inner.queue_job(Job::RetrySub { id, epoch });
             return;
@@ -1736,7 +1790,7 @@ impl FcastPlaybin {
                 return;
             }
         }
-        let delivered = {
+        let (delivered, fed_baseline) = {
             let routing = self.inner.routing.lock();
             let Some(input) = routing.inputs.iter().find(|i| {
                 i.external
@@ -1745,6 +1799,11 @@ impl FcastPlaybin {
             }) else {
                 return;
             };
+            let fed_baseline = input
+                .external
+                .as_ref()
+                .map(|e| e.fed_baseline)
+                .unwrap_or(0);
             let sids = input.stream_ids();
             // Only meaningful while this input's stream is still WANTED: a
             // selection that moved on owns its own replay. `applied` alone
@@ -1768,14 +1827,15 @@ impl FcastPlaybin {
                 );
                 return;
             }
-            routing.routed.iter().any(|routed| {
+            let delivered = routing.routed.iter().any(|routed| {
                 routed.kind == StreamKind::Text
                     && routed.downstream.is_some()
                     && routed
                         .db3_src_pad
                         .sticky_event::<gst::event::StreamStart>(0)
                         .is_some_and(|event| sids.iter().any(|sid| *sid == event.stream_id()))
-            })
+            });
+            (delivered, fed_baseline)
         };
         // Delivered is not enough: an input that joined the branch WITHOUT a
         // replay carries its own file-origin segment, and its cues render
@@ -1787,12 +1847,30 @@ impl FcastPlaybin {
         // would be a check and a pass that disagree about what "aligned"
         // means, which is the one thing neither is allowed to do.
         let aligned = delivered && self.inner.subtitle_origin_matches_video();
-        if aligned {
+        // Alignment alone cannot prove a cue survived the trip (see
+        // [`Inner::external_cues_fed`]): a burst the multiqueue destroyed in
+        // flight leaves a seated, aligned, silent branch, and concluding on
+        // it here is what made that silence permanent. The chain succeeds
+        // only when a cue reached the consumer since its hand-off.
+        // Lever: `FCAST_NO_REPLAY_DELIVERY_EVIDENCE` (set = alignment only).
+        let progressed = std::env::var_os("FCAST_NO_REPLAY_DELIVERY_EVIDENCE").is_some()
+            || self
+                .inner
+                .external_cues_fed
+                .lock()
+                .get(&id)
+                .copied()
+                .unwrap_or(0)
+                > fed_baseline;
+        if aligned && progressed {
             return;
         }
         debug!(
             ?id,
-            attempt, delivered, "the switched-to stream is not rendering aligned; replaying"
+            attempt,
+            delivered,
+            progressed,
+            "the switched-to stream is not rendering aligned; replaying"
         );
         self.replay_subtitle(id, epoch, attempt + 1);
     }
