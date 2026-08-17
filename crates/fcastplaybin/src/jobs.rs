@@ -1782,7 +1782,17 @@ impl FcastPlaybin {
                     }
                 };
 
-                let rate = seek.rate.unwrap_or(1.0) as f64;
+                // Backstop for `gst_event_new_seek`'s `rate != 0.0` assert
+                // (NULL event, binding panic, dead worker). Refused rather
+                // than coerced, and reported so the caller's seek slot
+                // settles instead of parking every later seek behind it.
+                let rate = seek.rate.unwrap_or(1.0);
+                if !Seek::rate_is_safe(rate) {
+                    error!(rate, "refusing a seek with an invalid rate");
+                    inner.emit(PlaybinEvent::SeekFailed);
+                    return;
+                }
+                let rate = rate as f64;
                 debug!(rate, ?position, "Performing seek");
 
                 if let Err(err) = send_rate_seek(&inner.pipeline, rate, position) {

@@ -71,6 +71,20 @@ fn seek_flags_for(rate: f64) -> gst::SeekFlags {
     flags
 }
 
+/// A load's start rate, made safe for `gst_event_new_seek`, which asserts
+/// `rate != 0.0` and returns NULL (the binding then panics on it and the
+/// panic kills the worker thread for good). Field: a sender's Load carried
+/// `speed: 0.0`. Coerced to 1.0 rather than refused so the start position is
+/// still honoured; a sender that means "paused" pauses the transport instead.
+pub(crate) fn sanitize_start_rate(rate: f64) -> f64 {
+    if rate.is_finite() && rate != 0.0 {
+        rate
+    } else {
+        warn!(rate, "invalid start rate, playing at 1.0x instead");
+        1.0
+    }
+}
+
 /// The flushing ACCURATE seek event [`send_rate_seek`] sends, so every other
 /// issuer of "the same seek" (the refresh flush, the external-input
 /// forwarding) lands on exactly the same timeline instead of re-deriving it.
@@ -1067,6 +1081,16 @@ impl FcastPlaybin {
         start: StartPoint,
         generation: u64,
     ) -> Result<StartOutcome> {
+        // Sanitized HERE, the one entry every load funnels through, so the
+        // tainted rate can neither panic the start seek nor get recorded in
+        // `intended_timeline` (where refresh seeks would replay it later).
+        let start = match start {
+            StartPoint::Seek { position, rate } => StartPoint::Seek {
+                position,
+                rate: sanitize_start_rate(rate),
+            },
+            live => live,
+        };
         let inner = &self.inner;
         {
             // No routes during the reset (see `Inner::route_gate`).

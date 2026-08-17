@@ -1264,10 +1264,22 @@ impl Player {
         // renders a 1.0x slice that a later seek flushes (the pop). `None`
         // marks a source with no start seek (live sources).
         let start = match start {
-            Some(rp) => fcastplaybin::StartPoint::Seek {
-                position: rp.position,
-                rate: rp.rate as f64,
-            },
+            Some(rp) => {
+                // A sender's Load can carry speed 0.0 (or NaN): gst seeks
+                // assert rate != 0.0 and the binding panics on the NULL
+                // event, killing the playback worker. Play at 1.0x instead;
+                // "start paused" travels as SetPlaybackState, not speed.
+                let rate = if Seek::rate_is_safe(rp.rate) {
+                    rp.rate as f64
+                } else {
+                    warn!(rate = rp.rate, "invalid start speed, playing at 1.0x");
+                    1.0
+                };
+                fcastplaybin::StartPoint::Seek {
+                    position: rp.position,
+                    rate,
+                }
+            }
             None => fcastplaybin::StartPoint::Live,
         };
         self.set_source(source, start);

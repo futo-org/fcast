@@ -800,3 +800,19 @@ fn a_record_ending_exactly_at_the_segment_start_is_refused() {
     );
     assert!(crate::Inner::item_from_sample(&sample, BitmapSubsEnabled::all()).is_none());
 }
+
+/// Field crash: a sender's Load carried `speed: 0.0`, which reached
+/// `gst_event_new_seek` as the start seek's rate. gst asserts `rate != 0.0`
+/// and returns NULL, the binding panics on the NULL event, and the panic
+/// kills the worker thread for good (every later job logs "worker is gone").
+/// The load entry coerces such rates to 1.0x instead.
+#[test]
+fn a_zero_or_non_finite_start_rate_is_coerced_to_1x() {
+    use crate::pipeline::sanitize_start_rate;
+    for bad in [0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        assert_eq!(sanitize_start_rate(bad), 1.0, "rate {bad}");
+    }
+    for ok in [1.0, 2.0, 0.5, -1.0] {
+        assert_eq!(sanitize_start_rate(ok), ok, "rate {ok}");
+    }
+}
