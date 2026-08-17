@@ -83,7 +83,7 @@ impl Default for RaopConfig {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ChromecastConfig {
-    /// Whether to advertise and serve Google Cast.
+    /// Whether to advertise and serve Google Cast. Off by default.
     pub enabled: bool,
     /// Broadcast name; `{hostname}` expands. Defaults to
     /// `Chromecast-{hostname}`.
@@ -94,7 +94,7 @@ pub struct ChromecastConfig {
 impl Default for ChromecastConfig {
     fn default() -> Self {
         Self {
-            enabled: true,
+            enabled: false,
             name: None,
         }
     }
@@ -578,7 +578,7 @@ mod tests {
         assert!(config.discovery.exclude_interfaces.is_none());
         assert!(config.fcast.enabled);
         assert!(config.raop.enabled);
-        assert!(config.chromecast.enabled);
+        assert!(!config.chromecast.enabled);
         assert!(config.airplay.enabled);
         assert!(config.interface.show_window);
         assert!(config.interface.tray);
