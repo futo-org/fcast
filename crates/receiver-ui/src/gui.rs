@@ -367,6 +367,25 @@ fn clear_audio_covers(bridge: &Bridge, renderer_tx: &RendererMsgSender) {
     let _ = renderer_tx.send(RendererMessage::ClearBluredAudioTrackCover);
 }
 
+/// Re-assert a visible cursor whenever the video scene is NOT up.
+///
+/// The video player is the only writer of the winit-level cursor hide, and
+/// Slint's cursor cache is blind to those direct calls (it re-applies only
+/// when the cursor it computes on a mouse event differs from its cache). A
+/// hide that lands after the teardown unhide but before the view unmounts
+/// (the 2s auto-hide timer) therefore left the cursor invisible at the idle
+/// menu with nothing ever re-showing it. The scene condition mirrors
+/// main.slint's VideoPlayerView mount condition, and this runs after every
+/// write to either property, so a falling edge always ends on "visible".
+fn unhide_cursor_outside_video_scene(ui: &MainWindow) {
+    let bridge = ui.global::<Bridge>();
+    let video_scene = bridge.get_app_state() == AppState::Playing
+        && bridge.get_player_variant() == UiPlayerVariant::Video;
+    if !video_scene {
+        bridge.invoke_set_cursor_hidden(false);
+    }
+}
+
 fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererMsgSender) {
     let bridge = ui.global::<Bridge>();
 
@@ -381,7 +400,10 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             let _ = prev_tx.send(window.is_fullscreen());
             window.set_fullscreen(fullscreen);
         }
-        UpdateGuiCommand::SetAppState(state) => bridge.set_app_state(state.into()),
+        UpdateGuiCommand::SetAppState(state) => {
+            bridge.set_app_state(state.into());
+            unhide_cursor_outside_video_scene(&ui);
+        }
         UpdateGuiCommand::UpdatePlaylist { start_idx, length } => {
             bridge.set_playlist_idx(start_idx);
             bridge.set_playlist_idx(length);
@@ -408,7 +430,10 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             set_playback_progress(&bridge, 0.0, 0.0);
             set_buffered_ranges(&bridge, Vec::new());
         }
-        UpdateGuiCommand::SetPlayerType(typ) => bridge.set_player_variant(typ.into()),
+        UpdateGuiCommand::SetPlayerType(typ) => {
+            bridge.set_player_variant(typ.into());
+            unhide_cursor_outside_video_scene(&ui);
+        }
         UpdateGuiCommand::SetTracks {
             videos,
             audios,

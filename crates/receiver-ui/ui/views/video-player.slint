@@ -6,11 +6,13 @@ import {
     ListView,
 } from "../../../../ui-components/std-widgets.slint";
 import {
+    AppState,
     Bridge,
     UiMediaTrack,
     GuiPlaybackState,
     UiMediaTrackType,
     UiMode,
+    UiPlayerVariant,
 } from "../globals.slint";
 import {
     PositionScrubber,
@@ -691,6 +693,15 @@ component PlaybackControls inherits Rectangle {
         interval: 2s;
         running: true;
         triggered => {
+            // The scene condition mirrors main.slint's mount condition: once
+            // teardown flips the state this view is on its way out, and a
+            // hide fired here would land AFTER the teardown unhide, leaving
+            // the cursor invisible at the idle menu for good (Slint's cursor
+            // cache never re-applies a value it thinks is current).
+            if Bridge.app-state != AppState.Playing
+                || Bridge.player-variant != UiPlayerVariant.Video {
+                return;
+            }
             if !Bridge.is-scrubbing-position
                 && (ta.has-hover || !focus.has-focus || show-settings) {
                 parent.close();
