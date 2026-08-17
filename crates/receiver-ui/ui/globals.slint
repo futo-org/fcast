@@ -147,6 +147,11 @@ export global Bridge {
     // path (see `note_render_cost`).
     in property <string> render-latency-info;
 
+    // Bumped by every tab press that no widget consumed, i.e. every one that
+    // moves the keyboard focus. Views with auto-hiding chrome watch it to stay
+    // awake while the keyboard walks them.
+    in-out property <int> tab-nav-serial: 0;
+
     // Settings drawer. `show-settings` toggles the slide-in panel. The `cfg-*`
     // properties mirror the persisted config, seeded once at startup by
     // `InitSettings` and two-way bound to the drawer's controls, which autosave
@@ -270,6 +275,24 @@ export global Bridge {
         if event.modifiers.control && event.modifiers.shift && (event.text == "i" || event.text == "I") {
             show-inspector = !show-inspector;
             return accept;
+        }
+        // Escape closes the settings drawer. The playback settings side bar has its
+        // own scope and never lets Escape get this far.
+        if event.text == Key.Escape && show-settings {
+            show-settings = false;
+            return accept;
+        }
+        // Reaching here means no widget took the tab, so focus is about to move.
+        // Rejecting keeps that traversal; the bump is only a notification.
+        if event.text == Key.Tab || event.text == Key.Backtab {
+            tab-nav-serial += 1;
+            return reject;
+        }
+        // Reaching here means no widget took the tab, so focus is about to move.
+        // Rejecting keeps that traversal; the bump is only a notification.
+        if event.text == Key.Tab || event.text == Key.Backtab {
+            tab-nav-serial += 1;
+            return reject;
         }
         if event.text == "q" {
             force-quit();

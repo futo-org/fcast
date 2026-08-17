@@ -38,6 +38,7 @@ export component Button {
     in property <color> border-color: FCastPalette.button-default-border-color;
 
     out property <bool> has-focus: i-focus-scope.has-focus;
+    out property <bool> has-hover <=> i-touch-area.has-hover;
     out property <bool> pressed: self.enabled && i-touch-area.pressed;
     in-out property <bool> checked;
 

@@ -24,6 +24,7 @@ import {
 import {
     FCastPalette,
 } from "../../../../ui-components/styling.slint";
+import { FocusBorder } from "../../../../ui-components/components.slint";
 
 component SecondaryButton inherits Button {
     icon-size: 18px;
@@ -34,25 +35,77 @@ component SecondaryButton inherits Button {
     colorize-icon: true;
 }
 
+// The side bar header's action button: close on the start page, back on the
+// others. It draws its own ring because the side bar's keyboard cursor decides
+// what is highlighted, not slint focus.
+component HeaderButton inherits Rectangle {
+    in property <image> icon;
+    in property <length> icon-size: 13px;
+    in property <angle> button-rotation: 0deg;
+    in property <bool> focused;
+
+    callback clicked;
+    // The side bar's cursor follows the pointer, so hovering has to report in.
+    callback hovered;
+
+    width: 34px;
+    height: 34px;
+
+    btn := Button {
+        width: root.width;
+        height: root.height;
+        icon: root.icon;
+        icon-size: root.icon-size;
+        transform-rotation: root.button-rotation;
+        colorize-icon: true;
+
+        clicked => {
+            root.clicked();
+        }
+        changed has-hover => {
+            if btn.has-hover {
+                root.hovered();
+            }
+        }
+    }
+
+    if root.focused: FocusBorder {
+        border-radius: root.height / 2;
+    }
+}
+
 component PlaybackSettingsMenuItem inherits Rectangle {
     in property <string> label;
     in property <image> icon;
+    // True when the side bar's keyboard cursor sits on this row.
+    in property <bool> focused;
 
     callback clicked;
+    callback hovered;
 
     border-radius: 6px;
 
     states [
-        hover when i-ta.has-hover: {
+        hover when i-ta.has-hover || root.focused: {
             text.color: FCastPalette.foreground;
             arrow-icon.colorize: FCastPalette.foreground;
             background: FCastPalette.brand-600;
         }
     ]
 
+    if root.focused: FocusBorder {
+        border-radius: root.border-radius;
+    }
+
     i-ta := TouchArea {
         clicked => root.clicked();
         mouse-cursor: pointer;
+
+        changed has-hover => {
+            if i-ta.has-hover {
+                root.hovered();
+            }
+        }
     }
 
     HorizontalLayout {
@@ -93,8 +146,12 @@ component PlaybackSettingsMenuItem inherits Rectangle {
 component SettingItem inherits Rectangle {
     in property <string> value;
     in property <bool> selected;
+    // True when the side bar's keyboard cursor sits on this row. Drawn as a ring
+    // rather than a background so it stays readable on the selected row too.
+    in property <bool> focused;
 
     callback clicked;
+    callback hovered;
 
     border-radius: 6px;
 
@@ -103,15 +160,25 @@ component SettingItem inherits Rectangle {
             background: @linear-gradient(90.92deg, #2D7AF8 0.79%, #0757D9 104.49%);
             icon.source: Icons.check-tick;
         }
-        hover when ta.has-hover: {
+        hover when ta.has-hover || root.focused: {
             background: @linear-gradient(90.92deg, #2D7AF850 0.79%, #0757D950 104.49%);
         }
     ]
+
+    if root.focused: FocusBorder {
+        border-radius: root.border-radius;
+    }
 
     ta := TouchArea {
         mouse-cursor: pointer;
 
         clicked => clicked();
+
+        changed has-hover => {
+            if ta.has-hover {
+                root.hovered();
+            }
+        }
     }
 
     HorizontalLayout {
@@ -138,20 +205,23 @@ component SettingItem inherits Rectangle {
 
 component PlaybackSettingHeader inherits HorizontalLayout {
     in property <string> title;
+    in property <bool> focused;
 
     callback navigate-previous;
+    callback hovered;
 
     spacing: 15px;
 
-    Button {
+    HeaderButton {
         icon: Icons.arrow-right;
         icon-size: 8px;
         width: 30px;
         height: 30px;
-        transform-rotation: 180deg;
-        colorize-icon: true;
+        button-rotation: 180deg;
+        focused: root.focused;
 
         clicked => navigate-previous();
+        hovered => root.hovered();
     }
 
     FText {
@@ -166,16 +236,58 @@ component SettingsTrackList inherits Rectangle {
     in property <[UiMediaTrack]> tracks;
     in property <int> selected-id;
     in property <bool> can-be-disabled: false;
+    // Keyboard cursor row of the owning page, -1 when the keyboard is elsewhere.
+    // Row 0 is the "Off" row when the list has one, the tracks follow.
+    in property <int> cursor: -1;
 
     callback clicked(id: int);
+    // Reported by whichever row is the current selection, so the page can park
+    // its cursor there. Rows push it because slint has no index-of on a model.
+    callback selected-row(row: int);
+    callback hovered(row: int);
 
-    ScrollView {
+    property <int> off-rows: can-be-disabled ? 1 : 0;
+    property <int> row-count: tracks.length + off-rows;
+    // Rows are uniform, so one division beats measuring each of them.
+    property <length> row-height: row-count > 0 ? sv.viewport-height / row-count : 0px;
+
+    changed cursor => {
+        root.scroll-into-view(root.cursor);
+    }
+
+    function scroll-into-view(index: int) {
+        if index < 0 || root.row-count == 0 {
+            return;
+        }
+        if sv.viewport-y + index * root.row-height < 0px {
+            sv.viewport-y = -index * root.row-height;
+        }
+        if sv.viewport-y + (index + 1) * root.row-height > sv.visible-height {
+            sv.viewport-y = sv.visible-height - (index + 1) * root.row-height;
+        }
+    }
+
+    sv := ScrollView {
         viewport-height: vl.preferred-height;
 
         vl := VerticalLayout {
             if can-be-disabled: SettingItem {
                 value: @tr("Off");
                 selected: selected-id == -1;
+                focused: root.cursor == 0;
+
+                init => {
+                    if self.selected {
+                        root.selected-row(0);
+                    }
+                }
+                changed selected => {
+                    if self.selected {
+                        root.selected-row(0);
+                    }
+                }
+
+                hovered => root.hovered(0);
 
                 clicked => clicked(-1);
             }
@@ -185,10 +297,24 @@ component SettingsTrackList inherits Rectangle {
                 background: #FFFFFF0A;
             }
 
-            for track in tracks: VerticalLayout {
+            for track[i] in tracks: VerticalLayout {
                 SettingItem {
                     value: track.name;
                     selected: selected-id == track.id;
+                    focused: root.cursor == i + root.off-rows;
+
+                    init => {
+                        if self.selected {
+                            root.selected-row(i + root.off-rows);
+                        }
+                    }
+                    changed selected => {
+                        if self.selected {
+                            root.selected-row(i + root.off-rows);
+                        }
+                    }
+
+                    hovered => root.hovered(i + root.off-rows);
 
                     clicked => clicked(track.id);
                 }
@@ -255,6 +381,187 @@ component PlaybackControls inherits Rectangle {
     property <bool> show-settings: false;
     property <SettingsPage> current-settings-page: SettingsPage.Start;
 
+    // Keyboard state of the settings side bar: one cursor index over the rows of
+    // the current page, in declaration order, with row 0 being the header button
+    // (close on the start page, back on the others). The side bar's FocusScope
+    // owns the keyboard while it is open and consumes Tab itself, so traversal
+    // can never wander off into the controls behind it.
+    property <int> settings-cursor: 1;
+    property <[float]> rates: [0.25, 0.5, 0.75, 1.0, 1.25, 1.50, 1.75, 2.0];
+
+    // The row holding the current value on each options page, as reported by that
+    // page's rows (see `note-selected-row`). The start page's is the category row
+    // the user left from, so backing out returns to it.
+    property <int> selected-row-start: 1;
+    property <int> selected-row-video: 1;
+    property <int> selected-row-audio: 1;
+    property <int> selected-row-subtitle: 1;
+    property <int> selected-row-rate: 1;
+
+    // Start page row layout: a menu entry per track kind that has tracks, then
+    // playback speed. -1 means the entry is not shown.
+    property <int> n-video: Bridge.video-tracks.length > 0 ? 1 : 0;
+    property <int> n-audio: Bridge.audio-tracks.length > 0 ? 1 : 0;
+    property <int> n-subtitle: Bridge.subtitle-tracks.length > 0 ? 1 : 0;
+    property <int> row-video: n-video > 0 ? 1 : -1;
+    property <int> row-audio: n-audio > 0 ? 1 + n-video : -1;
+    property <int> row-subtitle: n-subtitle > 0 ? 1 + n-video + n-audio : -1;
+    property <int> row-rate: 1 + n-video + n-audio + n-subtitle;
+
+    property <int> page-row-count: current-settings-page == SettingsPage.Start ? row-rate + 1
+        : current-settings-page == SettingsPage.Video ? 1 + Bridge.video-tracks.length
+        : current-settings-page == SettingsPage.Audio ? 1 + Bridge.audio-tracks.length
+        : current-settings-page == SettingsPage.Subtitle ? 2 + Bridge.subtitle-tracks.length
+        : 1 + rates.length;
+
+    // Tracks come and go mid-playback, so never leave the cursor past the end.
+    changed page-row-count => {
+        if settings-cursor >= page-row-count {
+            settings-cursor = max(page-row-count - 1, 0);
+        }
+    }
+
+    public function open-settings() {
+        current-settings-page = SettingsPage.Start;
+        // A fresh open starts at the top, on the first real row rather than on the
+        // header button. Only backing out of a category returns to it.
+        selected-row-start = 1;
+        settings-cursor = 1;
+        show-settings = true;
+        settings-focus.focus();
+    }
+
+    public function close-settings() {
+        show-settings = false;
+        current-settings-page = SettingsPage.Start;
+        settings-cursor = 1;
+        // Closing hides the side bar, which drops whatever focus lived inside it.
+        focus.focus();
+    }
+
+    function open-page(page: SettingsPage) {
+        // Stepping into a category remembers which one, so backing out of it lands
+        // on that row instead of at the top of the menu.
+        if current-settings-page == SettingsPage.Start && page != SettingsPage.Start {
+            selected-row-start = settings-cursor;
+        }
+        current-settings-page = page;
+        park-cursor(remembered-row(page));
+    }
+
+    // Entering a category by mouse moves the cursor onto its row first, so the
+    // way back is the same whichever way it was entered.
+    function enter-category(page: SettingsPage, row: int) {
+        park-cursor(row);
+        open-page(page);
+    }
+
+    // Parking the cursor on the row that holds the current value means tabbing
+    // into a list starts from what is selected instead of from the top.
+    function park-cursor(row: int) {
+        settings-cursor = max(0, min(row, page-row-count - 1));
+    }
+
+    pure function remembered-row(page: SettingsPage) -> int {
+        if page == SettingsPage.Video {
+            return selected-row-video;
+        }
+        if page == SettingsPage.Audio {
+            return selected-row-audio;
+        }
+        if page == SettingsPage.Subtitle {
+            return selected-row-subtitle;
+        }
+        if page == SettingsPage.Rate {
+            return selected-row-rate;
+        }
+        return selected-row-start;
+    }
+
+    // A page's rows report which one is the current value, since slint has no
+    // index-of on a model. It has to be remembered outside the page: the
+    // conditional that mounts a page reuses its instance, so re-entering it runs
+    // no `init` and would otherwise park on the row from the first visit.
+    function note-selected-row(page: SettingsPage, row: int) {
+        if page == SettingsPage.Video {
+            selected-row-video = row;
+        } else if page == SettingsPage.Audio {
+            selected-row-audio = row;
+        } else if page == SettingsPage.Subtitle {
+            selected-row-subtitle = row;
+        } else {
+            selected-row-rate = row;
+        }
+        if page == current-settings-page {
+            park-cursor(row);
+        }
+    }
+
+    function move-cursor(delta: int) {
+        if page-row-count <= 0 {
+            return;
+        }
+        settings-cursor += delta;
+        if settings-cursor < 0 {
+            settings-cursor = page-row-count - 1;
+        }
+        if settings-cursor >= page-row-count {
+            settings-cursor = 0;
+        }
+    }
+
+    function activate-cursor() {
+        // A page can lose all its rows mid-playback (tracks going away).
+        if page-row-count <= 0 {
+            return;
+        }
+        if settings-cursor == 0 {
+            // The header button: out of the side bar, or back one page.
+            if current-settings-page == SettingsPage.Start {
+                close-settings();
+            } else {
+                open-page(SettingsPage.Start);
+            }
+            return;
+        }
+        if current-settings-page == SettingsPage.Start {
+            if settings-cursor == row-video {
+                enter-category(SettingsPage.Video, row-video);
+            } else if settings-cursor == row-audio {
+                enter-category(SettingsPage.Audio, row-audio);
+            } else if settings-cursor == row-subtitle {
+                enter-category(SettingsPage.Subtitle, row-subtitle);
+            } else {
+                enter-category(SettingsPage.Rate, row-rate);
+            }
+            return;
+        }
+        if current-settings-page == SettingsPage.Video {
+            Bridge.select-track(Bridge.video-tracks[settings-cursor - 1].id, UiMediaTrackType.Video);
+            return;
+        }
+        if current-settings-page == SettingsPage.Audio {
+            Bridge.select-track(Bridge.audio-tracks[settings-cursor - 1].id, UiMediaTrackType.Audio);
+            return;
+        }
+        if current-settings-page == SettingsPage.Subtitle {
+            // Row 1 is "Off", the tracks follow.
+            select-subtitle(settings-cursor == 1 ? -1 : Bridge.subtitle-tracks[settings-cursor - 2].id);
+            return;
+        }
+        set-rate(rates[settings-cursor - 1]);
+    }
+
+    function select-subtitle(id: int) {
+        Bridge.current-subtitle-track = id;
+        Bridge.select-track(id, UiMediaTrackType.Subtitle);
+    }
+
+    function set-rate(rate: float) {
+        Bridge.change-playback-rate(rate);
+        Bridge.playback-rate = rate;
+    }
+
     forward-focus: focus;
 
     // True while any part of the controls is drawn over the video. Mirrored into the
@@ -306,6 +613,12 @@ component PlaybackControls inherits Rectangle {
     }
 
     public function show() {
+        reveal(true);
+    }
+
+    // `unhide-cursor` is false for keyboard wake-ups: a Tab should not conjure a
+    // mouse pointer the user never moved.
+    function reveal(unhide-cursor: bool) {
         tim.restart();
         if is-visible {
             return;
@@ -315,8 +628,28 @@ component PlaybackControls inherits Rectangle {
         background-height = 20%;
         elems-opacity = 100%;
         tim.running = true;
-        suggested-cursor = MouseCursor.default;
-        Bridge.set-cursor-hidden(false);
+        if unhide-cursor {
+            suggested-cursor = MouseCursor.default;
+            Bridge.set-cursor-hidden(false);
+        }
+    }
+
+    // Tab is how the keyboard reaches the controls, so it wakes them like a
+    // pointer move does and pushes the hide timer out while it walks them.
+    function wake-controls() {
+        if is-visible {
+            tim.restart();
+            return;
+        }
+        reveal(false);
+    }
+
+    // Every Tab that no widget consumed bumps this, which is the only way the
+    // controls hear about tab presses that landed on one of their own buttons
+    // (those bubble straight past this component to the window-wide scope).
+    property <int> keyboard-nav: Bridge.tab-nav-serial;
+    changed keyboard-nav => {
+        root.wake-controls();
     }
 
     public function close() {
@@ -334,10 +667,7 @@ component PlaybackControls inherits Rectangle {
         double-clicked => Bridge.toggle-fullscreen();
 
         clicked => {
-            current-settings-page = SettingsPage.Start;
-            show-settings = false;
-            // Closing the side bar destroys any list/slider holding focus.
-            focus.focus();
+            root.close-settings();
         }
 
         pointer-event(pe) => {
@@ -346,14 +676,29 @@ component PlaybackControls inherits Rectangle {
             }
         }
 
-        // No key handler here: unhandled keys bubble up to the global
-        // FocusScope in main.slint. This scope exists to anchor focus while
-        // the video scene is up and to react to window activation.
+        // This scope anchors focus while the video scene is up, reacts to window
+        // activation, and turns the first Tab into a wake-up. Everything else
+        // bubbles to the global FocusScope in main.slint.
         focus := FocusScope {
             focus-changed-event(event) => {
                 if (event == FocusReason.window-activation && is-visible) {
                     root.close();
                 }
+            }
+
+            key-pressed(event) => {
+                if event.text != Key.Tab && event.text != Key.Backtab {
+                    return reject;
+                }
+                // With the controls hidden there is nothing to tab to, so this
+                // press only reveals them and the next one starts walking.
+                if !is-visible {
+                    root.wake-controls();
+                    return accept;
+                }
+
+                root.wake-controls();
+                return reject;
             }
 
             init => self.focus();
@@ -466,7 +811,7 @@ component PlaybackControls inherits Rectangle {
                     visible: is-visible;
 
                     show-settings => {
-                        show-settings = true;
+                        root.open-settings();
                     }
                 }
             }
@@ -474,7 +819,9 @@ component PlaybackControls inherits Rectangle {
     }
 
     HorizontalLayout {
-        visible: settings-side-bar.width > 0px;
+        // `show-settings` keeps the panel drawn from the very first frame of the
+        // slide-in, so the focus handed to `settings-focus` lands on a visible item.
+        visible: show-settings || settings-side-bar.width > 0px;
 
         Rectangle {}
 
@@ -494,6 +841,47 @@ component PlaybackControls inherits Rectangle {
                 background: FCastPalette.opacity-light-1000;
             }
 
+            // The side bar is modal for the keyboard: it holds focus while open
+            // (handed over by `open-settings`) and swallows Tab, so tab traversal
+            // never reaches the controls or the buttons behind the panel. Rows are
+            // driven by `settings-cursor`, not by per-row focus, so this scope
+            // needs no clicks: `focus-on-click` off keeps it from shadowing the
+            // row touch areas below it.
+            settings-focus := FocusScope {
+                focus-on-click: false;
+
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        root.close-settings();
+                        return accept;
+                    }
+                    if event.text == Key.Tab {
+                        root.move-cursor(event.modifiers.shift ? -1 : 1);
+                        return accept;
+                    }
+                    if event.text == Key.Backtab || event.text == Key.UpArrow {
+                        root.move-cursor(-1);
+                        return accept;
+                    }
+                    if event.text == Key.DownArrow {
+                        root.move-cursor(1);
+                        return accept;
+                    }
+                    if event.text == Key.Return || event.text == Key.Space || event.text == Key.RightArrow {
+                        root.activate-cursor();
+                        return accept;
+                    }
+                    // Left is "back out of this page", and a no-op on the start page.
+                    if (event.text == Key.LeftArrow || event.text == Key.Backspace)
+                        && current-settings-page != SettingsPage.Start {
+                        root.open-page(SettingsPage.Start);
+                        return accept;
+                    }
+
+                    return reject;
+                }
+            }
+
             TouchArea {}
 
             if current-settings-page == SettingsPage.Start: VerticalLayout {
@@ -511,17 +899,16 @@ component PlaybackControls inherits Rectangle {
                         vertical-alignment: center;
                     }
 
-                    Button {
+                    HeaderButton {
                         icon: Icons.close;
                         icon-size: 13px;
-                        width: 34px;
-                        height: 34px;
+                        focused: settings-cursor == 0;
 
                         clicked => {
-                            show-settings = false;
-                            // Closing destroys any list holding focus, same as
-                            // clicking outside the side bar.
-                            focus.focus();
+                            root.close-settings();
+                        }
+                        hovered => {
+                            root.park-cursor(0);
                         }
                     }
                 }
@@ -533,36 +920,52 @@ component PlaybackControls inherits Rectangle {
                     if Bridge.video-tracks.length > 0: PlaybackSettingsMenuItem {
                         label: @tr("Video");
                         icon: Icons.settings-video;
+                        focused: settings-cursor == row-video;
 
                         clicked => {
-                            current-settings-page = SettingsPage.Video;
+                            root.enter-category(SettingsPage.Video, row-video);
+                        }
+                        hovered => {
+                            root.park-cursor(row-video);
                         }
                     }
 
                     if Bridge.audio-tracks.length > 0: PlaybackSettingsMenuItem {
                         label: @tr("Audio");
                         icon: Icons.details-audio;
+                        focused: settings-cursor == row-audio;
 
                         clicked => {
-                            current-settings-page = SettingsPage.Audio;
+                            root.enter-category(SettingsPage.Audio, row-audio);
+                        }
+                        hovered => {
+                            root.park-cursor(row-audio);
                         }
                     }
 
                     if Bridge.subtitle-tracks.length > 0: PlaybackSettingsMenuItem {
                         label: @tr("Subtitles");
                         icon: Icons.subtitles;
+                        focused: settings-cursor == row-subtitle;
 
                         clicked => {
-                            current-settings-page = SettingsPage.Subtitle;
+                            root.enter-category(SettingsPage.Subtitle, row-subtitle);
+                        }
+                        hovered => {
+                            root.park-cursor(row-subtitle);
                         }
                     }
 
                     PlaybackSettingsMenuItem {
                         label: @tr("Playback Speed");
                         icon: Icons.playback-rate;
+                        focused: settings-cursor == row-rate;
 
                         clicked => {
-                            current-settings-page = SettingsPage.Rate;
+                            root.enter-category(SettingsPage.Rate, row-rate);
+                        }
+                        hovered => {
+                            root.park-cursor(row-rate);
                         }
                     }
 
@@ -576,9 +979,13 @@ component PlaybackControls inherits Rectangle {
 
                 PlaybackSettingHeader {
                     title: @tr("Video track");
+                    focused: settings-cursor == 0;
 
                     navigate-previous => {
-                        current-settings-page = SettingsPage.Start;
+                        root.open-page(SettingsPage.Start);
+                    }
+                    hovered => {
+                        root.park-cursor(0);
                     }
                 }
 
@@ -586,10 +993,16 @@ component PlaybackControls inherits Rectangle {
                     padding-top: 10px;
                     spacing: 5px;
 
-                    // TODO: scroll view if needed
                     SettingsTrackList {
                         tracks: Bridge.video-tracks;
                         selected-id: Bridge.current-video-track;
+                        cursor: settings-cursor - 1;
+                        selected-row(row) => {
+                            root.note-selected-row(SettingsPage.Video, row + 1);
+                        }
+                        hovered(row) => {
+                            root.park-cursor(row + 1);
+                        }
                         clicked(id) => Bridge.select-track(id, UiMediaTrackType.Video);
                     }
                 }
@@ -601,9 +1014,13 @@ component PlaybackControls inherits Rectangle {
 
                 PlaybackSettingHeader {
                     title: @tr("Audio track");
+                    focused: settings-cursor == 0;
 
                     navigate-previous => {
-                        current-settings-page = SettingsPage.Start;
+                        root.open-page(SettingsPage.Start);
+                    }
+                    hovered => {
+                        root.park-cursor(0);
                     }
                 }
 
@@ -611,10 +1028,16 @@ component PlaybackControls inherits Rectangle {
                     padding-top: 10px;
                     spacing: 5px;
 
-                    // TODO: scroll view if needed
                     SettingsTrackList {
                         tracks: Bridge.audio-tracks;
                         selected-id: Bridge.current-audio-track;
+                        cursor: settings-cursor - 1;
+                        selected-row(row) => {
+                            root.note-selected-row(SettingsPage.Audio, row + 1);
+                        }
+                        hovered(row) => {
+                            root.park-cursor(row + 1);
+                        }
                         clicked(id) => Bridge.select-track(id, UiMediaTrackType.Audio);
                     }
                 }
@@ -626,9 +1049,13 @@ component PlaybackControls inherits Rectangle {
 
                 PlaybackSettingHeader {
                     title: @tr("Subtitle track");
+                    focused: settings-cursor == 0;
 
                     navigate-previous => {
-                        current-settings-page = SettingsPage.Start;
+                        root.open-page(SettingsPage.Start);
+                    }
+                    hovered => {
+                        root.park-cursor(0);
                     }
                 }
 
@@ -640,9 +1067,15 @@ component PlaybackControls inherits Rectangle {
                         tracks: Bridge.subtitle-tracks;
                         selected-id: Bridge.current-subtitle-track;
                         can-be-disabled: true;
+                        cursor: settings-cursor - 1;
+                        selected-row(row) => {
+                            root.note-selected-row(SettingsPage.Subtitle, row + 1);
+                        }
+                        hovered(row) => {
+                            root.park-cursor(row + 1);
+                        }
                         clicked(id) => {
-                            Bridge.current-subtitle-track = id;
-                            Bridge.select-track(id, UiMediaTrackType.Subtitle);
+                            root.select-subtitle(id);
                         }
                     }
                 }
@@ -654,9 +1087,13 @@ component PlaybackControls inherits Rectangle {
 
                 PlaybackSettingHeader {
                     title: @tr("Playback speed");
+                    focused: settings-cursor == 0;
 
                     navigate-previous => {
-                        current-settings-page = SettingsPage.Start;
+                        root.open-page(SettingsPage.Start);
+                    }
+                    hovered => {
+                        root.park-cursor(0);
                     }
                 }
 
@@ -664,17 +1101,31 @@ component PlaybackControls inherits Rectangle {
                     padding-top: 10px;
                     spacing: 5px;
 
-                    property <[float]> rates: [0.25, 0.5, 0.75, 1.0, 1.25, 1.50, 1.75, 2.0];
-
+                    // No scroll-into-view here: the eight rates always fit the panel.
                     ListView {
-                        for rate in rates: VerticalLayout {
+                        for rate[i] in root.rates: VerticalLayout {
                             SettingItem {
                                 value: rate;
                                 selected: Bridge.playback-rate == rate;
+                                focused: settings-cursor == i + 1;
+
+                                init => {
+                                    if self.selected {
+                                        root.note-selected-row(SettingsPage.Rate, i + 1);
+                                    }
+                                }
+                                changed selected => {
+                                    if self.selected {
+                                        root.note-selected-row(SettingsPage.Rate, i + 1);
+                                    }
+                                }
+
+                                hovered => {
+                                    root.park-cursor(i + 1);
+                                }
 
                                 clicked => {
-                                    Bridge.change-playback-rate(rate);
-                                    Bridge.playback-rate = rate;
+                                    root.set-rate(rate);
                                 }
                             }
 

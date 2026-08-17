@@ -6,6 +6,7 @@ import {
     Icons,
 } from "../../../ui-components/std-widgets.slint";
 import { FCastPalette, Icons as FluentIcons } from "../../../ui-components/styling.slint";
+import { FocusBorder } from "../../../ui-components/components.slint";
 import { Bridge } from "globals.slint";
 
 // A section heading (icon + label) that groups related settings.
@@ -128,6 +129,24 @@ component SelectRow inherits VerticalLayout {
     in-out property <string> value;
     property <bool> expanded: false;
 
+    // Closing the drawer (scrim click, close button, Escape) leaves the row folded
+    // open otherwise, and it would still be open the next time it is shown.
+    property <bool> drawer-open: Bridge.show-settings;
+    changed drawer-open => {
+        if !root.drawer-open {
+            root.expanded = false;
+        }
+    }
+
+    function select(opt: string) {
+        root.value = opt;
+        Bridge.set-string-setting(root.setting-key, opt);
+        root.expanded = false;
+        // Collapsing destroys the option rows, so pull focus back to the header
+        // instead of letting the window end up with no focused item at all.
+        row-focus.focus();
+    }
+
     Rectangle {
         height: 34px;
 
@@ -135,6 +154,26 @@ component SelectRow inherits VerticalLayout {
             clicked => {
                 root.expanded = !root.expanded;
             }
+        }
+
+        // Keyboard twin of the touch area: a tab stop that folds the row open.
+        // Zero width, so it never takes clicks away from the touch area.
+        row-focus := FocusScope {
+            x: 0;
+            width: 0;
+
+            key-pressed(event) => {
+                if event.text == Key.Space || event.text == Key.Return {
+                    root.expanded = !root.expanded;
+                    return accept;
+                }
+
+                return reject;
+            }
+        }
+
+        if row-focus.has-focus: FocusBorder {
+            border-radius: 4px;
         }
 
         HorizontalLayout {
@@ -180,7 +219,7 @@ component SelectRow inherits VerticalLayout {
             border-radius: 4px;
             background: opt == root.value
                 ? FCastPalette.opacity-light-1000
-                : (option-touch.has-hover ? FCastPalette.opacity-light-1100 : transparent);
+                : (option-touch.has-hover || option-focus.has-focus ? FCastPalette.opacity-light-1100 : transparent);
 
             animate background {
                 duration: 100ms;
@@ -188,10 +227,26 @@ component SelectRow inherits VerticalLayout {
 
             option-touch := TouchArea {
                 clicked => {
-                    root.value = opt;
-                    Bridge.set-string-setting(root.setting-key, opt);
-                    root.expanded = false;
+                    root.select(opt);
                 }
+            }
+
+            option-focus := FocusScope {
+                x: 0;
+                width: 0;
+
+                key-pressed(event) => {
+                    if event.text == Key.Space || event.text == Key.Return {
+                        root.select(opt);
+                        return accept;
+                    }
+
+                    return reject;
+                }
+            }
+
+            if option-focus.has-focus: FocusBorder {
+                border-radius: parent.border-radius;
             }
 
             HorizontalLayout {
@@ -218,6 +273,14 @@ export component SettingsDrawer inherits Rectangle {
     property <bool> open: Bridge.show-settings;
     property <float> reveal: root.open ? 1.0 : 0.0;
 
+    // Opening hands the keyboard to the panel: from there the guards below keep
+    // tab traversal inside it, and main.slint takes focus back on close.
+    changed open => {
+        if root.open {
+            close-btn.focus();
+        }
+    }
+
     // A single animated factor drives everything: the panel slide and the scrim
     // fade both follow `reveal`, and nothing else animates (so resizing the
     // window repositions the panel instantly). The duration matches the video
@@ -226,7 +289,9 @@ export component SettingsDrawer inherits Rectangle {
         duration: 100ms;
     }
 
-    visible: root.reveal > 0.0;
+    // `open` is in there so the panel is already drawn on the frame that gets the
+    // focus, before the reveal animation has ticked once.
+    visible: root.open || root.reveal > 0.0;
 
     // Dimmed background tint. Its opacity fades with `reveal`. The panel itself
     // only slides, it does not fade.
@@ -248,6 +313,23 @@ export component SettingsDrawer inherits Rectangle {
         height: parent.height;
         x: parent.width - self.width * root.reveal;
         background: @linear-gradient(180deg, #101010 0%, #0F0F10 100%);
+
+        // Tab traversal knows nothing about modal layers, so two guards fence the
+        // panel in: whichever one traversal lands on hands focus straight back to
+        // the close button, which keeps the idle screen behind the scrim out of
+        // reach. They bracket the panel's children, so they must stay first and
+        // last here. Forward tab wraps to the top of the panel; backward tab stops
+        // at the close button rather than wrapping to the bottom.
+        head-guard := FocusScope {
+            width: 0;
+            height: 0;
+
+            focus-gained(reason) => {
+                if reason == FocusReason.tab-navigation {
+                    close-btn.focus();
+                }
+            }
+        }
 
         // Left edge divider.
         Rectangle {
@@ -274,7 +356,7 @@ export component SettingsDrawer inherits Rectangle {
                     vertical-alignment: center;
                 }
 
-                Button {
+                close-btn := Button {
                     icon: Icons.close;
                     icon-size: 13px;
                     width: 34px;
@@ -449,6 +531,18 @@ export component SettingsDrawer inherits Rectangle {
                     color: FCastPalette.opacity-light-700;
                     font-size: 10px;
                     wrap: word-wrap;
+                }
+            }
+        }
+
+        // Second half of the guard pair declared at the top of the panel.
+        tail-guard := FocusScope {
+            width: 0;
+            height: 0;
+
+            focus-gained(reason) => {
+                if reason == FocusReason.tab-navigation {
+                    close-btn.focus();
                 }
             }
         }
