@@ -31,6 +31,7 @@ use fcast_video::{opengl, placebo, render_latency, video};
 slint::include_modules!();
 
 pub mod gui;
+pub mod scaling;
 
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
@@ -229,6 +230,10 @@ pub fn run<S: VideoSink + 'static>(
 
         #[cfg(debug_assertions)]
         ui.global::<Bridge>().set_is_debugging(true);
+
+        // Owned by the window from here on: the geometry callback holds the
+        // only strong reference, and it holds the window weakly.
+        let _ui_scaler = scaling::install(ui, settings.ui_scale(), settings.ui_scale_forced());
 
         let tick = Rc::new(RefCell::new(VideoTick {
             video_sink,

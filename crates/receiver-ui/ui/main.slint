@@ -50,6 +50,24 @@ export component MainWindow inherits Window {
     property <bool> video-obstructed: Bridge.video-obstructed;
     changed video-obstructed => Bridge.video-obstructed-changed(self.video-obstructed);
 
+    // The whole GUI is authored against one logical canvas and zoomed through
+    // the window's scale factor, which is re-derived on every geometry change:
+    // a resize, a fullscreen toggle or a move to another output.
+    changed width => Bridge.window-geometry-changed();
+    changed height => Bridge.window-geometry-changed();
+
+    // The window's scale factor, which Slint exposes to .slint code only as the
+    // ratio between the two length units. Watching it catches the platform
+    // pushing a new DPI scale (a move to another output), which it does without
+    // resizing us, so neither hook above would fire.
+    property <float> scale-factor: 1px / 1phx;
+    changed scale-factor => Bridge.window-geometry-changed();
+
+    // The size setting applies to the live window: the drawer autosaves into
+    // the cfg mirror, and this forwards the new value.
+    property <string> ui-scale-cfg: Bridge.cfg-interface-ui-scale;
+    changed ui-scale-cfg => Bridge.ui-scale-changed(self.ui-scale-cfg);
+
     // True only when the frame being rendered is PURELY the video-player scene: right
     // state AND none of the fading views (idle/loading/startup) still drawn over it.
     out property <bool> video-scene-clean: Bridge.app-state == AppState.Playing

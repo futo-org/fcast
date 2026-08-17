@@ -560,6 +560,17 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             bridge.set_cfg_interface_start_fullscreen(config.interface.start_fullscreen);
             bridge.set_cfg_interface_fullscreen_player(config.interface.fullscreen_player);
             bridge.set_cfg_interface_headless(config.interface.headless);
+            // Formatted the way the drawer's dropdown labels it, so the active
+            // option is the highlighted one: unset means the default mode,
+            // shown under its own name rather than as "Default".
+            bridge.set_cfg_interface_ui_scale(
+                config
+                    .interface
+                    .ui_scale
+                    .clone()
+                    .unwrap_or_else(|| receiver_core::ui_scaling::DEFAULT_MODE_NAME.to_owned())
+                    .into(),
+            );
             bridge.set_cfg_video_hdr_output(config.video.hdr_output);
             bridge.set_cfg_video_render_profile(
                 config

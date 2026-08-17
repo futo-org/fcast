@@ -129,6 +129,11 @@ pub struct InterfaceConfig {
     pub fullscreen_player: bool,
     /// Run without a GUI at all.
     pub headless: bool,
+    /// How the GUI is scaled: `tv` (the default), `auto`, `desktop`, or a
+    /// literal factor like `2.5`. Stored as a string so an unrecognised value
+    /// warns instead of discarding the file. See [`crate::ui_scaling`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui_scale: Option<String>,
 }
 
 impl Default for InterfaceConfig {
@@ -139,6 +144,7 @@ impl Default for InterfaceConfig {
             start_fullscreen: false,
             fullscreen_player: true,
             headless: false,
+            ui_scale: None,
         }
     }
 }
@@ -207,6 +213,7 @@ impl Config {
             "chromecast.name" => self.chromecast.name = text,
             "video.render_profile" => self.video.render_profile = choice,
             "log.level" => self.log.level = choice,
+            "interface.ui_scale" => self.interface.ui_scale = choice,
             _ => return false,
         }
         true
@@ -425,6 +432,7 @@ const CLEARABLE_KEYS: &[&[&str]] = &[
     &["chromecast", "name"],
     &["video", "render_profile"],
     &["log", "level"],
+    &["interface", "ui_scale"],
 ];
 
 /// Remove from `dst` every [`CLEARABLE_KEYS`] path absent from `src`; foreign
@@ -635,6 +643,16 @@ mod tests {
             !config.set_string("bogus.key", "x"),
             "unknown key returns false"
         );
+    }
+
+    #[test]
+    fn set_string_ui_scaling() {
+        let mut config = Config::default();
+
+        assert!(config.set_string("interface.ui_scale", "tv"));
+        assert_eq!(config.interface.ui_scale.as_deref(), Some("tv"));
+        assert!(config.set_string("interface.ui_scale", "Default"));
+        assert!(config.interface.ui_scale.is_none());
     }
 
     #[test]

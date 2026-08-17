@@ -118,8 +118,9 @@ component TextRow inherits HorizontalLayout {
 }
 
 // A one-of setting that expands inline instead of opening a popup, so it can
-// never overflow the window or get stranded on a resize. The first model entry,
-// "Default", maps to an unset value. Selecting an option autosaves.
+// never overflow the window or get stranded on a resize. Selecting an option
+// autosaves. The first model entry is the one an unset config resolves to,
+// spelled either as the sentinel "Default" or as the value it means.
 component SelectRow inherits VerticalLayout {
     in property <string> label;
     in property <string> setting-key;
@@ -376,6 +377,15 @@ export component SettingsDrawer inherits Rectangle {
                         label: @tr("Headless (no window)");
                         setting-key: "interface.headless";
                         value <=> Bridge.cfg-interface-headless;
+                    }
+                    // "tv" is the 10-foot layout and the default. "auto" gives
+                    // that only on TV-sized panels, "desktop" never. A literal
+                    // factor is config-file only, not dropdown material.
+                    SelectRow {
+                        label: @tr("UI size");
+                        setting-key: "interface.ui_scale";
+                        model: ["tv", "auto", "desktop"];
+                        value <=> Bridge.cfg-interface-ui-scale;
                     }
 
                     SectionHeader {

@@ -167,6 +167,9 @@ export global Bridge {
     in-out property <bool> cfg-interface-start-fullscreen: false;
     in-out property <bool> cfg-interface-fullscreen-player: true;
     in-out property <bool> cfg-interface-headless: false;
+    // Seeded with what an unset config means, so the startup push is a no-op
+    // and the `changed` hook in main.slint only fires on a real difference.
+    in-out property <string> cfg-interface-ui-scale: "tv";
     in-out property <bool> cfg-video-hdr-output: true;
     in-out property <string> cfg-video-render-profile: "Default";
     in-out property <string> cfg-discovery-exclude-interfaces;
@@ -203,6 +206,11 @@ export global Bridge {
     callback perform-app-update();
     callback restart-app();
     callback video-obstructed-changed(obstructed: bool);
+    // Fired whenever the window's logical size changes, including after our own
+    // rescale. Drives the scale-factor policy (see receiver-ui's `scaling`).
+    callback window-geometry-changed();
+    // A new `[interface] ui_scale`, applied to the live window.
+    callback ui-scale-changed(mode: string);
     callback new-video-frame();
     callback stop-playback();
 

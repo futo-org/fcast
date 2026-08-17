@@ -27,6 +27,7 @@ pub mod message;
 pub mod player;
 mod queue_cache;
 mod raop;
+pub mod ui_scaling;
 pub mod ui_types;
 mod user_agent;
 pub mod utils;
@@ -152,6 +153,10 @@ pub struct CliArgs {
     /// Path to the settings file to use
     #[arg(long)]
     settings_file_path: Option<String>,
+    /// How to scale the GUI: `tv` (default), `auto`, `desktop`, or a factor
+    /// like `2.5`
+    #[arg(long)]
+    ui_scale: Option<String>,
     /// Run without a GUI
     #[arg(long, default_value_t = false)]
     pub headless: bool,
@@ -292,6 +297,28 @@ impl Settings {
 
     pub fn disable_hdr_output(&self) -> bool {
         self.cli.disable_hdr_output || !self.config.get().video.hdr_output
+    }
+
+    /// GUI scaling mode, resolved from `--ui-scale` then `[interface]
+    /// ui_scale`. An unrecognised value warns and falls back to `auto`.
+    pub fn ui_scale(&self) -> ui_scaling::UiScale {
+        let from_cli = self.cli.ui_scale.as_deref();
+        let config = self.config.get();
+        let from_config = config.interface.ui_scale.as_deref();
+        let Some(value) = from_cli.or(from_config) else {
+            return ui_scaling::DEFAULT_MODE;
+        };
+        ui_scaling::UiScale::parse(value).unwrap_or_else(|| {
+            tracing::warn!(value, "Unrecognised ui_scale, using the default");
+            ui_scaling::DEFAULT_MODE
+        })
+    }
+
+    /// Whether `--ui-scale` was passed. The GUI needs to know: the settings
+    /// drawer mirrors the config file, and pushing that mirror at startup would
+    /// otherwise overwrite the forced mode.
+    pub fn ui_scale_forced(&self) -> bool {
+        self.cli.ui_scale.is_some()
     }
 }
 

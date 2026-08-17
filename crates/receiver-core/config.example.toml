@@ -50,6 +50,15 @@
 # fullscreen_player = true
 # Run without a GUI at all.
 # headless = false
+# How the GUI is scaled.
+#   "tv"      the default: fit the 1280x720 design canvas to the window, so a 4K
+#             panel draws the UI at 3x. Never smaller than the scale factor the
+#             system reports, so it is also safe on a HiDPI desk monitor
+#   "auto"    follow the display: TV-sized panels get the 10-foot layout, desk
+#             monitors keep the scale factor the system reports
+#   "desktop" always use the system scale factor
+#   a number  a literal factor, e.g. 2.5
+# ui_scale = "tv"
 
 [video]
 # Allow HDR passthrough. Set to false to tone-map HDR content to SDR.
