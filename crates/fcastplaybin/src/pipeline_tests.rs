@@ -212,6 +212,83 @@ fn duration_changed_reaches_the_caller_except_mid_activation() {
     let _ = playbin.stop();
 }
 
+/// The routed-pad EOS gate must never split a group. Two sibling A/V EOS
+/// racing a pre-arm may both pass or both drop, never one of each: the
+/// passed one parks its pushing thread (a multiqueue slot task) inside
+/// streamsynchronizer's group wait, and the dropped sibling never arrives to
+/// complete the group (CLEANUP invariant 12, the boundary freeze).
+///
+/// Driven straight against `Inner`, because in a real pipeline the window
+/// between one sibling's verdict and its mirror commit is sub-microsecond.
+/// The three threads are the field's: two decodebin3 streaming threads at the
+/// gate while the worker runs `Job::PrepareNext`.
+///
+/// Measured teeth: against a gate that decides and commits under separate
+/// locks this fails on round 0 as soon as anything delays the commit (a
+/// `yield_now` between the two stands in for the scheduler), while the
+/// natural window is too narrow to lose 1000 rounds to. What it pins is
+/// therefore the structure, not the odds.
+#[test]
+fn the_eos_gate_never_splits_a_group_against_a_racing_pre_arm() {
+    use crate::decisions::EosGate;
+
+    test_init();
+    let playbin = FcastPlaybin::new(fake_audio_sinks()).unwrap();
+    let inner = &playbin.inner;
+
+    for round in 0..1000u64 {
+        let group = gst::GroupId::next();
+        *inner.active_group.lock() = Some(group);
+        *inner.retired_group.lock() = None;
+        *inner.passing_eos_group.lock() = None;
+        *inner.swap_gate.state.lock() = SwapState::default();
+
+        let start = std::sync::Barrier::new(3);
+        let (audio, video) = std::thread::scope(|scope| {
+            // The arm, exactly as `Job::PrepareNext` writes it.
+            scope.spawn(|| {
+                start.wait();
+                *inner.swap_gate.state.lock() = SwapState {
+                    pending: Some(round + 1),
+                    drained: false,
+                    swapped: false,
+                    dropped_eos: false,
+                };
+            });
+            let audio = scope.spawn(|| {
+                start.wait();
+                inner.gapless_eos_gate(Some(group), true)
+            });
+            let video = scope.spawn(|| {
+                start.wait();
+                inner.gapless_eos_gate(Some(group), true)
+            });
+            (audio.join().unwrap(), video.join().unwrap())
+        });
+
+        let passed = |gate: EosGate| matches!(gate, EosGate::Pass { .. } | EosGate::SiblingPass);
+        assert_eq!(
+            passed(audio),
+            passed(video),
+            "round {round}: the group was split, {audio:?} vs {video:?}"
+        );
+        // A passed group is committed, so any straggler sibling passes too.
+        if passed(audio) {
+            assert_eq!(*inner.passing_eos_group.lock(), Some(group));
+            assert_eq!(
+                inner.gapless_eos_gate(Some(group), true),
+                EosGate::SiblingPass
+            );
+        }
+    }
+
+    // Leave the gate as found: teardown reads it.
+    *inner.swap_gate.state.lock() = SwapState::default();
+    *inner.active_group.lock() = None;
+    *inner.passing_eos_group.lock() = None;
+    let _ = playbin.stop();
+}
+
 /// One kept cue, shaped like what `Inner::park_text_stream`'s appsink hands to
 /// the ring, i.e. a buffer with a pts, text caps and a time segment.
 fn parked_sample(pts: gst::ClockTime) -> gst::Sample {

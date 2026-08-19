@@ -108,7 +108,15 @@ impl BitmapSubsEnabled {
 /// draining). The native PipeWire sink shares the monotonic clock domain,
 /// so once it is everywhere this becomes the default.
 pub(crate) fn force_system_clock() -> bool {
-    std::env::var("FCAST_FORCE_SYSTEM_CLOCK").is_ok_and(|v| v == "1")
+    force_system_clock_lever(std::env::var("FCAST_FORCE_SYSTEM_CLOCK").ok().as_deref())
+}
+
+/// The rule with the env read supplied (the environment is process-global,
+/// see [`BitmapSubsEnabled::from_levers`]). Alone among the levers this one
+/// is opt-in by VALUE, exactly "1", not merely present: it flips the clock
+/// under real playback, so a stray empty or "0" export must stay inert.
+fn force_system_clock_lever(var: Option<&str>) -> bool {
+    var == Some("1")
 }
 
 impl Inner {
@@ -116,5 +124,25 @@ impl Inner {
     /// the v1 remembered slots and drains are back.
     pub(crate) fn text_reconcile_levered() -> bool {
         std::env::var_os("FCAST_NO_TEXT_RECONCILE").is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::force_system_clock_lever;
+
+    /// Every other lever is presence-tested (`is_some`); this one demands
+    /// the exact value "1". Pinned so a refactor unifying the lever reads
+    /// cannot silently widen the opt-in to any set value.
+    #[test]
+    fn force_system_clock_requires_exactly_the_value_1() {
+        assert!(force_system_clock_lever(Some("1")));
+        assert!(!force_system_clock_lever(None));
+        // Present but not "1": inert, unlike the is_some levers.
+        assert!(!force_system_clock_lever(Some("")));
+        assert!(!force_system_clock_lever(Some("0")));
+        assert!(!force_system_clock_lever(Some("true")));
+        assert!(!force_system_clock_lever(Some("1 ")));
+        assert!(!force_system_clock_lever(Some("11")));
     }
 }

@@ -1231,4 +1231,128 @@ mod tests {
             "seek_failed left a state that can never complete: resume={resume:?}",
         );
     }
+
+    /// `clear_state` post-conditions from a machine mid-seek: phase Stopped,
+    /// seek slot empty, target back to Paused, live flag and rate reset. A
+    /// cleared machine refuses the next seek like any stopped one.
+    #[test]
+    fn clear_state_from_mid_seek_resets_the_whole_model() {
+        let mut sm = playing();
+        assert_eq!(
+            sm.seek_internal(Seek::new(Some(TEN), Some(2.0)), None),
+            Some(Seek::new(Some(TEN), Some(2.0)))
+        );
+        sm.is_live = true;
+        sm.rate = 2.0;
+        assert_eq!(sm.probe().2, SeekSlot::InFlight);
+
+        sm.clear_state();
+        assert_eq!(sm.probe(), (Phase::Stopped, gs!(Paused), SeekSlot::None));
+        assert!(sm.is_stopped());
+        assert!(!sm.is_seeking());
+        assert_eq!(sm.running(), None);
+        assert!(!sm.is_live);
+        assert_eq!(sm.rate, 1.0);
+        assert_eq!(sm.seek_internal(Seek::new(Some(FIVE), None), None), None);
+    }
+
+    /// `clear_state` while buffering is latched: the latch is gone, so a
+    /// later lone completion report is a no-op instead of a settle acting on
+    /// dead bookkeeping.
+    #[test]
+    fn clear_state_drops_a_latched_buffering() {
+        let mut sm = playing();
+        assert_eq!(sm.buffering(37), BufferingStateResult::Started(gs!(Paused)));
+        assert!(matches!(sm.probe().0, Phase::Buffering { .. }));
+
+        sm.clear_state();
+        assert_eq!(sm.probe(), (Phase::Stopped, gs!(Paused), SeekSlot::None));
+        assert_eq!(sm.buffering(100), BufferingStateResult::Buffering);
+        assert!(sm.is_stopped(), "the stray completion settled nothing");
+    }
+
+    /// `clear_state` over a committed load: the Playing commit is forgotten
+    /// with the load, not carried into the next item's target.
+    #[test]
+    fn clear_state_forgets_a_pending_load_commit() {
+        let mut sm = StateMachine::new();
+        sm.begin_load();
+        assert_eq!(sm.set_playback_state(rs!(Playing)), None);
+        assert_eq!(sm.probe().0, Phase::Loading { committed: true });
+        assert_eq!(sm.probe().1, gs!(Playing));
+
+        sm.clear_state();
+        assert_eq!(sm.probe(), (Phase::Stopped, gs!(Paused), SeekSlot::None));
+    }
+
+    /// A failed in-flight seek whose target the pipeline has NOT reached
+    /// re-commits toward that target instead of settling in place.
+    #[test]
+    fn seek_failed_with_an_unreached_target_recommits_it() {
+        let mut sm = paused();
+        assert_eq!(
+            sm.seek_internal(Seek::new(Some(TEN), None), Some(gs!(Playing))),
+            Some(Seek::new(Some(TEN), Some(1.0)))
+        );
+        assert_eq!(sm.probe().1, gs!(Playing));
+        assert_eq!(sm.probe().2, SeekSlot::InFlight);
+
+        assert_eq!(sm.seek_failed(), Some(gs!(Playing)));
+        assert_eq!(sm.probe(), (Phase::Changing, gs!(Playing), SeekSlot::None));
+        // The re-commit settles like any transition.
+        assert_eq!(
+            sm.state_changed(gs!(Paused), gs!(Playing), gs!(VoidPending)),
+            new_ps!(Playing)
+        );
+    }
+
+    /// A failure with a seek parked BEHIND the in-flight one (not buffering)
+    /// drops the parked seek too: same mechanics, it would fail the same way.
+    /// Nothing may dispatch it afterwards.
+    #[test]
+    fn seek_failed_drops_the_seek_parked_behind_it() {
+        let mut sm = paused();
+        assert_eq!(
+            sm.seek_internal(Seek::new(Some(TEN), None), None),
+            Some(Seek::new(Some(TEN), Some(1.0)))
+        );
+        assert_eq!(sm.seek_internal(Seek::new(Some(THIRTY), None), None), None);
+        assert_eq!(
+            sm.probe().2,
+            SeekSlot::InFlightParked(Seek::new(Some(THIRTY), Some(1.0)))
+        );
+
+        assert_eq!(sm.seek_failed(), None);
+        assert_eq!(sm.probe().2, SeekSlot::None);
+        assert_eq!(sm.running(), Some(rs!(Paused)));
+        // The settled-Paused edge that would have dispatched the parked seek
+        // finds nothing to dispatch.
+        assert_eq!(
+            sm.state_changed(gs!(Paused), gs!(Paused), gs!(VoidPending)),
+            new_ps!(Paused)
+        );
+    }
+
+    /// While playing, a failed seek settles back to Running(Playing): the
+    /// target and the current state agree, so nothing is re-committed.
+    #[test]
+    fn seek_failed_while_playing_settles_back_to_playing() {
+        let mut sm = playing();
+        assert_eq!(
+            sm.seek_internal(Seek::new(Some(TEN), None), None),
+            Some(Seek::new(Some(TEN), Some(1.0)))
+        );
+        assert_eq!(sm.seek_failed(), None);
+        assert_eq!(sm.running(), Some(rs!(Playing)));
+    }
+
+    /// With no seek tracked at all, `seek_failed` is a no-op: a stale failure
+    /// report must not disturb a settled machine.
+    #[test]
+    fn seek_failed_with_no_tracked_seek_changes_nothing() {
+        let mut sm = paused();
+        let before = sm.probe();
+        assert_eq!(sm.seek_failed(), None);
+        assert_eq!(sm.probe(), before);
+    }
 }

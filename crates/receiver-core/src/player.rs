@@ -22,6 +22,11 @@ use fcastplaybin::state_machine::{
 /// global config side channels.
 pub use fcastplaybin::MediaInput;
 
+/// What the application does to the pipeline right after a gapless cancel.
+/// Re-exported from `fcastplaybin`: it is the caller's half of the cancel
+/// contract (see [`Player::cancel_prepared`]).
+pub use fcastplaybin::AfterCancel;
+
 /// Correlates missing-plugin element messages with decodebin's follow-up
 /// "missing plugin" WARNING (posted right after, on the same thread) so the
 /// user-facing warning can be dropped when the only undecodable streams were
@@ -1187,6 +1192,14 @@ impl Player {
         self.expected_generation == Some(generation)
     }
 
+    /// The generation of the pending gapless pre-arm, if any. The pipeline
+    /// stamps events with it from the swap on, up to a queue depth AHEAD of
+    /// the activation the application adopts, so the event filter must treat
+    /// it as "hold", not "drop" (see `Application::held_prearm_events`).
+    pub fn pending_gapless_generation(&self) -> Option<u64> {
+        self.pending_gapless
+    }
+
     /// Pre-arm the next item on the live pipeline for a gapless transition
     /// (see `fcastplaybin::prepare_next_async`). Returns the generation the
     /// item carries once it activates; the application keeps it to validate
@@ -1207,9 +1220,15 @@ impl Player {
     /// [`clear_pending_gapless`](Self::clear_pending_gapless) on a confirmed
     /// cancel or [`adopt_gapless_generation`](Self::adopt_gapless_generation)
     /// on the activation.
-    pub fn cancel_prepared(&mut self) {
+    ///
+    /// `after` states what reaches the pipeline next, which decides whether
+    /// the crate synthesizes the item end its gapless hold consumed (see
+    /// [`AfterCancel`]). A cancel made to clear the way for a flushing seek
+    /// must say so: that seek regenerates the end, and a synthesized one
+    /// would advance the queue instead of replaying the seek.
+    pub fn cancel_prepared(&mut self, after: AfterCancel) {
         if self.pending_gapless.is_some() {
-            self.fcast.cancel_prepared_async();
+            self.fcast.cancel_prepared_async(after);
         }
     }
 

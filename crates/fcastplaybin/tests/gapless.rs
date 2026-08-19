@@ -15,7 +15,9 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fcastplaybin::{AudioSink, FcastPlaybin, MediaInput, PlaybinEvent, Sinks, StartPoint};
+use fcastplaybin::{
+    AfterCancel, AudioSink, FcastPlaybin, MediaInput, PlaybinEvent, Sinks, StartPoint,
+};
 use gst::prelude::*;
 
 /// Everything here plays media in real time (synced fake sinks), so waits
@@ -530,7 +532,7 @@ fn cancelled_prepare_falls_back_to_normal_eos() {
     let h = Harness::new();
     let first_generation = h.load_and_play(&first);
     let prepared_generation = h.playbin.prepare_next_async(MediaInput::Uri(second));
-    h.playbin.cancel_prepared_async();
+    h.playbin.cancel_prepared_async(AfterCancel::Nothing);
 
     let seen = h.wait_for("PreparedCancelled confirming the cancel", |event, _| {
         matches!(event, PlaybinEvent::PreparedCancelled { .. })
@@ -613,7 +615,7 @@ fn cancel_after_performed_swap_is_declined_and_activation_completes() {
         .prepare_next_async(MediaInput::Element(prepared_element.clone()));
 
     wait_for_performed_swap(&prepared_element);
-    h.playbin.cancel_prepared_async();
+    h.playbin.cancel_prepared_async(AfterCancel::Nothing);
 
     let seen = h.wait_for("PreparedCancelDeclined", |event, _| {
         matches!(
@@ -739,7 +741,7 @@ fn mid_item_cancel_does_not_end_the_item_early() {
     // mid-playout, before the real (output-side) end.
     let _prepared = h.playbin.prepare_next_async(dataless_prepared_input());
     std::thread::sleep(Duration::from_millis(1200));
-    h.playbin.cancel_prepared_async();
+    h.playbin.cancel_prepared_async(AfterCancel::Nothing);
 
     let seen = h.wait_for("EndOfStream after the mid-item cancel", |event, _| {
         matches!(event, PlaybinEvent::EndOfStream)
@@ -824,7 +826,7 @@ fn cancel_after_consumed_end_synthesizes_end_of_stream() {
          synthesis; seen: {before_cancel:#?}"
     );
 
-    h.playbin.cancel_prepared_async();
+    h.playbin.cancel_prepared_async(AfterCancel::Nothing);
 
     let seen = h.wait_for("the synthesized EndOfStream", |event, _| {
         matches!(event, PlaybinEvent::EndOfStream)
@@ -839,6 +841,70 @@ fn cancel_after_consumed_end_synthesizes_end_of_stream() {
             .iter()
             .any(|(event, _)| matches!(event, PlaybinEvent::PreparedActivated)),
         "a dataless prepared input must never activate; seen: {seen:#?}"
+    );
+    h.playbin.stop().expect("stop");
+}
+
+/// The counterpart of the test above, and the whole reason [`AfterCancel`]
+/// exists. The output hold consumes the item's end up to a video queue depth
+/// (30s) before the item is audibly over, so a cancel made to clear the way
+/// for a flushing seek (invariant 8: cancel, consume the outcome, THEN seek)
+/// routinely lands with the item still playing. That seek restarts the
+/// sources and regenerates the real end, so synthesizing one here ends the
+/// item under the caller instead: the app advances its queue and the user's
+/// scrub-back becomes a track skip.
+///
+/// The cancel outcome must still arrive, because it is what releases the
+/// caller's parked seek.
+#[test]
+fn cancel_for_a_flushing_seek_leaves_the_end_to_the_seek() {
+    init();
+    if !encoders_available() || gst::ElementFactory::find("appsrc").is_none() {
+        eprintln!("skipping: required elements unavailable");
+        return;
+    }
+    let first = encode_av_clip("consumed-seek-a", "smpte", 440);
+
+    let h = Harness::new();
+    let _first_generation = h.load_and_play(&first);
+    let _prepared = h.playbin.prepare_next_async(dataless_prepared_input());
+
+    // Same shape as the synthesizing test: let the item play past its 2s
+    // end so the pending hold consumes the output-side EOS.
+    std::thread::sleep(Duration::from_secs(3));
+
+    // The precondition, for the reason the test above spells out: without a
+    // consumed end there is no synthesis to suppress and nothing is pinned.
+    let before_cancel = h.drain_pending();
+    assert!(
+        !before_cancel
+            .iter()
+            .any(|(event, _)| matches!(event, PlaybinEvent::EndOfStream)),
+        "the item's real EndOfStream reached the caller while a prepare was still \
+         pending, so the hold never consumed it; seen: {before_cancel:#?}"
+    );
+
+    h.playbin
+        .cancel_prepared_async(AfterCancel::FlushingSeek);
+
+    let seen = h.wait_for("PreparedCancelled", |event, _| {
+        matches!(event, PlaybinEvent::PreparedCancelled { .. })
+    });
+    assert!(
+        !seen
+            .iter()
+            .any(|(event, _)| matches!(event, PlaybinEvent::EndOfStream)),
+        "a cancel made for a flushing seek must not end the item ahead of its \
+         outcome; seen: {seen:#?}"
+    );
+    // And not behind it either: the seek the caller is about to replay is
+    // what regenerates this item's end.
+    let after = h.drain_after(Duration::from_millis(700));
+    assert!(
+        !after
+            .iter()
+            .any(|(event, _)| matches!(event, PlaybinEvent::EndOfStream)),
+        "the consumed end was synthesized after the cancel outcome; after: {after:#?}"
     );
     h.playbin.stop().expect("stop");
 }

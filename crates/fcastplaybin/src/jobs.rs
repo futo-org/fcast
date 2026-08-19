@@ -11,7 +11,7 @@ use tracing::{debug, debug_span, error, trace, warn};
 
 use crate::{
     FcastPlaybin, Inner,
-    api::{ErrorOrigin, ExternalSubId, MediaInput, PlaybinEvent, StartPoint},
+    api::{AfterCancel, ErrorOrigin, ExternalSubId, MediaInput, PlaybinEvent, StartPoint},
     external::REPLAY_JOBS_QUEUED,
     gapless::{CancelOutcome, PreparedNext, SwapState},
     graph, hands,
@@ -140,6 +140,11 @@ pub(crate) enum Job {
         /// [`PlaybinEvent::PreparedFailed`] that already told the caller its
         /// prepare is gone.
         notify: bool,
+        /// What the caller does to the pipeline next, which decides the
+        /// consumed-end synthesis (see [`AfterCancel`] and
+        /// [`FcastPlaybin::cancel_prepared`]). The crate's own self-cancels
+        /// pass [`AfterCancel::Nothing`]: nothing follows them either.
+        after: AfterCancel,
     },
     /// Post-activation cleanup: remove every input older than the newly
     /// activated generation (the drained main input and the previous item's
@@ -477,6 +482,148 @@ pub(crate) fn stale_policy(job: &Job) -> StalePolicy {
     }
 }
 
+/// What the poison gate owes the caller of a job it refuses (see the gate at
+/// the top of [`FcastPlaybin::run_job`]). Carries the payload so the decision
+/// is one exhaustive place and can be pinned without a wedged pipeline.
+pub(crate) enum Refusal {
+    /// Nobody waits on it. Fire-and-forget transport intent, idempotent
+    /// hygiene, or work that re-derives everything at execution.
+    Nothing,
+    /// A blocking barrier the caller is parked on.
+    Barrier(Box<dyn FnOnce() + Send>),
+    /// An EMPTY graph snapshot rather than a walked one: the walk reads live
+    /// element state on a pipeline mid-descent on another thread, the one
+    /// thing this gate exists not to do.
+    Snapshot(Box<dyn FnOnce(graph::GraphSnapshot) + Send>),
+    /// The caller-visible event that reports the refusal. `generation`
+    /// overrides the current stamp, for a load that never adopted its own.
+    Event {
+        event: PlaybinEvent,
+        generation: Option<u64>,
+    },
+    /// The selection engine recorded the wait when the CALLER decided to
+    /// dispatch, so only a report on its own side can release it.
+    DispatchFailed(gst::Seqnum),
+    /// Same, for a refresh seek's in-flight slot.
+    RefreshFailed(gst::Seqnum),
+}
+
+/// What a poisoned crate owes each job kind's caller.
+///
+/// EXHAUSTIVE on purpose, like [`stale_policy`]: a new variant must say
+/// whether someone is left waiting on it, because a refusal that settles
+/// nothing moves the wedge from the worker to the callers. The settlement is
+/// the one the variant's ORDINARY failure path already emits, so no caller
+/// learns a new vocabulary from the poison.
+pub(crate) fn poison_refusal(job: Job) -> Refusal {
+    match job {
+        // The shutdown barrier (`shutdown_async`). A barrier nobody signals
+        // is exactly the hang the driver reports.
+        Job::Stop { done, .. } => match done {
+            Some(done) => Refusal::Barrier(done),
+            None => Refusal::Nothing,
+        },
+        Job::DumpGraph { done } => Refusal::Snapshot(done),
+        // An async load's caller waits for `Loaded` or the loud load-failure
+        // `Error` and has nothing else to learn from (the pipeline this
+        // would have errored on is the wedged one). Stamped with THIS job's
+        // generation for the reason the ordinary arm gives at length: the
+        // current one still names the item being replaced, and the caller's
+        // load-scope gate would drop the very report it waits for.
+        Job::Load {
+            input, generation, ..
+        } => Refusal::Event {
+            event: PlaybinEvent::Error {
+                origin: ErrorOrigin::Main,
+                error: gst::glib::Error::new(
+                    gst::LibraryError::Failed,
+                    "loading the media failed: the pipeline is descending below the crate",
+                ),
+                failed_uri: failed_uri_of(&input),
+            },
+            generation: Some(generation),
+        },
+        // The caller owns a one-in-flight seek slot and waits for exactly one
+        // of RateChanged/SeekFailed/QueueSeek; a silent drop strands it.
+        Job::Seek(_) => Refusal::Event {
+            event: PlaybinEvent::SeekFailed,
+            generation: None,
+        },
+        Job::RefreshSeek { seqnum } => Refusal::Event {
+            event: PlaybinEvent::RefreshSeekFailed { seqnum },
+            generation: None,
+        },
+        // The cancel matrix awaits exactly one outcome event. Nothing was
+        // cancelled, hence no generation. A self-cancel notifies nobody.
+        Job::CancelPrepared { notify, .. } => {
+            if notify {
+                Refusal::Event {
+                    event: PlaybinEvent::PreparedCancelled { generation: None },
+                    generation: None,
+                }
+            } else {
+                Refusal::Nothing
+            }
+        }
+        // `prepare_next_async` hands back a generation the caller correlates
+        // against exactly one of PreparedActivated/PreparedFailed.
+        Job::PrepareNext { generation, .. } => Refusal::Event {
+            event: PlaybinEvent::PreparedFailed { generation },
+            generation: None,
+        },
+        // The attach's one caller-visible outcome, as on the epoch gate's
+        // drop path.
+        Job::AttachSub { id, .. } => Refusal::Event {
+            event: PlaybinEvent::ExternalSubtitleFailed { id },
+            generation: None,
+        },
+        // The engine's waits. `DispatchSelection` is the send that will not
+        // happen; the deadline is the only thing that would ever have noticed
+        // it, and it is refused here too, so it must settle in its place.
+        // Both are seqnum-guarded on the engine's side, so a wait that has
+        // since confirmed is a no-op.
+        Job::DispatchSelection { seqnum, .. } | Job::SelectionDeadline { seqnum } => {
+            Refusal::DispatchFailed(seqnum)
+        }
+        Job::RefreshDeadline { seqnum } => Refusal::RefreshFailed(seqnum),
+
+        // Nobody waits. Transport intent the caller re-drives, id/epoch-keyed
+        // work whose input is gone with the pipeline, and internal hygiene
+        // that re-derives everything at execution.
+        Job::SetState { .. }
+        | Job::RecoverClock
+        | Job::RecalculateLatency
+        | Job::DetachSub { .. }
+        | Job::FailSub { .. }
+        | Job::CheckSub { .. }
+        | Job::RetrySub { .. }
+        | Job::AdoptSubState { .. }
+        | Job::VerifyReplay { .. }
+        | Job::ReplaySub { .. }
+        | Job::FinishActivation
+        | Job::SyncTextRunningTime
+        | Job::DrainTextWork
+        | Job::VideoChainGone
+        | Job::ClearStateFailure
+        | Job::PollTextPolicy
+        // A lane's report retires an in-flight table entry, and the table
+        // dies with the instance a poisoned teardown is ending.
+        | Job::EffectDone { .. } => Refusal::Nothing,
+    }
+}
+
+/// The URI a load failure should name, for the report that makes it
+/// actionable. The load consumes its input, so this is read before it runs.
+fn failed_uri_of(input: &MediaInput) -> Option<String> {
+    match input {
+        MediaInput::Uri(uri) => Some(uri.clone()),
+        MediaInput::Element(element) => element
+            .dynamic_cast_ref::<gst::URIHandler>()
+            .and_then(|handler| handler.uri())
+            .map(|uri| uri.to_string()),
+    }
+}
+
 // The consumer transport has no shared text-sink entry to contend for. Each
 // live text branch ends in its OWN appsink, built and destroyed with the
 // branch, so a disposal's check-then-flush cannot race a link: the branch it
@@ -595,9 +742,10 @@ impl std::fmt::Debug for Job {
                 .field("input", input)
                 .field("generation", generation)
                 .finish(),
-            Job::CancelPrepared { notify } => f
+            Job::CancelPrepared { notify, after } => f
                 .debug_struct("CancelPrepared")
                 .field("notify", notify)
+                .field("after", after)
                 .finish(),
             Job::FinishActivation => write!(f, "FinishActivation"),
             Job::SyncTextRunningTime => write!(f, "SyncTextRunningTime"),
@@ -1190,7 +1338,7 @@ impl Inner {
                 // resource for good (see [`Inner::replay_inflight`]).
                 inner.replay_inflight.lock().remove(&(sub_id, epoch));
                 Inner::settle_replay_seek(inner, sub_id, epoch);
-                Inner::release_owed_hold(inner, sub_id, epoch);
+                inner.release_owed_hold(sub_id, epoch);
                 retire(id);
             }
             hands::LaneFallback::Join { hold } => {
@@ -1431,8 +1579,16 @@ impl FcastPlaybin {
     /// activating anyway. On the latter the caller MUST keep its pre-arm
     /// bookkeeping so the imminent [`PlaybinEvent::PreparedActivated`] is
     /// adopted rather than treated as unmatched.
-    pub fn cancel_prepared_async(&self) {
-        self.queue_job(Job::CancelPrepared { notify: true });
+    ///
+    /// `after` states what the caller does to the pipeline next. It is not
+    /// advisory: it decides whether the item end the gapless hold consumed
+    /// is synthesized here or left to the flushing seek that follows (see
+    /// [`AfterCancel`]).
+    pub fn cancel_prepared_async(&self, after: AfterCancel) {
+        self.queue_job(Job::CancelPrepared {
+            notify: true,
+            after,
+        });
     }
 
     /// Queue a full stop on the worker thread: pipeline to READY, every
@@ -1519,6 +1675,22 @@ impl FcastPlaybin {
         self.inner.stale_jobs_dropped.load(Ordering::SeqCst)
     }
 
+    /// Carry out what a refused job owed its caller (see [`poison_refusal`]).
+    fn settle_refusal(&self, refusal: Refusal) {
+        let inner = &self.inner;
+        match refusal {
+            Refusal::Nothing => {}
+            Refusal::Barrier(done) => done(),
+            Refusal::Snapshot(done) => done(graph::GraphSnapshot::default()),
+            Refusal::Event { event, generation } => match generation {
+                Some(generation) => inner.emit_with_generation(event, generation),
+                None => inner.emit(event),
+            },
+            Refusal::DispatchFailed(seqnum) => inner.selection.lock().dispatch_failed(seqnum),
+            Refusal::RefreshFailed(seqnum) => inner.selection.lock().refresh_failed(seqnum),
+        }
+    }
+
     /// Execute one queued job on the worker thread.
     fn run_job(&self, queued: QueuedJob) {
         let QueuedJob { epoch, job } = queued;
@@ -1529,31 +1701,15 @@ impl FcastPlaybin {
         // `Inner::teardown_poisoned`) has no job it can run, whatever epoch the
         // job carries. Refusing is not the same as ignoring. Every job that
         // has a caller waiting on it settles that wait here, or the bounded
-        // disarm would have moved the wedge from the worker to the callers:
-        //
-        // * `Stop` is the shutdown barrier (`shutdown_async`), and a barrier nobody
-        //   signals is exactly the hang the driver reports;
-        // * `DumpGraph` gets an EMPTY snapshot rather than a walked one. The walk reads
-        //   live element state on a pipeline that is mid-descent on another thread,
-        //   which is the one thing this arm exists not to do.
-        //
-        // No event is emitted. A poisoned crate has no item to report about,
-        // and the caller learns from the refused operation itself.
+        // disarm would have moved the wedge from the worker to the callers.
+        // `poison_refusal` is where that per-variant decision lives.
         if inner.teardown_poisoned.load(Ordering::SeqCst) {
             warn!(
                 ?job,
                 "refusing a job: a teardown left this pipeline descending below the crate \
                  (see FcastPlaybin::rescue_disarm_timeouts)"
             );
-            match job {
-                Job::Stop { done, .. } => {
-                    if let Some(done) = done {
-                        done();
-                    }
-                }
-                Job::DumpGraph { done } => done(graph::GraphSnapshot::default()),
-                _ => {}
-            }
+            self.settle_refusal(poison_refusal(job));
             return;
         }
 
@@ -1677,13 +1833,7 @@ impl FcastPlaybin {
             } => {
                 // Kept for the failure report below: the load consumes the
                 // input, and the URI is what makes the report actionable.
-                let failed_uri = match &input {
-                    MediaInput::Uri(uri) => Some(uri.clone()),
-                    MediaInput::Element(element) => element
-                        .dynamic_cast_ref::<gst::URIHandler>()
-                        .and_then(|handler| handler.uri())
-                        .map(|uri| uri.to_string()),
-                };
+                let failed_uri = failed_uri_of(&input);
                 match self.load_with_generation(input, start, generation) {
                     Ok(outcome) => {
                         if outcome.live {
@@ -2015,7 +2165,10 @@ impl FcastPlaybin {
                 // imminent, and arming over it would hand the activation
                 // this prepare's record while the pipeline plays the other
                 // item. Refuse instead.
-                if matches!(self.cancel_prepared(), CancelOutcome::Declined { .. }) {
+                if matches!(
+                    self.cancel_prepared(AfterCancel::Nothing),
+                    CancelOutcome::Declined { .. }
+                ) {
                     debug!(
                         generation,
                         "a performed swap is activating; refusing the prepare"
@@ -2043,10 +2196,22 @@ impl FcastPlaybin {
                 // the transition.
                 *inner.swap_gate.state.lock() = SwapState {
                     pending: Some(generation),
-                    drained: Inner::main_input_drained(inner),
+                    drained: false,
                     swapped: false,
                     dropped_eos: false,
                 };
+                // `drained` is derived AFTER the arm, never sampled into the
+                // literal above. Rust evaluates the assigned value before the
+                // place expression, so a sample there completes BEFORE the
+                // gate lock is taken, and the input's final EOS landing in
+                // that window is lost both ways: `note_input_pad_eos` no-ops
+                // against a gate with no pending swap, and EOS fires once per
+                // pad, so nothing sets it again. The prepared input's blocked
+                // threads then park on the condvar forever and the boundary
+                // silently hangs. This call re-reads the taps under the armed
+                // state, in the tap probe's own lock order (routing, then the
+                // gate).
+                Inner::note_input_pad_eos(inner);
 
                 let built = match input {
                     MediaInput::Uri(uri) => Inner::make_urisourcebin(&uri, true),
@@ -2084,8 +2249,8 @@ impl FcastPlaybin {
                     }
                 }
             }
-            Job::CancelPrepared { notify } => {
-                let outcome = self.cancel_prepared();
+            Job::CancelPrepared { notify, after } => {
+                let outcome = self.cancel_prepared(after);
                 if notify {
                     inner.emit(match outcome {
                         CancelOutcome::Cancelled { generation } => {
@@ -2373,6 +2538,40 @@ impl FcastPlaybin {
                 }
             }
             Outcome::JoinFinished { kind } => debug!(?kind, "a chain join finished"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ExternalSubId, Job, TimerJob};
+
+    /// The timer table's job mapping, one assertion per variant: a due
+    /// timer must queue exactly the worker job it stands for, fields
+    /// intact, or a verification fires as a re-check and vice versa.
+    #[test]
+    fn each_timer_job_maps_to_its_worker_job_with_its_fields() {
+        let id = ExternalSubId(9);
+        let verify = TimerJob::VerifyReplay {
+            id,
+            epoch: 3,
+            attempt: 2,
+        };
+        match verify.job() {
+            Job::VerifyReplay {
+                id: got_id,
+                epoch: 3,
+                attempt: 2,
+            } if got_id == id => {}
+            other => panic!("VerifyReplay mapped to {other:?}"),
+        }
+        let check = TimerJob::CheckSub { id, epoch: 5 };
+        match check.job() {
+            Job::CheckSub {
+                id: got_id,
+                epoch: 5,
+            } if got_id == id => {}
+            other => panic!("CheckSub mapped to {other:?}"),
         }
     }
 }

@@ -1132,3 +1132,196 @@ impl FcastPlaybin {
         self.inner.last_applied_subtitle.lock().clone()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn init() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| gst::init().unwrap());
+    }
+
+    const fn secs(s: u64) -> gst::ClockTime {
+        gst::ClockTime::from_seconds(s)
+    }
+
+    fn segment_with(
+        rate: f64,
+        start: gst::ClockTime,
+        base: gst::ClockTime,
+        offset: gst::ClockTime,
+    ) -> gst::FormattedSegment<gst::ClockTime> {
+        let mut segment = gst::FormattedSegment::<gst::ClockTime>::new();
+        segment.set_rate(rate);
+        segment.set_start(start);
+        segment.set_base(base);
+        segment.set_offset(offset);
+        segment
+    }
+
+    /// A text sample from parts. `payload` rides as the buffer bytes so the
+    /// UTF-8 gate sees exactly what the test wrote.
+    fn text_sample(
+        payload: &[u8],
+        pts: Option<gst::ClockTime>,
+        duration: Option<gst::ClockTime>,
+        with_caps: bool,
+    ) -> gst::Sample {
+        let mut buffer = gst::Buffer::from_slice(payload.to_vec());
+        {
+            let buffer = buffer.get_mut().unwrap();
+            if let Some(pts) = pts {
+                buffer.set_pts(pts);
+            }
+            if let Some(duration) = duration {
+                buffer.set_duration(duration);
+            }
+        }
+        let segment = segment_with(
+            1.0,
+            gst::ClockTime::ZERO,
+            gst::ClockTime::ZERO,
+            gst::ClockTime::ZERO,
+        );
+        let mut builder = gst::Sample::builder().buffer(&buffer).segment(&segment);
+        let caps = gst::Caps::builder("text/x-raw")
+            .field("format", "utf8")
+            .build();
+        if with_caps {
+            builder = builder.caps(&caps);
+        }
+        builder.build()
+    }
+
+    /// The origin is `start - base*|rate| - offset`, all three terms. The
+    /// OFFSET term is the one a pad offset lands in at base 0
+    /// (gst_segment_offset_running_time), and a copy without it reads a
+    /// misaligned branch as aligned.
+    #[test]
+    fn the_segment_origin_subtracts_base_and_offset() {
+        init();
+        let segment = segment_with(1.0, secs(10), secs(2), secs(1));
+        assert_eq!(Inner::segment_origin(&segment), secs(7));
+        // Offset alone moves the origin, so dropping the term is caught.
+        let offset_only = segment_with(1.0, secs(10), gst::ClockTime::ZERO, secs(3));
+        assert_eq!(Inner::segment_origin(&offset_only), secs(7));
+    }
+
+    /// The base term scales by the rate MAGNITUDE, forward or reverse.
+    #[test]
+    fn the_segment_origin_scales_base_by_the_rate_magnitude() {
+        init();
+        let fast = segment_with(2.0, secs(10), secs(2), gst::ClockTime::ZERO);
+        assert_eq!(Inner::segment_origin(&fast), secs(6));
+        let reverse = segment_with(-2.0, secs(10), secs(2), gst::ClockTime::ZERO);
+        assert_eq!(Inner::segment_origin(&reverse), secs(6));
+        let slow = segment_with(0.5, secs(10), secs(2), gst::ClockTime::ZERO);
+        assert_eq!(Inner::segment_origin(&slow), secs(9));
+    }
+
+    /// Each subtraction saturates. A base or offset past the start clamps to
+    /// zero rather than wrapping into a giant bogus origin.
+    #[test]
+    fn the_segment_origin_saturates_rather_than_wrapping() {
+        init();
+        let deep_base = segment_with(1.0, secs(10), secs(20), gst::ClockTime::ZERO);
+        assert_eq!(Inner::segment_origin(&deep_base), gst::ClockTime::ZERO);
+        let deep_offset = segment_with(1.0, secs(10), secs(8), secs(5));
+        assert_eq!(Inner::segment_origin(&deep_offset), gst::ClockTime::ZERO);
+    }
+
+    /// The UTF-8 hard-fail is load-bearing (documented at the check): bytes a
+    /// renderer cannot take as a string are refused, not lossily converted.
+    #[test]
+    fn a_non_utf8_text_payload_is_refused() {
+        init();
+        let sample = text_sample(&[0xc3, 0x28, 0xff], Some(secs(1)), Some(secs(1)), true);
+        assert!(Inner::item_from_sample(&sample, BitmapSubsEnabled::all()).is_none());
+    }
+
+    /// No PTS means no place on the running-time line, so no cue.
+    #[test]
+    fn a_sample_without_a_pts_is_refused() {
+        init();
+        let sample = text_sample(b"NOPTS", None, Some(secs(1)), true);
+        assert!(Inner::item_from_sample(&sample, BitmapSubsEnabled::all()).is_none());
+    }
+
+    /// No caps means the gate cannot classify the stream, so no cue.
+    #[test]
+    fn a_sample_without_caps_is_refused() {
+        init();
+        let sample = text_sample(b"NOCAPS", Some(secs(1)), Some(secs(1)), false);
+        assert!(Inner::item_from_sample(&sample, BitmapSubsEnabled::all()).is_none());
+    }
+
+    /// A pts + duration that overflows is a corrupt timestamp. The unit is
+    /// treated as open-ended (checked_add feeds the clip a None end) rather
+    /// than panicking a streaming thread.
+    #[test]
+    fn an_overflowing_pts_plus_duration_is_open_ended_not_a_panic() {
+        init();
+        let sample = text_sample(b"HUGE", Some(gst::ClockTime::MAX), Some(secs(2)), true);
+        match Inner::item_from_sample(&sample, BitmapSubsEnabled::all()) {
+            Some(SubtitleFeedItem::Cue { end_rt, .. }) => {
+                assert_eq!(end_rt, None, "the overflowed end must read open-ended");
+            }
+            other => panic!("expected an open-ended cue, got {other:?}"),
+        }
+    }
+
+    /// A `CueIrMeta` on the buffer upgrades the format to CueIr with the
+    /// buffer's pts anchored, while the payload text still rides beside it
+    /// for consumers that ignore the IR.
+    #[test]
+    fn a_cue_ir_meta_yields_the_cue_ir_format_with_the_pts_anchor() {
+        init();
+        assert!(
+            cue_ir_enabled(),
+            "the lib test process must not set FCAST_NO_CUE_IR"
+        );
+        use gstrssubparse::subparse_formats::ir::{CueIr, Line, Span};
+        let ir = CueIr {
+            lines: vec![Line {
+                spans: vec![Span::plain("styled")],
+            }],
+            ..CueIr::default()
+        };
+        let pts = secs(3);
+        let mut buffer = gst::Buffer::from_slice(b"styled".to_vec());
+        {
+            let buffer = buffer.get_mut().unwrap();
+            buffer.set_pts(pts);
+            buffer.set_duration(secs(1));
+            gstrssubparse::cueir::CueIrMeta::add(buffer, ir.clone());
+        }
+        let segment = segment_with(
+            1.0,
+            gst::ClockTime::ZERO,
+            gst::ClockTime::ZERO,
+            gst::ClockTime::ZERO,
+        );
+        let caps = gst::Caps::builder("text/x-raw")
+            .field("format", "utf8")
+            .build();
+        let sample = gst::Sample::builder()
+            .buffer(&buffer)
+            .caps(&caps)
+            .segment(&segment)
+            .build();
+        match Inner::item_from_sample(&sample, BitmapSubsEnabled::all()) {
+            Some(SubtitleFeedItem::Cue { format, text, .. }) => {
+                assert_eq!(text, "styled");
+                match format {
+                    SubtitleTextFormat::CueIr { ir: got, pts_start } => {
+                        assert_eq!(*got, ir, "the IR rides through untouched");
+                        assert_eq!(pts_start, Some(pts));
+                    }
+                    other => panic!("expected the CueIr format, got {other:?}"),
+                }
+            }
+            other => panic!("expected a cue, got {other:?}"),
+        }
+    }
+}

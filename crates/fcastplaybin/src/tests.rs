@@ -2,9 +2,10 @@ use super::{
     ExternalSubId, MediaInput, Seek, StartPoint, SubtitleFeedItem, decisions::*, selection,
 };
 use crate::{
+    api::{AfterCancel, PlaybinEvent},
     gapless::SwapState,
     hands::Outcome,
-    jobs::{Job, StalePolicy, stale_policy},
+    jobs::{Job, Refusal, StalePolicy, poison_refusal, stale_policy},
     levers::BitmapSubsEnabled,
     routing::StreamKind,
 };
@@ -117,7 +118,13 @@ fn stale_policy_drop_set_is_exactly_load_recoverclock_attachsub_dispatchselectio
         done: Box::new(|_| {}),
     };
     pinned(dump, StalePolicy::Run);
-    pinned(Job::CancelPrepared { notify: true }, StalePolicy::Run);
+    pinned(
+        Job::CancelPrepared {
+            notify: true,
+            after: AfterCancel::Nothing,
+        },
+        StalePolicy::Run,
+    );
     pinned(Job::FinishActivation, StalePolicy::Run);
     pinned(Job::SyncTextRunningTime, StalePolicy::Run);
     pinned(Job::DrainTextWork, StalePolicy::Run);
@@ -162,6 +169,204 @@ fn stale_policy_drop_set_is_exactly_load_recoverclock_attachsub_dispatchselectio
         },
     };
     pinned(replay_done, StalePolicy::Run);
+}
+
+/// What a poisoned crate owes each job kind's caller, pinned.
+///
+/// The gate's contract is that refusing is not ignoring: a refusal that
+/// settles nothing moves the wedge from the worker to the callers, which is
+/// the silently-never-plays-again shape a field teardown produced. Every
+/// variant with a caller parked on an outcome must therefore name a
+/// settlement here, and `poison_refusal`'s match is exhaustive so a future
+/// variant has to make that decision.
+#[test]
+fn the_poison_gate_settles_every_job_a_caller_waits_on() {
+    // Only for `gst::Seqnum::next`; no pipeline is built here.
+    gst::init().unwrap();
+    let id = ExternalSubId(1);
+    let uri = || MediaInput::Uri("file:///item".to_string());
+    let settles = |job: Job, want: &str| {
+        let name = format!("{job:?}");
+        let got = match poison_refusal(job) {
+            Refusal::Nothing => "nothing",
+            Refusal::Barrier(_) => "barrier",
+            Refusal::Snapshot(_) => "snapshot",
+            Refusal::Event { .. } => "event",
+            Refusal::DispatchFailed(_) => "dispatch-failed",
+            Refusal::RefreshFailed(_) => "refresh-failed",
+        };
+        assert_eq!(got, want, "{name}");
+    };
+
+    // Blocking callers. A shutdown barrier nobody signals is the hang the
+    // driver reports; the inspector's snapshot is answered EMPTY rather
+    // than by walking a pipeline mid-descent on another thread.
+    settles(
+        Job::Stop {
+            target: gst::State::Null,
+            done: Some(Box::new(|| {})),
+        },
+        "barrier",
+    );
+    // `stop_async` waits on nothing.
+    settles(
+        Job::Stop {
+            target: gst::State::Ready,
+            done: None,
+        },
+        "nothing",
+    );
+    settles(
+        Job::DumpGraph {
+            done: Box::new(|_| {}),
+        },
+        "snapshot",
+    );
+
+    // Event-awaiting callers, each parked on exactly one outcome.
+    settles(
+        Job::Load {
+            input: uri(),
+            start: StartPoint::Live,
+            generation: 3,
+        },
+        "event",
+    );
+    settles(Job::Seek(Seek::new(None, Some(1.0))), "event");
+    settles(
+        Job::RefreshSeek {
+            seqnum: gst::Seqnum::next(),
+        },
+        "event",
+    );
+    settles(
+        Job::CancelPrepared {
+            notify: true,
+            after: AfterCancel::Nothing,
+        },
+        "event",
+    );
+    // A self-cancel follows a `PreparedFailed` that already reported.
+    settles(
+        Job::CancelPrepared {
+            notify: false,
+            after: AfterCancel::Nothing,
+        },
+        "nothing",
+    );
+    settles(
+        Job::PrepareNext {
+            input: uri(),
+            generation: 4,
+        },
+        "event",
+    );
+    settles(
+        Job::AttachSub {
+            id,
+            url: "file:///subs.srt".to_string(),
+        },
+        "event",
+    );
+
+    // The selection engine's own waits. The deadline is refused too, so it
+    // cannot be what notices the dispatch never left.
+    let dispatch = Job::DispatchSelection {
+        target: selection::TrackSelection {
+            video: Some("v".to_string()),
+            audio: Some("a".to_string()),
+            subtitle: None,
+        },
+        seqnum: gst::Seqnum::next(),
+        replacing: true,
+        generation: 1,
+        queued: std::time::Instant::now(),
+    };
+    settles(dispatch, "dispatch-failed");
+    settles(
+        Job::SelectionDeadline {
+            seqnum: gst::Seqnum::next(),
+        },
+        "dispatch-failed",
+    );
+    settles(
+        Job::RefreshDeadline {
+            seqnum: gst::Seqnum::next(),
+        },
+        "refresh-failed",
+    );
+
+    // Nobody waits: transport intent the caller re-drives, id/epoch-keyed
+    // work whose input dies with the pipeline, and internal hygiene.
+    settles(
+        Job::SetState {
+            target: gst::State::Paused,
+        },
+        "nothing",
+    );
+    settles(Job::RecoverClock, "nothing");
+    settles(Job::RecalculateLatency, "nothing");
+    settles(Job::DetachSub { id }, "nothing");
+    settles(Job::FailSub { id, epoch: 0 }, "nothing");
+    settles(Job::CheckSub { id, epoch: 0 }, "nothing");
+    settles(Job::RetrySub { id, epoch: 0 }, "nothing");
+    settles(Job::AdoptSubState { id, epoch: 0 }, "nothing");
+    settles(
+        Job::VerifyReplay {
+            id,
+            epoch: 0,
+            attempt: 0,
+        },
+        "nothing",
+    );
+    settles(
+        Job::ReplaySub {
+            id,
+            attempt: 0,
+            epoch: 0,
+        },
+        "nothing",
+    );
+    settles(Job::FinishActivation, "nothing");
+    settles(Job::SyncTextRunningTime, "nothing");
+    settles(Job::DrainTextWork, "nothing");
+    settles(Job::VideoChainGone, "nothing");
+    settles(Job::ClearStateFailure, "nothing");
+    settles(Job::PollTextPolicy, "nothing");
+    settles(
+        Job::EffectDone {
+            id: 0,
+            outcome: Outcome::JoinFinished {
+                kind: StreamKind::Text,
+            },
+        },
+        "nothing",
+    );
+}
+
+/// The load-failure report must name the URI that failed, whichever shape
+/// the input arrived in: without it the caller's error is unactionable.
+#[test]
+fn a_refused_load_reports_the_uri_it_would_have_played() {
+    gst::init().unwrap();
+    let Refusal::Event { event, generation } = poison_refusal(Job::Load {
+        input: MediaInput::Uri("file:///item.mkv".to_string()),
+        start: StartPoint::Live,
+        generation: 9,
+    }) else {
+        panic!("a refused load must settle with an event");
+    };
+    // Stamped with the JOB's generation: the current one still names the
+    // item being replaced, and the caller's load-scope gate would drop it.
+    assert_eq!(generation, Some(9));
+    let PlaybinEvent::Error {
+        origin, failed_uri, ..
+    } = event
+    else {
+        panic!("a refused load must settle with an Error");
+    };
+    assert!(matches!(origin, crate::ErrorOrigin::Main));
+    assert_eq!(failed_uri.as_deref(), Some("file:///item.mkv"));
 }
 
 /// The eager park's whole decision table, which is two bits wide since

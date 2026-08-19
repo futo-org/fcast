@@ -66,6 +66,13 @@ const BUFFERED_RANGES_INTERVAL: Duration = Duration::from_millis(1000);
 const SEEK_HOLD_TOLERANCE: f64 = 0.75;
 /// Safety net so a dropped/failed seek can't freeze the thumb forever.
 const SEEK_HOLD_TIMEOUT: Duration = Duration::from_secs(12);
+
+/// Cap on events held for a pending pre-arm (see
+/// `Application::held_prearm_events`). The window is at most the aqueue
+/// depth (~1s audio, ~30s video) at UI event rates, so the cap only bites a
+/// runaway; overflow keeps the prefix and drops the newcomer so replay order
+/// stays coherent.
+const HELD_PREARM_EVENTS_MAX: usize = 256;
 /// Pause after a failed `accept()`; a failing accept returns immediately, so
 /// this bounds the spin.
 pub(crate) const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
@@ -265,6 +272,97 @@ fn parked_op_action(kind: GaplessParkedOpKind, outcome: GaplessOutcome) -> Parke
         (_, O::PrepareGone) => ParkedOpAction::Replay,
         (K::Seek | K::SetSpeed, O::SwapPerformed) => ParkedOpAction::ReloadAtTarget,
         (K::TrackChange | K::SubtitleChange, O::SwapPerformed) => ParkedOpAction::Drop,
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum StaleEventAction {
+    /// Describes the one real pipeline, not the item it is playing: only the
+    /// attribution is future, so it applies now.
+    Apply,
+    /// The pending pre-arm's generation: the pipeline's future, not a
+    /// straggler. Held for the adoption's drain.
+    Hold,
+    /// A superseded load's straggler.
+    Drop,
+}
+
+/// What the generation filter does with a load-scoped event whose generation
+/// is not the current one. The pipeline adopts the prepared generation at the
+/// swap, up to a queue depth ahead of the activation the application adopts,
+/// so dropping the pending generation lost real state (the new item's first
+/// StreamsSelected, Tags, Buffering, StateChanged, genuine Errors).
+///
+/// Transport edges must not be held: the mirror state machine only converges
+/// through them, and a held Playing->Paused leaves it mid-transition, where a
+/// Resume merely retargets and dispatches nothing. The pipeline then stays
+/// PAUSED, no audio crosses the boundary, the activation is never released and
+/// the held edge never replays. Permanent wedge, so apply them.
+fn stale_event_action(
+    generation: u64,
+    pending_prearm: Option<u64>,
+    pipeline_scoped: bool,
+) -> StaleEventAction {
+    if pending_prearm != Some(generation) {
+        StaleEventAction::Drop
+    } else if pipeline_scoped {
+        StaleEventAction::Apply
+    } else {
+        StaleEventAction::Hold
+    }
+}
+
+/// How a confirmed cancel resolves against the pre-arm bookkeeping.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum CancelReport {
+    /// Nothing will activate: drop the bookkeeping and resolve what was parked
+    /// against the still-playing item.
+    PrepareGone,
+    /// The prepared slot was already consumed by an activation the application
+    /// has not adopted yet; handled exactly like an explicit decline.
+    SwapPerformed,
+    /// Not this application's cancel.
+    Straggler,
+}
+
+/// What a `GaplessCancelled` means for the pre-arm. `generation: None` says
+/// the crate found nothing prepared, and with a cancel of ours in flight the
+/// only thing that empties that slot is the activation: the swap already
+/// performed, the successor is the only linked upstream, and replaying a
+/// parked flushing seek would hit IT (invariant 8). Report the swap instead,
+/// which keeps the pre-arm for the imminent activation to adopt.
+fn cancel_report(reported: Option<u64>, armed: Option<u64>, cancelling: bool) -> CancelReport {
+    if armed.is_none() || !cancelling {
+        return CancelReport::Straggler;
+    }
+    match reported {
+        // A generation mismatch is bookkeeping drift, not a live prepare: the
+        // caller warns and clears, since keeping a pre-arm nothing will
+        // activate wedges gapless for the rest of the item.
+        Some(_) => CancelReport::PrepareGone,
+        None => CancelReport::SwapPerformed,
+    }
+}
+
+/// When a held event may replay, relative to the adopted item's own events.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+enum HeldReplayPhase {
+    /// Nothing else has to land first: replays in the adoption itself.
+    Adoption,
+    /// Resolves stream ids, so it waits for the collection that installs the
+    /// adopted item's stream list.
+    FirstCollection,
+}
+
+/// Where a held event belongs in the replay. The crate emits the activation
+/// and the new collection as two messages, so the adoption's drain runs one
+/// message BEFORE the collection: a selection replayed there resolves the new
+/// item's sids against the retired item's stream list, resolves nothing, and
+/// publishes "no track selected" for the rest of the item.
+fn held_replay_phase(event: &player::PlayerEvent) -> HeldReplayPhase {
+    match event {
+        player::PlayerEvent::StreamsSelected { .. } => HeldReplayPhase::FirstCollection,
+        _ => HeldReplayPhase::Adoption,
     }
 }
 
@@ -522,6 +620,18 @@ pub struct Application {
     /// this one's fate. Untimed by design: fcastplaybin reports exactly one
     /// outcome per cancel.
     gapless_parked_op: Option<GaplessParkedOp>,
+    /// Events stamped with the PENDING pre-arm's generation, held until the
+    /// activation is adopted. The pipeline adopts the prepared generation at
+    /// the swap while the user-facing activation is held to the audio
+    /// boundary, so everything it emits in that window (the new item's first
+    /// StreamsSelected, Tags, Buffering, StateChanged, genuine Errors) is
+    /// ahead of `expected_generation`. Dropping them lost real state, the
+    /// worst being a Buffering(100) whose absence latched the mirror machine
+    /// in Buffering for the session. Drained through `handle_player_event` at
+    /// adoption, where each event re-passes the generation filter, so a
+    /// straggler held for a pre-arm that died is dropped there. Cleared with
+    /// the pre-arm bookkeeping at every site that clears `pending_gapless`.
+    held_prearm_events: Vec<(player::PlayerEvent, Option<u64>)>,
     /// Start position/rate overriding the next load's own `time`/`speed`, for
     /// when a load stands in for an operation the pipeline can no longer
     /// serve. Consumed unconditionally by the next load so it can never
@@ -798,6 +908,7 @@ impl Application {
             queue_prefetcher,
             gapless_prearm: None,
             gapless_parked_op: None,
+            held_prearm_events: Vec::new(),
             load_start_override: None,
             gapless_blocked_item: None,
             gapless_enabled: !std::env::var("FCAST_NO_GAPLESS").is_ok_and(|v| v == "1"),
@@ -1144,6 +1255,7 @@ impl Application {
         self.seek_quiet = false;
         self.gapless_prearm = None;
         self.player.clear_pending_gapless();
+        self.held_prearm_events.clear();
         self.gapless_parked_op = None;
         self.reject_pending_subtitle_adds();
         self.drop_pending_seek();
@@ -1811,7 +1923,7 @@ impl Application {
         debug!(?index, "Selecting queue item");
         queue.current_idx = index;
 
-        self.cancel_gapless_prearm();
+        self.cancel_gapless_prearm(player::AfterCancel::Nothing);
 
         if let Some(media) = self.current_media.as_mut() {
             media.clear_external_subtitles();
@@ -1928,6 +2040,26 @@ impl Application {
         let Some(duration) = self.current_duration.filter(|d| !d.is_zero()) else {
             return;
         };
+        // Items shorter than the pre-arm margin take the gapped path. Such
+        // an item pre-arms on its FIRST tick, mid-bring-up, and its input
+        // drains decode-paced within milliseconds, so the swap lands seconds
+        // before the audible boundary and decodebin3 then holds the old
+        // item's drained state next to the new item's arriving one for the
+        // item's whole remaining playtime. That coexistence is where every
+        // R1 boundary wedge lived (slots removed under the successor,
+        // outputless selected slots, unused-slot EOS churn); the
+        // carry-patches cover the shapes we caught, upstream has not touched
+        // decodebin3 in over a year, and a measured 15s item still wedged,
+        // so the safe set is exactly the items whose pre-arm fires in steady
+        // state. A short item's gap is imperceptible next to a wedged
+        // session.
+        if duration < Self::GAPLESS_PREARM_MARGIN {
+            debug!(
+                next,
+                "Gapless: current item shorter than the pre-arm margin; gapped advance"
+            );
+            return;
+        }
         if position + Self::GAPLESS_PREARM_MARGIN < duration {
             return;
         }
@@ -2115,7 +2247,15 @@ impl Application {
     /// pipeline's swap and a declined cancel activates regardless, so
     /// dropping it up front leaves that activation unmatched and audibly
     /// replays the finished track.
-    fn cancel_gapless_prearm(&mut self) {
+    ///
+    /// `after` tells the crate whether a flushing seek follows. The gapless
+    /// output hold has usually already eaten the item's EOS by cancel time
+    /// (it crosses decodebin3 up to a video queue depth before the item is
+    /// audibly over), and the crate synthesizes that end unless something is
+    /// about to regenerate it. A parked seek IS that something, and a
+    /// synthesized end there advances the queue instead, turning the user's
+    /// scrub-back into a track skip.
+    fn cancel_gapless_prearm(&mut self, after: player::AfterCancel) {
         let Some(prearm) = self.gapless_prearm.as_mut() else {
             return;
         };
@@ -2125,8 +2265,8 @@ impl Application {
         }
         prearm.cancelling = true;
         let generation = prearm.generation;
-        debug!(generation, "Cancelling the gapless pre-arm");
-        self.player.cancel_prepared();
+        debug!(generation, ?after, "Cancelling the gapless pre-arm");
+        self.player.cancel_prepared(after);
     }
 
     /// Run an operation that reaches the pipeline as a flushing seek, or park
@@ -2156,8 +2296,20 @@ impl Application {
                 "Parking the operation until the gapless cancel resolves"
             );
         }
+        // A seek or a speed change reaches the pipeline AS a flushing seek
+        // once the outcome replays it, and that seek regenerates the item's
+        // end. A track or subtitle change does not, so its cancel still owes
+        // the caller the consumed end.
+        let after = match kind {
+            GaplessParkedOpKind::Seek | GaplessParkedOpKind::SetSpeed => {
+                player::AfterCancel::FlushingSeek
+            }
+            GaplessParkedOpKind::TrackChange | GaplessParkedOpKind::SubtitleChange => {
+                player::AfterCancel::Nothing
+            }
+        };
         // Idempotent: an already in-flight cancel's outcome resolves this too.
-        self.cancel_gapless_prearm();
+        self.cancel_gapless_prearm(after);
     }
 
     /// The apply half of
@@ -2275,6 +2427,7 @@ impl Application {
         // the advance only happens on adoption, so "current" is still the playing item.
         self.gapless_prearm = None;
         self.player.clear_pending_gapless();
+        self.held_prearm_events.clear();
         // Carried across `cleanup_playback_data`, which would otherwise drop the hold
         // and clear the GUI's `seek-pending` flag even though this load lands
         // on the target.
@@ -2360,9 +2513,13 @@ impl Application {
         self.inspector_container = None;
         self.inspector_image = String::new();
         self.have_media_title = title.is_some();
-        if let Some(title) = title {
-            self.gui.set_media_title(title);
-        }
+        // The gapless path skips cleanup_playback_data, so the labels roll
+        // here too: a titleless item must not keep the retired item's title,
+        // and the artist only ever comes from Tags, so it clears either way
+        // and refreshes if the new item carries any.
+        self.gui.set_media_title(title.unwrap_or_default());
+        self.last_artist_name = None;
+        self.gui.set_artist_name(String::new());
 
         // The gapless path bypasses the normal load, so refresh the audio cover here or
         // the previous track's thumbnail lingers and the Tags handler ignores new art.
@@ -2393,6 +2550,29 @@ impl Application {
             }));
         }
         self.sync_queue_cache();
+
+        // Replay what the new generation emitted inside the held window, in
+        // arrival order, now that the filter accepts it. Each event re-passes
+        // the filter, so anything held for a generation that is no longer
+        // current drops there. Selections stay parked for the collection that
+        // follows this activation (see `held_replay_phase`); re-parking them
+        // BEFORE the replay keeps them reachable to a held collection's own
+        // drain.
+        let held = std::mem::take(&mut self.held_prearm_events);
+        let (deferred, now): (Vec<_>, Vec<_>) = held
+            .into_iter()
+            .partition(|(event, _)| held_replay_phase(event) == HeldReplayPhase::FirstCollection);
+        self.held_prearm_events = deferred;
+        self.replay_held_prearm_events(now);
+    }
+
+    /// Feed held events back through the filter, in arrival order.
+    fn replay_held_prearm_events(&mut self, events: Vec<(player::PlayerEvent, Option<u64>)>) {
+        for (event, generation) in events {
+            if let Err(err) = self.handle_player_event(event, generation) {
+                warn!(?err, "replaying a held pre-arm event failed");
+            }
+        }
     }
 
     /// Reconcile the prefetch cache with the current queue window. Runs after
@@ -2462,7 +2642,7 @@ impl Application {
         queue.items.remove(idx);
 
         // Indices shifted (and the pre-armed item itself may be gone).
-        self.cancel_gapless_prearm();
+        self.cancel_gapless_prearm(player::AfterCancel::Nothing);
 
         self.relay_to_other_senders(
             origin,
@@ -2521,7 +2701,7 @@ impl Application {
             .insert(idx, QueueItem::from_flat(&insert.item()));
 
         // Indices shifted; the pre-armed item may no longer be the next.
-        self.cancel_gapless_prearm();
+        self.cancel_gapless_prearm(player::AfterCancel::Nothing);
 
         if let Some(relay_msg) =
             fcast_protocol::v4::MessageBuilder::new().from_queue_insert_stripped(insert)
@@ -2978,7 +3158,7 @@ impl Application {
         }
         // An external subtitle makes the item gapless-ineligible: a swap would leak
         // this item's sub into the next item's collections.
-        self.cancel_gapless_prearm();
+        self.cancel_gapless_prearm(player::AfterCancel::Nothing);
         if !self.player.seekable {
             if !self.player.seekable_known {
                 // Not unseekable, just not answerable yet.
@@ -3404,6 +3584,17 @@ impl Application {
         )
     }
 
+    /// Whether an event describes the pipeline rather than the item playing
+    /// out of it. Both transport edges are pipeline-wide, and there is exactly
+    /// one pipeline across a gapless boundary, so the pending pre-arm's
+    /// generation on them is a future ATTRIBUTION, not a future event.
+    fn player_event_is_pipeline_scoped(event: &player::PlayerEvent) -> bool {
+        matches!(
+            event,
+            player::PlayerEvent::StateChanged { .. } | player::PlayerEvent::AsyncDone
+        )
+    }
+
     fn handle_player_event(
         &mut self,
         event: player::PlayerEvent,
@@ -3415,15 +3606,39 @@ impl Application {
             && Self::player_event_is_load_scoped(&event)
             && !self.player.is_event_current(generation)
         {
-            debug!(generation, "Dropping player event from a superseded load");
-            return Ok(());
+            match stale_event_action(
+                generation,
+                self.player.pending_gapless_generation(),
+                Self::player_event_is_pipeline_scoped(&event),
+            ) {
+                // Falls through to the handler below: per-item misattribution here
+                // is transient and the adoption re-seeds duration/seekability.
+                StaleEventAction::Apply => {
+                    debug!(
+                        generation,
+                        "Applying a pipeline-scoped event from the pending pre-arm"
+                    );
+                }
+                StaleEventAction::Hold => {
+                    if self.held_prearm_events.len() >= HELD_PREARM_EVENTS_MAX {
+                        warn!(generation, "held pre-arm buffer full; dropping the event");
+                    } else {
+                        self.held_prearm_events.push((event, Some(generation)));
+                    }
+                    return Ok(());
+                }
+                StaleEventAction::Drop => {
+                    debug!(generation, "Dropping player event from a superseded load");
+                    return Ok(());
+                }
+            }
         }
         match event {
             player::PlayerEvent::EndOfStream => {
                 // Resolved before the cancel so a parked operation cannot survive into the
                 // next item; the advance below owns the transition.
                 self.resolve_parked_gapless_op(GaplessOutcome::ItemEnded);
-                self.cancel_gapless_prearm();
+                self.cancel_gapless_prearm(player::AfterCancel::Nothing);
 
                 self.player.end_of_stream_reached();
 
@@ -3560,6 +3775,15 @@ impl Application {
                 // Retried now that `is_loading_media` is clear; covers the order where
                 // seekability resolved before this collection.
                 self.maybe_apply_pending_subtitle_adds();
+
+                // The stream list is installed, so anything a gapless adoption parked
+                // for it can resolve now. A collection arriving while the pre-arm is
+                // still pending re-parks them through the filter, in order, so an
+                // early drain is a no-op.
+                if !self.held_prearm_events.is_empty() {
+                    let deferred = std::mem::take(&mut self.held_prearm_events);
+                    self.replay_held_prearm_events(deferred);
+                }
             }
             player::PlayerEvent::AsyncDone => {
                 self.player.async_done();
@@ -3847,6 +4071,7 @@ impl Application {
                         );
                         self.gapless_prearm = None;
                         self.player.clear_pending_gapless();
+                        self.held_prearm_events.clear();
                         self.load_media();
                     } else {
                         debug!(generation, "Ignoring a stale gapless activation");
@@ -3885,6 +4110,9 @@ impl Application {
                         // Keep the player's view honest (the generation IS live) first.
                         self.player.adopt_gapless_generation(generation);
                         self.gapless_prearm = None;
+                        // The item is being treated as ended, not adopted for
+                        // playback, so its held events describe nothing.
+                        self.held_prearm_events.clear();
                         self.player.end_of_stream_reached();
                         self.media_ended();
                         // Senders see the same shape as an ordinary end-of-stream advance.
@@ -3914,22 +4142,24 @@ impl Application {
                     self.gapless_prearm = None;
                     self.gapless_blocked_item = Some(self.current_media_item_id);
                     self.player.clear_pending_gapless();
+                    self.held_prearm_events.clear();
                     self.resolve_parked_gapless_op(GaplessOutcome::PrepareGone);
                 }
             }
             player::PlayerEvent::GaplessCancelled { generation } => {
-                // The prepare is gone and no activation follows, so the bookkeeping the
-                // cancel kept alive can finally be dropped.
-                match self.gapless_prearm.as_ref() {
-                    Some(prearm) if prearm.cancelling => {
-                        if let Some(generation) = generation
-                            && generation != prearm.generation
-                        {
-                            // Bookkeeping drift; clear it anyway, since keeping a pre-arm
-                            // nothing will activate wedges gapless for the rest of the item.
+                let armed = self.gapless_prearm.as_ref().map(|prearm| prearm.generation);
+                let cancelling = self
+                    .gapless_prearm
+                    .as_ref()
+                    .is_some_and(|prearm| prearm.cancelling);
+                match cancel_report(generation, armed, cancelling) {
+                    // The prepare is gone and no activation follows, so the bookkeeping
+                    // the cancel kept alive can finally be dropped.
+                    CancelReport::PrepareGone => {
+                        if generation != armed {
                             warn!(
-                                generation,
-                                armed = prearm.generation,
+                                ?generation,
+                                ?armed,
                                 "Gapless cancellation confirmed for an unexpected generation"
                             );
                         } else {
@@ -3937,11 +4167,21 @@ impl Application {
                         }
                         self.gapless_prearm = None;
                         self.player.clear_pending_gapless();
+                        self.held_prearm_events.clear();
                         self.resolve_parked_gapless_op(GaplessOutcome::PrepareGone);
                     }
-                    // A straggler: a pre-arm with no cancel in flight is not this cancel's,
-                    // and nothing can be parked without a `cancelling` pre-arm.
-                    _ => debug!(
+                    // Same shape as a declined cancel: the pre-arm and its held events
+                    // stay for the activation handler to adopt.
+                    CancelReport::SwapPerformed => {
+                        info!(
+                            ?armed,
+                            "Gapless cancellation confirmed after the swap; the activation stands"
+                        );
+                        self.resolve_parked_gapless_op(GaplessOutcome::SwapPerformed);
+                    }
+                    // A pre-arm with no cancel in flight is not this cancel's, and
+                    // nothing can be parked without a `cancelling` pre-arm.
+                    CancelReport::Straggler => debug!(
                         ?generation,
                         "Gapless cancellation confirmed with no pre-arm"
                     ),
@@ -5285,6 +5525,133 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The two-masters window: a stale-looking generation matching the
+    /// pending pre-arm is the pipeline's future and must be held, never
+    /// dropped. Everything else stays a dropped straggler, including a stale
+    /// generation while a DIFFERENT prepare is pending.
+    #[test]
+    fn only_the_pending_prearm_generation_is_held() {
+        assert_eq!(
+            stale_event_action(7, Some(7), false),
+            StaleEventAction::Hold
+        );
+        assert_eq!(
+            stale_event_action(7, Some(8), false),
+            StaleEventAction::Drop
+        );
+        assert_eq!(stale_event_action(7, None, false), StaleEventAction::Drop);
+    }
+
+    /// Holding a transport edge wedges the mirror machine mid-transition, and
+    /// a Resume out of that only retargets: the pipeline stays PAUSED, so the
+    /// activation never releases and the edge never replays.
+    #[test]
+    fn transport_edges_of_the_pending_prearm_apply_immediately() {
+        assert_eq!(
+            stale_event_action(7, Some(7), true),
+            StaleEventAction::Apply
+        );
+        // A pipeline-scoped edge from a SUPERSEDED load is still a straggler:
+        // that pipeline is gone.
+        assert_eq!(stale_event_action(7, Some(8), true), StaleEventAction::Drop);
+        assert_eq!(stale_event_action(7, None, true), StaleEventAction::Drop);
+    }
+
+    /// Only the two transport edges describe the pipeline instead of the item.
+    #[test]
+    fn only_transport_edges_are_pipeline_scoped() {
+        assert!(Application::player_event_is_pipeline_scoped(
+            &player::PlayerEvent::AsyncDone
+        ));
+        assert!(Application::player_event_is_pipeline_scoped(
+            &player::PlayerEvent::StateChanged {
+                old: gst::State::Playing,
+                current: gst::State::Paused,
+                pending: gst::State::VoidPending,
+            }
+        ));
+        for event in [
+            player::PlayerEvent::EndOfStream,
+            player::PlayerEvent::DurationChanged,
+            player::PlayerEvent::Buffering(50),
+            player::PlayerEvent::StreamsSelected {
+                video: None,
+                audio: None,
+                subtitle: None,
+                seqnum: gst::Seqnum::next(),
+            },
+        ] {
+            assert!(
+                !Application::player_event_is_pipeline_scoped(&event),
+                "{event:?}"
+            );
+        }
+    }
+
+    /// A selection resolves stream ids against the list the collection
+    /// installs, and the crate emits the collection one message AFTER the
+    /// activation: replaying it in the adoption clears every track id.
+    #[test]
+    fn a_held_selection_waits_for_the_adopted_collection() {
+        assert_eq!(
+            held_replay_phase(&player::PlayerEvent::StreamsSelected {
+                video: None,
+                audio: None,
+                subtitle: None,
+                seqnum: gst::Seqnum::next(),
+            }),
+            HeldReplayPhase::FirstCollection
+        );
+        for event in [
+            player::PlayerEvent::DurationChanged,
+            player::PlayerEvent::Buffering(100),
+            player::PlayerEvent::AsyncDone,
+        ] {
+            assert_eq!(
+                held_replay_phase(&event),
+                HeldReplayPhase::Adoption,
+                "{event:?}"
+            );
+        }
+    }
+
+    /// The post-activation window: the crate reports a generation-less cancel
+    /// because the activation already took the prepared slot. Reading that as
+    /// "prepare gone" replays a flushing seek into the successor.
+    #[test]
+    fn a_generationless_cancel_reports_the_performed_swap() {
+        assert_eq!(
+            cancel_report(None, Some(7), true),
+            CancelReport::SwapPerformed
+        );
+        assert_eq!(
+            cancel_report(Some(7), Some(7), true),
+            CancelReport::PrepareGone
+        );
+        // Drift still clears: a pre-arm nothing will activate wedges gapless.
+        assert_eq!(
+            cancel_report(Some(9), Some(7), true),
+            CancelReport::PrepareGone
+        );
+    }
+
+    /// Nothing can be parked without a cancel of ours in flight, so anything
+    /// else is another cancel's echo.
+    #[test]
+    fn a_cancel_without_one_in_flight_is_a_straggler() {
+        for reported in [None, Some(7)] {
+            assert_eq!(
+                cancel_report(reported, Some(7), false),
+                CancelReport::Straggler
+            );
+            assert_eq!(
+                cancel_report(reported, None, false),
+                CancelReport::Straggler
+            );
+            assert_eq!(cancel_report(reported, None, true), CancelReport::Straggler);
+        }
+    }
 
     #[test]
     fn valid_show_durations_become_delays() {

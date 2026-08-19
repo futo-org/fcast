@@ -3097,6 +3097,10 @@ define_test_case!(
         send!(Send::Version(4)),
         send!(Send::SenderIntroduction),
         recv!(Receive::ReceiverIntroduction),
+        // 2s, below the receiver's pre-arm margin: this case pins the GAPPED
+        // advance a too-short item takes by policy (the receiver never
+        // pre-arms it), tracks still advertising afterwards included. The
+        // gapless boundary itself is pinned by gapless_queue_autoplay_v4.
         serve!("video/short_clip.mkv", 0, "video/x-matroska"),
         serve!("video/video_multi_track.mkv", 1, "video/x-matroska"),
         send!(Send::LoadQueueV4 {
@@ -3122,7 +3126,12 @@ define_test_case!(
         send!(Send::Version(4)),
         send!(Send::SenderIntroduction),
         recv!(Receive::ReceiverIntroduction),
-        serve!("video/short_clip.mkv", 0, "video/x-matroska"),
+        // 45s, above the receiver's pre-arm margin: items shorter than the
+        // margin advance gapped by policy (the R1 class, and a measured 15s
+        // item still wedged), so a short clip would make the no-Ended
+        // assertions below test nothing. The short shape's gapped advance is
+        // pinned by queue_autoplay_v4. This case runs ~48s by construction.
+        serve!("video/clip_45s.mkv", 0, "video/x-matroska"),
         serve!("video/video_multi_track.mkv", 1, "video/x-matroska"),
         send!(Send::LoadQueueV4 {
             items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
@@ -3131,6 +3140,13 @@ define_test_case!(
         }),
         Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
         Step::MarkPlaybackStates,
+        // The boundary lands at ~45s and the settle cap is 16s PER STEP, so
+        // sleep out most of the item in cap-sized slices. The mark above
+        // stays ahead of the sleeps so an Ended anywhere inside the playback
+        // still trips the assertions.
+        Step::SleepMillis(11_000),
+        Step::SleepMillis(11_000),
+        Step::SleepMillis(11_000),
         Step::AwaitQueueSelect { index: 1 },
         Step::AssertNoPlaybackStateSinceMark(fcast_protocol::v4::flat::PlaybackState::Ended),
         Step::AssertNoPlaybackStateSinceMark(fcast_protocol::v4::flat::PlaybackState::Idle),

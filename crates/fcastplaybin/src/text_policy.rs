@@ -336,6 +336,20 @@ impl Inner {
     /// `replay_checks_armed` (a bounded re-check already outstanding).
     /// Together they are why a 1 Hz unconditional poll cannot oscillate.
     ///
+    /// # Why alignment alone, when the verification also demands DELIVERY
+    ///
+    /// [`FcastPlaybin::verify_replay`] concludes only when a cue has reached
+    /// the consumer since the replay's hand-off (see
+    /// [`Inner::external_cues_fed`]); this pass deliberately does not ask.
+    /// Silence is not divergence HERE: an external with no cue at the current
+    /// position is silent and perfectly correct, and an unbounded 1 Hz pass
+    /// acting on that would flush the branch for the rest of the item. The
+    /// evidence term belongs to the CHAIN, which spends a bounded number of
+    /// attempts on it and then escalates. That asymmetry is why a check which
+    /// cannot decide RE-ARMS itself rather than handing its question to this
+    /// pass (see `verify_replay`'s held-verdict arm): what this pass cannot
+    /// see, nothing else would ask about again.
+    ///
     /// # The anti-fight rule with the deadline machinery
     ///
     /// The reconciler emits nothing while a selection is mid-flight. That is
@@ -787,18 +801,45 @@ impl Inner {
                     "upstream owns selection; releasing the held external the applied slot names"
                 );
                 *inner.last_applied_subtitle.lock() = Some(sid.clone());
-                // The per-resource in-flight bit, set before the emit like
-                // every other one (see [`Inner::replay_inflight`]).
-                inner.replay_inflight.lock().insert((id, epoch));
-                let sent = inner.queue_job(Job::ReplaySub {
-                    id,
-                    epoch,
-                    attempt: 0,
-                });
-                if !sent {
-                    inner.replay_inflight.lock().remove(&(id, epoch));
-                }
-                let owed = sent.then_some((id, epoch));
+                // BEHIND the per-resource in-flight bit, like every other
+                // emitter (see [`Inner::replay_inflight`] and the join-time
+                // emitter's note on `subtitle-reenable-freeze.txt`). This site
+                // set the bit and then queued REGARDLESS, so a reconcile emit
+                // for the same applied sid one poll earlier left two
+                // `ReplaySub` jobs in the queue for one `(id, epoch)`; the
+                // choke point inside `replay_subtitle` can only collapse them
+                // while a seek is TRAVELLING, and the first outcome landing
+                // before the second job ran is the double flush the enqueue
+                // guard exists to close.
+                let key = (id, epoch);
+                let already = !inner.replay_inflight.lock().insert(key);
+                let sent = if already {
+                    debug!(
+                        ?id,
+                        epoch,
+                        "a replay for this input is already queued or in flight; the upstream \
+                         release does not add a second"
+                    );
+                    true
+                } else {
+                    let sent = inner.queue_job(Job::ReplaySub {
+                        id,
+                        epoch,
+                        attempt: 0,
+                    });
+                    if !sent {
+                        // Only a bit this call CREATED comes back out. Taking
+                        // a foreign emitter's would reopen the window the bit
+                        // exists to close, on a replay still pending.
+                        inner.replay_inflight.lock().remove(&key);
+                    }
+                    sent
+                };
+                // Owed either way. The hold is discharged by the outcome of a
+                // replay for this `(id, epoch)`, and a suppressed duplicate
+                // carries the same key (the selection-time emitter's rule, see
+                // [`Inner::release_owed_hold`]).
+                let owed = sent.then_some(key);
                 inner.unblock_selected_externals(std::slice::from_ref(&sid), owed);
             }
         }

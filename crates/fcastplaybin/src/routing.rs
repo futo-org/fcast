@@ -1868,10 +1868,10 @@ impl Inner {
                     None => {
                         // Drop the EOS while a swap is pending or while
                         // THIS pad still carries a previous group (see
-                        // `Inner::gapless_eos_check_and_mark`). The pad's
-                        // sticky stream-start at EOS time is the ending
-                        // stream's, an authoritative fallback when the
-                        // recorded group is missing.
+                        // `Inner::gapless_eos_gate`). The pad's sticky
+                        // stream-start at EOS time is the ending stream's,
+                        // an authoritative fallback when the recorded group
+                        // is missing.
                         let pad_group = {
                             let routing = inner.routing.lock();
                             routing
@@ -1891,32 +1891,26 @@ impl Inner {
                         // group and its parked thread (the multiqueue slot
                         // task of the stream that EOSed first) never wakes.
                         // The post-ssync gate consumes them instead (see
-                        // `Inner::passing_eos_group`).
-                        if av && pad_group.is_some() && pad_group == *inner.passing_eos_group.lock()
-                        {
-                            debug!(
-                                pad = %pad.name(),
-                                "gapless: passing a sibling EOS through to complete the group"
-                            );
-                            return gst::PadProbeReturn::Ok;
-                        }
-                        let (should_drop, pending, behind) =
-                            inner.gapless_eos_check_and_mark(pad_group);
-                        if should_drop {
-                            debug!(
-                                pad = %pad.name(),
-                                pending,
-                                behind,
-                                "gapless: dropping the drained item's EOS"
-                            );
-                            return gst::PadProbeReturn::Drop;
-                        }
-                        // This EOS enters streamsynchronizer. Commit the
-                        // whole group to passing so a pre-arm landing
-                        // between now and the siblings' EOS cannot strand
-                        // the group half-ended in ssync.
-                        if av && let Some(group) = pad_group {
-                            *inner.passing_eos_group.lock() = Some(group);
+                        // `Inner::passing_eos_group`). Verdict and commit
+                        // are one critical section, so a pre-arm cannot
+                        // split a group's siblings.
+                        match inner.gapless_eos_gate(pad_group, av) {
+                            decisions::EosGate::SiblingPass => {
+                                debug!(
+                                    pad = %pad.name(),
+                                    "gapless: passing a sibling EOS through to complete the group"
+                                );
+                            }
+                            decisions::EosGate::Pass { .. } => {}
+                            decisions::EosGate::Drop { pending, behind } => {
+                                debug!(
+                                    pad = %pad.name(),
+                                    pending,
+                                    behind,
+                                    "gapless: dropping the drained item's EOS"
+                                );
+                                return gst::PadProbeReturn::Drop;
+                            }
                         }
                     }
                     // STREAM_START: record the pad's group; a group change
@@ -1930,7 +1924,7 @@ impl Inner {
                                 routed.group = Some(group);
                             }
                         }
-                        inner.note_output_stream_start(group);
+                        inner.note_output_stream_start(group, &pad.name());
                     }
                 }
                 gst::PadProbeReturn::Ok
@@ -2374,5 +2368,107 @@ impl FcastPlaybin {
             .iter()
             .map(|r| format!("{:?}:{}", r.kind, r.db3_src_pad.name()))
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sids(video: &[&str], audio: &[&str], text: &[&str]) -> RoutedSids {
+        let own = |list: &[&str]| list.iter().map(|s| s.to_string()).collect();
+        RoutedSids {
+            video: own(video),
+            audio: own(audio),
+            text: own(text),
+        }
+    }
+
+    fn target(
+        video: Option<&str>,
+        audio: Option<&str>,
+        subtitle: Option<&str>,
+    ) -> selection::TrackSelection {
+        selection::TrackSelection {
+            video: video.map(str::to_string),
+            audio: audio.map(str::to_string),
+            subtitle: subtitle.map(str::to_string),
+        }
+    }
+
+    /// `matches` probes only the slots the target NAMES. The asymmetry is
+    /// deliberate: a deselected stream keeps its routed entry, so an empty
+    /// slot is unobservable here and a None slot always matches, even with
+    /// live streams of that kind still routed.
+    #[test]
+    fn matches_never_probes_an_empty_target_slot() {
+        let cases: &[(RoutedSids, selection::TrackSelection, bool)] = &[
+            // Nothing named matches anything, live or not.
+            (sids(&[], &[], &[]), target(None, None, None), true),
+            (
+                sids(&["v0"], &["a0"], &["t0"]),
+                target(None, None, None),
+                true,
+            ),
+            // A named sid must be live on a pad of ITS kind.
+            (sids(&["v0"], &[], &[]), target(Some("v0"), None, None), true),
+            (sids(&[], &[], &[]), target(Some("v0"), None, None), false),
+            (
+                sids(&["v1"], &[], &[]),
+                target(Some("v0"), None, None),
+                false,
+            ),
+            // A subtitle-off target matches whatever text is still routed.
+            (
+                sids(&["v0"], &["a0"], &["t0"]),
+                target(Some("v0"), Some("a0"), None),
+                true,
+            ),
+            // All named, all live.
+            (
+                sids(&["v0"], &["a0", "a1"], &["t0"]),
+                target(Some("v0"), Some("a1"), Some("t0")),
+                true,
+            ),
+            // One named slot missing fails the whole match.
+            (
+                sids(&["v0"], &["a0"], &[]),
+                target(Some("v0"), Some("a0"), Some("t0")),
+                false,
+            ),
+        ];
+        for (live, want, expected) in cases {
+            assert_eq!(
+                live.matches(want),
+                *expected,
+                "live {live:?} against {want:?}"
+            );
+        }
+    }
+
+    /// `actual` reports per slot the requested stream when it turns out live,
+    /// else FALLS BACK to the first live one of the kind, else nothing. The
+    /// fallback fires for unnamed slots too, the other half of the asymmetry:
+    /// a give-up report says what IS playing, not what was asked.
+    #[test]
+    fn actual_falls_back_to_the_first_live_stream_per_slot() {
+        let live = sids(&["v1", "v0"], &["a0", "a1"], &[]);
+
+        // The requested sid is live, even when it is not first.
+        let kept = live.actual(&target(Some("v0"), Some("a1"), None));
+        assert_eq!(kept.video.as_deref(), Some("v0"));
+        assert_eq!(kept.audio.as_deref(), Some("a1"));
+
+        // A dead request falls back to live.first of its kind.
+        let fallen = live.actual(&target(Some("vX"), Some("aX"), Some("tX")));
+        assert_eq!(fallen.video.as_deref(), Some("v1"));
+        assert_eq!(fallen.audio.as_deref(), Some("a0"));
+        assert_eq!(fallen.subtitle, None, "no live text means no report");
+
+        // An unnamed slot still reports what plays.
+        let unnamed = live.actual(&target(None, None, None));
+        assert_eq!(unnamed.video.as_deref(), Some("v1"));
+        assert_eq!(unnamed.audio.as_deref(), Some("a0"));
+        assert_eq!(unnamed.subtitle, None);
     }
 }

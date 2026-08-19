@@ -39,6 +39,15 @@ const REPLAY_ATTEMPTS: u32 = 3;
 /// the verdict.
 const MAX_ATTACH_RETRIES: u32 = 3;
 
+/// Whether a replay was REFUSED: pads were offered the seek and not one took
+/// it, so the replay is postponed to a moment the pipeline can carry it (see
+/// [`FcastPlaybin::replay_outcome`]). Zero pads offered is NOT a refusal, the
+/// input simply had no pads, and postponing there would owe a replay nothing
+/// can discharge.
+fn replay_refused(accepted: usize, total: usize) -> bool {
+    accepted == 0 && total > 0
+}
+
 /// External-subtitle bookkeeping for an [`Input`] (`None` for the main
 /// input).
 pub(crate) struct ExternalInput {
@@ -441,6 +450,32 @@ impl Inner {
             debug!(pad = %pad.name(), "releasing a selected external input's data hold");
             pad.remove_probe(probe);
         }
+        // AN OWING NEEDS AN OUTCOME LEFT TO DISCHARGE IT.
+        //
+        // The caller decides `owed` by reading [`Inner::replay_inflight`]
+        // BEFORE this call - a rival replay already queued or in flight makes
+        // it suppress its own and owe the hold to that one's key. But the
+        // rival settles on the worker with no ordering against the caller's
+        // thread, and an outcome landing in that window runs
+        // [`Inner::release_owed_hold`] against a flag that is still false. It
+        // no-ops, this call then sets the flag, and the owing has no outcome
+        // left to reach it: block probes installed for the rest of the item on
+        // an input whose selection reads as confirmed.
+        //
+        // So re-read the bit with the flag now WRITTEN. A clear bit means no
+        // replay is queued or travelling for this resource, which is the same
+        // thing as "its seek has landed", so the probes may come off. The
+        // release is idempotent, so an outcome arriving inside this window
+        // costs one extra no-op and nothing else.
+        if let Some((id, epoch)) = owed
+            && !self.replay_inflight.lock().contains(&(id, epoch))
+        {
+            debug!(
+                ?id,
+                epoch, "the replay this hold was owed to has already settled; releasing it here"
+            );
+            self.release_owed_hold(id, epoch);
+        }
     }
 
     /// Put every text branch of external `(id, epoch)` back on offset 0, which
@@ -553,12 +588,14 @@ impl Inner {
     /// ([`hands::LaneFallback`]), and a report with no decider left to take it
     /// ([`hands::Outcome::owed`]). "On every outcome" is a contract about
     /// unconditionality, so it has to hold where there IS no outcome.
-    /// Idempotent by construction, which is what lets three paths own it, since
+    /// Idempotent by construction, which is what lets four paths own it, since
     /// the probes are taken out of the input under the routing lock and a
-    /// second release finds `hold_release_owed` already false.
-    pub(crate) fn release_owed_hold(inner: &Arc<Inner>, id: ExternalSubId, epoch: u32) {
+    /// second release finds `hold_release_owed` already false. The fourth is
+    /// [`Inner::unblock_selected_externals`]'s own tail, for the owing whose
+    /// outcome had already passed by the time the flag was written.
+    pub(crate) fn release_owed_hold(&self, id: ExternalSubId, epoch: u32) {
         let to_unblock: Vec<(gst::Pad, gst::PadProbeId)> = {
-            let mut routing = inner.routing.lock();
+            let mut routing = self.routing.lock();
             let Some(input) = routing.inputs.iter_mut().find(|input| {
                 input
                     .external
@@ -576,6 +613,32 @@ impl Inner {
             debug!(pad = %pad.name(), ?id, "releasing an external input's data hold owed to its replay");
             pad.remove_probe(probe);
         }
+    }
+
+    /// Whether a replay chain for `(id, epoch)` is still worth keeping alive:
+    /// the input is attached under that epoch AND its stream is still what the
+    /// selection wants.
+    ///
+    /// The same two questions [`FcastPlaybin::verify_replay`] asks before it
+    /// concludes, asked before it RE-ASKS instead. A check re-armed across a
+    /// window that cannot decide it must not outlive its subject, or a
+    /// detached input leaves a timer re-arming itself for the rest of the
+    /// item. Routing then selection, the documented lock order.
+    pub(crate) fn replay_chain_wanted(&self, id: ExternalSubId, epoch: u32) -> bool {
+        let routing = self.routing.lock();
+        let Some(input) = routing.inputs.iter().find(|i| {
+            i.external
+                .as_ref()
+                .is_some_and(|e| e.id == id && e.epoch == epoch)
+        }) else {
+            return false;
+        };
+        let sids = input.stream_ids();
+        let selection = self.selection.lock();
+        selection
+            .subtitle_sid()
+            .is_some_and(|sid| sids.contains(&sid))
+            || selection.desires_external(id)
     }
 
     /// Queue [`Job::VerifyReplay`] after [`REPLAY_VERIFY_AFTER`], off the
@@ -1049,6 +1112,53 @@ impl FcastPlaybin {
             self.inner.replay_inflight.lock().remove(&(id, epoch));
         }
         sent
+    }
+
+    /// Whether a replay verification is armed for `(id, epoch)` (see
+    /// [`Inner::replay_checks_armed`]). Readable so a test can prove the CHAIN
+    /// survives a window that cannot decide it, which is the whole difference
+    /// between the check re-asking and the reconcile pass being handed a
+    /// question it has no term for. Not part of the public API.
+    #[doc(hidden)]
+    pub fn replay_check_armed(&self, id: ExternalSubId, epoch: u32) -> bool {
+        self.inner.replay_checks_armed.lock().contains(&(id, epoch))
+    }
+
+    /// Run [`FcastPlaybin::verify_replay`] inline, the way its timer job does.
+    /// Lets a test take the verdict exactly where the pipeline cannot answer
+    /// it instead of racing a 400 ms timer. Not part of the public API.
+    #[doc(hidden)]
+    pub fn verify_replay_now(&self, id: ExternalSubId, epoch: u32, attempt: u32) {
+        self.verify_replay(id, epoch, attempt);
+    }
+
+    /// Block probes still installed for an external input's data hold (see
+    /// [`ExternalInput::hold_until_selected`]). The hold as a NUMBER, so a
+    /// test can prove the probes actually came off. Not part of the public
+    /// API.
+    #[doc(hidden)]
+    pub fn external_hold_probes(&self, id: ExternalSubId) -> usize {
+        self.inner
+            .routing
+            .lock()
+            .inputs
+            .iter()
+            .find(|input| input.is_external(id))
+            .map(|input| input.block_probes.len())
+            .unwrap_or(0)
+    }
+
+    /// Run [`Inner::unblock_selected_externals`] with the owing key a
+    /// `STREAMS_SELECTED` would carry, so a test can REPRODUCE the ordering
+    /// the bus handler cannot schedule: the rival replay's outcome landing
+    /// before the owing is recorded. Not part of the public API.
+    #[doc(hidden)]
+    pub fn release_selected_external_holds(
+        &self,
+        selected_ids: &[String],
+        owed: Option<(ExternalSubId, u32)>,
+    ) {
+        self.inner.unblock_selected_externals(selected_ids, owed);
     }
 
     /// How many replay flushing seeks have actually been handed off (see
@@ -1592,20 +1702,22 @@ impl FcastPlaybin {
         // The seek this outcome reports is no longer travelling, so the choke
         // point may pass the next one (see `Inner::settle_replay_seek`).
         Inner::settle_replay_seek(inner, id, epoch);
-        Inner::release_owed_hold(inner, id, epoch);
+        inner.release_owed_hold(id, epoch);
         // Not one pad took it. A pipeline at rest in PAUSED refuses a flushing
         // seek on every pad, every push logging `Failed to push event ...
         // state="paused"`, and the verification then correctly saw the stream
         // still unaligned and replayed again. Four rounds of work that could
         // not succeed by construction. Owe it to the moment the pipeline can
-        // carry it instead, and do NOT arm a check that would only rediscover
-        // the same thing.
+        // carry it instead, and never arm a check that would spend an attempt
+        // rediscovering the same thing (the arming below cannot: it re-asks
+        // with the SAME attempt and the check defers its verdict while the
+        // pipeline is parked).
         //
         // Decided from the OUTCOME rather than from the pipeline state: a
         // state check also matched a pipeline transiently at rest during a
         // seek, where the seek IS accepted, and postponing there left the
         // input unaligned for good.
-        if accepted == 0 && total > 0 {
+        if replay_refused(accepted, total) {
             // A new postponed item invalidates the last drain's no-op
             // verdict (see `Inner::drain_poke_parked`).
             inner.drain_poke_parked.store(false, Ordering::SeqCst);
@@ -1621,6 +1733,36 @@ impl FcastPlaybin {
                     );
                     owed.push((id, epoch, attempt));
                 }
+                return;
+            }
+            // A refusal at rest in PAUSED is about the PIPELINE, not about the
+            // branch, so the question this replay was asked for is still open
+            // - and the reconcile pass can only carry it while the branch
+            // reads UNALIGNED. A replay the verification asked for because the
+            // branch was silent leaves an aligned one behind, which that pass
+            // calls converged, so deferring to it there loses the chain and
+            // the silence becomes permanent. Arm the check instead: it now
+            // holds its own verdict below a settled PLAYING (see
+            // [`FcastPlaybin::verify_replay`]), so this no longer "rediscovers
+            // the same thing" four times over - it waits with the
+            // delivery-evidence term intact for the first moment a flushing
+            // seek could be accepted, which is the same moment the pass would
+            // have re-emitted at. Same attempt: a refused seek performed none.
+            // Lever: `FCAST_NO_REPLAY_VERDICT_DEFERRAL` (a check that
+            // concludes anywhere WOULD burn the attempts, so the lever takes
+            // this arming with it).
+            let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+            let parked = current != gst::State::Playing || pending != gst::State::VoidPending;
+            if parked
+                && std::env::var_os("FCAST_NO_REPLAY_VERDICT_DEFERRAL").is_none()
+                && inner.replay_chain_wanted(id, epoch)
+            {
+                debug!(
+                    ?id,
+                    epoch, attempt, "the pipeline refused the replay while parked; re-asking once \
+                     it can carry one"
+                );
+                inner.arm_replay_verification(id, epoch, attempt);
                 return;
             }
             // RETURN, owing nothing. The refusal left the input unaligned, and
@@ -1733,11 +1875,15 @@ impl FcastPlaybin {
     /// bounded.
     ///
     /// A verdict is only ever reached at a pipeline settled at PLAYING.
-    /// Anywhere below, the check holds itself into
+    /// Anywhere below, the check RE-ARMS itself (under
+    /// `FCAST_NO_TEXT_RECONCILE` it holds itself into
     /// [`Inner::deferred_verifications`] and the deferred-work drain re-arms
-    /// it later, because a pipeline that is not flowing leaves the stickies
+    /// it instead), because a pipeline that is not flowing leaves the stickies
     /// exactly as the input's previous tenure left them and they prove
-    /// nothing about this one.
+    /// nothing about this one. Either way the CHAIN survives the window: it
+    /// carries the delivery-evidence term the reconcile pass has no equivalent
+    /// of, so a question dropped here is a silent branch nothing re-asks
+    /// about.
     pub(crate) fn verify_replay(&self, id: ExternalSubId, epoch: u32, attempt: u32) {
         // The chain this check belongs to has now run, so the next legitimate
         // arming is allowed. See `arm_replay_verification`.
@@ -1775,18 +1921,47 @@ impl FcastPlaybin {
                     }
                     return;
                 }
-                // RETURN WITHOUT A VERDICT. Nothing is remembered, because
-                // nothing needs to be: the next drain's reconcile pass asks
-                // the same question against a pipeline that can answer it, and
-                // the tick queues a pass every second whether or not an edge
-                // ever comes. A held list was only ever a way of arranging to
-                // be asked again.
+                // NO VERDICT, SO RE-ASK. Nothing is remembered - the ARMING is
+                // the question, held open across a window that cannot answer
+                // it - but the question itself must not be handed on, which
+                // is what returning here used to do.
+                //
+                // [`Inner::reconcile_subtitle_delivery`] asks a strictly
+                // WEAKER one. Its convergence test is `delivered && aligned`,
+                // two sticky reads that a joined branch and a post-seek
+                // segment satisfy on their own, and it has no
+                // delivery-evidence term at all. A burst the multiqueue
+                // destroyed in flight leaves a seated, aligned, SILENT branch,
+                // which reads as converged there on every later pass, so a
+                // replay deferred to it was never re-derived and the track
+                // rendered nothing for the rest of the item. The evidence term
+                // lives on THIS chain (`progressed`, below), and so does the
+                // attempt bound that makes asking about silence safe at all -
+                // silence is also what an external with no cue at this
+                // position looks like, and a 1 Hz pass acting on that would
+                // flush the branch forever. So the chain is what has to
+                // survive the window.
+                //
+                // The SAME attempt: a verdict that was not reached spends
+                // none. Bounded by the RESOURCE rather than by a counter - a
+                // detached or deselected input re-arms nothing, the re-arm
+                // stops the moment the pipeline can answer, and a load reset
+                // drops the timer with its dedupe key (see
+                // [`Inner::clear_pending_timers`]).
+                if !self.inner.replay_chain_wanted(id, epoch) {
+                    debug!(
+                        ?id,
+                        epoch, attempt, "no verdict below a settled PLAYING and nothing wants this \
+                         input any more; the chain ends here"
+                    );
+                    return;
+                }
                 debug!(
                     ?id,
-                    epoch,
-                    attempt,
-                    "no verdict below a settled PLAYING; the reconcile pass re-asks"
+                    epoch, attempt, "no verdict below a settled PLAYING; re-asking once the \
+                     pipeline can answer"
                 );
+                self.inner.arm_replay_verification(id, epoch, attempt);
                 return;
             }
         }
@@ -1904,5 +2079,32 @@ impl FcastPlaybin {
             "external subtitle produced no text stream within the timeout"
         );
         self.fail_subtitle(id, epoch);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The postponement rule of [`FcastPlaybin::replay_outcome`]: only a real
+    /// refusal (offered pads, zero takers) postpones. An input with no pads
+    /// at all is not refused, and any accepted pad means the seek travelled.
+    #[test]
+    fn a_replay_is_refused_only_when_offered_pads_all_declined() {
+        let cases: &[(usize, usize, bool)] = &[
+            (0, 0, false),
+            (0, 1, true),
+            (0, 5, true),
+            (1, 1, false),
+            (1, 5, false),
+            (5, 5, false),
+        ];
+        for (accepted, total, expected) in cases {
+            assert_eq!(
+                replay_refused(*accepted, *total),
+                *expected,
+                "accepted {accepted} of {total}"
+            );
+        }
     }
 }

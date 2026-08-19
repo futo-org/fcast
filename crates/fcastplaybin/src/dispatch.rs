@@ -682,6 +682,7 @@ impl FcastPlaybin {
                     // `Self::dispatch_selection`).
                     externals,
                     upstream_owns,
+                    now: Instant::now(),
                 };
                 let mut engine = self.inner.selection.lock();
                 match engine.pump(&ctx) {
@@ -1046,7 +1047,22 @@ impl FcastPlaybin {
                 sorted.sort();
                 *self.inner.last_upstream_ids.lock() != sorted
             };
-            if changed && !upstream_ids.is_empty() {
+            // A CHANGED upstream part with nothing left in it is a deselect of
+            // every upstream-owned stream, and no `SELECT_STREAMS` can carry
+            // it (an empty event is refused, and the demuxer has no "select
+            // nothing"). Confirming it locally would tell the caller the slot
+            // is off while the demuxer keeps playing it, so refuse: the
+            // rollback keeps `applied` naming what is really playing and the
+            // desire stays divergent.
+            if changed && upstream_ids.is_empty() {
+                warn!(
+                    ?target,
+                    "an upstream-owned deselect names no stream; refusing it"
+                );
+                self.inner.selection.lock().dispatch_failed(seqnum);
+                return false;
+            }
+            if changed {
                 let main_input = {
                     let routing = self.inner.routing.lock();
                     routing
@@ -1091,6 +1107,15 @@ impl FcastPlaybin {
     /// message can be attributed to this request (`None` for a fresh one).
     /// Sent to decodebin3 directly, no detour through the sinks.
     ///
+    /// An id absent from the advertised collection is refused with `Err`
+    /// before anything is queued: decodebin3 ignores such an event wholesale
+    /// and never posts a confirmation, so queueing it would starve a caller
+    /// waiting on the seqnum forever (measured by
+    /// `streams_selected_carries_the_request_seqnum`). A collection change
+    /// racing this check can still eat a selection inside decodebin3, which
+    /// is what the selection deadline exists for; the gate only closes the
+    /// case that could NEVER confirm.
+    ///
     /// The send happens on a dedicated thread, NOT inline: decodebin3
     /// handles `SELECT_STREAMS` on the sending thread, and its stream-switch
     /// machinery takes slot pad object locks that a live-spinning slot
@@ -1101,6 +1126,14 @@ impl FcastPlaybin {
     /// bus message, and a selection superseded by a core swap before it
     /// sends is silently dropped (it could never confirm anyway).
     pub fn select_streams(&self, stream_ids: &[&str], seqnum: Option<gst::Seqnum>) -> Result<()> {
+        {
+            let selection = self.inner.selection.lock();
+            if let Some(unknown) = stream_ids.iter().find(|sid| !selection.knows_stream(sid)) {
+                return Err(anyhow!(
+                    "stream {unknown} is not in the advertised collection"
+                ));
+            }
+        }
         self.select_streams_to(None, stream_ids, seqnum, None)
     }
 

@@ -10,7 +10,8 @@ use tracing::{debug, error, info};
 
 use crate::{
     FcastPlaybin, Inner,
-    api::PlaybinEvent,
+    api::{AfterCancel, PlaybinEvent},
+    decisions::{EosGate, gapless_eos_decision},
     jobs::Job,
     routing::{Input, StreamKind},
     selection,
@@ -45,6 +46,57 @@ impl PreparedNext {
             .filter_map(|pad| pad.stream_id().map(|sid| sid.to_string()))
             .collect()
     }
+
+    /// Whether the relink has run for this prepared input. Its source pads
+    /// are UNLINKED by construction until [`Inner::perform_gapless_swap`]
+    /// links them into decodebin3 (that is the hold itself, see
+    /// [`Inner::add_prepared_input`]), so one linked pad means the swap has
+    /// started.
+    ///
+    /// Deliberately lock-free. The one caller runs inside the bus SYNC
+    /// handler, which can be re-entered on the very thread performing the
+    /// swap while it holds the swap gate, so asking the gate instead would
+    /// be a self-deadlock.
+    fn relinked(&self) -> bool {
+        self.element.src_pads().iter().any(|pad| pad.is_linked())
+    }
+}
+
+/// Whether `selected_ids` names something and names only ids from `known`.
+/// The containment test both halves of [`activation_decision`] use.
+fn selection_covered_by(selected_ids: &[String], known: &[String]) -> bool {
+    !selected_ids.is_empty()
+        && selected_ids
+            .iter()
+            .all(|sel| known.iter().any(|id| id == sel))
+}
+
+/// The decision core of [`Inner::try_activate_prepared`], with the pipeline
+/// reads supplied so the identical-sid shape can be pinned without one.
+///
+/// Containment in the prepared ids alone is NOT the boundary. Two queue
+/// items from the same URI carry identical stream ids (the degradation the
+/// arm-time sticky check in [`Inner::activate_prepared_now`] documents), so
+/// a `STREAMS_SELECTED` decodebin3 posts about the CURRENT item, e.g. for a
+/// mid-item track change, satisfies it too. Adopting the next generation
+/// there unblocks the prepared pads into unlinked decodebin3 pads and has
+/// [`crate::jobs::Job::FinishActivation`] remove the still-playing input.
+///
+/// `relinked` is what tells them apart: before the relink decodebin3 has
+/// none of the prepared item's streams to select, so an ambiguous report can
+/// only be about the item still playing. A selection naming ids the current
+/// item does NOT carry is unambiguous and activates as before, which keeps
+/// the `FCAST_NO_ADAPTIVE_PREPARE_HOLD` reading intact.
+fn activation_decision(
+    selected_ids: &[String],
+    prepared_ids: &[String],
+    routed_ids: &[String],
+    relinked: bool,
+) -> bool {
+    if !selection_covered_by(selected_ids, prepared_ids) {
+        return false;
+    }
+    !selection_covered_by(selected_ids, routed_ids) || relinked
 }
 
 /// Coordination between the current input's drain watches and the prepared
@@ -118,6 +170,41 @@ pub(crate) enum CancelOutcome {
     Declined { generation: u64 },
 }
 
+/// The matching rule of [`Inner::collection_is_prepared`], with the prepared
+/// ids and the collection's sids supplied so it can be pinned without a
+/// pipeline: ANY stream matched AND NONE foreign, and no prepared ids at all
+/// (pads not produced yet) answers false.
+fn collection_matches_prepared(
+    ids: &[String],
+    collection_sids: impl IntoIterator<Item = Option<gst::glib::GString>>,
+) -> bool {
+    if ids.is_empty() {
+        return false;
+    }
+    let mut any = false;
+    for sid in collection_sids {
+        let Some(sid) = sid else {
+            continue;
+        };
+        if ids.iter().any(|id| *id == sid) {
+            any = true;
+        } else {
+            // A stream from elsewhere: a combined or current-item
+            // collection, not the prepared item's.
+            return false;
+        }
+    }
+    any
+}
+
+/// Whether a cancel owes the caller a synthesized [`PlaybinEvent::EndOfStream`]
+/// (see the rationale at the bottom of [`FcastPlaybin::cancel_prepared`]).
+/// Only a consumed end is owed at all, and only when nothing is about to
+/// regenerate it.
+fn cancel_synthesizes_eos(dropped_eos: bool, after: AfterCancel) -> bool {
+    dropped_eos && matches!(after, AfterCancel::Nothing)
+}
+
 /// The user-facing half of a gapless activation, held back from decodebin3's
 /// output until the new item's audio actually reaches the sink. See
 /// [`Inner::held_activation`].
@@ -175,24 +262,10 @@ impl Inner {
         let Some(prepared) = prepared.as_ref() else {
             return false;
         };
-        let ids = prepared.stream_ids();
-        if ids.is_empty() {
-            return false;
-        }
-        let mut any = false;
-        for stream in collection.iter() {
-            let Some(sid) = stream.stream_id() else {
-                continue;
-            };
-            if ids.iter().any(|id| *id == sid) {
-                any = true;
-            } else {
-                // A stream from elsewhere: a combined or current-item
-                // collection, not the prepared item's.
-                return false;
-            }
-        }
-        any
+        collection_matches_prepared(
+            &prepared.stream_ids(),
+            collection.iter().map(|stream| stream.stream_id()),
+        )
     }
 
     /// Refresh the recorded output groups from each routed pad's sticky
@@ -225,7 +298,7 @@ impl Inner {
     /// output pad carries a new group id. When a prepared item is pending,
     /// the group change IS the switch (a same-slot continuation posts no
     /// new streams-selected, so the data plane is the reliable signal).
-    pub(crate) fn note_output_stream_start(&self, group: Option<gst::GroupId>) {
+    pub(crate) fn note_output_stream_start(&self, group: Option<gst::GroupId>, pad_name: &str) {
         let Some(group) = group else { return };
         let retired = {
             let mut active = self.active_group.lock();
@@ -242,45 +315,92 @@ impl Inner {
         };
         let prepared = self.prepared.lock().take();
         if let Some(prepared) = prepared {
+            // The pad names the thread the activation runs on, which decides
+            // what the arm below can race (see the aqueue sticky check).
             info!(
                 generation = prepared.generation,
+                pad = pad_name,
                 "gapless activation: the prepared item's group reached the output"
             );
             self.activate_prepared_now(prepared, retired);
         }
     }
 
-    /// The gapless EOS-hold decision, shared by the output gate and the
-    /// post-streamsynchronizer gate: an EOS on a pad whose stream group is
-    /// `pad_group` must be dropped while a swap is pending (committed to a
-    /// next item, nothing may end the pipeline) or while the pad still
-    /// carries a non-active group, either lagging the active one or
-    /// positively the RETIRED one (old-item drainage, see
-    /// [`Inner::retired_group`]). Unknowns on either side never drop: only
-    /// a positively known group mismatch is old-item drainage. A pending
-    /// drop is recorded for the cancel synthesis (see
-    /// [`SwapState::dropped_eos`]). Returns (drop, pending, behind).
+    /// The post-streamsynchronizer gate's half of the EOS hold: the same
+    /// decision ([`gapless_eos_decision`]) with no sibling-pass arm and
+    /// nothing to commit, because ssync already completed the group.
+    /// Returns (drop, pending, behind).
     pub(crate) fn gapless_eos_check_and_mark(
         &self,
         pad_group: Option<gst::GroupId>,
     ) -> (bool, bool, bool) {
         let active_group = *self.active_group.lock();
         let retired_group = *self.retired_group.lock();
-        let behind = match (pad_group, active_group) {
-            (Some(pad_group), Some(active)) => pad_group != active,
-            _ => false,
-        } || (pad_group.is_some() && pad_group == retired_group);
         // One lock hold for the check AND the drop record: a cancel between
         // them would zero the state and the mark would pollute the next
         // prepare's gate.
         let mut state = self.swap_gate.state.lock();
-        let pending = state.pending.is_some();
-        if pending {
-            // The item's end is consumed for good; a cancelled swap must
-            // synthesize it (see `SwapState::dropped_eos`).
-            state.dropped_eos = true;
+        let gate = gapless_eos_decision(
+            pad_group,
+            active_group,
+            retired_group,
+            None,
+            state.pending.is_some(),
+            false,
+        );
+        match gate {
+            EosGate::Drop { pending, behind } => {
+                if pending {
+                    // The item's end is consumed for good; a cancelled swap
+                    // must synthesize it (see `SwapState::dropped_eos`).
+                    state.dropped_eos = true;
+                }
+                (true, pending, behind)
+            }
+            // Neither reason held, so both are false by construction.
+            _ => (false, false, false),
         }
-        (pending || behind, pending, behind)
+    }
+
+    /// The routed-pad EOS gate: decide and commit under ONE critical
+    /// section, with the passing mirror's lock taken first and held across
+    /// the verdict and the commit.
+    ///
+    /// The atomicity is the point. With the sibling-pass read, the
+    /// pending/behind verdict and the mirror commit as three separate lock
+    /// holds, a pre-arm (`Job::PrepareNext`) landing between one sibling's
+    /// PASS verdict and its commit makes the next sibling read an empty
+    /// mirror and drop on the fresh `pending`. That subset-drop parks the
+    /// first stream's multiqueue task inside ssync's group wait forever
+    /// (CLEANUP invariant 12). Holding the mirror serializes the siblings:
+    /// the second one cannot look until the first has published.
+    ///
+    /// Lock order: `passing_eos_group` outermost, then `active_group`,
+    /// `retired_group`, `swap_gate.state`. Nothing takes the mirror while
+    /// holding any of those, and every hold here is a plain field read.
+    pub(crate) fn gapless_eos_gate(&self, pad_group: Option<gst::GroupId>, av: bool) -> EosGate {
+        let mut passing = self.passing_eos_group.lock();
+        let active_group = *self.active_group.lock();
+        let retired_group = *self.retired_group.lock();
+        let mut state = self.swap_gate.state.lock();
+        let gate = gapless_eos_decision(
+            pad_group,
+            active_group,
+            retired_group,
+            *passing,
+            state.pending.is_some(),
+            av,
+        );
+        match gate {
+            EosGate::Drop { pending: true, .. } => state.dropped_eos = true,
+            // This EOS enters streamsynchronizer, so the whole group is
+            // committed to passing before any sibling can be judged.
+            EosGate::Pass {
+                commit: Some(group),
+            } => *passing = Some(group),
+            _ => {}
+        }
+        gate
     }
 
     /// A full-pipeline flushing seek went out. It reset
@@ -319,12 +439,34 @@ impl Inner {
             let Some(prepared) = slot.as_ref() else {
                 return;
             };
-            let ids = prepared.stream_ids();
-            if selected_ids.is_empty()
-                || !selected_ids
-                    .iter()
-                    .all(|sel| ids.iter().any(|id| id == sel))
-            {
+            let prepared_ids = prepared.stream_ids();
+            // Cheap prefilter of the same predicate, so the routing read
+            // below stays off this hot path (every STREAMS_SELECTED lands
+            // here).
+            if !selection_covered_by(selected_ids, &prepared_ids) {
+                return;
+            }
+            // The current item's routed output streams, i.e. what a report
+            // about the item still playing would name. Lock order is
+            // `prepared` then `routing`, the one `cancel_prepared` takes.
+            let routed_ids: Vec<String> = self
+                .routing
+                .lock()
+                .routed
+                .iter()
+                .filter_map(|r| r.db3_src_pad.stream_id().map(|sid| sid.to_string()))
+                .collect();
+            if !activation_decision(
+                selected_ids,
+                &prepared_ids,
+                &routed_ids,
+                prepared.relinked(),
+            ) {
+                debug!(
+                    generation = prepared.generation,
+                    "a selection naming the current item's ids too is not the boundary \
+                     until the relink"
+                );
                 return;
             }
             slot.take().expect("checked above")
@@ -349,6 +491,14 @@ impl Inner {
     /// so the title/duration switch lands with the sound. Audio-less items
     /// emit them here, keeping the activation-then-collection order.
     fn activate_prepared_now(&self, prepared: PreparedNext, retired: Option<gst::GroupId>) {
+        // TEST FAULT INJECTION (see [`Inner::stage_activation_delay_ms`]).
+        // Before any effect of the activation, so the whole function is late
+        // the way a busy bus thread makes it late.
+        let staged_delay = self.stage_activation_delay_ms.load(Ordering::SeqCst);
+        if staged_delay > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(staged_delay));
+        }
+
         // A prior hold still waiting on its sink boundary (unreachable with
         // real media, two swaps within one queue depth) is flushed under the
         // outgoing generation, before we adopt this one, to keep order and
@@ -458,11 +608,62 @@ impl Inner {
         // The user-facing switch: hold it for the sink boundary if the item
         // has audio to anchor the release on, else emit it now (an audio-less
         // item never crosses the audio queue, so there is nothing to wait for).
+        let audio_sids: Vec<String> = prepared
+            .pending_collection
+            .as_ref()
+            .map(|collection| {
+                collection
+                    .iter()
+                    .filter(|s| s.stream_type().contains(gst::StreamType::AUDIO))
+                    .filter_map(|s| s.stream_id().map(|id| id.to_string()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let held = HeldActivation {
             collection: prepared.pending_collection,
         };
         if has_audio {
-            *self.held_activation.lock() = Some(held);
+            // The release edge may ALREADY have passed. This function can run
+            // on a bus posting thread (the selection trigger) with no ordering
+            // against the audio data plane, and on a reused slot the new
+            // item's STREAM_START can cross a near-empty fpb-aqueue before the
+            // arm below. Exactly one STREAM_START crosses per item, so arming
+            // after the edge would hold forever, which was the rare
+            // queue_autoplay boundary wedge (tracks never advertised).
+            //
+            // The aqueue src sticky answers "did it cross" race-free. gstpad
+            // stores a serialized sticky BEFORE the probes run
+            // (gst_pad_push_event, store_sticky_event ahead of check_sticky),
+            // so under this lock either the sticky still names the old item
+            // and the release probe has not fired (arming is safe, the probe
+            // must wait for this lock), or it names the new item and the edge
+            // is spent (emit now). Two queue items with identical stream ids
+            // read as already-crossed and emit a queue-depth early, the
+            // pre-hold seam behavior, degraded but never wedged.
+            let mut slot = self.held_activation.lock();
+            let crossed = self
+                .audio_entry
+                .static_pad("src")
+                .and_then(|src| src.sticky_event::<gst::event::StreamStart>(0))
+                .is_some_and(|event| {
+                    let sid = event.stream_id();
+                    audio_sids.iter().any(|known| known.as_str() == sid)
+                });
+            if crossed {
+                drop(slot);
+                // Counted PER INSTANCE so a test can pin this branch without
+                // scanning a process-global log buffer every other test in
+                // the binary writes into (see
+                // `FcastPlaybin::arm_time_activation_releases`).
+                self.arm_time_releases.fetch_add(1, Ordering::SeqCst);
+                info!(
+                    generation = prepared.generation,
+                    "gapless activation released at arm, the audio boundary had already crossed"
+                );
+                self.emit_held(held);
+            } else {
+                *slot = Some(held);
+            }
         } else {
             self.emit_held(held);
         }
@@ -647,7 +848,10 @@ impl Inner {
                 // EOS was already consumed by the drain, synthesizes the
                 // end-of-stream the caller now needs to advance normally.
                 inner.emit(PlaybinEvent::PreparedFailed { generation });
-                inner.queue_job(Job::CancelPrepared { notify: false });
+                inner.queue_job(Job::CancelPrepared {
+                    notify: false,
+                    after: AfterCancel::Nothing,
+                });
                 let _ = info.data.take();
                 info.flow_res = Err(gst::FlowError::Flushing);
                 gst::PadProbeReturn::Handled
@@ -735,6 +939,26 @@ impl Inner {
         // successor to one of those would let the playing slot die instead
         // (the exact wedge the coverage check above exists for). Plan
         // first, mutate after: a failed plan must leave the links alone.
+        //
+        // The NEW side needs the mirror preference. src_pads() order comes
+        // from urisourcebin's parallel parse chains and is racy, and the
+        // first same-type pad claims the reused slot. When a multi-track
+        // item's UNSELECTED sibling won that race, the stream decodebin3
+        // will actually select landed on a fresh slot whose output decision
+        // ran before the new collection was current, was refused, and was
+        // never revisited (the R1 boundary wedge, half of it). decodebin3's
+        // default selection takes the first stream of each type in
+        // collection order, collection order is container track order, and
+        // the parsed stream ids embed the track number, so sorting the pads
+        // by stream id hands the reused slot to the stream that will play.
+        // The collection itself cannot be the rank: the prepared input often
+        // posts it only AFTER the swap. Pads without a sticky stream-start
+        // sort last.
+        let mut new_pads = new_pads;
+        new_pads.sort_by_key(|pad| {
+            let sid = pad.stream_id().map(|s| s.to_string());
+            (sid.is_none(), sid)
+        });
         let mut taken = vec![false; old_pairs.len()];
         let mut links: Vec<(gst::Pad, gst::Pad)> = Vec::new();
         let mut fresh: Vec<gst::Pad> = Vec::new();
@@ -833,6 +1057,31 @@ impl Inner {
 }
 
 impl FcastPlaybin {
+    /// TEST FAULT INJECTION: delay the next gapless activation by `delay`,
+    /// staging the window between the boundary's data flow and the
+    /// activation's arm of `held_activation` (see
+    /// [`Inner::stage_activation_delay_ms`]). Per instance so it is safe
+    /// under a test binary's thread pool. Not part of the public API.
+    #[doc(hidden)]
+    pub fn stage_activation_delay(&self, delay: std::time::Duration) {
+        self.inner
+            .stage_activation_delay_ms
+            .store(delay.as_millis() as u64, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// How many gapless activations found the audio boundary already crossed
+    /// at arm time and released the held events right there (see the sticky
+    /// check in `Inner::activate_prepared_now`). PER INSTANCE, which is the
+    /// point: the crate's tracing goes to one process-global subscriber, so a
+    /// test binary running several pipelines at once cannot tell whose line
+    /// it is reading. Not part of the public API.
+    #[doc(hidden)]
+    pub fn arm_time_activation_releases(&self) -> u64 {
+        self.inner
+            .arm_time_releases
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// Drop a still-pending prepared next input: take it out of the
     /// prepared slot and remove its element from the pipeline. A no-op
     /// when nothing is prepared (or it already activated, which empties the
@@ -843,7 +1092,11 @@ impl FcastPlaybin {
     /// finish (a caller-side load supersedes it normally anyway). Callers
     /// arming a NEW prepare must refuse on it rather than clobber the
     /// in-flight activation.
-    pub(crate) fn cancel_prepared(&self) -> CancelOutcome {
+    ///
+    /// `after` says what the caller does to the pipeline next, which is the
+    /// only thing that can decide the consumed-end synthesis at the bottom
+    /// (see [`AfterCancel`]).
+    pub(crate) fn cancel_prepared(&self, after: AfterCancel) -> CancelOutcome {
         // Atomic against the block probe's surgery: past the swap the
         // relink is live and activation is imminent, cancelling would rip
         // the now-active input out mid-stream. `pending` distinguishes the
@@ -891,12 +1144,253 @@ impl FcastPlaybin {
         // normally once the hold disarms, so no synthesis there: ending
         // the item early would cut its buffered tail (and turn a seek-back
         // near the end into a skip to the next item).
-        if dropped_eos {
+        //
+        // A FLUSHING SEEK FOLLOWING THIS CANCEL has that same effect, and
+        // it is the invariant-8 path: the app parks the seek precisely
+        // BECAUSE a prepare is pending. The drop happens up to a video
+        // queue depth (30 s) before the item is audibly over, so the seek
+        // lands with the item still playing, the seek restarts the sources
+        // and regenerates the real end, and a synthesis here would make the
+        // caller advance its queue instead of replaying the seek. Only the
+        // caller knows which cancel this is, hence `after`.
+        if cancel_synthesizes_eos(dropped_eos, after) {
             debug!("prepare cancelled after its end was consumed: synthesizing end-of-stream");
             self.inner.emit(PlaybinEvent::EndOfStream);
+        } else if dropped_eos {
+            debug!("prepare cancelled for a flushing seek: leaving the end to the seek");
         }
         CancelOutcome::Cancelled {
             generation: cancelled,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        PreparedNext, SwapState, activation_decision, cancel_synthesizes_eos,
+        collection_matches_prepared, gapless_eos_decision,
+    };
+    use crate::api::AfterCancel;
+    use gst::prelude::*;
+
+    fn ids(names: &[&str]) -> Vec<String> {
+        names.iter().map(|s| s.to_string()).collect()
+    }
+
+    fn sids(names: &[&str]) -> Vec<Option<gst::glib::GString>> {
+        names.iter().map(|s| Some((*s).into())).collect()
+    }
+    /// Any-matched AND none-foreign: one foreign stream disqualifies the
+    /// whole collection, and an empty side never matches.
+    #[test]
+    fn a_collection_is_prepared_only_when_purely_the_prepared_streams() {
+        let prepared = ids(&["p-1", "p-2"]);
+        // A subset of the prepared streams is enough.
+        assert!(collection_matches_prepared(&prepared, sids(&["p-1"])));
+        assert!(collection_matches_prepared(
+            &prepared,
+            sids(&["p-2", "p-1"])
+        ));
+        // One foreign stream makes it a combined or current-item collection.
+        assert!(!collection_matches_prepared(
+            &prepared,
+            sids(&["p-1", "cur-1"])
+        ));
+        assert!(!collection_matches_prepared(&prepared, sids(&["cur-1"])));
+        // An empty collection matches nothing.
+        assert!(!collection_matches_prepared(&prepared, sids(&[])));
+        // No prepared ids yet (pads not produced): never claim a match.
+        assert!(!collection_matches_prepared(&ids(&[]), sids(&["p-1"])));
+        // Streams without ids are skipped, not read as foreign, and alone
+        // they match nothing.
+        assert!(!collection_matches_prepared(&prepared, vec![None]));
+        assert!(collection_matches_prepared(
+            &prepared,
+            vec![None, Some("p-1".into())]
+        ));
+    }
+
+    /// `stream_ids` reads only pads that already carry a stream-start, so a
+    /// half-parsed prepared input reports the ids it has, not phantoms.
+    #[test]
+    fn prepared_stream_ids_skip_pads_without_a_stream_start() {
+        gst::init().unwrap();
+        let bin = gst::Bin::new();
+        let with_sid = gst::Pad::builder(gst::PadDirection::Src)
+            .name("src_0")
+            .build();
+        with_sid.set_active(true).unwrap();
+        with_sid
+            .store_sticky_event(&gst::event::StreamStart::new("prep-sid"))
+            .unwrap();
+        let without_sid = gst::Pad::builder(gst::PadDirection::Src)
+            .name("src_1")
+            .build();
+        bin.add_pad(&with_sid).unwrap();
+        bin.add_pad(&without_sid).unwrap();
+        let prepared = PreparedNext {
+            element: bin.upcast(),
+            generation: 1,
+            pending_collection: None,
+        };
+        assert_eq!(prepared.stream_ids(), ids(&["prep-sid"]));
+    }
+
+    /// The selection-side activation trigger's whole truth table. The rows
+    /// that matter are the IDENTICAL-SID ones: two queue items from the same
+    /// URI share stream ids, so a `STREAMS_SELECTED` decodebin3 posts about
+    /// the CURRENT item (a mid-item track change) names exactly the prepared
+    /// ids. Activating there adopts the next generation while the old item
+    /// still plays and `Job::FinishActivation` then removes the live input.
+    #[test]
+    fn the_selection_activation_truth_table() {
+        // (name, selected, prepared, routed, relinked) -> activate
+        let cases = [
+            // The ordinary switch: the successor's ids are its own.
+            (
+                "distinct ids, relinked",
+                &["b-v", "b-a"][..],
+                &["b-v", "b-a"][..],
+                &["a-v", "a-a"][..],
+                true,
+                true,
+            ),
+            // Still unambiguous before the relink: only the prepared item
+            // carries these ids, so nothing else could be reporting them.
+            // Keeps the FCAST_NO_ADAPTIVE_PREPARE_HOLD reading working.
+            (
+                "distinct ids, not relinked",
+                &["b-v", "b-a"][..],
+                &["b-v", "b-a"][..],
+                &["a-v", "a-a"][..],
+                false,
+                true,
+            ),
+            // A foreign id means the report is not purely the prepared item.
+            (
+                "one foreign id",
+                &["b-v", "a-a"][..],
+                &["b-v", "b-a"][..],
+                &["a-v", "a-a"][..],
+                true,
+                false,
+            ),
+            // An empty selection names nothing.
+            (
+                "empty selection",
+                &[][..],
+                &["b-v", "b-a"][..],
+                &["a-v", "a-a"][..],
+                true,
+                false,
+            ),
+            // No prepared pads yet: nothing to match against.
+            (
+                "prepared has no pads",
+                &["a-v"][..],
+                &[][..],
+                &["a-v"][..],
+                false,
+                false,
+            ),
+            // THE DEFECT ROW. Same-URI successor, the report is about the
+            // playing item, the relink has not happened.
+            (
+                "identical ids, not relinked",
+                &["v", "a"][..],
+                &["v", "a"][..],
+                &["v", "a"][..],
+                false,
+                false,
+            ),
+            // Same shape after the relink: decodebin3 now has the prepared
+            // item's streams, so this IS the switch.
+            (
+                "identical ids, relinked",
+                &["v", "a"][..],
+                &["v", "a"][..],
+                &["v", "a"][..],
+                true,
+                true,
+            ),
+            // A subset of the identical ids (a subtitle toggle leaves the
+            // A/V pair selected) is ambiguous just the same.
+            (
+                "identical ids, subset, not relinked",
+                &["a"][..],
+                &["v", "a"][..],
+                &["v", "a"][..],
+                false,
+                false,
+            ),
+            // A same-URI successor whose report names a stream the current
+            // item does NOT have routed is unambiguous: only a switch can
+            // put a new id on the wire.
+            (
+                "identical ids, new stream routed nowhere",
+                &["v", "a", "t"][..],
+                &["v", "a", "t"][..],
+                &["v", "a"][..],
+                false,
+                true,
+            ),
+        ];
+        for (name, selected, prepared, routed, relinked, expected) in cases {
+            let got = activation_decision(&ids(selected), &ids(prepared), &ids(routed), relinked);
+            assert_eq!(got, expected, "{name}");
+        }
+    }
+
+    /// Only a CONSUMED end is owed, and only when nothing regenerates it.
+    /// The flushing-seek row is the one that matters: the output hold drops
+    /// the EOS up to a video queue depth before the item is audibly over, so
+    /// a synthesis there turns the caller's seek-back into a queue skip.
+    #[test]
+    fn a_cancel_synthesizes_the_consumed_end_only_when_nothing_replays_it() {
+        let cases = [
+            ("nothing consumed", false, AfterCancel::Nothing, false),
+            ("nothing consumed, seek", false, AfterCancel::FlushingSeek, false),
+            ("consumed, plain cancel", true, AfterCancel::Nothing, true),
+            ("consumed, seek follows", true, AfterCancel::FlushingSeek, false),
+        ];
+        for (name, dropped_eos, after, expected) in cases {
+            assert_eq!(cancel_synthesizes_eos(dropped_eos, after), expected, "{name}");
+        }
+    }
+
+    /// The swap gate's drain edge fires ONCE per pad and is discarded while
+    /// no swap is armed, so `Job::PrepareNext` sampling the taps before it
+    /// writes the armed state can lose the last one for good (the prepared
+    /// input's threads then park on the condvar forever). The arm re-derives
+    /// under the armed state instead, which is what this models.
+    #[test]
+    fn an_arm_recovers_a_drain_edge_that_fired_just_before_it() {
+        // The tap's own EOS probe, which is `Inner::note_input_pad_eos`'s
+        // gate half: it only lands while a swap is pending.
+        let edge = |state: &mut SwapState| {
+            if state.pending.is_some() && !state.drained {
+                state.drained = true;
+                return true;
+            }
+            false
+        };
+
+        // The lost edge: it fires between the worker's sample and its write.
+        let mut state = SwapState::default();
+        assert!(!edge(&mut state), "no swap armed yet, the edge is discarded");
+        // The arm, with `drained` no longer sampled ahead of the lock.
+        state = SwapState {
+            pending: Some(7),
+            ..Default::default()
+        };
+        assert!(!state.drained);
+        // The re-derive the arm now performs, the taps having already
+        // stored their EOS.
+        assert!(edge(&mut state), "the armed state must take the edge");
+        assert!(state.drained);
+        // Idempotent: the real probe's later calls change nothing.
+        assert!(!edge(&mut state));
+        assert!(state.drained);
     }
 }

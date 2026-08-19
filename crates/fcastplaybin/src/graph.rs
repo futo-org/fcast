@@ -407,4 +407,58 @@ mod tests {
         assert_eq!(truncate("abc", 5), "abc");
         assert_eq!(truncate("abcdef", 5), "abcde…");
     }
+
+    /// The cut counts CHARS, not bytes: multi-byte input under the limit
+    /// stays whole even when its byte length exceeds it, and a cut lands on a
+    /// char boundary (a byte slice here would panic mid-codepoint).
+    #[test]
+    fn truncation_is_char_boundary_safe_on_multibyte_input() {
+        // 5 chars, 10 bytes: within the char limit, so untouched.
+        assert_eq!(truncate("ααααα", 5), "ααααα");
+        assert_eq!(truncate("ααααα", 3), "ααα…");
+        // 4-byte codepoints get the same treatment.
+        assert_eq!(truncate("🦀🦀🦀", 2), "🦀🦀…");
+        // The ellipsis only appears on an actual cut.
+        assert_eq!(truncate("🦀🦀🦀", 3), "🦀🦀🦀");
+        assert_eq!(truncate("", 0), "");
+    }
+
+    /// `serialize_value`: a plain value serializes, a NULL boxed value maps
+    /// to None instead of tripping the boxed serializer's NULL assert.
+    #[test]
+    fn serialize_value_skips_null_boxed_values() {
+        init();
+        assert_eq!(serialize_value(&123i32.to_value()).as_deref(), Some("123"));
+        let null_caps = gst::glib::Value::from_type(gst::Caps::static_type());
+        assert_eq!(serialize_value(&null_caps), None);
+        let real_caps = gst::Caps::builder("video/x-raw").build().to_value();
+        assert!(serialize_value(&real_caps).is_some());
+    }
+
+    /// `non_default_properties` lists exactly the properties that moved off
+    /// their default, and never `name`.
+    #[test]
+    fn non_default_properties_lists_only_changed_properties() {
+        init();
+        let stock = gst::ElementFactory::make("identity").build().unwrap();
+        let props = non_default_properties(&stock);
+        assert!(
+            !props.iter().any(|p| p.starts_with("sync=")),
+            "a default-valued property must not be listed: {props:?}"
+        );
+        assert!(
+            !props.iter().any(|p| p.starts_with("name=")),
+            "name is always skipped: {props:?}"
+        );
+
+        let tuned = gst::ElementFactory::make("identity")
+            .property("sync", true)
+            .build()
+            .unwrap();
+        let props = non_default_properties(&tuned);
+        assert!(
+            props.iter().any(|p| p == "sync=true"),
+            "a changed property must be listed as prop=value: {props:?}"
+        );
+    }
 }

@@ -85,9 +85,10 @@ pub(crate) fn sanitize_start_rate(rate: f64) -> f64 {
     }
 }
 
-/// The flushing ACCURATE seek event [`send_rate_seek`] sends, so every other
-/// issuer of "the same seek" (the refresh flush, the external-input
-/// forwarding) lands on exactly the same timeline instead of re-deriving it.
+/// The flushing seek event [`send_rate_seek`] sends (keyframe-landing, no
+/// ACCURATE), so every other issuer of "the same seek" (the refresh flush,
+/// the external-input forwarding) lands on exactly the same timeline instead
+/// of re-deriving it.
 /// `seqnum` stamps the event for callers that need to attribute the answer.
 pub(crate) fn rate_seek_event(
     rate: f64,
@@ -120,7 +121,7 @@ pub(crate) fn rate_seek_event(
     }
 }
 
-/// A flushing ACCURATE seek to `position` at `rate`, handling reverse rates
+/// A flushing keyframe seek to `position` at `rate`, handling reverse rates
 /// (seek from the end).
 pub(crate) fn send_rate_seek(
     pipeline: &gst::Pipeline,
@@ -904,6 +905,8 @@ impl FcastPlaybin {
             suppress_text_clear: Mutex::new(std::collections::HashSet::new()),
             bitmap_subs: BitmapSubsEnabled::from_env(),
             stage_join_hold_ms: AtomicU64::new(0),
+            stage_activation_delay_ms: AtomicU64::new(0),
+            arm_time_releases: AtomicU64::new(0),
             stage_text_caps_loss: std::sync::atomic::AtomicBool::new(false),
             stage_cue_loss: std::sync::atomic::AtomicU32::new(0),
             staged_joins: Mutex::new(Vec::new()),
@@ -1344,9 +1347,11 @@ impl FcastPlaybin {
     // (including the event callback and async executors).
 
     /// Set the volume (clamped to `0.0..=1.0`). Confirmation arrives as
-    /// [`PlaybinEvent::VolumeChanged`]. GObject semantics apply: setting the
-    /// current value again emits no notify (see
-    /// [`renotify_volume`](Self::renotify_volume)).
+    /// [`PlaybinEvent::VolumeChanged`]. Setting the current value again emits
+    /// no notify. The skip is this crate's, not GObject's (a plain
+    /// `set_property` notifies unconditionally, measured by
+    /// `volume_idempotent_set_emits_no_event`); callers whose protocol needs
+    /// a confirmation anyway use [`renotify_volume`](Self::renotify_volume).
     ///
     /// Volume lives on a dedicated `volume` element, NOT the audio sink: the
     /// sink is rebuilt per load, many resolved sinks expose no volume
@@ -1354,9 +1359,12 @@ impl FcastPlaybin {
     /// non-deterministically. playsink ships a dedicated volume element for
     /// the same reasons.
     pub fn set_volume(&self, volume: f64) {
-        self.inner
-            .volume
-            .set_property("volume", volume.clamp(0.0, 1.0));
+        let target = volume.clamp(0.0, 1.0);
+        let current: f64 = self.inner.volume.property("volume");
+        if current == target {
+            return;
+        }
+        self.inner.volume.set_property("volume", target);
     }
 
     /// The current volume (`0.0..=1.0`).
@@ -1590,5 +1598,95 @@ impl FcastPlaybin {
         if target > gst::State::Ready {
             let _ = self.inner.pipeline.set_state(target);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn init() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| gst::init().unwrap());
+    }
+
+    /// TRICKMODE exactly for reverse or above 2.0x. The 2.0 boundary is
+    /// INCLUSIVE on the full-quality side: a 2x "watch faster" keeps every
+    /// frame, and only just above it starts dropping.
+    #[test]
+    fn trickmode_is_reverse_or_strictly_above_two_x() {
+        let full_quality = [0.5, 1.0, 1.25, 1.5, 2.0];
+        for rate in full_quality {
+            let flags = seek_flags_for(rate);
+            assert!(
+                !flags.contains(gst::SeekFlags::TRICKMODE),
+                "rate {rate} must stay full quality"
+            );
+            assert!(flags.contains(gst::SeekFlags::FLUSH));
+        }
+        let trick = [2.0000001, 2.5, 4.0, -0.5, -1.0, -2.0];
+        for rate in trick {
+            let flags = seek_flags_for(rate);
+            assert!(
+                flags.contains(gst::SeekFlags::TRICKMODE),
+                "rate {rate} must enable trickmode"
+            );
+            assert!(flags.contains(gst::SeekFlags::FLUSH));
+        }
+    }
+
+    fn seek_fields(
+        event: &gst::Event,
+    ) -> (
+        f64,
+        gst::SeekFlags,
+        gst::SeekType,
+        Option<gst::ClockTime>,
+        gst::SeekType,
+        Option<gst::ClockTime>,
+    ) {
+        let gst::EventView::Seek(seek) = event.view() else {
+            panic!("rate_seek_event built something other than a seek");
+        };
+        let (rate, flags, start_type, start, stop_type, stop) = seek.get();
+        let time = |value: gst::GenericFormattedValue| match value {
+            gst::GenericFormattedValue::Time(t) => t,
+            other => panic!("a non-time bound in the seek: {other:?}"),
+        };
+        (rate, flags, start_type, time(start), stop_type, time(stop))
+    }
+
+    /// A forward rate anchors the START at the position and leaves the stop
+    /// open, and the caller's seqnum stamps the event.
+    #[test]
+    fn a_forward_rate_seek_is_set_anchored_at_the_position() {
+        init();
+        let seqnum = gst::Seqnum::next();
+        let position = gst::ClockTime::from_seconds(5);
+        let event = rate_seek_event(1.5, position, Some(seqnum));
+        assert_eq!(event.seqnum(), seqnum);
+        let (rate, flags, start_type, start, stop_type, stop) = seek_fields(&event);
+        assert_eq!(rate, 1.5);
+        assert_eq!(flags, gst::SeekFlags::FLUSH);
+        assert_eq!(start_type, gst::SeekType::Set);
+        assert_eq!(start, Some(position));
+        assert_eq!(stop_type, gst::SeekType::None);
+        assert_eq!(stop, gst::ClockTime::NONE);
+    }
+
+    /// A reverse rate builds the End-anchored pair: play [0, position]
+    /// backwards, with the stop naming the position and trickmode on.
+    #[test]
+    fn a_reverse_rate_seek_is_the_end_anchored_pair() {
+        init();
+        let position = gst::ClockTime::from_seconds(7);
+        let event = rate_seek_event(-1.0, position, None);
+        let (rate, flags, start_type, start, stop_type, stop) = seek_fields(&event);
+        assert_eq!(rate, -1.0);
+        assert_eq!(flags, gst::SeekFlags::FLUSH | gst::SeekFlags::TRICKMODE);
+        assert_eq!(start_type, gst::SeekType::Set);
+        assert_eq!(start, Some(gst::ClockTime::ZERO));
+        assert_eq!(stop_type, gst::SeekType::End);
+        assert_eq!(stop, Some(position));
     }
 }

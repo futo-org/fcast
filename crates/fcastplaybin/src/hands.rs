@@ -1206,4 +1206,55 @@ mod tests {
         assert_eq!(hands.in_flight(), 1, "a warning is not a retirement");
         assert!(hands.complete(id));
     }
+
+    /// [`Effect::lane`] and [`Outcome::lane`] must agree per effect kind, or
+    /// an outcome retires on the wrong lane. The whole table: every outcome a
+    /// lane body can produce for an effect names that effect's own lane.
+    #[test]
+    fn every_outcome_retires_on_the_lane_of_its_effect() {
+        gst::init().unwrap();
+        let seqnum = gst::Seqnum::next();
+
+        let select_outcomes = [
+            Outcome::SelectSent {
+                seqnum,
+                upstream_ids: None,
+            },
+            Outcome::SelectRefused { seqnum },
+            Outcome::SelectSkipped {
+                seqnum,
+                reason: SKIPPED_STALE_EPOCH,
+            },
+        ];
+        for outcome in select_outcomes {
+            assert_eq!(
+                outcome.lane(),
+                select_effect(seqnum).lane(),
+                "{outcome:?} must retire on the select lane"
+            );
+        }
+
+        let replay = Outcome::ReplaySent {
+            sub_id: ExternalSubId(1),
+            epoch: 0,
+            attempt: 0,
+            accepted: 1,
+            total: 1,
+        };
+        assert_eq!(replay.lane(), replay_effect().lane());
+
+        let join = Outcome::JoinFinished {
+            kind: StreamKind::Audio,
+        };
+        assert_eq!(join.lane(), join_effect().lane());
+    }
+
+    /// The wrong-lane fallback traps under debug assertions: a misrouted
+    /// effect is structurally impossible, and a debug build says so loudly.
+    #[cfg(debug_assertions)]
+    #[test]
+    #[should_panic(expected = "an effect reached the wrong hands lane")]
+    fn the_wrong_lane_fallback_traps_in_debug_builds() {
+        wrong_lane(Lane::Select);
+    }
 }

@@ -1557,3 +1557,66 @@ impl FcastPlaybin {
             .collect()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{FlowStage, FlushReason};
+    use crate::FcastPlaybin;
+
+    /// Every census name pinned to its variant and every variant to its
+    /// counter slot in ALL. The by-name accessors panic on an unknown name,
+    /// so with the literals held here a rename is a red test, never an
+    /// assertion silently reading zero from the wrong counter.
+    #[test]
+    fn flush_reason_names_and_counter_slots_round_trip() {
+        for reason in FlushReason::ALL {
+            // Exhaustive on purpose: a new reason fails to compile here
+            // until it is named, ordered into ALL and counted.
+            let name = match reason {
+                FlushReason::TeardownText => "teardown_text",
+                FlushReason::TeardownDb3 => "teardown_db3",
+                FlushReason::DisposalQueue => "disposal_queue",
+                FlushReason::TeardownQueue => "teardown_queue",
+                FlushReason::RemoveInput => "remove_input",
+                FlushReason::DisposalConsumer => "disposal_consumer",
+                FlushReason::TeardownConsumer => "teardown_consumer",
+            };
+            assert_eq!(reason.name(), name);
+            // `reason as usize` indexes FLUSH_PAIRS, so ALL must list the
+            // variants in declaration order or counts land on the wrong row.
+            assert_eq!(FlushReason::ALL[reason as usize], reason, "{name} slot");
+            // The resolver a test asserts through reaches the same counter.
+            let _ = FcastPlaybin::crate_flush_pairs_for(name);
+        }
+        let names = FlushReason::ALL.map(FlushReason::name);
+        for (i, name) in names.iter().enumerate() {
+            assert!(
+                !names[..i].contains(name),
+                "duplicate census name {name:?} merges two reasons"
+            );
+        }
+    }
+
+    /// The same pin for the flow census stages.
+    #[test]
+    fn flow_stage_names_and_counter_slots_round_trip() {
+        for stage in FlowStage::ALL {
+            let name = match stage {
+                FlowStage::DetachTextParts => "detach_text_parts",
+                FlowStage::RemoveInput => "remove_input",
+                FlowStage::RemoveVideoChain => "remove_video_chain",
+                FlowStage::EnsureVideoChain => "ensure_video_chain",
+            };
+            assert_eq!(stage.name(), name);
+            assert_eq!(FlowStage::ALL[stage as usize], stage, "{name} slot");
+            let _ = FcastPlaybin::flow_census_flushing_for(name);
+        }
+        let names = FlowStage::ALL.map(FlowStage::name);
+        for (i, name) in names.iter().enumerate() {
+            assert!(
+                !names[..i].contains(name),
+                "duplicate census name {name:?} merges two stages"
+            );
+        }
+    }
+}

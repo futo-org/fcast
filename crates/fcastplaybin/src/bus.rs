@@ -8,7 +8,7 @@ use tracing::{debug, warn};
 
 use crate::{
     FcastPlaybin, Inner,
-    api::{ErrorOrigin, ExternalSubId, MessageHook, PlaybinEvent},
+    api::{AfterCancel, ErrorOrigin, ExternalSubId, MessageHook, PlaybinEvent},
     decisions,
     jobs::Job,
     routing::StreamKind,
@@ -28,6 +28,32 @@ enum ErrorSource {
     /// abandoned and reported as [`PlaybinEvent::PreparedFailed`].
     Prepared(u64),
     Unknown,
+}
+
+/// The generation ladder of [`Inner::classify_error_src`], with the gst
+/// ancestry walk supplied as a per-input bool so the attribution can be
+/// pinned without a pipeline. `inputs` yields (the src is from this input,
+/// the input's generation, its external id).
+fn classify_matched_input(
+    current: u64,
+    inputs: impl IntoIterator<Item = (bool, u64, Option<ExternalSubId>)>,
+) -> ErrorSource {
+    for (is_from_input, generation, external) in inputs {
+        if !is_from_input {
+            continue;
+        }
+        if generation > current {
+            return ErrorSource::Prepared(generation);
+        }
+        if generation != current {
+            return ErrorSource::Stale;
+        }
+        return match external {
+            Some(id) => ErrorSource::External(id),
+            None => ErrorSource::Main,
+        };
+    }
+    ErrorSource::Unknown
 }
 
 impl Inner {
@@ -138,24 +164,18 @@ impl Inner {
         };
         let generation = self.current_generation();
         let routing = self.routing.lock();
-        for input in &routing.inputs {
-            let is_from_input = src == input.element.upcast_ref::<gst::Object>()
-                || src.has_as_ancestor(&input.element);
-            if !is_from_input {
-                continue;
-            }
-            if input.generation > generation {
-                return ErrorSource::Prepared(input.generation);
-            }
-            if input.generation != generation {
-                return ErrorSource::Stale;
-            }
-            return match &input.external {
-                Some(external) => ErrorSource::External(external.id),
-                None => ErrorSource::Main,
-            };
-        }
-        ErrorSource::Unknown
+        classify_matched_input(
+            generation,
+            routing.inputs.iter().map(|input| {
+                let is_from_input = src == input.element.upcast_ref::<gst::Object>()
+                    || src.has_as_ancestor(&input.element);
+                (
+                    is_from_input,
+                    input.generation,
+                    input.external.as_ref().map(|external| external.id),
+                )
+            }),
+        )
     }
 
     /// Translate a bus message into its typed event, applying the crate's
@@ -210,7 +230,10 @@ impl Inner {
                             debug = ?error.debug(),
                             "prepared next input failed before activation"
                         );
-                        self.queue_job(Job::CancelPrepared { notify: false });
+                        self.queue_job(Job::CancelPrepared {
+                            notify: false,
+                            after: AfterCancel::Nothing,
+                        });
                         self.queue_state_unlatch();
                         self.emit(PlaybinEvent::PreparedFailed { generation });
                         return None;
@@ -565,7 +588,12 @@ impl Inner {
                             // Owed either way. The hold is discharged by the
                             // outcome of a replay for this `(id, epoch)`
                             // (`Inner::release_owed_hold`), and a suppressed
-                            // duplicate carries the same key.
+                            // duplicate carries the same key. The bit is read
+                            // HERE and the owing is written by the call below,
+                            // so the rival's outcome can settle in between and
+                            // find nothing owed; `unblock_selected_externals`
+                            // re-reads the bit at its tail for exactly that
+                            // window.
                             if sent && !inline_hold_release {
                                 owed_release = Some((id, epoch));
                             }
@@ -712,5 +740,66 @@ impl FcastPlaybin {
             }
             gst::BusSyncReply::Drop
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ErrorSource, ExternalSubId, classify_matched_input};
+
+    const MAIN: Option<ExternalSubId> = None;
+
+    /// The 5-way attribution ladder, pinned per rung. Misattribution is
+    /// user-visible: a prepared or stale input's death surfaced as `Main`
+    /// shows a spurious playback error for an item that is playing fine.
+    #[test]
+    fn error_attribution_names_each_generation_rung() {
+        // Ahead of the current generation: a pre-armed next input, consumed
+        // internally and reported as PreparedFailed with ITS generation.
+        assert!(matches!(
+            classify_matched_input(5, [(true, 6, MAIN)]),
+            ErrorSource::Prepared(6)
+        ));
+        // Behind: a superseded input still leaving the pipeline.
+        assert!(matches!(
+            classify_matched_input(5, [(true, 4, MAIN)]),
+            ErrorSource::Stale
+        ));
+        // Current generation with an external id: the fail/re-arm decision
+        // consumes it, never the caller.
+        assert!(matches!(
+            classify_matched_input(5, [(true, 5, Some(ExternalSubId(3)))]),
+            ErrorSource::External(ExternalSubId(3))
+        ));
+        // The current main input, the one origin a caller tears down over.
+        assert!(matches!(
+            classify_matched_input(5, [(true, 5, MAIN)]),
+            ErrorSource::Main
+        ));
+        // No input claims the src at all: unattributable.
+        assert!(matches!(
+            classify_matched_input(5, [(false, 5, MAIN), (false, 6, MAIN)]),
+            ErrorSource::Unknown
+        ));
+        assert!(matches!(
+            classify_matched_input(5, std::iter::empty::<(bool, u64, Option<ExternalSubId>)>()),
+            ErrorSource::Unknown
+        ));
+    }
+
+    /// The ladder acts on the FIRST input that claims the src and never
+    /// reads past it, so a later input cannot steal the attribution.
+    #[test]
+    fn error_attribution_stops_at_the_first_claiming_input() {
+        assert!(matches!(
+            classify_matched_input(5, [(false, 5, MAIN), (true, 4, MAIN), (true, 5, MAIN)]),
+            ErrorSource::Stale
+        ));
+        // The ahead check outranks the behind check on the same input, so a
+        // prepare is never misread as stale drainage.
+        assert!(matches!(
+            classify_matched_input(5, [(true, 9, Some(ExternalSubId(1)))]),
+            ErrorSource::Prepared(9)
+        ));
     }
 }

@@ -78,9 +78,10 @@ mod pipeline_tests;
 mod tests;
 
 pub use api::{
-    AudioSink, AudioSinkFactory, BitmapSubFormat, CueIr, ErrorOrigin, ExternalSubId, MediaInput,
-    MessageHook, PlaybinEvent, Sinks, SourceDbg, StartOutcome, StartPoint, StreamIoStats,
-    SubtitleConsumer, SubtitleFeedItem, SubtitleTextFormat, bitmap_format_implemented,
+    AfterCancel, AudioSink, AudioSinkFactory, BitmapSubFormat, CueIr, ErrorOrigin, ExternalSubId,
+    MediaInput, MessageHook, PlaybinEvent, Sinks, SourceDbg, StartOutcome, StartPoint,
+    StreamIoStats, SubtitleConsumer, SubtitleFeedItem, SubtitleTextFormat,
+    bitmap_format_implemented,
 };
 
 pub use buffering::{BufferedRange, BufferingInfo};
@@ -497,6 +498,26 @@ struct Inner {
     /// sites instead of delivering them, staging in-flight destruction
     /// (buffers lost, events kept). Per instance, one unit per cue.
     stage_cue_loss: std::sync::atomic::AtomicU32,
+    /// TEST FAULT INJECTION, in milliseconds; `0` is off.
+    ///
+    /// Sleeps at the top of `activate_prepared_now`, staging the R1 window
+    /// reproducibly. The selection-side activation trigger runs on a bus
+    /// posting thread with no ordering against the audio data plane, so on a
+    /// reused slot the new item's STREAM_START can cross a near-empty
+    /// `fpb-aqueue` before the activation arms `held_activation`. Exactly one
+    /// STREAM_START crosses per item, so an arm after that edge would wait
+    /// forever (the queue_autoplay tracks-never-advertised boundary wedge)
+    /// without the arm-time sticky check in `activate_prepared_now`.
+    ///
+    /// PER INSTANCE for the reason [`Inner::stage_join_hold_ms`] gives at
+    /// length. The sleep holds no crate lock and the data plane keeps
+    /// flowing through it, which is exactly the field's window.
+    stage_activation_delay_ms: AtomicU64,
+    /// How many activations took the arm-time spent-edge branch above (see
+    /// [`FcastPlaybin::arm_time_activation_releases`]). Diagnostic only, and
+    /// PER INSTANCE so a test can pin the branch in its own pipeline instead
+    /// of in a log buffer the whole test binary shares.
+    arm_time_releases: AtomicU64,
     /// Branches [`Inner::stage_join_hold_ms`] is holding at NULL, with the
     /// instant each may be brought up. Released by the next text poll.
     ///
@@ -771,7 +792,10 @@ struct Inner {
     /// EOS of a group passed, its siblings pass too, streamsynchronizer
     /// completes the group and re-emits EOS on its src pads, where the
     /// post-ssync gate consumes them before they reach the sinks. Reset per
-    /// load.
+    /// load. Lock order: taken OUTSIDE `active_group`, `retired_group` and
+    /// `swap_gate.state`, which [`Inner::gapless_eos_gate`] holds under it
+    /// to decide and commit atomically. Never take it while holding any of
+    /// those three.
     passing_eos_group: Mutex<Option<gst::GroupId>>,
     /// Stream ids whose INPUT-side stream has delivered EOS into decodebin3
     /// and has not been restarted by a flush since (recorded by a probe on

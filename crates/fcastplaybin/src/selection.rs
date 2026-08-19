@@ -125,7 +125,17 @@ pub(crate) struct PumpCtx {
     /// this mode are the ones this crate produces
     /// ([`Command::ConfirmApplied`]).
     pub(crate) upstream_owns: bool,
+    /// The clock at this pump, for the bounded subtitle holdback. The engine
+    /// reads no clock of its own (same rule as the deadline advisories, which
+    /// arrive as absolute due times).
+    pub(crate) now: Instant,
 }
+
+/// How long the subtitle holdback waits for the collection to announce video
+/// before dispatching anyway (see [`SelectionEngine::resolve`]). Long enough
+/// to cover decodebin3 merging its inputs one collection at a time, short
+/// enough that a media which never announces video still answers the request.
+const SUBTITLE_HOLDBACK_GRACE: Duration = Duration::from_secs(1);
 
 /// What the pump decided to dispatch next.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -279,6 +289,13 @@ pub(crate) struct SelectionEngine {
     /// The same, for the in-flight refresh seek: its seqnum and when it runs
     /// out. Validated against `refreshing` the same lazy way.
     refresh_deadline: Option<(gst::Seqnum, Instant)>,
+    /// When the subtitle holdback first deferred a resolution, i.e. how long
+    /// the desire has been waiting for the collection to announce video.
+    /// `Some` is the ONE deferral no event is guaranteed to lift, so it keeps
+    /// the engine unconverged (the pump is poked while it is) and it bounds
+    /// itself with [`SUBTITLE_HOLDBACK_GRACE`]. Cleared by every resolve that
+    /// does not hold back.
+    subtitle_held_since: Option<Instant>,
 }
 
 impl SelectionEngine {
@@ -454,6 +471,14 @@ impl SelectionEngine {
         self.desired_subtitle == Some(SubtitleDesire::External(id))
     }
 
+    /// Whether `sid` is in the advertised collection. The refusal gate for a
+    /// caller-supplied selection: decodebin3 ignores a `SELECT_STREAMS`
+    /// naming an unknown id wholesale and never confirms it, so an unknown
+    /// id must be refused up front rather than queued into silence.
+    pub(crate) fn knows_stream(&self, sid: &str) -> bool {
+        self.collection.iter().any(|stream| stream.sid == sid)
+    }
+
     /// An `ExternalSubtitleFailed` fired or the input was detached: a desire
     /// parked on it would otherwise park forever. Resets to UNSET (whatever is
     /// showing keeps showing), not to "off".
@@ -491,13 +516,16 @@ impl SelectionEngine {
             self.text_state_known = true;
         }
 
-        // A report is upstream's own word, so `applied` is about to be set from
-        // evidence rather than optimism on every arm below: nothing left to
-        // roll back to.
-        self.applied_before_dispatch = None;
-
+        // A report is upstream's own word, so `applied` is set from evidence
+        // rather than optimism on every arm that adopts it: nothing left to
+        // roll back to. The ONE arm that adopts nothing (the superseded echo
+        // restoring a still-live wait) re-points the anchor at the report
+        // instead of clearing it, since that wait is still optimistic.
         match self.selecting.take() {
             None => {
+                // Nothing in flight, so no optimistic `applied` is anchored on
+                // the snapshot whatever this report turns out to be.
+                self.applied_before_dispatch = None;
                 // The overtake path below abandons the live wait without
                 // clearing the superseded records, so an echo of ours can
                 // land here with nothing in flight.
@@ -518,6 +546,7 @@ impl SelectionEngine {
             }
             Some((expected, desired_sel)) => {
                 if expected == seqnum || &desired_sel == reported {
+                    self.applied_before_dispatch = None;
                     self.applied = reported.clone();
                     self.superseded.clear();
                     // Ours settled. Anything the report still diverges on
@@ -528,10 +557,19 @@ impl SelectionEngine {
                 if self.take_superseded_echo(seqnum, reported) {
                     // A superseded dispatch's late confirmation. It is ours
                     // but stale, and the live request's own confirmation is
-                    // still en route.
+                    // still en route, so it must not be adopted as `applied`.
+                    //
+                    // It IS upstream's latest word though, so it becomes the
+                    // ROLLBACK ANCHOR of the still-optimistic live wait.
+                    // Wiping the anchor here left a refusal of that wait with
+                    // nothing to put back (`applied` kept the refused target);
+                    // keeping the pre-chain snapshot would put back a state
+                    // this very report says upstream has left.
+                    self.applied_before_dispatch = Some(reported.clone());
                     self.selecting = Some((expected, desired_sel));
                     return;
                 }
+                self.applied_before_dispatch = None;
                 self.applied = reported.clone();
                 debug!(?desired_sel, ?reported, "selection overtaken, re-asserting");
                 self.dirty = true;
@@ -677,6 +715,17 @@ impl SelectionEngine {
                 "rolling back a refused selection's optimistic applied"
             );
             self.applied = previous;
+        }
+        // A SUPERSEDE CHAIN: an older sibling really left, so the rollback
+        // above puts back a state upstream has already moved past, and that
+        // sibling's own late confirmation is drained as a stale echo rather
+        // than re-asserting anything. Without this the engine rests with
+        // `applied` diverged from what is playing, `dirty` false and no
+        // deadline. Re-dirtying keeps the desire dispatchable; it costs at
+        // most one re-dispatch, which the chain's own confirmations settle.
+        if !self.superseded.is_empty() {
+            debug!("a refusal inside a supersede chain; re-asserting the desire");
+            self.dirty = true;
         }
     }
 
@@ -908,6 +957,7 @@ impl SelectionEngine {
             || self.refresh_wanted
             || self.unanswered_request
             || self.awaiting_external
+            || self.subtitle_held_since.is_some()
             || self.selecting.is_some()
             || self.refreshing.is_some()
     }
@@ -1001,7 +1051,10 @@ impl SelectionEngine {
     /// concrete selection to dispatch. `None` when nothing is dispatchable
     /// (no collection yet, or the resolution is the empty selection, which
     /// decodebin3 asserts on).
-    fn resolve(&self, ctx: &PumpCtx) -> Option<TrackSelection> {
+    fn resolve(&mut self, ctx: &PumpCtx) -> Option<TrackSelection> {
+        // Re-armed below only if the holdback defers again, so every other
+        // outcome (including the ones returning early) ends the wait.
+        let held_since = self.subtitle_held_since.take();
         if self.collection.is_empty() {
             return None;
         }
@@ -1096,19 +1149,34 @@ impl SelectionEngine {
             if !video_is_being_turned_off
                 && std::env::var_os("FCAST_NO_SUBTITLE_HOLDBACK").is_none()
             {
+                // decodebin3 grows its merged collection as each input
+                // reports, so a resolution early in a load can see audio and
+                // text with no video yet. An event whose whole content is
+                // dropping the text stream turns a request to ENABLE a
+                // subtitle into one that disables it, and decodebin3 then
+                // never auto-selects text again. Wait: the collection change
+                // that brings video in re-dirties the desire.
+                //
+                // BOUNDED, because that premise fails on media that never
+                // announces video at all: no collection change is coming, the
+                // pump has already consumed `dirty`, and the desire (plus the
+                // request it answers) was swallowed for the life of the item.
+                // Past the grace the dispatch goes out with the subtitle kept,
+                // exactly as the sibling arm below sends it.
                 if only_the_subtitle_moves {
-                    // decodebin3 grows its merged collection as each input
-                    // reports, so a resolution early in a load can see audio
-                    // and text with no video yet. An event whose whole content
-                    // is dropping the text stream turns a request to ENABLE a
-                    // subtitle into one that disables it, and decodebin3 then
-                    // never auto-selects text again. Wait: the collection
-                    // change that brings video in re-dirties the desire.
+                    let since = held_since.unwrap_or(ctx.now);
+                    if ctx.now.saturating_duration_since(since) < SUBTITLE_HOLDBACK_GRACE {
+                        self.subtitle_held_since = Some(since);
+                        debug!(
+                            collection = ?self.collection,
+                            "holding the subtitle selection back until the collection announces video"
+                        );
+                        return None;
+                    }
                     debug!(
                         collection = ?self.collection,
-                        "holding the subtitle selection back until the collection announces video"
+                        "the collection never announced video; dispatching the held subtitle"
                     );
-                    return None;
                 }
                 // Another slot has real work, so this dispatch cannot wait.
                 // Send it with the subtitle KEPT. The video pinning the event
@@ -1175,16 +1243,25 @@ impl SelectionEngine {
         let external_arrived = self.awaiting_external && !unresolved_external;
         self.awaiting_external = unresolved_external;
 
-        if self.dirty || external_arrived {
+        // The subtitle holdback deferred a resolution and nothing is bound to
+        // re-dirty it, so the pump has to come back to it on its own until the
+        // grace runs out (see `resolve`).
+        let holding_back = self.subtitle_held_since.is_some();
+
+        if self.dirty || external_arrived || holding_back {
             self.dirty = false;
+            // ONE resolution per pump: `resolve` ends the holdback wait it
+            // owns, so asking twice would answer the second question against
+            // state the first one changed.
+            let resolved = self.resolve(ctx);
             // An already-satisfied USER request still has to be answered, and
             // only this crate can in upstream-selection mode. The flag is
             // taken either way: in db3-owned mode decodebin3 owns that channel,
             // and leaving it set would answer a later, unrelated pump.
             // `desires_resolvable` FIRST: an unresolvable desire must not even
             // consume the flag, or the request is lost.
-            if let Some(target) = self.resolve(ctx)
-                && target == self.applied
+            if let Some(target) = &resolved
+                && *target == self.applied
                 && self.desires_resolvable(ctx)
                 && std::mem::take(&mut self.unanswered_request)
                 && ctx.upstream_owns
@@ -1193,9 +1270,9 @@ impl SelectionEngine {
                     ?target,
                     "a user request is already satisfied; confirming it locally"
                 );
-                return Some(Command::ConfirmApplied(target));
+                return Some(Command::ConfirmApplied(target.clone()));
             }
-            if let Some(target) = self.resolve(ctx)
+            if let Some(target) = resolved
                 && target != self.applied
             {
                 // The dispatch's own confirmation answers the request.
@@ -1320,6 +1397,16 @@ mod tests {
             externals: Vec::new(),
             // These cases predate the split and model db3-owned mode.
             upstream_owns: false,
+            now: Instant::now(),
+        }
+    }
+
+    /// [`ctx`] with the pump's clock pinned, for the cases that drive the
+    /// bounded subtitle holdback.
+    fn ctx_at(quiet: bool, paused: bool, now: Instant) -> PumpCtx {
+        PumpCtx {
+            now,
+            ..ctx(quiet, paused)
         }
     }
 
@@ -1517,6 +1604,7 @@ mod tests {
                 .iter()
                 .map(|(id, sids)| (*id, sids.iter().map(|s| s.to_string()).collect()))
                 .collect(),
+            now: Instant::now(),
         }
     }
 
@@ -2393,23 +2481,18 @@ mod tests {
         );
     }
 
-    /// CHARACTERIZATION, not an endorsement. On a media with NO video at all a
-    /// subtitle request is held back FOREVER and the caller is never told.
+    /// On a media with NO video at all the holdback's premise never holds: the
+    /// collection change that brings video in is not coming, and `pump` clears
+    /// `dirty` before `resolve` answers `None`. Nothing was dispatched, no
+    /// `ConfirmApplied` was produced and `unanswered_request` stayed set for
+    /// the life of the item, so the request was swallowed whole.
     ///
-    /// The holdback's only recovery is the collection change that brings video
-    /// in, and `pump` clears `dirty` before `resolve` answers `None`. For an
-    /// audio+text item no such collection is coming, so nothing is dispatched,
-    /// no `ConfirmApplied` is produced and `unanswered_request` stays set for
-    /// the life of the item, keeping `unconverged()` true at rest.
-    ///
-    /// The premise (no text without video) was written for `subtitleoverlay`,
-    /// which composited cues onto frames. The v2 transport hands cues to a
-    /// consumer the driver knows nothing about, so the premise is now the
-    /// CALLER's. Changing it is a real behaviour change, since the holdback
-    /// also stops a subtitle-ENABLE being answered by an event that disables
-    /// it, so it is recorded rather than done quietly.
+    /// The wait is bounded now: while it lasts the engine counts as
+    /// unconverged (which is what keeps the pump poked at all), and past
+    /// [`SUBTITLE_HOLDBACK_GRACE`] the switch goes out with the subtitle KEPT,
+    /// exactly as the sibling arm sends it when another slot has work.
     #[test]
-    fn a_video_less_item_never_answers_a_subtitle_request() {
+    fn a_video_less_item_eventually_dispatches_a_held_back_subtitle() {
         let mut engine = SelectionEngine::new();
         engine.collection_changed(collection(&[
             ("a0", StreamKind::Audio),
@@ -2418,26 +2501,95 @@ mod tests {
         ]));
         engine.streams_selected(gst::Seqnum::next(), &sel(None, Some("a0"), Some("t0")));
 
+        let t0 = Instant::now();
         engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t1".into())));
-        // Held back, and `dirty` is consumed by the attempt.
-        assert_eq!(engine.pump(&ctx(true, false)), None);
+        // Held back, and `dirty` is consumed by the attempt: only the wait
+        // itself brings the pump back.
+        assert_eq!(engine.pump(&ctx_at(true, false, t0)), None);
         assert!(!engine.has_dispatchable_work());
-        // Every later pump, quiet or not, upstream-owned or not, decides
-        // nothing, since no event is left that can re-dirty this.
-        for _ in 0..8 {
-            assert_eq!(engine.pump(&ctx(true, false)), None);
-            assert_eq!(engine.pump(&ctx_upstream(true, false)), None);
-            assert_eq!(engine.pump(&ctx(true, true)), None);
+        assert!(
+            engine.unconverged(),
+            "a held-back desire must keep the engine poked"
+        );
+        // Inside the grace the collection could still be growing a video
+        // stream, so every pump keeps waiting.
+        for step in 1..5 {
+            let now = t0 + Duration::from_millis(100 * step);
+            assert_eq!(engine.pump(&ctx_at(true, false, now)), None);
+            assert_eq!(engine.pump(&ctx_at(true, true, now)), None);
         }
         assert_eq!(
             engine.applied().subtitle.as_deref(),
             Some("t0"),
-            "the request never took effect"
+            "the switch went out before the collection had its chance"
+        );
+
+        // No video ever came. The switch dispatches with the subtitle kept.
+        let late = t0 + SUBTITLE_HOLDBACK_GRACE;
+        let target = sel(None, Some("a0"), Some("t1"));
+        assert_eq!(
+            engine.pump(&ctx_at(true, false, late)),
+            Some(Command::SelectStreams(target.clone()))
+        );
+        let sn = gst::Seqnum::next();
+        engine.selection_dispatched(sn, target.clone());
+        engine.streams_selected(sn, &target);
+        assert!(
+            engine.subtitle_held_since.is_none(),
+            "the wait outlived the dispatch that ended it"
         );
         assert!(
-            engine.unconverged(),
-            "the request is still owed an answer nobody will give"
+            !engine.unanswered_request,
+            "the dispatch's own confirmation answers the request"
         );
+    }
+
+    /// The same wait, on the request the field actually loses: an external
+    /// subtitle attached to an audio-only item with `select=true`.
+    ///
+    /// `collection_changed` seeds the text slot with the external's stream, so
+    /// the resolution EQUALS `applied` and the only thing owed is the answer -
+    /// which the holdback swallowed with the resolution, leaving the input held
+    /// and the caller waiting for a confirmation that never came.
+    #[test]
+    fn a_video_less_item_answers_a_held_back_external_request() {
+        let ext = ExternalSubId(3);
+        let mut engine = SelectionEngine::new();
+        engine.collection_changed(collection(&[("a0", StreamKind::Audio)]));
+        engine.streams_selected(gst::Seqnum::next(), &sel(None, Some("a0"), None));
+        // The external input's stream is merged in.
+        engine.collection_changed(collection(&[
+            ("a0", StreamKind::Audio),
+            ("ext-t", StreamKind::Text),
+        ]));
+
+        let t0 = Instant::now();
+        engine.request(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(ext));
+        let held = PumpCtx {
+            now: t0,
+            upstream_owns: true,
+            ..ctx_ext(true, false, &[(ext, &["ext-t"])])
+        };
+        assert_eq!(engine.pump(&held), None);
+        assert!(
+            engine.unconverged(),
+            "the request is owed an answer only this crate can give"
+        );
+
+        let late = PumpCtx {
+            now: t0 + SUBTITLE_HOLDBACK_GRACE,
+            ..held
+        };
+        assert_eq!(
+            engine.pump(&late),
+            Some(Command::ConfirmApplied(sel(
+                None,
+                Some("a0"),
+                Some("ext-t")
+            ))),
+            "the held-back request was never answered"
+        );
+        assert!(!engine.unconverged());
     }
 
     /// A report that PREDATES half the collection must not leave the engine
@@ -2639,6 +2791,96 @@ mod tests {
             engine.applied().subtitle,
             None,
             "a superseded dispatch's late echo must not revert the applied selection"
+        );
+    }
+
+    /// A supersede chain whose SENT head confirms and whose superseding head
+    /// is then refused: the engine must come to rest on what upstream really
+    /// applied, not on the refused target and not on the pre-chain guess.
+    ///
+    /// The chain: paused dispatch sn1 (really sent, parked at decodebin3),
+    /// superseded by sn2 (`applied` optimistic, anchor still the pre-chain
+    /// state). The resume's flushing seek lands mid-send of sn2, so sn1
+    /// confirms and sn2 is refused. Clearing the anchor on the way through the
+    /// echo left `dispatch_failed` nothing to roll back to: `applied` kept the
+    /// refused target, `desired == applied`, nothing dirty, no wait, no
+    /// deadline, and `poll_text_policy` linking a subtitle upstream never
+    /// selected.
+    #[test]
+    fn a_refusal_after_a_superseded_echo_rolls_back_to_the_report() {
+        let mut engine = settled_engine();
+        engine.request(TrackSlot::Audio, TrackTarget::Stream(Some("a1".into())));
+        let first = sel(Some("v0"), Some("a1"), Some("t0"));
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(first.clone()))
+        );
+        let sn1 = gst::Seqnum::next();
+        engine.selection_dispatched(sn1, first.clone());
+
+        // Paused, so the next request supersedes the parked dispatch.
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t1".into())));
+        let second = sel(Some("v0"), Some("a1"), Some("t1"));
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(second.clone()))
+        );
+        let sn2 = gst::Seqnum::next();
+        engine.selection_dispatched(sn2, second.clone());
+
+        // The resume makes data flow and the parked sn1 confirms. The live
+        // wait is restored, and nothing is adopted.
+        engine.streams_selected(sn1, &first);
+        assert!(engine.selection_in_flight(sn2), "the live wait was settled");
+
+        // The same flush refused sn2 mid-send: it never left.
+        engine.dispatch_failed(sn2);
+        assert_eq!(
+            engine.applied(),
+            &first,
+            "the refusal must put back what upstream last confirmed"
+        );
+    }
+
+    /// The other order of the same chain: the refusal first, the sent head's
+    /// confirmation after it.
+    ///
+    /// `dispatch_failed` rolls back to the pre-chain snapshot, which the sent
+    /// sibling has already moved upstream past, and that sibling's own
+    /// confirmation is then drained as a stale echo - skipping adoption AND
+    /// the divergence check. The desire has to survive that, or the engine
+    /// rests with `applied`, the desire and decodebin3 all disagreeing.
+    #[test]
+    fn a_refusal_inside_a_supersede_chain_keeps_the_desire_dispatchable() {
+        let mut engine = settled_engine();
+        engine.request(TrackSlot::Audio, TrackTarget::Stream(Some("a1".into())));
+        let first = sel(Some("v0"), Some("a1"), Some("t0"));
+        assert!(engine.pump(&ctx(true, true)).is_some());
+        let sn1 = gst::Seqnum::next();
+        engine.selection_dispatched(sn1, first.clone());
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t1".into())));
+        let second = sel(Some("v0"), Some("a1"), Some("t1"));
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(second.clone()))
+        );
+        let sn2 = gst::Seqnum::next();
+        engine.selection_dispatched(sn2, second.clone());
+
+        engine.dispatch_failed(sn2);
+        assert!(
+            engine.has_dispatchable_work(),
+            "a refusal with a sent sibling outstanding left nothing to re-assert"
+        );
+
+        // The sibling's late confirmation is ours but stale, so it is drained
+        // rather than adopted, and it must not take the desire with it.
+        engine.streams_selected(sn1, &first);
+        assert_eq!(
+            engine.pump(&ctx(true, true)),
+            Some(Command::SelectStreams(second)),
+            "the superseding desire was never asked for again"
         );
     }
 
@@ -2898,6 +3140,7 @@ mod tests {
                 externals_attached: !self.externals.is_empty(),
                 externals: self.externals.clone(),
                 upstream_owns: false,
+                now: Instant::now(),
             }
         }
 
@@ -3730,5 +3973,107 @@ mod tests {
             },
             DeadlineFire::Refresh(seqnum) => engine.refresh_failed(seqnum),
         }
+    }
+
+    /// With NOTHING refreshing, `refresh_superseded` is false (a caller may
+    /// force a refresh the engine never tracked, and that job must run) while
+    /// its `==` sibling `refresh_in_flight` is also false. The two differ
+    /// ONLY on the None case, and collapsing them flips one of these.
+    #[test]
+    fn no_refresh_in_flight_is_not_supersession() {
+        let engine = SelectionEngine::default();
+        let seqnum = gst::Seqnum::next();
+        assert!(!engine.refresh_superseded(seqnum));
+        assert!(!engine.refresh_in_flight(seqnum));
+    }
+
+    /// With a refresh TRACKED, the two split exactly on the seqnum: the
+    /// tracked one is in flight and not superseded, any other is superseded
+    /// and not in flight.
+    #[test]
+    fn a_tracked_refresh_splits_in_flight_from_superseded_by_seqnum() {
+        let mut engine = SelectionEngine::default();
+        let ours = gst::Seqnum::next();
+        let other = gst::Seqnum::next();
+        engine.refresh_dispatched(ours);
+        assert!(engine.refresh_in_flight(ours));
+        assert!(!engine.refresh_superseded(ours));
+        assert!(!engine.refresh_in_flight(other));
+        assert!(engine.refresh_superseded(other));
+        // A failure report for a foreign seqnum clears nothing.
+        engine.refresh_failed(other);
+        assert!(engine.refresh_in_flight(ours));
+        // Ours does.
+        engine.refresh_failed(ours);
+        assert!(!engine.refresh_in_flight(ours));
+        assert!(!engine.refresh_superseded(ours));
+    }
+
+    /// `selection_pending` and `selecting_seqnum` read the same live wait:
+    /// empty until a dispatch, naming it while it waits, empty again once its
+    /// confirmation settles it.
+    #[test]
+    fn the_live_wait_is_visible_from_dispatch_to_confirmation() {
+        let mut engine = SelectionEngine::default();
+        engine.collection_changed(avt_collection());
+        assert!(!engine.selection_pending());
+        assert_eq!(engine.selecting_seqnum(), None);
+
+        let seqnum = gst::Seqnum::next();
+        let target = sel(Some("v0"), Some("a0"), Some("t1"));
+        engine.selection_dispatched(seqnum, target.clone());
+        assert!(engine.selection_pending());
+        assert_eq!(engine.selecting_seqnum(), Some(seqnum));
+
+        engine.streams_selected(seqnum, &target);
+        assert!(!engine.selection_pending());
+        assert_eq!(engine.selecting_seqnum(), None);
+    }
+
+    /// An explicit subtitle OFF is a desire, not an applied state: an applied
+    /// text slot that happens to be empty must not read as one.
+    #[test]
+    fn an_empty_applied_text_slot_is_not_an_explicit_off() {
+        let mut engine = SelectionEngine::default();
+        engine.collection_changed(avt_collection());
+        engine.streams_selected(gst::Seqnum::next(), &sel(Some("v0"), Some("a0"), None));
+        assert_eq!(engine.subtitle_sid(), None, "applied text is empty");
+        assert!(
+            !engine.subtitle_explicitly_off(),
+            "nobody asked for off; decodebin3 just reported none"
+        );
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(None));
+        assert!(engine.subtitle_explicitly_off());
+
+        // Any other desire ends the explicit off.
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t0".into())));
+        assert!(!engine.subtitle_explicitly_off());
+        engine.request(
+            TrackSlot::Subtitle,
+            TrackTarget::ExternalSubtitle(ExternalSubId(4)),
+        );
+        assert!(!engine.subtitle_explicitly_off());
+    }
+
+    /// `desires_external` answers for the DESIRED external only: the right
+    /// id, not another id, not a stream desire, and not after the external
+    /// failed and the desire was dropped.
+    #[test]
+    fn desires_external_names_exactly_the_desired_id() {
+        const EXT: ExternalSubId = ExternalSubId(7);
+        const OTHER: ExternalSubId = ExternalSubId(8);
+        let mut engine = SelectionEngine::default();
+        assert!(!engine.desires_external(EXT));
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(EXT));
+        assert!(engine.desires_external(EXT));
+        assert!(!engine.desires_external(OTHER));
+
+        engine.external_gone(EXT);
+        assert!(!engine.desires_external(EXT), "the failed desire is dropped");
+
+        engine.request(TrackSlot::Subtitle, TrackTarget::Stream(Some("t0".into())));
+        assert!(!engine.desires_external(EXT));
     }
 }

@@ -25,9 +25,10 @@ pub enum MediaInput {
 /// 1.0x audio that the flushing seek then discards, an audible pop.
 #[derive(Debug, Clone, Copy)]
 pub enum StartPoint {
-    /// Seekable source: after preroll, one flushing ACCURATE seek to
-    /// `position` at `rate`. The 1.0x start-of-stream no-op is skipped, so a
-    /// plain load never blocks on the seek.
+    /// Seekable source: after preroll, one flushing seek to `position` at
+    /// `rate` (keyframe-landing, no ACCURATE, pinned by
+    /// `seek_flags_doc_divergence`). The 1.0x start-of-stream no-op is
+    /// skipped, so a plain load never blocks on the seek.
     Seek { position: gst::ClockTime, rate: f64 },
     /// Live source (WHEP/fwebrtc/mirror): preroll only, never seek.
     Live,
@@ -425,6 +426,28 @@ pub enum PlaybinEvent {
         generation: u64,
     },
     Warning(String),
+}
+
+/// What the caller does to the pipeline right after a cancel
+/// ([`FcastPlaybin::cancel_prepared_async`](crate::FcastPlaybin::cancel_prepared_async)).
+///
+/// It decides one thing: whether the crate synthesizes the item end the
+/// gapless output hold consumed. While a prepare is pending every EOS at
+/// decodebin3's outputs is dropped, and that happens up to a video queue
+/// depth (30 s) before the item is audibly over, so a cancel commonly lands
+/// with the item still playing an end nothing can surface any more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AfterCancel {
+    /// Nothing restarts the item's sources (autoplay off, a queue mutation,
+    /// a track change). A consumed end is gone for good and is synthesized
+    /// as [`PlaybinEvent::EndOfStream`].
+    #[default]
+    Nothing,
+    /// A flushing seek follows, which is the invariant the parked-op slot
+    /// exists for: cancel first, then seek. The seek restarts the sources
+    /// and regenerates the item's real end, so synthesizing one here would
+    /// turn the seek into a skip to the next queue item.
+    FlushingSeek,
 }
 
 /// First look at every raw bus message, invoked on the posting (streaming)

@@ -1265,3 +1265,170 @@ fn the_seat_occupant_is_observed_not_remembered() {
     media.unregister();
     subs.unregister();
 }
+
+/// A verdict that could not be reached must keep its own CHAIN, not hand the
+/// question to the reconcile pass.
+///
+/// `verify_replay` refuses to conclude below a settled PLAYING, where the
+/// stickies it reads are leftovers of the input's previous tenure. It used to
+/// return there owing nothing, by explicit comment leaving the re-ask to the
+/// reconcile pass. That pass asks a strictly WEAKER question: `delivered &&
+/// aligned`, two sticky reads with no delivery-evidence term at all. A
+/// redelivery burst the multiqueue destroys in flight leaves a seated,
+/// aligned, SILENT branch, which reads as converged on every later pass, so
+/// the replay was never re-derived and the track rendered nothing for the rest
+/// of the item.
+///
+/// The chain is what carries the evidence term (`external_cues_fed`, so
+/// silence counts) and the attempt bound that makes acting on silence safe, so
+/// the chain is what has to survive the window. Reverting the re-arm leaves
+/// `replay_check_armed` false here forever.
+#[test]
+fn a_verdict_held_below_playing_keeps_its_own_chain() {
+    let _serial = init();
+    let (harness, media, subs, id, _sid) = converged("verdictrearm");
+    harness.wait_for("the attach's own replay to settle", || {
+        !harness.playbin.replay_inflight(id, 0)
+    });
+
+    // Below a settled PLAYING: nothing flows, so no verdict is available.
+    harness.playbin.pause().expect("pause");
+    harness.wait_for("the pipeline to settle at PAUSED", || {
+        harness.playbin.state_summary() == (gst::State::Paused, gst::State::VoidPending)
+            && !harness.playbin.has_async_transition()
+    });
+
+    // The check, taken exactly where it cannot decide.
+    harness.playbin.verify_replay_now(id, 0, 0);
+    harness.wait_for("the held verdict to re-arm its own check", || {
+        harness.playbin.replay_check_armed(id, 0)
+    });
+
+    // And it is a re-ask, not a leak: once the pipeline can answer, the check
+    // concludes and arms nothing further.
+    harness.playbin.play().expect("play");
+    harness.wait_for("the pipeline to settle at PLAYING again", || {
+        harness.playbin.state_summary() == (gst::State::Playing, gst::State::VoidPending)
+            && !harness.playbin.has_async_transition()
+    });
+    harness.wait_for("the re-armed check to conclude", || {
+        !harness.playbin.replay_check_armed(id, 0)
+    });
+    assert_eq!(
+        harness.playbin.replay_inflight_orphans(),
+        0,
+        "the re-armed chain left an in-flight replay bit behind"
+    );
+
+    media.release_all();
+    subs.release_all();
+    harness.shutdown();
+    media.unregister();
+    subs.unregister();
+}
+
+/// An owing recorded after its only outcome has already passed must not
+/// strand the hold.
+///
+/// The selection-time emitter reads `replay_inflight` BEFORE it records the
+/// owing: a rival replay already in flight makes it queue none of its own and
+/// owe the hold to that one's key. The rival settles on the worker with no
+/// ordering against the bus thread, so its `release_owed_hold` can run while
+/// the flag is still false - it no-ops, the flag is then set, and no outcome
+/// is left to reach it. The input's block probes stay installed for the rest
+/// of the item with the selection reading as confirmed: no cue, no error, and
+/// nothing that can poke it back (the hold's own condition is discharged, so
+/// `unblock_selected_externals` skips the input from then on).
+///
+/// Reproduced rather than raced, the crate's own pattern: the outcome runs to
+/// completion first, then the owing is recorded. Without the re-read at the
+/// tail of `unblock_selected_externals` the probes below never come off.
+#[test]
+fn an_owed_hold_whose_replay_already_settled_is_released() {
+    let _serial = init();
+    // The main item carries an EMBEDDED text track, which is what keeps the
+    // attach below unselected: with no text of its own the item's auto-select
+    // moves straight onto the external, and the hold this test is about is
+    // released by that selection's own replay before it can be observed.
+    let media = ScenarioBuilder::new("owedholdlostmain")
+        .video("video_0")
+        .audio("audio_0")
+        .text("text_0", cues(600, gst::ClockTime::from_mseconds(100), "E"))
+        .duration(gst::ClockTime::from_seconds(120))
+        .pacing(Pacing::Realtime)
+        .register();
+    let subs = ScenarioBuilder::new("owedholdlostsubs")
+        .text("text_0", cues(600, gst::ClockTime::from_mseconds(100), "R"))
+        .duration(gst::ClockTime::from_seconds(120))
+        .pacing(Pacing::AsFastAsPossible)
+        .register();
+
+    let harness = Harness::new();
+    harness.playbin.load_async(
+        MediaInput::Uri(media.uri()),
+        StartPoint::Seek {
+            position: gst::ClockTime::ZERO,
+            rate: 1.0,
+        },
+    );
+    harness.wait_for("the load to report Loaded", || harness.loaded.get());
+    harness.playbin.play().expect("play");
+    harness.wait_for("the pipeline to settle at PLAYING", || {
+        harness.playbin.state_summary() == (gst::State::Playing, gst::State::VoidPending)
+            && !harness.playbin.has_async_transition()
+    });
+    // The embedded track must be the SELECTED one before the attach, or the
+    // auto-select has no text yet and takes the external instead.
+    harness.tap_text();
+    harness.wait_for("the embedded text track to render", || {
+        harness.cues_seen("E") > 0
+    });
+    let id = harness
+        .playbin
+        .attach_subtitle(&subs.uri())
+        .expect("attaching the external subtitle input");
+    harness.wait_for("the external subtitle stream to materialize", || {
+        !harness.playbin.subtitle_stream_ids(id).is_empty()
+    });
+    let sid = harness
+        .playbin
+        .subtitle_stream_ids(id)
+        .first()
+        .cloned()
+        .expect("the external advertised a stream");
+    assert!(
+        harness.playbin.external_hold_probes(id) > 0,
+        "an attached, unselected external must be held at its source pads; with no hold \
+         installed this test proves nothing"
+    );
+
+    // The rival replay, run to completion BEFORE the owing exists. Its
+    // outcome released nothing, because nothing was owed yet.
+    let seeks_before = FcastPlaybin::replay_seeks_sent();
+    assert!(
+        harness.playbin.queue_replay_sub(id, 0),
+        "queueing the rival replay the way an emitter does"
+    );
+    harness.wait_for("the rival replay to settle", || {
+        !harness.playbin.replay_inflight(id, 0)
+    });
+    assert!(
+        FcastPlaybin::replay_seeks_sent() > seeks_before,
+        "no replay seek was handed off, so this input was re-attached rather than replayed \
+         and the epoch below is not the one that is held"
+    );
+
+    // The selection handler's write, landing after that outcome.
+    harness
+        .playbin
+        .release_selected_external_holds(std::slice::from_ref(&sid), Some((id, 0)));
+    harness.wait_for("the owed hold to come off", || {
+        harness.playbin.external_hold_probes(id) == 0
+    });
+
+    media.release_all();
+    subs.release_all();
+    harness.shutdown();
+    media.unregister();
+    subs.unregister();
+}

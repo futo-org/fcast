@@ -200,6 +200,62 @@ pub(crate) fn text_pad_offset(
     scaled + (video_base - text_base)
 }
 
+/// What the gapless EOS gates do with one EOS (see
+/// [`super::Inner::gapless_eos_gate`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EosGate {
+    /// An EOS of this group already entered streamsynchronizer, so this one
+    /// MUST follow or the group never completes and the pushing thread ssync
+    /// parked (a multiqueue slot task) never wakes. Records nothing: the
+    /// group is already committed and the item's end is not being consumed.
+    SiblingPass,
+    /// Nothing holds this EOS back. `commit` is the group to record as
+    /// passing so the siblings still to come take the arm above (`None` for
+    /// text, which bypasses ssync, and for an unknown group).
+    Pass { commit: Option<gst::GroupId> },
+    /// Held back. The two reasons stay apart for the log, and `pending` is
+    /// what makes the drop a CONSUMED item end (see `SwapState::dropped_eos`).
+    Drop { pending: bool, behind: bool },
+}
+
+/// The gapless EOS-hold decision, pure over everything the two gates read.
+///
+/// An EOS on a pad whose stream group is `pad_group` must be dropped while a
+/// swap is pending (committed to a next item, nothing may end the pipeline)
+/// or while the pad still carries a non-active group, either lagging the
+/// active one or positively the RETIRED one (old-item drainage, see
+/// [`super::Inner::retired_group`]). Unknowns on either side never drop: only
+/// a positively known group mismatch is old-item drainage.
+///
+/// The sibling-pass arm outranks both, and is what makes the gate
+/// all-or-nothing per group: `passing_group` is the group a previous EOS was
+/// already let through with, and dropping a strict subset of a group's EOS
+/// wedges streamsynchronizer forever. Only `av` pads take part, text bypasses
+/// ssync entirely. The post-ssync gate passes `passing_group: None`: it sits
+/// downstream of the group wait, so it has no group to complete.
+pub(crate) fn gapless_eos_decision(
+    pad_group: Option<gst::GroupId>,
+    active_group: Option<gst::GroupId>,
+    retired_group: Option<gst::GroupId>,
+    passing_group: Option<gst::GroupId>,
+    pending: bool,
+    av: bool,
+) -> EosGate {
+    if av && pad_group.is_some() && pad_group == passing_group {
+        return EosGate::SiblingPass;
+    }
+    let behind = match (pad_group, active_group) {
+        (Some(pad_group), Some(active)) => pad_group != active,
+        _ => false,
+    } || (pad_group.is_some() && pad_group == retired_group);
+    if pending || behind {
+        return EosGate::Drop { pending, behind };
+    }
+    EosGate::Pass {
+        commit: if av { pad_group } else { None },
+    }
+}
+
 /// Caps-name fallback for pads without a GstStream.
 pub(crate) fn kind_from_caps_name(name: &str) -> Option<StreamKind> {
     // image/* is video: parsebin types image streams as VIDEO and
