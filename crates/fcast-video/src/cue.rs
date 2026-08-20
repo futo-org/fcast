@@ -154,8 +154,6 @@ mod layout {
     pub const WRAP_WIDTH_FRACTION: f64 = 0.90;
     /// Distance from the bottom edge, as a fraction of canvas height.
     pub const BOTTOM_MARGIN_FRACTION: f64 = 0.04;
-    /// Black outline width as a fraction of the font size.
-    pub const OUTLINE_FONT_FRACTION: f64 = 0.14;
     pub const FONT_FAMILY: &str = "Sans";
     /// Refuse to allocate a raster larger than this in either dimension.
     pub const MAX_RASTER_PX: i32 = 8192;

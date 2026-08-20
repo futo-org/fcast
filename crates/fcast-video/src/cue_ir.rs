@@ -168,7 +168,7 @@ pub const DEFAULT_BACKGROUND: BackgroundStyle = BackgroundStyle {
 /// The default glyph outline: near-opaque black, 0.14em wide.
 ///
 /// Also shared with the pango arm, which has always hardcoded exactly these
-/// two numbers (`OUTLINE_FONT_FRACTION` = 0.14, alpha 0.85 ≈ 217/255).
+/// two numbers (width 0.14 of the font size, alpha 0.85 ≈ 217/255).
 pub const DEFAULT_OUTLINE: OutlineStyle = OutlineStyle {
     color: [0, 0, 0, 217],
     width_fraction: 0.14,
