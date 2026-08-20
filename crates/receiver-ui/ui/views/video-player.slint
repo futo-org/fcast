@@ -387,6 +387,9 @@ component PlaybackControls inherits Rectangle {
     // owns the keyboard while it is open and consumes Tab itself, so traversal
     // can never wander off into the controls behind it.
     property <int> settings-cursor: 1;
+    // True after keyboard navigation in the side bar, false again on hover.
+    // The focus ring only draws while it is true, hover keeps its own highlight.
+    property <bool> settings-kb-nav: false;
     property <[float]> rates: [0.25, 0.5, 0.75, 1.0, 1.25, 1.50, 1.75, 2.0];
 
     // The row holding the current value on each options page, as reported by that
@@ -427,6 +430,7 @@ component PlaybackControls inherits Rectangle {
         // header button. Only backing out of a category returns to it.
         selected-row-start = 1;
         settings-cursor = 1;
+        settings-kb-nav = false;
         show-settings = true;
         settings-focus.focus();
     }
@@ -460,6 +464,13 @@ component PlaybackControls inherits Rectangle {
     // into a list starts from what is selected instead of from the top.
     function park-cursor(row: int) {
         settings-cursor = max(0, min(row, page-row-count - 1));
+    }
+
+    // Mouse twin of park-cursor, used by the hover callbacks. Hover moves the
+    // cursor but must not draw the keyboard ring, so it drops the flag first.
+    function hover-park(row: int) {
+        settings-kb-nav = false;
+        park-cursor(row);
     }
 
     pure function remembered-row(page: SettingsPage) -> int {
@@ -501,6 +512,7 @@ component PlaybackControls inherits Rectangle {
         if page-row-count <= 0 {
             return;
         }
+        settings-kb-nav = true;
         settings-cursor += delta;
         if settings-cursor < 0 {
             settings-cursor = page-row-count - 1;
@@ -511,6 +523,7 @@ component PlaybackControls inherits Rectangle {
     }
 
     function activate-cursor() {
+        settings-kb-nav = true;
         // A page can lose all its rows mid-playback (tracks going away).
         if page-row-count <= 0 {
             return;
@@ -874,6 +887,7 @@ component PlaybackControls inherits Rectangle {
                     // Left is "back out of this page", and a no-op on the start page.
                     if (event.text == Key.LeftArrow || event.text == Key.Backspace)
                         && current-settings-page != SettingsPage.Start {
+                        root.settings-kb-nav = true;
                         root.open-page(SettingsPage.Start);
                         return accept;
                     }
@@ -902,13 +916,13 @@ component PlaybackControls inherits Rectangle {
                     HeaderButton {
                         icon: Icons.close;
                         icon-size: 13px;
-                        focused: settings-cursor == 0;
+                        focused: settings-kb-nav && settings-cursor == 0;
 
                         clicked => {
                             root.close-settings();
                         }
                         hovered => {
-                            root.park-cursor(0);
+                            root.hover-park(0);
                         }
                     }
                 }
@@ -920,52 +934,52 @@ component PlaybackControls inherits Rectangle {
                     if Bridge.video-tracks.length > 0: PlaybackSettingsMenuItem {
                         label: @tr("Video");
                         icon: Icons.settings-video;
-                        focused: settings-cursor == row-video;
+                        focused: settings-kb-nav && settings-cursor == row-video;
 
                         clicked => {
                             root.enter-category(SettingsPage.Video, row-video);
                         }
                         hovered => {
-                            root.park-cursor(row-video);
+                            root.hover-park(row-video);
                         }
                     }
 
                     if Bridge.audio-tracks.length > 0: PlaybackSettingsMenuItem {
                         label: @tr("Audio");
                         icon: Icons.details-audio;
-                        focused: settings-cursor == row-audio;
+                        focused: settings-kb-nav && settings-cursor == row-audio;
 
                         clicked => {
                             root.enter-category(SettingsPage.Audio, row-audio);
                         }
                         hovered => {
-                            root.park-cursor(row-audio);
+                            root.hover-park(row-audio);
                         }
                     }
 
                     if Bridge.subtitle-tracks.length > 0: PlaybackSettingsMenuItem {
                         label: @tr("Subtitles");
                         icon: Icons.subtitles;
-                        focused: settings-cursor == row-subtitle;
+                        focused: settings-kb-nav && settings-cursor == row-subtitle;
 
                         clicked => {
                             root.enter-category(SettingsPage.Subtitle, row-subtitle);
                         }
                         hovered => {
-                            root.park-cursor(row-subtitle);
+                            root.hover-park(row-subtitle);
                         }
                     }
 
                     PlaybackSettingsMenuItem {
                         label: @tr("Playback Speed");
                         icon: Icons.playback-rate;
-                        focused: settings-cursor == row-rate;
+                        focused: settings-kb-nav && settings-cursor == row-rate;
 
                         clicked => {
                             root.enter-category(SettingsPage.Rate, row-rate);
                         }
                         hovered => {
-                            root.park-cursor(row-rate);
+                            root.hover-park(row-rate);
                         }
                     }
 
@@ -979,13 +993,13 @@ component PlaybackControls inherits Rectangle {
 
                 PlaybackSettingHeader {
                     title: @tr("Video track");
-                    focused: settings-cursor == 0;
+                    focused: settings-kb-nav && settings-cursor == 0;
 
                     navigate-previous => {
                         root.open-page(SettingsPage.Start);
                     }
                     hovered => {
-                        root.park-cursor(0);
+                        root.hover-park(0);
                     }
                 }
 
@@ -996,12 +1010,12 @@ component PlaybackControls inherits Rectangle {
                     SettingsTrackList {
                         tracks: Bridge.video-tracks;
                         selected-id: Bridge.current-video-track;
-                        cursor: settings-cursor - 1;
+                        cursor: settings-kb-nav ? settings-cursor - 1 : -1;
                         selected-row(row) => {
                             root.note-selected-row(SettingsPage.Video, row + 1);
                         }
                         hovered(row) => {
-                            root.park-cursor(row + 1);
+                            root.hover-park(row + 1);
                         }
                         clicked(id) => Bridge.select-track(id, UiMediaTrackType.Video);
                     }
@@ -1014,13 +1028,13 @@ component PlaybackControls inherits Rectangle {
 
                 PlaybackSettingHeader {
                     title: @tr("Audio track");
-                    focused: settings-cursor == 0;
+                    focused: settings-kb-nav && settings-cursor == 0;
 
                     navigate-previous => {
                         root.open-page(SettingsPage.Start);
                     }
                     hovered => {
-                        root.park-cursor(0);
+                        root.hover-park(0);
                     }
                 }
 
@@ -1031,12 +1045,12 @@ component PlaybackControls inherits Rectangle {
                     SettingsTrackList {
                         tracks: Bridge.audio-tracks;
                         selected-id: Bridge.current-audio-track;
-                        cursor: settings-cursor - 1;
+                        cursor: settings-kb-nav ? settings-cursor - 1 : -1;
                         selected-row(row) => {
                             root.note-selected-row(SettingsPage.Audio, row + 1);
                         }
                         hovered(row) => {
-                            root.park-cursor(row + 1);
+                            root.hover-park(row + 1);
                         }
                         clicked(id) => Bridge.select-track(id, UiMediaTrackType.Audio);
                     }
@@ -1049,13 +1063,13 @@ component PlaybackControls inherits Rectangle {
 
                 PlaybackSettingHeader {
                     title: @tr("Subtitle track");
-                    focused: settings-cursor == 0;
+                    focused: settings-kb-nav && settings-cursor == 0;
 
                     navigate-previous => {
                         root.open-page(SettingsPage.Start);
                     }
                     hovered => {
-                        root.park-cursor(0);
+                        root.hover-park(0);
                     }
                 }
 
@@ -1067,12 +1081,12 @@ component PlaybackControls inherits Rectangle {
                         tracks: Bridge.subtitle-tracks;
                         selected-id: Bridge.current-subtitle-track;
                         can-be-disabled: true;
-                        cursor: settings-cursor - 1;
+                        cursor: settings-kb-nav ? settings-cursor - 1 : -1;
                         selected-row(row) => {
                             root.note-selected-row(SettingsPage.Subtitle, row + 1);
                         }
                         hovered(row) => {
-                            root.park-cursor(row + 1);
+                            root.hover-park(row + 1);
                         }
                         clicked(id) => {
                             root.select-subtitle(id);
@@ -1087,13 +1101,13 @@ component PlaybackControls inherits Rectangle {
 
                 PlaybackSettingHeader {
                     title: @tr("Playback speed");
-                    focused: settings-cursor == 0;
+                    focused: settings-kb-nav && settings-cursor == 0;
 
                     navigate-previous => {
                         root.open-page(SettingsPage.Start);
                     }
                     hovered => {
-                        root.park-cursor(0);
+                        root.hover-park(0);
                     }
                 }
 
@@ -1107,7 +1121,7 @@ component PlaybackControls inherits Rectangle {
                             SettingItem {
                                 value: rate;
                                 selected: Bridge.playback-rate == rate;
-                                focused: settings-cursor == i + 1;
+                                focused: settings-kb-nav && settings-cursor == i + 1;
 
                                 init => {
                                     if self.selected {
@@ -1121,7 +1135,7 @@ component PlaybackControls inherits Rectangle {
                                 }
 
                                 hovered => {
-                                    root.park-cursor(i + 1);
+                                    root.hover-park(i + 1);
                                 }
 
                                 clicked => {
