@@ -468,7 +468,6 @@ enum Action {
         capabilities: Option<crate::device::ReceiverCapabilities>,
     },
     /// The receiver assigned the companion provider ID.
-    CompanionReady,
     LoadedV4(V4Load),
     QueueInserted {
         entry: QueueEntry,
@@ -1208,9 +1207,44 @@ fn queue_item_to_entry(item: QueueItem) -> QueueEntry {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+enum SubtitleCommandSource {
+    Url(String),
+    Companion(CompanionSource),
+}
+
+#[derive(Debug)]
+enum CompanionData {
+    File(std::fs::File),
+    Bytes(std::io::Cursor<Vec<u8>>),
+}
+
+impl CompanionData {
+    fn len(&self) -> std::io::Result<u64> {
+        match self {
+            Self::File(file) => Ok(file.metadata()?.len()),
+            Self::Bytes(bytes) => Ok(bytes.get_ref().len() as u64),
+        }
+    }
+
+    fn seek(&mut self, position: std::io::SeekFrom) -> std::io::Result<u64> {
+        match self {
+            Self::File(file) => file.seek(position),
+            Self::Bytes(bytes) => bytes.seek(position),
+        }
+    }
+
+    fn read_exact(&mut self, bytes: &mut [u8]) -> std::io::Result<()> {
+        match self {
+            Self::File(file) => file.read_exact(bytes),
+            Self::Bytes(data) => data.read_exact(bytes),
+        }
+    }
+}
+
 #[derive(Debug)]
 struct StaticCompanionResource {
-    file: Arc<Mutex<std::fs::File>>,
+    data: Arc<Mutex<CompanionData>>,
     content_type: String,
     /// Cached at registration. Companion resources are treated as immutable for
     /// the session.
@@ -1222,13 +1256,9 @@ impl CompanionResource for StaticCompanionResource {
         &self,
         _route: CompanionResourceRoute,
     ) -> CompanionResourceFuture<'_, CompanionResourceInfo> {
-        let file = Arc::clone(&self.file);
         let content_type = self.content_type.clone();
+        let size = self.len;
         Box::pin(async move {
-            let size = tokio::task::spawn_blocking(move || file.lock().unwrap().metadata())
-                .await
-                .map_err(std::io::Error::other)??
-                .len();
             Ok(CompanionResourceInfo {
                 content_type,
                 size: Some(size),
@@ -1237,11 +1267,11 @@ impl CompanionResource for StaticCompanionResource {
     }
 
     fn read(&self, request: CompanionResourceRequest) -> CompanionResourceFuture<'_, Vec<u8>> {
-        let file = Arc::clone(&self.file);
+        let data = Arc::clone(&self.data);
+        let file_len = self.len;
         Box::pin(async move {
             tokio::task::spawn_blocking(move || {
-                let mut file = file.lock().unwrap();
-                let file_len = file.metadata()?.len();
+                let mut data = data.lock().unwrap();
                 let Some((start, stop)) = request
                     .range
                     .map(|range| (*range.start(), *range.end()))
@@ -1263,10 +1293,10 @@ impl CompanionResource for StaticCompanionResource {
                         "companion response exceeds multipart limit",
                     ));
                 }
-                let mut data = vec![0; len as usize];
-                file.seek(std::io::SeekFrom::Start(start))?;
-                file.read_exact(&mut data)?;
-                Ok(data)
+                data.seek(std::io::SeekFrom::Start(start))?;
+                let mut bytes = vec![0; len as usize];
+                data.read_exact(&mut bytes)?;
+                Ok(bytes)
             })
             .await
             .map_err(std::io::Error::other)?
@@ -1573,10 +1603,14 @@ impl InnerDevice {
     }
 
     fn add_source(&mut self, source: &CompanionSource) -> std::io::Result<u32> {
-        let file = match &source.descriptor {
-            CompanionSourceDescriptor::Path(ref path) => std::fs::File::open(path)?,
+        let data = match &source.descriptor {
+            CompanionSourceDescriptor::Path(ref path) => {
+                CompanionData::File(std::fs::File::open(path)?)
+            }
             #[cfg(unix)]
-            CompanionSourceDescriptor::Fd(fd) => std::fs::File::from(fd.take()?),
+            CompanionSourceDescriptor::Fd(fd) => {
+                CompanionData::File(std::fs::File::from(fd.take()?))
+            }
             #[cfg(not(unix))]
             CompanionSourceDescriptor::Fd(..) => {
                 return Err(std::io::Error::new(
@@ -1589,9 +1623,9 @@ impl InnerDevice {
             }
         };
 
-        file.metadata()?;
+        let len = data.len()?;
         let source = StaticCompanionResource {
-            file: Arc::new(Mutex::new(file)),
+            data: Arc::new(Mutex::new(data)),
             content_type: source.content_type.clone(),
             len,
         };
@@ -1622,7 +1656,7 @@ impl InnerDevice {
         matches!(
             self.state_machine.variant,
             StateVariant::V4 {
-                companion_provider_id: None,
+                companion_provider: None,
                 ..
             }
         )
@@ -1647,34 +1681,6 @@ impl InnerDevice {
                 ..
             } => true,
             _ => false,
-        }
-    }
-
-    /// Release the transferred file descriptors of a command that will never
-    /// execute (see [`Self::discard_companion_descriptor`]).
-    fn discard_command_descriptors(&self, cmd: &Command) {
-        match cmd {
-            Command::Load {
-                type_: LoadType::CompanionResource { source },
-                ..
-            } => self.discard_companion_descriptor(&source.descriptor),
-            Command::LoadQueue(queue) => {
-                for entry in &queue.items {
-                    if let MediaLocator::FCompanion { source } = &entry.item.source {
-                        self.discard_companion_descriptor(&source.descriptor);
-                    }
-                }
-            }
-            Command::QueueInsert { item, .. } => {
-                if let MediaLocator::FCompanion { source } = &item.source {
-                    self.discard_companion_descriptor(&source.descriptor);
-                }
-            }
-            Command::AddSubtitleSource {
-                source: SubtitleCommandSource::Companion(source),
-                ..
-            } => self.discard_companion_descriptor(&source.descriptor),
-            _ => {}
         }
     }
 
@@ -2018,7 +2024,7 @@ impl InnerDevice {
                     return self
                         .send_resource_result(
                             callback.request_id,
-                            companion::GetResourceResult::Success(Vec::new()),
+                            companion::GetResourceResult::Success(Vec::new().into()),
                         )
                         .await;
                 }
@@ -2027,7 +2033,7 @@ impl InnerDevice {
                         request_id: callback.request_id,
                         part: part as u8,
                         total_parts,
-                        result: companion::GetResourceResult::Success(chunk.to_vec()),
+                        result: companion::GetResourceResult::Success(chunk.to_vec().into()),
                     }
                     .serialize();
                     self.send_bytes(Opcode::Resource, &body).await?;
@@ -2573,9 +2579,9 @@ impl InnerDevice {
         });
     }
 
-    /// Ask a v4 receiver to report playback progress every `interval_millis` milliseconds (floored
-    /// to 100 ms, the receiver's granularity). Older receivers have no such message, so the request
-    /// is skipped there.
+    /// Ask a v4 receiver to report playback progress every `interval_millis`
+    /// milliseconds (floored to 100 ms, the receiver's granularity). Older
+    /// receivers have no such message, so the request is skipped there.
     async fn send_progress_update_interval(&mut self, interval_millis: u64) -> anyhow::Result<()> {
         match self.state_machine.variant {
             StateVariant::V4 { .. } => {
@@ -3682,8 +3688,6 @@ fn wrapped_playlist_index(current: usize, jump: i32, length: usize) -> Option<us
 
 #[cfg(test)]
 mod tests {
-    use fcast_protocol::bytes::Bytes;
-
     use super::*;
 
     #[derive(Debug)]

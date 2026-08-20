@@ -124,7 +124,7 @@ impl ResourceResponse {
 #[derive(Debug, PartialEq, Eq)]
 pub enum GetResourceResult {
     NotFound,
-    Success(Vec<u8>),
+    Success(Bytes),
     InvalidRange,
     Cancelled,
     Failed,
@@ -132,14 +132,14 @@ pub enum GetResourceResult {
 }
 
 impl GetResourceResult {
-    pub fn parse(buf: &[u8]) -> Result<Self, ParseError> {
+    pub fn parse(buf: Bytes) -> Result<Self, ParseError> {
         if buf.is_empty() {
             return Err(ParseError::MissingData);
         }
 
         match buf[0] {
             0x00 => Ok(Self::NotFound),
-            0x01 => Ok(Self::Success(buf[1..].to_vec())),
+            0x01 => Ok(Self::Success(buf.slice(1..))),
             0x02 => Ok(Self::InvalidRange),
             0x03 => Ok(Self::Cancelled),
             0x04 => Ok(Self::Failed),
@@ -151,7 +151,7 @@ impl GetResourceResult {
     pub fn serialize(&self) -> Vec<u8> {
         match self {
             Self::NotFound => vec![0x00],
-            Self::Success(buf) => [&[Self::success_tag()], buf.as_slice()].concat(),
+            Self::Success(buf) => [&[Self::success_tag()], buf.as_ref()].concat(),
             Self::InvalidRange => vec![0x02],
             Self::Cancelled => vec![0x03],
             Self::Failed => vec![0x04],
@@ -196,20 +196,8 @@ pub fn create_routed_url(
 }
 
 pub fn resource_part_count(byte_len: usize) -> Option<u8> {
-    let parts = (byte_len / MAX_RESOURCE_READ_SIZE
-        + usize::from(byte_len % MAX_RESOURCE_READ_SIZE != 0))
-    .max(1);
+    let parts = byte_len.div_ceil(MAX_RESOURCE_READ_SIZE).max(1);
     u8::try_from(parts).ok()
-}
-
-#[derive(Default)]
-pub struct RequestIdGenerator(RequestId);
-
-impl RequestIdGenerator {
-    pub fn next(&mut self) -> RequestId {
-        self.0 += 1;
-        self.0 - 1
-    }
 }
 
 #[cfg(test)]
@@ -244,20 +232,20 @@ mod tests {
     fn get_resource_result() {
         for result in [
             GetResourceResult::NotFound,
-            GetResourceResult::Success(vec![1, 2, 3]),
-            GetResourceResult::Success(vec![]),
+            GetResourceResult::Success(vec![1, 2, 3].into()),
+            GetResourceResult::Success(vec![].into()),
             GetResourceResult::InvalidRange,
             GetResourceResult::Cancelled,
             GetResourceResult::Failed,
             GetResourceResult::EndOfStream,
         ] {
             assert_eq!(
-                GetResourceResult::parse(&result.serialize()).unwrap(),
+                GetResourceResult::parse(result.serialize().into()).unwrap(),
                 result
             );
         }
         assert!(matches!(
-            GetResourceResult::parse(&[0xff]),
+            GetResourceResult::parse(Bytes::from_static(&[0xff])),
             Err(ParseError::InvalidEnumVariant(0xff))
         ));
     }
@@ -300,14 +288,14 @@ mod tests {
             request_id: 0,
             part: u8::MAX - 1,
             total_parts: u8::MAX,
-            result: GetResourceResult::Success(vec![]),
+            result: GetResourceResult::Success(vec![].into()),
         }
         .is_last_part());
         assert!(!ResourceResponse {
             request_id: 0,
             part: 0,
             total_parts: 0,
-            result: GetResourceResult::Success(vec![]),
+            result: GetResourceResult::Success(vec![].into()),
         }
         .is_last_part());
     }

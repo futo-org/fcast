@@ -435,8 +435,11 @@ impl OwnedCompanionFd {
 pub enum CompanionSourceDescriptor {
     /// A local filesystem path the SDK opens for reading.
     Path(String),
-    /// An owned Unix file descriptor. Construct with [`CompanionSource::from_fd`].
+    /// An owned Unix file descriptor. Construct with
+    /// [`CompanionSource::from_fd`].
     Fd(Arc<OwnedCompanionFd>),
+    /// In-memory bytes, copied into the SDK and served directly.
+    Bytes(Vec<u8>),
 }
 
 impl PartialEq for CompanionSourceDescriptor {
@@ -444,6 +447,7 @@ impl PartialEq for CompanionSourceDescriptor {
         match (self, other) {
             (Self::Path(a), Self::Path(b)) => a == b,
             (Self::Fd(a), Self::Fd(b)) => Arc::ptr_eq(a, b),
+            (Self::Bytes(a), Self::Bytes(b)) => a == b,
             _ => false,
         }
     }
@@ -468,7 +472,8 @@ impl CompanionSource {
     /// A companion source backed by an owned file descriptor, moving ownership
     /// of the descriptor into the SDK (which closes it when finished).
     ///
-    /// Unix only. The descriptor is closed exactly once on every success and error path.
+    /// Unix only. The descriptor is closed exactly once on every success and
+    /// error path.
     #[cfg(unix)]
     pub fn from_fd(fd: std::os::fd::OwnedFd, content_type: impl Into<String>) -> Self {
         Self {

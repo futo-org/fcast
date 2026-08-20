@@ -737,6 +737,7 @@ impl<'a> MessageBuilder<'a> {
         self.builder.create_vector(&strs)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn receiver_introduction(
         mut self,
         device_info: &DeviceInfo,

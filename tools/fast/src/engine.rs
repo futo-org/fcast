@@ -1011,19 +1011,6 @@ impl<'a> Engine<'a> {
         Ok(())
     }
 
-    /// The single terminal `NotFound` frame answering an unfulfillable
-    /// `GetResource`.
-    async fn send_companion_not_found(&mut self, request_id: u32) -> Result<()> {
-        let body = companion::ResourceResponse {
-            request_id,
-            part: 0,
-            total_parts: 1,
-            result: companion::GetResourceResult::NotFound,
-        }
-        .serialize();
-        self.conn.write(Opcode::Resource, Some(&body)).await
-    }
-
     fn validate_awaited(&self, opcode: Opcode, body: Option<&[u8]>) -> Result<()> {
         match opcode {
             Opcode::Version => {
