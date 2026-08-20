@@ -32,7 +32,12 @@ impl CastContext {
 
 #[cfg(any_protocol)]
 impl CastContext {
-    /// Construct an FCast device without erasing its concrete Rust type.
+    /// Concrete [`crate::fcast::FCastDevice`] so callers can use
+    /// [`crate::fcast::FCastDevice::companion_resource_registrar`].
+    ///
+    /// Dynamic FCompanion registration is Rust-only.
+    /// [`Self::create_device_from_info`] erases to [`CastingDevice`] and is
+    /// what UniFFI/Flutter see; it cannot register dynamic resources.
     #[cfg(feature = "fcast")]
     pub fn create_fcast_device_from_info(
         &self,

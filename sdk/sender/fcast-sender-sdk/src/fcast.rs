@@ -61,9 +61,16 @@ const TLS_UPGRADE_TIMEOUT: Duration = Duration::from_secs(5);
 const COMPANION_CALLBACK_TIMEOUT: Duration = Duration::from_secs(2);
 const MAX_COMPANION_CALLBACKS: usize = 8;
 
+/// Boxed I/O future from [`CompanionResource`] callbacks.
+///
+/// The worker times each callback out after two seconds and runs at most eight
+/// at once. Nested [`CompanionResourceRegistrar::register`] from a callback is
+/// allowed.
 pub type CompanionResourceFuture<'a, T> =
     Pin<Box<dyn Future<Output = std::io::Result<T>> + Send + 'a>>;
 
+/// Origin-form companion route: `""` or `"/path?query"`. Rejects authority-form
+/// and fragments.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct CompanionResourceRoute(String);
 
@@ -79,18 +86,27 @@ impl CompanionResourceRoute {
     }
 }
 
+/// Receiver read: a validated [`CompanionResourceRoute`] plus optional
+/// inclusive byte range.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompanionResourceRequest {
     pub route: CompanionResourceRoute,
     pub range: Option<RangeInclusive<u64>>,
 }
 
+/// Metadata from [`CompanionResource::info`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompanionResourceInfo {
     pub content_type: String,
     pub size: Option<u64>,
 }
 
+/// App-provided dynamic FCompanion resource. Rust-only; not on
+/// [`CastingDevice`] or UniFFI/Flutter.
+///
+/// `info` and `read` run on the FCast worker. Keep them non-blocking or spawn
+/// inside the future. Errors map to companion statuses and do not disconnect
+/// the session.
 pub trait CompanionResource: std::fmt::Debug + Send + Sync + 'static {
     fn info(
         &self,
@@ -100,6 +116,11 @@ pub trait CompanionResource: std::fmt::Debug + Send + Sync + 'static {
     fn read(&self, request: CompanionResourceRequest) -> CompanionResourceFuture<'_, Vec<u8>>;
 }
 
+/// Why [`CompanionResourceRegistrar::register`] failed.
+///
+/// `Disconnected` is a gone worker, including a failed command send.
+/// `Unsupported` is a non-v1 companion receiver. `Exhausted` is a consumed
+/// 32-bit id space (ids are never reused).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CompanionResourceRegistrationError {
     Unsupported,
@@ -121,6 +142,11 @@ impl std::fmt::Display for CompanionResourceRegistrationError {
 
 impl std::error::Error for CompanionResourceRegistrationError {}
 
+/// Registers dynamic [`CompanionResource`]s on a live [`FCastDevice`].
+///
+/// Clone freely. `register` before `connect` is queued; after the worker dies
+/// it returns [`CompanionResourceRegistrationError::Disconnected`] and clears
+/// started worker state, matching FCast command send failure.
 #[derive(Clone)]
 pub struct CompanionResourceRegistrar {
     state: Weak<Mutex<State>>,
@@ -133,6 +159,7 @@ impl std::fmt::Debug for CompanionResourceRegistrar {
     }
 }
 
+/// Guard for one registration. Drop unregisters it.
 #[must_use = "dropping the registration unregisters its companion resource"]
 #[derive(Debug)]
 pub struct CompanionResourceRegistration {
@@ -144,10 +171,12 @@ pub struct CompanionResourceRegistration {
 }
 
 impl CompanionResourceRegistration {
+    /// Stable `fcomp://` root for this resource.
     pub fn url(&self) -> &str {
         &self.url
     }
 
+    /// `url` plus a validated origin-form route.
     pub fn url_for(&self, route: &str) -> Result<String, companion::RouteError> {
         companion::create_routed_url(self.provider_id, self.resource_id, route)
     }
@@ -163,6 +192,9 @@ impl Drop for CompanionResourceRegistration {
 }
 
 impl CompanionResourceRegistrar {
+    /// Queue or send a registration. A failed send clears
+    /// `command_tx`/`started` and returns
+    /// [`CompanionResourceRegistrationError::Disconnected`].
     pub async fn register(
         &self,
         resource: Arc<dyn CompanionResource>,
@@ -177,8 +209,11 @@ impl CompanionResourceRegistrar {
             let mut state = state.lock().unwrap();
             match state.command_tx.as_ref() {
                 Some(tx) => {
-                    tx.send(command)
-                        .map_err(|_| CompanionResourceRegistrationError::Disconnected)?;
+                    if tx.send(command).is_err() {
+                        state.command_tx = None;
+                        state.started = false;
+                        return Err(CompanionResourceRegistrationError::Disconnected);
+                    }
                 }
                 None if !state.ever_started => state.pending_commands.push_back(command),
                 None => return Err(CompanionResourceRegistrationError::Disconnected),
@@ -316,6 +351,8 @@ impl FCastDevice {
         }
     }
 
+    /// Registrar for dynamic FCompanion resources. Rust-only; not on
+    /// [`CastingDevice`] or UniFFI/Flutter.
     pub fn companion_resource_registrar(&self) -> CompanionResourceRegistrar {
         CompanionResourceRegistrar {
             state: Arc::downgrade(&self.state),
@@ -1933,7 +1970,7 @@ impl InnerDevice {
             Err(_) if kind.is_some() => {
                 return self
                     .send_resource_result(request_id, companion::GetResourceResult::Failed)
-                    .await
+                    .await;
             }
             Err(_) => {
                 let msg = v4::MessageBuilder::new().companion_resource_info_response_with_status(
@@ -4225,6 +4262,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_register_send_is_disconnected_and_resets_worker_state() {
+        let device = FCastDevice::new(
+            DeviceInfo::fcast(
+                "test".to_owned(),
+                vec![IpAddr::v4(127, 0, 0, 1)],
+                1,
+                HashMap::new(),
+            ),
+            Handle::current(),
+        );
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        drop(rx);
+        {
+            let mut state = device.state.lock().unwrap();
+            state.command_tx = Some(tx);
+            state.started = true;
+            state.ever_started = true;
+        }
+        assert!(matches!(
+            device
+                .companion_resource_registrar()
+                .register(Arc::new(TestResource::new([])))
+                .await,
+            Err(CompanionResourceRegistrationError::Disconnected)
+        ));
+        let state = device.state.lock().unwrap();
+        assert!(!state.started);
+        assert!(state.command_tx.is_none());
+    }
+
+    #[tokio::test]
     async fn failed_and_partial_loads_release_static_resources() {
         let path =
             std::env::temp_dir().join(format!("fcast-partial-companion-{}", std::process::id()));
@@ -4298,17 +4366,53 @@ mod tests {
     fn owned_fd_is_consumed_and_closed_exactly_once() {
         use std::os::{fd::OwnedFd, unix::net::UnixStream};
 
-        let (owned, mut peer) = UnixStream::pair().unwrap();
-        let source = CompanionSource::from_fd(OwnedFd::from(owned), "video/test");
+        fn pair() -> (CompanionSource, UnixStream) {
+            let (owned, peer) = UnixStream::pair().unwrap();
+            (
+                CompanionSource::from_fd(OwnedFd::from(owned), "video/test"),
+                peer,
+            )
+        }
+        fn eof(peer: &mut UnixStream) {
+            assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        }
+
+        let (source, mut peer) = pair();
+        let clone = source.clone();
+        drop(source);
+        drop(clone);
+        eof(&mut peer);
+
+        let (source, mut peer) = pair();
+        let clone = source.clone();
+        let CompanionSourceDescriptor::Fd(owner) = &source.descriptor else {
+            unreachable!();
+        };
+        let CompanionSourceDescriptor::Fd(cloned_owner) = &clone.descriptor else {
+            unreachable!();
+        };
+        assert!(Arc::ptr_eq(owner, cloned_owner));
+        let mut inner = test_inner();
+        set_companion(&mut inner, 6, 1);
+        inner.add_source(&source).unwrap();
+        assert!(owner.take().is_err());
+        assert!(cloned_owner.take().is_err());
+        assert!(inner.add_source(&clone).is_err());
+        inner.clear_playback_scoped_state();
+        eof(&mut peer);
+        drop(clone);
+        drop(source);
+
+        let (source, mut peer) = pair();
         let CompanionSourceDescriptor::Fd(owner) = &source.descriptor else {
             unreachable!();
         };
         let mut inner = test_inner();
         set_companion(&mut inner, 6, 1);
-        inner.add_source(&source).unwrap();
+        inner.next_companion_resource_id = u64::from(u32::MAX) + 1;
+        assert!(inner.add_source(&source).is_err());
         assert!(owner.take().is_err());
-        inner.clear_playback_scoped_state();
-        assert_eq!(peer.read(&mut [0]).unwrap(), 0);
+        eof(&mut peer);
         drop(source);
     }
 

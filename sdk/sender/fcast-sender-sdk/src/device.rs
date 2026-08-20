@@ -404,6 +404,8 @@ pub struct ApplicationInfo {
     pub display_name: String,
 }
 
+/// Owns one Unix companion fd. Clones of [`CompanionSource`] share this; `take`
+/// and drop close it once.
 #[cfg_attr(feature = "uniffi", derive(uniffi::Object))]
 #[derive(Debug)]
 pub struct OwnedCompanionFd {
@@ -472,8 +474,9 @@ impl CompanionSource {
     /// A companion source backed by an owned file descriptor, moving ownership
     /// of the descriptor into the SDK (which closes it when finished).
     ///
-    /// Unix only. The descriptor is closed exactly once on every success and
-    /// error path.
+    /// Unix only. The descriptor is closed exactly once on every success,
+    /// error, and drop path, including clones that share the same
+    /// [`OwnedCompanionFd`].
     #[cfg(unix)]
     pub fn from_fd(fd: std::os::fd::OwnedFd, content_type: impl Into<String>) -> Self {
         Self {
