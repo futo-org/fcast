@@ -11,9 +11,7 @@ pub struct FCompUrl {
 
 impl FCompUrl {
     pub fn new(url: &Url) -> Option<Self> {
-        let authority = url.as_str().split_once("://")?.1.split('/').next()?;
         if url.scheme() != "fcomp"
-            || authority.contains('@')
             || !url.username().is_empty()
             || url.password().is_some()
             || url.port().is_some()
@@ -45,6 +43,13 @@ impl FCompUrl {
         if let Some(query) = url.query() {
             route.push('?');
             route.push_str(query);
+        }
+        if route.as_bytes().windows(3).any(|bytes| {
+            bytes[0] == b'%'
+                && bytes[1] == b'0'
+                && matches!(bytes[2].to_ascii_lowercase(), b'a' | b'd')
+        }) {
+            return None;
         }
         companion::validate_route(&route).ok()?;
 
@@ -192,12 +197,13 @@ pub mod imp {
                 })?;
 
             let res = self.wait(async move {
-                match rx.recv().await {
-                    Some(r) => Ok(r),
-                    None => Err(gst::error_msg!(
+                match recv_timed(&mut rx).await {
+                    Ok(Some(r)) => Ok(r),
+                    Ok(None) => Err(gst::error_msg!(
                         gst::ResourceError::OpenRead,
                         ["Failed to get resource info"]
                     )),
+                    Err(err) => Err(err),
                 }
             });
 
@@ -258,19 +264,6 @@ pub mod imp {
             drop(canceller);
 
             let future = async {
-                let res =
-                    tokio::time::timeout(crate::fcast::COMPANION_REQUEST_TIMEOUT, future).await;
-
-                match res {
-                    Ok(res) => res,
-                    Err(_) => Err(gst::error_msg!(
-                        gst::ResourceError::Read,
-                        ["Request timeout"]
-                    )),
-                }
-            };
-
-            let future = async {
                 match future::Abortable::new(future, abort_registration).await {
                     Ok(res) => res.map_err(Some),
                     Err(_) => Err(None),
@@ -287,6 +280,14 @@ pub mod imp {
 
             res
         }
+    }
+
+    async fn recv_timed<T>(
+        rx: &mut tokio::sync::mpsc::UnboundedReceiver<T>,
+    ) -> Result<Option<T>, gst::ErrorMessage> {
+        tokio::time::timeout(crate::fcast::COMPANION_REQUEST_TIMEOUT, rx.recv())
+            .await
+            .map_err(|_| gst::error_msg!(gst::ResourceError::Read, ["Request timeout"]))
     }
 
     impl ObjectImpl for FCompSrc {
@@ -464,13 +465,16 @@ pub mod imp {
         ) -> Result<CreateSuccess, gst::FlowError> {
             let mut state = self.state.lock();
             let State::Started {
-                size, current_pos, ..
+                size,
+                current_pos,
+                stop,
             } = &mut *state
             else {
                 gst::element_imp_error!(self, gst::CoreError::Failed, ["Not started yet"]);
                 return Err(gst::FlowError::Error);
             };
-            if size.is_some_and(|size| *current_pos >= size) {
+            let end = (*stop).or(*size);
+            if end.is_some_and(|end| *current_pos >= end) {
                 return Err(gst::FlowError::Eos);
             }
 
@@ -511,9 +515,15 @@ pub mod imp {
                 );
                 return Err(gst::FlowError::Error);
             };
-            let read_length = companion::MAX_RESOURCE_READ_SIZE as u64;
-            let read_head =
-                v4::flat::ResourceReadHead::new(*current_pos, *current_pos + read_length - 1);
+            let max_len = companion::MAX_RESOURCE_READ_SIZE as u64;
+            let remaining = end
+                .map(|end| end.saturating_sub(*current_pos))
+                .unwrap_or(max_len);
+            let read_length = remaining.min(max_len).max(1);
+            let read_head = v4::flat::ResourceReadHead::new(
+                *current_pos,
+                current_pos.saturating_add(read_length.saturating_sub(1)),
+            );
 
             gst::debug!(
                 CAT,
@@ -535,18 +545,25 @@ pub mod imp {
             let res = self.wait(async move {
                 let mut data = Vec::new();
                 let mut received = false;
-                while let Some(response) = rx.recv().await {
-                    received = true;
-                    match response.result {
-                        companion::GetResourceResult::Success(part) => data.extend(part),
-                        companion::GetResourceResult::EndOfStream => return Ok((data, true)),
-                        result => {
-                            let outcome = crate::fcast::companion_resource_outcome(&result);
-                            return Err(gst::error_msg!(
-                                gst::ResourceError::Read,
-                                ["Companion resource request failed: {outcome:?}"]
-                            ));
+                loop {
+                    match recv_timed(&mut rx).await? {
+                        Some(response) => {
+                            received = true;
+                            match response.result {
+                                companion::GetResourceResult::Success(part) => data.extend(part),
+                                companion::GetResourceResult::EndOfStream => {
+                                    return Ok((data, true));
+                                }
+                                result => {
+                                    let outcome = crate::fcast::companion_resource_outcome(&result);
+                                    return Err(gst::error_msg!(
+                                        gst::ResourceError::Read,
+                                        ["Companion resource request failed: {outcome:?}"]
+                                    ));
+                                }
+                            }
                         }
+                        None => break,
                     }
                 }
                 if received {
@@ -561,10 +578,17 @@ pub mod imp {
 
             match res {
                 Ok((data, end_of_stream)) => {
-                    if end_of_stream || (data.is_empty() && size.is_none()) {
-                        return Err(gst::FlowError::Eos);
+                    let mut data = data;
+                    let response_end = current_pos.saturating_add(data.len() as u64);
+                    if let Some(end) = end {
+                        data.truncate(
+                            usize::try_from(end.saturating_sub(*current_pos)).unwrap_or(usize::MAX),
+                        );
                     }
                     if data.is_empty() {
+                        if end_of_stream || size.is_none() {
+                            return Err(gst::FlowError::Eos);
+                        }
                         gst::element_imp_error!(
                             self,
                             gst::ResourceError::Read,
@@ -581,6 +605,9 @@ pub mod imp {
                         buffer.set_offset_end(*current_pos + data_size);
                     }
                     *current_pos += data_size;
+                    if end_of_stream && size.is_none() {
+                        *size = Some(response_end);
+                    }
                     Ok(CreateSuccess::NewBuffer(buffer))
                 }
                 Err(Some(err)) => {
@@ -739,6 +766,14 @@ mod tests {
                     route: "/".to_owned(),
                 }),
             ),
+            (
+                "fcomp://0.fcast/0/?q=1",
+                Some(FCompUrl {
+                    provider_id: 0,
+                    resource_id: 0,
+                    route: "/?q=1".to_owned(),
+                }),
+            ),
             ("fcomp://fcast/0", None),
             ("fcomp://fcast/", None),
             ("fcomp://0.fcast/", None),
@@ -751,12 +786,23 @@ mod tests {
             ("fcomp://0.fcast.example/0", None),
             ("fcomp://0.fcast./0", None),
             ("fcomp://user@0.fcast/0", None),
-            ("fcomp://@0.fcast/0", None),
+            (
+                "fcomp://@0.fcast/0",
+                Some(FCompUrl {
+                    provider_id: 0,
+                    resource_id: 0,
+                    route: String::new(),
+                }),
+            ),
             ("fcomp://0.fcast:123/0", None),
             ("fcomp://0.fcast/0#fragment", None),
             ("fcomp://0.fcast/0?query-only", None),
             ("fcomp://0.fcast/0//authority", None),
             ("fcomp://0.fcast/0/route#fragment", None),
+            ("fcomp://65536.fcast/0", None),
+            ("fcomp://0.fcast/4294967296", None),
+            ("fcomp://0.fcast/0/%0a", None),
+            ("fcomp://0.fcast/0/%0D", None),
         ];
 
         for (url, result) in cases {
@@ -798,6 +844,9 @@ mod tests {
         UnknownEmpty,
         /// End the stream explicitly, with either a known or unknown size.
         EndOfStream { size: Option<u64> },
+        /// One successful payload followed by `EndOfStream` on the same
+        /// request.
+        SuccessThenEndOfStream(Vec<u8>),
         /// Report `reported_size` for the resource info, but answer every
         /// `GetResource` with `GetResourceResult::NotFound`.
         AlwaysNone { reported_size: u64 },
@@ -842,6 +891,9 @@ mod tests {
                                             continue;
                                         }
                                         ProviderBehavior::EndOfStream { size: Some(size) } => *size,
+                                        ProviderBehavior::SuccessThenEndOfStream(data) => {
+                                            data.len() as u64
+                                        }
                                         ProviderBehavior::AlwaysNone { reported_size } => {
                                             *reported_size
                                         }
@@ -877,6 +929,23 @@ mod tests {
                                         }
                                         ProviderBehavior::EndOfStream { .. } => {
                                             companion::GetResourceResult::EndOfStream
+                                        }
+                                        ProviderBehavior::SuccessThenEndOfStream(data) => {
+                                            let _ = tx.send(companion::ResourceResponse {
+                                                request_id: 0,
+                                                part: 0,
+                                                total_parts: 2,
+                                                result: companion::GetResourceResult::Success(
+                                                    data.clone(),
+                                                ),
+                                            });
+                                            let _ = tx.send(companion::ResourceResponse {
+                                                request_id: 0,
+                                                part: 1,
+                                                total_parts: 2,
+                                                result: companion::GetResourceResult::EndOfStream,
+                                            });
+                                            continue;
                                         }
                                         ProviderBehavior::AlwaysNone { .. } => {
                                             companion::GetResourceResult::NotFound
@@ -1114,14 +1183,18 @@ mod tests {
     #[test]
     fn test_empty_known_resource_is_clean_eos() {
         let mut h = Harness::new(Some(Vec::new()));
-        h.run(|src| src.set_state(gst::State::Playing).unwrap());
+        h.run(|src| {
+            src.set_state(gst::State::Playing).unwrap();
+        });
         assert_eq!(h.collect_until_eos(), Vec::<u8>::new());
     }
 
     #[test]
     fn test_empty_unknown_resource_is_clean_eos() {
         let mut h = Harness::new_with(Some(ProviderBehavior::UnknownEmpty));
-        h.run(|src| src.set_state(gst::State::Playing).unwrap());
+        h.run(|src| {
+            src.set_state(gst::State::Playing).unwrap();
+        });
         assert_eq!(h.collect_until_eos(), Vec::<u8>::new());
     }
 
@@ -1129,9 +1202,21 @@ mod tests {
     fn test_explicit_end_of_stream_is_clean_eos() {
         for size in [None, Some(4096)] {
             let mut h = Harness::new_with(Some(ProviderBehavior::EndOfStream { size }));
-            h.run(|src| src.set_state(gst::State::Playing).unwrap());
+            h.run(|src| {
+                src.set_state(gst::State::Playing).unwrap();
+            });
             assert_eq!(h.collect_until_eos(), Vec::<u8>::new());
         }
+    }
+
+    #[test]
+    fn test_success_then_eos_keeps_payload() {
+        let data = b"leftover".to_vec();
+        let mut h = Harness::new_with(Some(ProviderBehavior::SuccessThenEndOfStream(data.clone())));
+        h.run(|src| {
+            src.set_state(gst::State::Playing).unwrap();
+        });
+        assert_eq!(h.collect_until_eos(), data);
     }
 
     #[test]
@@ -1305,5 +1390,39 @@ mod tests {
 
         let received = h.collect_contiguous_from(seek_to);
         assert_eq!(received, &data[seek_to as usize..]);
+    }
+
+    #[test]
+    fn test_seek_with_stop_position() {
+        let data = patterned(8192);
+        let mut h = Harness::new(Some(data.clone()));
+
+        h.run(|src| {
+            src.set_state(gst::State::Playing).unwrap();
+        });
+
+        let buffer = h.wait_buffer_or_eos().unwrap();
+        assert_eq!(buffer.offset(), 0);
+
+        let start = 123u64;
+        let stop = 131u64;
+        h.run(move |src| {
+            src.seek(
+                1.0,
+                gst::SeekFlags::FLUSH,
+                gst::SeekType::Set,
+                gst::format::Bytes::from_u64(start),
+                gst::SeekType::Set,
+                gst::format::Bytes::from_u64(stop),
+            )
+            .unwrap();
+        });
+
+        let segment = h.wait_for_segment(true);
+        assert_eq!(segment.start(), Some(gst::format::Bytes::from_u64(start)));
+        assert_eq!(segment.stop(), Some(gst::format::Bytes::from_u64(stop)));
+
+        let received = h.collect_contiguous_from(start);
+        assert_eq!(received, &data[start as usize..stop as usize]);
     }
 }

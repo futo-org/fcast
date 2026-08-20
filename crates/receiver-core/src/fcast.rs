@@ -1395,6 +1395,12 @@ fn fail_resource_request(item: CompanionQueueItem, request_id: companion::Reques
     }
 }
 
+fn fail_companion_queue(queue: &mut HashMap<companion::RequestId, CompanionQueueItem>) {
+    for (request_id, item) in queue.drain() {
+        fail_resource_request(item, request_id);
+    }
+}
+
 fn handle_resource_response(
     queue: &mut HashMap<companion::RequestId, CompanionQueueItem>,
     resource: companion::ResourceResponse,
@@ -1765,6 +1771,7 @@ impl SessionDriver {
                             },
                     } = &mut self.state.variant
                     {
+                        fail_companion_queue(&mut self.companion_queue);
                         let id = self.companion_ctx.replace_provider(
                             companion_provider_id,
                             self.internal_companion_tx.clone(),
@@ -1933,15 +1940,15 @@ impl SessionDriver {
                     };
 
                     self.companion_queue.retain(|_, req| !req.feedback_closed());
-                    let Some(request_id) = allocate_request_id(
-                        &mut self.next_request_id,
-                        &self.companion_queue,
-                    ) else {
-                        error!("No companion request IDs available");
-                        continue;
-                    };
                     match comp {
                         CompanionMessage::GetResourceInfo { id, route, feedback } => {
+                            let Some(request_id) = allocate_request_id(
+                                &mut self.next_request_id,
+                                &self.companion_queue,
+                            ) else {
+                                error!("No companion request IDs available");
+                                continue;
+                            };
                             self.send_v4_message(&V4Message::CompanionGetResourceInfo {
                                 request_id,
                                 resource_id: id,
@@ -1950,6 +1957,21 @@ impl SessionDriver {
                             self.companion_queue.insert(request_id, CompanionQueueItem::GetResourceInfo(feedback));
                         }
                         CompanionMessage::GetResource { id, route, read_head, feedback } => {
+                            let Some(request_id) = allocate_request_id(
+                                &mut self.next_request_id,
+                                &self.companion_queue,
+                            ) else {
+                                error!("No companion request IDs available");
+                                fail_resource_request(
+                                    CompanionQueueItem::GetResource {
+                                        feedback,
+                                        next_part: 0,
+                                        total_parts: None,
+                                    },
+                                    0,
+                                );
+                                continue;
+                            };
                             let builder = v4::MessageBuilder::new();
                             let msg = builder.companion_resource_request_with_route(
                                 request_id,
@@ -2052,6 +2074,7 @@ impl SessionDriver {
         }
 
         debug!(state = ?self.state.variant);
+        fail_companion_queue(&mut self.companion_queue);
 
         if let StateVariant::Active {
             version:
@@ -2283,6 +2306,17 @@ mod tests {
             Err(MultipartError::WrongResponseType)
         );
         assert!(!queue.contains_key(&4));
+    }
+
+    #[test]
+    fn companion_queue_is_failed_when_drained() {
+        let (mut queue, mut rx) = resource_queue(3);
+        fail_companion_queue(&mut queue);
+        assert!(queue.is_empty());
+        assert!(matches!(
+            rx.try_recv().unwrap().result,
+            companion::GetResourceResult::Failed
+        ));
     }
 
     #[test]

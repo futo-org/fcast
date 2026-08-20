@@ -1,4 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Duration,
+};
 
 use bytes::Bytes;
 use fcast_protocol::companion;
@@ -48,6 +51,41 @@ pub enum DownloadImageError {
     CompanionResource(crate::fcast::CompanionResourceOutcome),
     #[error("FCompanion request timed out")]
     CompanionTimeout,
+}
+
+async fn collect_companion_resource(
+    mut resource_rx: tokio::sync::mpsc::UnboundedReceiver<companion::ResourceResponse>,
+    timeout: Duration,
+) -> Result<Vec<u8>, DownloadImageError> {
+    let mut res = Vec::new();
+    let mut received = false;
+    loop {
+        let response = tokio::time::timeout(timeout, resource_rx.recv())
+            .await
+            .map_err(|_| DownloadImageError::CompanionTimeout)?;
+        match response {
+            Some(response) => {
+                received = true;
+                match response.result {
+                    companion::GetResourceResult::Success(buf) => res.extend_from_slice(&buf),
+                    companion::GetResourceResult::EndOfStream => break,
+                    companion::GetResourceResult::NotFound => {
+                        return Err(DownloadImageError::ResourceNotFound);
+                    }
+                    result => {
+                        return Err(DownloadImageError::CompanionResource(
+                            crate::fcast::companion_resource_outcome(&result),
+                        ));
+                    }
+                }
+            }
+            None => break,
+        }
+    }
+    if !received {
+        return Err(DownloadImageError::CompRequestFailed);
+    }
+    Ok(res)
 }
 
 pub fn orientation_to_degs(orientation: metadata::Orientation) -> f32 {
@@ -401,58 +439,36 @@ impl Downloader {
 
         let url = crate::fcompsrc::FCompUrl::new(&url).ok_or(DownloadImageError::InvalidCompUrl)?;
 
-        tokio::time::timeout(crate::fcast::COMPANION_REQUEST_TIMEOUT, async {
-            let provider = ctx
-                .get_provider(url.provider_id)
-                .ok_or(DownloadImageError::ProviderNotFound)?;
-            let mut info = provider
-                .get_resource_info(url.resource_id, &url.route)
-                .map_err(|_| DownloadImageError::FailedToGetInfo)?;
-            let info = info
-                .recv()
-                .await
-                .ok_or(DownloadImageError::FailedToGetInfo)?;
-            let info = info.borrow_dependent();
-            let format = Self::format_from_content_type(info.content_type())?;
-            match crate::fcast::companion_info_outcome(info.status()) {
-                crate::fcast::CompanionResourceOutcome::Success => (),
-                crate::fcast::CompanionResourceOutcome::NotFound => {
-                    return Err(DownloadImageError::ResourceNotFound);
-                }
-                crate::fcast::CompanionResourceOutcome::EndOfStream => {
-                    return Ok((Bytes::new(), format));
-                }
-                outcome => return Err(DownloadImageError::CompanionResource(outcome)),
+        let provider = ctx
+            .get_provider(url.provider_id)
+            .ok_or(DownloadImageError::ProviderNotFound)?;
+        let mut info = provider
+            .get_resource_info(url.resource_id, &url.route)
+            .map_err(|_| DownloadImageError::FailedToGetInfo)?;
+        let info = tokio::time::timeout(crate::fcast::COMPANION_REQUEST_TIMEOUT, info.recv())
+            .await
+            .map_err(|_| DownloadImageError::CompanionTimeout)?
+            .ok_or(DownloadImageError::FailedToGetInfo)?;
+        let info = info.borrow_dependent();
+        let format = Self::format_from_content_type(info.content_type())?;
+        match crate::fcast::companion_info_outcome(info.status()) {
+            crate::fcast::CompanionResourceOutcome::Success => (),
+            crate::fcast::CompanionResourceOutcome::NotFound => {
+                return Err(DownloadImageError::ResourceNotFound);
             }
+            crate::fcast::CompanionResourceOutcome::EndOfStream => {
+                return Ok((Bytes::new(), format));
+            }
+            outcome => return Err(DownloadImageError::CompanionResource(outcome)),
+        }
 
-            let mut resource_rx = provider
-                .get_resource(url.resource_id, &url.route, None)
-                .map_err(|_| DownloadImageError::CompRequestFailed)?;
-            let mut res = Vec::new();
-            let mut received = false;
-            while let Some(response) = resource_rx.recv().await {
-                received = true;
-                match response.result {
-                    companion::GetResourceResult::Success(buf) => res.extend_from_slice(&buf),
-                    companion::GetResourceResult::EndOfStream => break,
-                    companion::GetResourceResult::NotFound => {
-                        return Err(DownloadImageError::ResourceNotFound);
-                    }
-                    result => {
-                        return Err(DownloadImageError::CompanionResource(
-                            crate::fcast::companion_resource_outcome(&result),
-                        ));
-                    }
-                }
-            }
-            if !received {
-                return Err(DownloadImageError::CompRequestFailed);
-            }
+        let resource_rx = provider
+            .get_resource(url.resource_id, &url.route, None)
+            .map_err(|_| DownloadImageError::CompRequestFailed)?;
+        let res = collect_companion_resource(resource_rx, crate::fcast::COMPANION_REQUEST_TIMEOUT)
+            .await?;
 
-            Ok((Bytes::from_owner(res), format))
-        })
-        .await
-        .map_err(|_| DownloadImageError::CompanionTimeout)?
+        Ok((Bytes::from_owner(res), format))
     }
 
     pub fn queue_download(&self, id: u32, url: String, headers: Option<HashMap<String, String>>) {
@@ -582,5 +598,31 @@ mod tests {
             matches!(&err, DownloadImageError::UnsupportedScheme(s) if s == "ftp"),
             "unexpected error: {err:?}"
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn companion_part_timeout_resets_after_each_part() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(collect_companion_resource(rx, Duration::from_secs(1)));
+
+        tokio::time::advance(Duration::from_millis(900)).await;
+        tx.send(companion::ResourceResponse {
+            request_id: 1,
+            part: 0,
+            total_parts: 2,
+            result: companion::GetResourceResult::Success(vec![1, 2, 3].into()),
+        })
+        .unwrap();
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_millis(900)).await;
+        tx.send(companion::ResourceResponse {
+            request_id: 1,
+            part: 1,
+            total_parts: 2,
+            result: companion::GetResourceResult::EndOfStream,
+        })
+        .unwrap();
+
+        assert_eq!(task.await.unwrap().unwrap(), vec![1, 2, 3]);
     }
 }

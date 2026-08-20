@@ -142,6 +142,7 @@ image = { workspace = true, features = ["encode"] }
 # them and the decoders they are fed to (fcastplaybin cannot depend on
 # fcast-video), which is what `the_drivers_bitmap_fixtures_decode` needs.
 fcasttest = { path = "../fcasttest" }
+tokio = { workspace = true, features = ["test-util"] }
 
 
 [features]

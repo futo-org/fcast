@@ -291,12 +291,14 @@ fn image_download_error_kind(err: &image::DownloadImageError) -> ErrorKind {
         | E::InvalidCompUrl
         | E::ProviderNotFound
         | E::CompRequestFailed
-        | E::ResourceNotFound => ErrorKind::ResourceNotFound,
+        | E::ResourceNotFound
+        | E::CompanionTimeout => ErrorKind::ResourceNotFound,
         E::MissingContentType
         | E::InvalidContentType
         | E::ContentTypeIsNotString
         | E::UnsupportedContentType(_)
         | E::DecodeImage(_) => ErrorKind::UnsupportedFormat,
+        E::CompanionResource(_) => ErrorKind::Internal,
     }
 }
 
