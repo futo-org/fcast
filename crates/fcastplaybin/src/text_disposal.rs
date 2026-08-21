@@ -52,14 +52,13 @@ pub(crate) struct TextDisposal {
 // the next cue's push and the outgoing slot's multiqueue src pad therefore sat
 // mid-push for the media's whole cue cadence (measured 1.6s at a 2s cue period,
 // 4.6s at 4s). Every arm became a PARK after that flush was caught deadlocking
-// the decider against the overlay's sticky re-push cascade, with the flush kept
-// reachable behind `FCAST_EAGER_REPLACE_FLUSH` so the lever restored v1
-// exactly.
+// the decider against the overlay's sticky re-push cascade.
 //
-// There is no v1 left to restore. The flush, its intent slot, its counter, its
-// five levers and its `eager_branch` census reason are gone; what carried the
+// There is no v1 left to restore. The flush, its intent slot, its counter and
+// its `eager_branch` census reason went with subtitleoverlay; what carried the
 // work all along -- the park, plus the branch disposal behind it -- is the
-// whole of it now. See `decisions::park_text_before_dispatch`.
+// whole of it now. See
+// `decisions::park_text_before_dispatch`.
 
 /// Mid-play disposals whose branch would not quiesce inside the budget and
 /// fell back to the v1 queue pair ([`Inner::dispose_text_branch_on`]).
@@ -69,7 +68,7 @@ pub(crate) struct TextDisposal {
 /// stream lock while the feeder push is blocked on buffer-count fullness the
 /// time-uncap cannot relieve. Worst case equals v1. What it must not be is
 /// SILENT, and what a nonzero count on a default suite means is "look".
-static DISPOSAL_QUIESCE_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static DISPOSAL_QUIESCE_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 
 /// Which boundary a text-branch disposal is running at.
 ///
@@ -90,7 +89,7 @@ pub(crate) enum DisposalBoundary {
     /// worth knowing. The mid-play census reasons (`disposal_consumer`,
     /// `disposal_queue`) are therefore reachable from a plain LOAD and not
     /// only from playback. And the quiesce budget is spent on the CALLER's
-    /// thread there - up to `FCAST_DISPOSAL_QUIESCE_MS` per branch - which is
+    /// thread there - up to [`DISPOSAL_QUIESCE_MS`] per branch - which is
     /// harmless in practice because a branch at READY is trivially quiescent
     /// and the first trylock succeeds, but it is the caller's time, not a
     /// worker's.
@@ -101,9 +100,16 @@ pub(crate) enum DisposalBoundary {
 }
 
 /// How long a mid-play disposal waits for its branch to go quiet before
-/// falling back to the v1 flush pair. Overridden by
-/// `FCAST_DISPOSAL_QUIESCE_MS`.
-const DISPOSAL_QUIESCE_MS: Duration = Duration::from_millis(50);
+/// falling back to the v1 flush pair.
+pub(crate) const DISPOSAL_QUIESCE_MS: Duration = Duration::from_millis(50);
+
+/// The live quiescence budget in milliseconds, normally
+/// [`DISPOSAL_QUIESCE_MS`]. Mutable only so tests can shorten it
+/// ([`FcastPlaybin::set_disposal_quiesce`]).
+///
+/// A `static` rather than an `Inner` field because the disposal that reads it
+/// also runs at a TEARDOWN boundary, past the point an `Inner` is reachable.
+static DISPOSAL_QUIESCE: AtomicU64 = AtomicU64::new(DISPOSAL_QUIESCE_MS.as_millis() as u64);
 
 /// The poll step inside [`DISPOSAL_QUIESCE_MS`].
 const DISPOSAL_QUIESCE_STEP: Duration = Duration::from_millis(2);
@@ -226,47 +232,27 @@ impl Inner {
         // pipeline posted an error: Internal data stream error" attributed to
         // the external's own uri. The buffer and byte caps stay at their
         // defaults, so the data volume in flight is unchanged from before this
-        // wake existed. Lever: `FCAST_NO_TQUEUE_UNCAP_ON_DETACH`.
+        // wake existed.
         //
-        // And only on an ADAPTIVE main input, which is where the hazard this
-        // wake exists for lives: adaptivedemux2 serves every track from ONE
-        // output loop and pauses it for good on a FLUSHING return, killing the
-        // whole item. A non-adaptive demuxer loses only the flushing stream to
-        // the multiqueue latch, which is the status quo this wake never had to
-        // change, and time-only still cost that seed one failure in seven
-        // there.
+        // ON EVERY MODE, not just an adaptive main input. The hazard is worst
+        // there (adaptivedemux2 serves every track from ONE output loop and
+        // pauses it for good on a FLUSHING return, killing the whole item),
+        // but the wake stands in for the disposal's queue pair and that pair
+        // was not adaptive-only: a non-adaptive item that loses its text
+        // stream to a multiqueue latch is a silently dead subtitle track, and
+        // adaptive-only still cost the seed above one failure in seven.
         //
-        // PROMOTED TO ALL MODES. The wake now stands in for the disposal's
-        // queue pair, and that pair was not adaptive-only, so its replacement
-        // cannot be either: a non-adaptive item that loses its text stream to
-        // a multiqueue latch is a silently dead
-        // subtitle track, which is exactly the "silent corruption" the slot
-        // reuse causes. The three-cap lift stays refused (the measured 8-of-11
-        // failure above); this is still time-only.
-        // Lever: `FCAST_UNCAP_ADAPTIVE_ONLY` restores the adaptive-only
-        // conditional, `FCAST_NO_TQUEUE_UNCAP_ON_DETACH` still kills the wake
-        // everywhere.
-        //
-        // LEVER INTERACTION, worth knowing before an A/B: the uncap is what
-        // makes a mid-play branch QUIESCE, so killing it no longer merely
-        // restores the old timing. It makes
-        // `dispose_text_branch_on`'s quiescence probe fail and fall back to
-        // the v1 flush pair, counted in `disposal_quiesce_timeouts`. Measured:
-        // `subtitle_disable` runs ~123 s on the default arm, ~234 s with the
-        // uncap off and ~237 s with the pair restored outright. The two levers
-        // are not independent, and a run with both set is v1 rather than a
-        // third arm.
-        if let Some(tqueue) = &tqueue
-            && (std::env::var_os("FCAST_UNCAP_ADAPTIVE_ONLY").is_none()
-                || inner.upstream_owns_selection())
-            && std::env::var_os("FCAST_NO_TQUEUE_UNCAP_ON_DETACH").is_none()
-        {
+        // The uncap is also what makes a mid-play branch QUIESCE, so it is
+        // load-bearing for `dispose_text_branch_on`'s quiescence probe: without
+        // it the probe times out and falls back to the v1 flush pair (counted
+        // in `disposal_quiesce_timeouts`), measured as `subtitle_disable`
+        // running ~123 s with the uncap against ~234 s without.
+        if let Some(tqueue) = &tqueue {
             debug!(tqueue = %tqueue.name(), "lifting the text queue's time cap to wake a parked push");
             tqueue.set_property("max-size-time", 0u64);
         }
 
         if let Some(tqueue) = &tqueue
-            && std::env::var_os("FCAST_NO_DETACH_DROP_PROBE").is_none()
             && let Some(qsrc) = tqueue.static_pad("src")
         {
             // Never removed: this pad goes to NULL and leaves the pipeline
@@ -382,7 +368,7 @@ impl Inner {
         // pipeline stayed paused, with the incoming track never linked and no
         // cue behind it. Bite-proof: `sink_subtitles::
         // a_paused_disposal_frees_the_branch_for_the_next_link`.
-        if defer_disposal && std::env::var_os("FCAST_NO_TEXT_WORK_DEFERRAL").is_none() {
+        if defer_disposal && !inner.stage_text_work_deferral_off() {
             debug!(
                 defer_disposal,
                 "postponing a text branch disposal off the calling thread"
@@ -518,29 +504,18 @@ impl Inner {
         // a busy pad go quiet is the time-uncap at detach, which wakes the
         // parked chain call with `srcresult` still OK so it enqueues and
         // returns GST_FLOW_OK: no FLUSHING anywhere.
-        //
-        // Levers: `FCAST_DISPOSAL_QUEUE_FLUSH` restores the unconditional v1
-        // pair; `FCAST_DISPOSAL_QUIESCE_MS` is the budget (0 = one probe, no
-        // retry).
         let quiesced = match boundary {
             DisposalBoundary::Teardown => false,
-            DisposalBoundary::MidPlay
-                if std::env::var_os("FCAST_DISPOSAL_QUEUE_FLUSH").is_some() =>
-            {
-                false
-            }
             DisposalBoundary::MidPlay => Self::await_pad_quiescence(&disposal.downstream),
         };
         if !quiesced {
-            if boundary == DisposalBoundary::MidPlay
-                && std::env::var_os("FCAST_DISPOSAL_QUEUE_FLUSH").is_none()
-            {
+            if boundary == DisposalBoundary::MidPlay {
                 // The double-block geometry: a cue push parked INSIDE the
                 // branch's tail holding the queue's src stream lock, with the
                 // feeder push blocked on buffer-count fullness that the
                 // time-uncap cannot relieve. Nothing non-flushing reaches that push, so
                 // this is v1 - worst case, counted rather than silent.
-                DISPOSAL_QUIESCE_TIMEOUTS.fetch_add(1, Ordering::SeqCst);
+                DISPOSAL_QUIESCE_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
                 warn!(
                     pad = %disposal.downstream.name(),
                     "a text branch would not quiesce; falling back to the v1 flush pair \
@@ -613,16 +588,15 @@ impl Inner {
 
     /// Wait, briefly, for `pad` to have no serialized push in flight.
     ///
-    /// `FCAST_DISPOSAL_QUIESCE_MS` (default [`DISPOSAL_QUIESCE_MS`]) is the
-    /// whole budget, polled in [`DISPOSAL_QUIESCE_STEP`] steps.
+    /// [`DISPOSAL_QUIESCE`] (default [`DISPOSAL_QUIESCE_MS`]) is the whole
+    /// budget, polled in [`DISPOSAL_QUIESCE_STEP`] steps.
     ///
-    /// ZERO MEANS NO WAITING, NOT NO SKIPPING. The plan described `0` as
-    /// "never wait = always pair"; it is not. A zero budget still takes one
+    /// ZERO MEANS NO WAITING, NOT NO SKIPPING. A zero budget still takes one
     /// immediate probe, and that probe usually SUCCEEDS - measured to make no
     /// difference at all on the default suites, because the detach-time uncap
     /// has already released the parked push by the time a disposal runs. The
     /// knob shortens the wait for a branch that is busy; it does not restore
-    /// the pair. `FCAST_DISPOSAL_QUEUE_FLUSH` is the always-pair restore.
+    /// the pair.
     ///
     /// Polling rather than blocking is the point: the decider must never wait
     /// on a streaming thread's stream lock (see [`Inner::pad_is_quiescent`]),
@@ -630,11 +604,8 @@ impl Inner {
     /// switch latency while being far above the microseconds a cue push takes
     /// once the uncap has released it.
     fn await_pad_quiescence(pad: &gst::Pad) -> bool {
-        let budget = std::env::var("FCAST_DISPOSAL_QUIESCE_MS")
-            .ok()
-            .and_then(|raw| raw.parse::<u64>().ok())
-            .map_or(DISPOSAL_QUIESCE_MS, Duration::from_millis);
-        let deadline = Instant::now() + budget;
+        let deadline =
+            Instant::now() + Duration::from_millis(DISPOSAL_QUIESCE.load(Ordering::Relaxed));
         loop {
             if Self::pad_is_quiescent(pad) {
                 return true;
@@ -677,13 +648,13 @@ impl FcastPlaybin {
         self.inner.deferred_text_disposal.lock().len()
     }
 
-    /// How many mid-play disposals fell back to the v1 queue pair because the
-    /// branch would not quiesce inside `FCAST_DISPOSAL_QUIESCE_MS` (see
-    /// [`DISPOSAL_QUIESCE_TIMEOUTS`]). Not a failure - the counted residual -
-    /// but a nonzero count on a default suite is worth a look. Not part of the
-    /// public API.
+    /// Shorten the mid-play disposal's quiescence budget. For tests only:
+    /// production callers keep [`DISPOSAL_QUIESCE_MS`]. Same shape and purpose
+    /// as [`Self::set_selection_deadline`], except that the budget is
+    /// process-wide, since the disposal that reads it also runs past the point
+    /// an instance is reachable.
     #[doc(hidden)]
-    pub fn disposal_quiesce_timeouts() -> u64 {
-        DISPOSAL_QUIESCE_TIMEOUTS.load(Ordering::SeqCst)
+    pub fn set_disposal_quiesce(&self, budget: Duration) {
+        DISPOSAL_QUIESCE.store(budget.as_millis() as u64, Ordering::Relaxed);
     }
 }

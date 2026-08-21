@@ -61,6 +61,8 @@ use fcasttest::{
 };
 use gst::prelude::*;
 
+#[path = "support/census.rs"]
+mod census;
 #[path = "support/text_arm.rs"]
 mod text_arm;
 
@@ -923,10 +925,10 @@ impl Runner {
         }
     }
 
-    /// A graph-dump round-trip proves the worker is not wedged inside a job.
+    /// A barrier round-trip proves the worker is not wedged inside a job.
     fn check_worker_alive(&self) -> Checked {
         let (tx, rx) = mpsc::channel();
-        self.playbin.debug_graph_async(Box::new(move |_| {
+        self.playbin.barrier_async(Box::new(move || {
             let _ = tx.send(());
         }));
         let deadline = Instant::now() + WORKER_BOUND;
@@ -935,7 +937,7 @@ impl Runner {
                 Ok(()) => return Ok(()),
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if Instant::now() >= deadline {
-                        return Err(self.fail("the worker never answered a graph dump"));
+                        return Err(self.fail("the worker never answered a barrier"));
                     }
                     self.settle_pump();
                 }
@@ -1755,6 +1757,7 @@ fn fuzz_action_schedules() {
          (override with FCAST_FUZZ_SEED / FCAST_FUZZ_ITERS / FCAST_FUZZ_ACTIONS / FCAST_FUZZ_SHRINK)"
     );
 
+    let census_before = census::baseline();
     let mut total = Coverage::default();
     for iteration in 0..iters {
         let case = Case::generate(seed, iteration, actions);
@@ -1847,16 +1850,14 @@ fn fuzz_action_schedules() {
         }
     }
 
-    // The teardown descent bound MUST NOT FIRE on this driver, at any
-    // budget. Every iteration ends in a teardown, so this run is the widest
-    // sample of them the suite has; seeds 500001/500002/500010 in particular
-    // pin the teardown-boundary flush choreography the bound now wraps. A
-    // nonzero count means some descent stopped returning for fifteen seconds
-    // and its thread plus its graph were deliberately leaked - a real wedge,
-    // and the one thing this bound is not allowed to be doing routinely.
-    assert_eq!(
-        fcastplaybin::FcastPlaybin::teardown_descent_stuck(),
-        0,
-        "a teardown descent blew its budget and was leaked during the fuzz run"
-    );
+    // Every silent-failure counter MUST stay flat on this driver, at any
+    // budget. The teardown descent bound is the one this check started as:
+    // every iteration ends in a teardown, so this run is the widest sample of
+    // them the suite has (seeds 500001/500002/500010 pin the
+    // teardown-boundary flush choreography the bound wraps), and a nonzero
+    // count means some descent stopped returning for fifteen seconds and its
+    // thread plus its graph were deliberately leaked. The rest of the census
+    // rides along for free: a random walk over the whole track lifecycle is
+    // exactly the sample those instruments were put in for.
+    census::assert_flat_all(&census_before, "the fuzz run");
 }

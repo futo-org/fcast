@@ -55,9 +55,9 @@ fn handed_back_seek_must_not_clobber_a_newer_parked_seek() {
     let newest = Seek::new(Some(THIRTY), Some(1.0));
 
     // The user seeks: dispatched to the worker.
-    assert_eq!(sm.seek_internal(first, None), Some(first));
+    assert_eq!(sm.seek_internal(first), Some(first));
     // The user scrubs again while the first is still out: parked behind it.
-    assert_eq!(sm.seek_internal(newest, None), None);
+    assert_eq!(sm.seek_internal(newest), None);
     // ...and only NOW does the worker's hand-back for the FIRST seek land.
     sm.queue_seek(first);
 
@@ -161,8 +161,8 @@ fn load_without_pause_still_reaches_playing_through_the_overshoot() {
 /// marker set: `seek_failed` bails out on `Phase::Buffering` ("buffering
 /// keeps its own recovery"), but buffering completion only re-derives the
 /// transitions when the seek slot is CLEAR. With a stale in-flight marker it
-/// returns `FinishedButWaitingSeek` and waits for a settle edge that will
-/// never come (the pipeline is already settled where buffering put it), so
+/// returns `Finished(None)` and waits for a settle edge that will never
+/// come (the pipeline is already settled where buffering put it), so
 /// the machine never reports a running state again and the receiver is stuck
 /// in "Buffering" for good.
 #[test]
@@ -171,14 +171,11 @@ fn seek_failure_during_buffering_does_not_wedge_the_machine() {
 
     // The user seeks: dispatched (the pipeline is settled in PAUSED).
     let seek = Seek::new(Some(TEN), Some(1.0));
-    assert_eq!(sm.seek_internal(seek, None), Some(seek));
+    assert_eq!(sm.seek_internal(seek), Some(seek));
 
     // The source rebuffers while the seek is out. The caller re-commits
     // PAUSED, which the pipeline is already in: no state edge is posted.
-    assert_eq!(
-        sm.buffering(0),
-        BufferingStateResult::Started(gst::State::Paused)
-    );
+    assert_eq!(sm.buffering(0), BufferingStateResult::Started);
 
     // The seek comes back as failed.
     assert_eq!(sm.seek_failed(), None);
@@ -207,15 +204,12 @@ fn seek_failure_during_buffering_keeps_a_superseding_seek() {
     let mut sm = playing();
 
     assert_eq!(
-        sm.seek_internal(Seek::new(Some(TEN), None), None),
+        sm.seek_internal(Seek::new(Some(TEN), None)),
         Some(Seek::new(Some(TEN), Some(1.0)))
     );
-    assert_eq!(
-        sm.buffering(10),
-        BufferingStateResult::Started(gst::State::Paused)
-    );
+    assert_eq!(sm.buffering(10), BufferingStateResult::Started);
     // A newer seek supersedes the in-flight one while buffering.
-    assert_eq!(sm.seek_internal(Seek::new(Some(THIRTY), None), None), None);
+    assert_eq!(sm.seek_internal(Seek::new(Some(THIRTY), None)), None);
     // The old, superseded seek reports failure.
     assert_eq!(sm.seek_failed(), None);
     // The pipeline settles at PAUSED during buffering, then buffering

@@ -417,7 +417,7 @@ fn the_upstream_hold_release_queues_no_second_replay() {
     harness
         .playbin
         .request_track(TrackSlot::Subtitle, TrackTarget::Stream(None));
-    let seeds_before = FcastPlaybin::slot_seed_pushes();
+    let seeds_before = FcastPlaybin::global_stats().slot_seed_pushes;
     let id = harness.attach_and_materialize(&subs.uri());
     assert!(
         harness.playbin.external_hold_probes(id) > 0,
@@ -430,7 +430,7 @@ fn the_upstream_hold_release_queues_no_second_replay() {
     harness.wait_until(
         "the held external's slot to be seeded",
         EVENT_TIMEOUT,
-        || FcastPlaybin::slot_seed_pushes() > seeds_before,
+        || FcastPlaybin::global_stats().slot_seed_pushes > seeds_before,
     );
     let sid = harness
         .playbin
@@ -445,15 +445,17 @@ fn the_upstream_hold_release_queues_no_second_replay() {
         harness.playbin.queue_replay_sub(id, 0),
         "queueing the first replay the way an emitter does"
     );
-    harness.wait_until("the first replay seek to reach the park", EVENT_TIMEOUT, || {
-        park.parked() > 0
-    });
+    harness.wait_until(
+        "the first replay seek to reach the park",
+        EVENT_TIMEOUT,
+        || park.parked() > 0,
+    );
     assert!(
         harness.playbin.replay_inflight(id, 0),
         "the parked replay should hold the in-flight bit"
     );
 
-    let queued_before = FcastPlaybin::replay_jobs_queued();
+    let queued_before = FcastPlaybin::global_stats().replay_jobs_queued;
     harness
         .playbin
         .request_track(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(id));
@@ -470,7 +472,7 @@ fn the_upstream_hold_release_queues_no_second_replay() {
         thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(
-        FcastPlaybin::replay_jobs_queued(),
+        FcastPlaybin::global_stats().replay_jobs_queued,
         queued_before,
         "the upstream hold release queued a second replay job for an input whose replay is \
          still outstanding"
@@ -514,9 +516,8 @@ fn the_upstream_hold_release_queues_no_second_replay() {
 /// with the external's stream and the decoder's auto-select joined it.
 /// Nothing is dispatched, so nothing was owed a confirmation, and in
 /// upstream-selection mode the decoder never posts one either.
-/// `ConfirmApplied` answers exactly this shape. Lever:
-/// `FCAST_NO_CONFIRM_APPLIED` restores the old unanswered behaviour and
-/// makes this test red again.
+/// `ConfirmApplied` answers exactly this shape; without it the request goes
+/// unanswered and this test is red again.
 ///
 /// The synthetic confirmation is scoped away from a gapless activation
 /// window, where `applied` already names the incoming item's streams and a

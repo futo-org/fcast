@@ -3,7 +3,7 @@
 //! "Got data flow before segment event"? A yes/no question of one pad, read off
 //! that pad's own sticky list. Deliberately NOT a rate measurement: counting
 //! warnings across arms was hopeless (0/5/0/0/0 current against 0/0/0/24/8
-//! all-levers-off). Lever for the fix: `FCAST_NO_FLUSH_SEGMENT_RESTORE`.
+//! with every fix taken out).
 //! Long-form record: NEXT-FIXES-PLAN.md, fuzz-campaign-findings.md.
 //!
 //! Mechanism (gstpad.c lines from a local GStreamer 1.29 checkout):
@@ -579,8 +579,8 @@ fn an_injected_flush_pair_strands_a_decodebin_sink_pad_without_a_segment() {
 /// THE FIX, measured against `an_injected_flush_pair_...` directly above: same
 /// rig, same injection point, same pads. The only difference is the third
 /// event, the SEGMENT captured off each pad before the `FlushStart` and resent
-/// after the `FlushStop`, which is what `Inner::flush_db3_sink_pads` does
-/// (lever `FCAST_NO_FLUSH_SEGMENT_RESTORE`). Read that function's SCOPE section
+/// after the `FlushStop`, which is what `Inner::flush_db3_sink_pads` does.
+/// Read that function's SCOPE section
 /// before assuming the same replay is safe on a text-branch pad: measurably it
 /// is not.
 ///

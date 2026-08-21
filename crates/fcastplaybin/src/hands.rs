@@ -22,12 +22,12 @@
 //!    while holding `selection`. `routing` and the gates CAN be held across an
 //!    enqueue (`route_db3_pad` queues its join under the route gate so the
 //!    routing entry is visible to the join first).
-//! 4. Every enqueue produces EXACTLY ONE outcome, with two edges. A lane whose
-//!    `Weak` no longer upgrades stops without reporting. A lane that cannot
-//!    reach the decider retires the entry itself and settles what is owed. A
-//!    body that never finished owes what the EFFECT owes ([`LaneFallback::of`],
-//!    armed before the body and covering an unwind). A finished body owes what
-//!    its OUTCOME owes ([`Outcome::owed`]).
+//! 4. Every enqueue registers in flight and produces EXACTLY ONE outcome, with
+//!    two edges. A lane whose `Weak` no longer upgrades stops without
+//!    reporting. A lane that cannot reach the decider retires the entry itself
+//!    and settles what is owed. A body that never finished owes what the EFFECT
+//!    owes ([`LaneFallback::of`], armed before the body and covering an
+//!    unwind). A finished body owes what its OUTCOME owes ([`Outcome::owed`]).
 //! 5. Revalidation happens at EXECUTION, not at enqueue. A select whose queue
 //!    epoch has moved is skipped WITH an outcome, never silently.
 //!
@@ -37,13 +37,6 @@
 //! the `loom_` tests pin the TABLE half on every schedule loom can build for
 //! two threads. The lane bodies belong to the integration suites and
 //! `tools/run-tsan.sh`.
-//!
-//! # Lever
-//!
-//! `FCAST_NO_HANDS=1` spawns the v1 loops instead
-//! (`Inner::select_sender_loop` and friends). Chosen once at spawn time. The
-//! enqueue side reads the `Hands::live` flag rather than the environment, so
-//! a lane can never disagree with the executor actually running.
 
 use std::{
     sync::{Arc, atomic::Ordering, mpsc},
@@ -342,29 +335,24 @@ pub(crate) struct Wedged {
 
 /// The executor: three lane channels plus the in-flight table.
 pub(crate) struct Hands {
-    /// `false` under `FCAST_NO_HANDS`. The v1 loops read the same channels
-    /// and nothing is registered in flight (nobody would report a `Done`).
-    live: bool,
     select_tx: mpsc::Sender<Envelope>,
     replay_tx: mpsc::Sender<Envelope>,
     join_tx: mpsc::Sender<Envelope>,
     next_id: AtomicU64,
     /// Short by construction, so a linear scan is the right structure.
     in_flight: Mutex<Vec<InFlight>>,
-    /// How many effects the tick has reported as wedged. Diagnostic, read
-    /// through `FcastPlaybin::hands_wedge_warnings`.
+    /// How many effects the tick has reported as wedged. Diagnostic, read by
+    /// this module's own tests (the crate-level accessor had no callers).
     wedge_warnings: AtomicU64,
 }
 
 impl Hands {
     pub(crate) fn new(
-        live: bool,
         select_tx: mpsc::Sender<Envelope>,
         replay_tx: mpsc::Sender<Envelope>,
         join_tx: mpsc::Sender<Envelope>,
     ) -> Self {
         Self {
-            live,
             select_tx,
             replay_tx,
             join_tx,
@@ -387,9 +375,7 @@ impl Hands {
     pub(crate) fn enqueue(&self, effect: Effect, queue_epoch: u64) -> Result<EffectId, Effect> {
         let lane = effect.lane();
         let id = self.next_id();
-        if self.live {
-            self.register(id, lane, effect.seqnum());
-        }
+        self.register(id, lane, effect.seqnum());
         let tx = match lane {
             Lane::Select => &self.select_tx,
             Lane::Replay => &self.replay_tx,
@@ -484,6 +470,9 @@ impl Hands {
         wedged
     }
 
+    /// Test-only since the crate-level accessor went (it had no callers);
+    /// the counter itself keeps counting, the module's own tests read it.
+    #[cfg(test)]
     pub(crate) fn wedge_warnings(&self) -> u64 {
         self.wedge_warnings.load(Ordering::SeqCst)
     }
@@ -592,7 +581,7 @@ mod loom_tests {
         let (replay_tx, replay_rx) = mpsc::channel();
         let (join_tx, join_rx) = mpsc::channel();
         (
-            Hands::new(true, select_tx, replay_tx, join_tx),
+            Hands::new(select_tx, replay_tx, join_tx),
             [select_rx, replay_rx, join_rx],
         )
     }
@@ -854,7 +843,7 @@ mod tests {
         let (replay_tx, replay_rx) = mpsc::channel();
         let (join_tx, join_rx) = mpsc::channel();
         (
-            Hands::new(true, select_tx, replay_tx, join_tx),
+            Hands::new(select_tx, replay_tx, join_tx),
             select_rx,
             replay_rx,
             join_rx,
@@ -993,22 +982,6 @@ mod tests {
         assert!(matches!(join, Outcome::JoinFinished { .. }));
     }
 
-    /// Under `FCAST_NO_HANDS` the v1 loops report nothing, so nothing may be
-    /// registered. An unretirable entry wedges the tick and the deadline.
-    #[test]
-    fn the_v1_arm_registers_nothing() {
-        gst::init().unwrap();
-        let (select_tx, select_rx) = mpsc::channel();
-        let (replay_tx, _replay_rx) = mpsc::channel();
-        let (join_tx, _join_rx) = mpsc::channel();
-        let hands = Hands::new(false, select_tx, replay_tx, join_tx);
-        let seqnum = gst::Seqnum::next();
-        hands.enqueue(select_effect(seqnum), 0).expect("enqueued");
-        assert_eq!(hands.in_flight(), 0);
-        assert!(hands.select_age(seqnum, Instant::now()).is_none());
-        assert!(select_rx.try_recv().is_ok(), "the effect still ships");
-    }
-
     /// A lane that is gone must not leave its effect in the table, and the
     /// caller must get the effect back for its inline fallback.
     #[test]
@@ -1017,7 +990,7 @@ mod tests {
         let (select_tx, select_rx) = mpsc::channel();
         let (replay_tx, replay_rx) = mpsc::channel();
         let (join_tx, join_rx) = mpsc::channel();
-        let hands = Hands::new(true, select_tx, replay_tx, join_tx);
+        let hands = Hands::new(select_tx, replay_tx, join_tx);
         drop(select_rx);
         drop(replay_rx);
         drop(join_rx);

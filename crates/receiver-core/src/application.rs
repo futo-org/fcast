@@ -4133,8 +4133,10 @@ impl Application {
                 message,
                 failed_uri,
             } => {
-                // Attribution comes from fcastplaybin's generation-tagged inputs;
-                // `failed_uri` is diagnostic only. External subtitles never error here.
+                // Attribution comes from fcastplaybin's generation-tagged inputs.
+                // `failed_uri` is not just diagnostic: `kind` was classified from
+                // its presence, and its host is the network-failure detail below.
+                // External subtitles never error here.
                 match err_origin {
                     fcastplaybin::ErrorOrigin::Stale => {
                         debug!(?failed_uri, message, "Dropping error from a stale input");

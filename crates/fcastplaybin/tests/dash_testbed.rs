@@ -20,7 +20,7 @@
 //! `Inner::flush_live_text_branches` is unreachable through a DASH input: an
 //! adaptive demuxer answers SELECTABLE, so every subtitle transition routes
 //! to the park arm. The hold that does guard this path is the drop probe in
-//! `detach_text_parts`, lever `FCAST_NO_DETACH_DROP_PROBE`.
+//! `detach_text_parts`.
 //!
 //! Fixtures are generated on demand by `tests/support/gen-dash.sh` into the
 //! gitignored `target/dash-fixtures`, and served by the file server in
@@ -40,6 +40,8 @@ use fcastplaybin::{
 use fcasttest::sink::{FTestSink, Recording};
 use gst::prelude::*;
 
+#[path = "support/census.rs"]
+mod census;
 #[path = "support/text_arm.rs"]
 mod text_arm;
 
@@ -132,6 +134,11 @@ struct Harness {
     /// See [`Harness::poll_on_events_only`].
     event_polls_only: Cell<bool>,
     _audio: Arc<Mutex<Vec<Recording>>>,
+    /// Checked when the harness drops: every counter whose healthy value is
+    /// zero must have stayed flat for the life of this test. One guard per
+    /// harness rather than one assertion per test, so a new silent-failure
+    /// instrument is covered here the moment it is declared `zero`.
+    _census: census::Census,
 }
 
 impl Harness {
@@ -169,6 +176,7 @@ impl Harness {
             marks: RefCell::new(Vec::new()),
             event_polls_only: Cell::new(false),
             _audio: audio,
+            _census: census::Census::arm("this dash harness"),
         }
     }
 
@@ -828,9 +836,8 @@ fn default_text_renders_on_a_second_load_after_a_stop() {
 /// A prepared adaptive input posts its own streams-selected the moment it is
 /// PAUSED. Misread as decodebin3 switching items, the activation adopts the
 /// next generation with nothing linked and the demuxer dies of not-linked.
-/// The prepared input's self-report is dropped, lever
-/// `FCAST_NO_ADAPTIVE_PREPARE_HOLD`; with the lever set this fails on the
-/// pipeline error before any cue.
+/// The prepared input's self-report is dropped by the adaptive prepare hold;
+/// without that hold this fails on the pipeline error before any cue.
 #[test]
 fn default_text_renders_on_a_gapless_prepared_second_item() {
     let (server, root) = serve();
@@ -880,10 +887,9 @@ fn default_text_renders_on_a_gapless_prepared_second_item() {
 /// streams-selected at PAUSED. Misread as a switch, the activation adopts the
 /// next generation with nothing linked, the playing input is removed, and the
 /// demuxer dies of not-linked. This test is the prepare hold's bite proof.
-/// With `FCAST_NO_ADAPTIVE_PREPARE_HOLD=1` item A stops dead right after the
-/// prepare (it waits on item A's frames because the collateral is what makes
-/// the defect unmissable); without the lever the prepared item sits blocked
-/// while A plays on.
+/// Without the prepare hold item A stops dead right after the prepare (it
+/// waits on item A's frames because the collateral is what makes the defect
+/// unmissable); with it the prepared item sits blocked while A plays on.
 #[test]
 fn a_gapless_prepared_dash_item_is_linked_before_it_streams() {
     let (_server, root) = serve();
@@ -964,8 +970,8 @@ const WHOLE_PERIOD_PUSH_AT: Duration = Duration::from_millis(1500);
 /// `multiqueue_slot_unlatch.rs` proves the latch and the repair against that
 /// pad directly, with no timing at all.
 ///
-/// Verification: green with no env vars; `FCAST_NO_SLOT_UNLATCH=1` is red on
-/// the repair never happening and no EMB cue following it.
+/// Verification: green as shipped; without the slot unlatch it is red on the
+/// repair never happening and no EMB cue following it.
 ///
 /// The cue this waits for is one beyond whatever the text park replayed into
 /// the join. A replayed cue never crossed the staged link and says nothing
@@ -984,8 +990,8 @@ fn a_whole_period_text_track_survives_a_join_that_raced_its_own_activation() {
     let harness = Harness::new();
     harness.playbin.stage_join_before_active(STAGED_JOIN_HOLD);
 
-    let repairs_before = FcastPlaybin::slot_unlatches();
-    let races_before = FcastPlaybin::joins_into_an_inactive_branch();
+    let repairs_before = FcastPlaybin::global_stats().slot_unlatches;
+    let races_before = FcastPlaybin::global_stats().joins_into_an_inactive_branch;
 
     harness.load_and_play(&server.url("vod/manifest-text.mpd"));
     let tap = harness.tap_overlay_text();
@@ -993,7 +999,7 @@ fn a_whole_period_text_track_survives_a_join_that_raced_its_own_activation() {
     // The join has to have raced, or this test is measuring an ordinary
     // playback and would pass with the repair deleted.
     harness.wait_until("the staged join to land", EVENT_TIMEOUT, || {
-        FcastPlaybin::joins_into_an_inactive_branch() > races_before
+        FcastPlaybin::global_stats().joins_into_an_inactive_branch > races_before
     });
 
     // The latch has to have happened and been repaired, waited for rather
@@ -1006,7 +1012,7 @@ fn a_whole_period_text_track_survives_a_join_that_raced_its_own_activation() {
         "the staged latch to be repaired (unrepaired, the slot is dead for the item and no \
          further EMB cue can follow)",
         EVENT_TIMEOUT,
-        || FcastPlaybin::slot_unlatches() > repairs_before,
+        || FcastPlaybin::global_stats().slot_unlatches > repairs_before,
     );
     // Everything the park handed over, discounted. A cue beyond this mark can
     // only have come through the joined, and therefore repaired, slot.
@@ -1022,7 +1028,7 @@ fn a_whole_period_text_track_survives_a_join_that_raced_its_own_activation() {
         "the whole-period embedded track after a join that raced its own activation",
     );
     assert_eq!(
-        FcastPlaybin::slot_unlatch_failures(),
+        FcastPlaybin::global_stats().slot_unlatch_failures,
         0,
         "a latched slot was found and the repair did not clear it"
     );
@@ -1106,9 +1112,8 @@ const FIRST_CUE_BOUND: Duration = Duration::from_secs(5);
 ///
 /// # Verification
 ///
-/// * Green: no env vars.
-/// * `FCAST_NO_PARKED_TEXT_REPLAY=1`: RED on the first cue being `EMB 03`
-///   rather than `EMB 00`. That is the defect, reproduced.
+/// Green as shipped. With the discarding park back it is RED on the first cue
+/// being `EMB 03` rather than `EMB 00`. That is the defect, reproduced.
 #[test]
 fn a_whole_period_text_track_renders_its_opening_cues() {
     let (server, root) = serve();
@@ -1119,7 +1124,7 @@ fn a_whole_period_text_track_renders_its_opening_cues() {
     );
 
     let harness = Harness::new();
-    let replayed_before = FcastPlaybin::parked_text_cues_replayed();
+    let replayed_before = FcastPlaybin::global_stats().parked_text_cues_replayed;
     let t0 = Instant::now();
     harness.load_and_play(&server.url("vod/manifest-text.mpd"));
     let tap = harness.tap_overlay_text();
@@ -1151,7 +1156,7 @@ fn a_whole_period_text_track_renders_its_opening_cues() {
             .take(6)
             .map(|(text, _)| text.clone())
             .collect::<Vec<_>>(),
-        FcastPlaybin::parked_text_cues_replayed() - replayed_before,
+        FcastPlaybin::global_stats().parked_text_cues_replayed - replayed_before,
     );
     let latency = at.saturating_duration_since(t0);
     assert!(
@@ -1165,7 +1170,7 @@ fn a_whole_period_text_track_renders_its_opening_cues() {
     // A zero here means the join won that race and this run proved nothing
     // about the repair, so it is a staging failure and not a pass.
     assert!(
-        FcastPlaybin::parked_text_cues_replayed() > replayed_before,
+        FcastPlaybin::global_stats().parked_text_cues_replayed > replayed_before,
         "no parked cue was replayed, so the text branch joined before the demuxer pushed \
          anything and this test is passing vacuously, the whole-period fixture is supposed to \
          put its first cues across during bring-up"
@@ -1360,9 +1365,9 @@ fn probe_first_cue_latency_on_a_whole_period_track() {
         harness.video_buffers(),
         harness.video_buffers() as f64 / FPS as f64,
         since(Instant::now()),
-        FcastPlaybin::slot_unlatches(),
-        FcastPlaybin::joins_into_an_inactive_branch(),
-        FcastPlaybin::parked_text_cues_replayed(),
+        FcastPlaybin::global_stats().slot_unlatches,
+        FcastPlaybin::global_stats().joins_into_an_inactive_branch,
+        FcastPlaybin::global_stats().parked_text_cues_replayed,
     );
     harness.shutdown();
 }
@@ -1442,9 +1447,9 @@ fn dash_external_sub_switch_cycle() {
 /// `pump_selection` sends every replace to the PARK arm instead of the flush
 /// (`src/lib.rs`, the `replacing && upstream_owns_selection()` branch). Zero
 /// "queueing the eager text-branch flush" lines over a whole run, ten "parked
-/// text stream" ones. So `FCAST_NO_TEXT_FLUSH_FEEDER_HOLD` is inert on DASH,
-/// and the hold that matters on this path is the one in `detach_text_parts`,
-/// lever `FCAST_NO_DETACH_DROP_PROBE`.
+/// text stream" ones. So the text-flush feeder hold is unreachable on DASH,
+/// and the hold that matters on this path is the drop probe in
+/// `detach_text_parts`.
 #[test]
 fn dash_external_to_external_direct_switch() {
     let (server, _root) = serve();
@@ -1740,9 +1745,9 @@ fn dash_embedded_text_rejoins_whether_decodebin3_replaces_or_reuses_its_pad() {
 ///
 /// # What fixes it, and how the two candidate repairs were told apart
 ///
-/// The crate now enumerates decodebin3's multiqueue directly when the selected
-/// text stream has no LIVE routed pad (`Inner::adopt_outputless_text_slot`),
-/// and on this capture that census settled the question:
+/// A crate-side census enumerated decodebin3's multiqueue directly whenever the
+/// selected text stream had no LIVE routed pad, and on this capture it settled
+/// the question (the census is retired; see the note below):
 ///
 /// ```text
 /// src_4[caps=None sticky=StreamStart+Segment+StreamCollection eos=false ...]
@@ -1935,11 +1940,12 @@ fn dash_embedded_text_rejoins_after_a_round_trip_through_an_external() {
 /// branch at all, against 8/8 without it. Confining the seek to one ELEMENT
 /// does not confine its FLUSH.
 ///
-/// So what ships for this shape is the NAME, not a repair:
-/// `Inner::adopt_outputless_text_slot` enumerates decodebin3's multiqueue and
-/// logs the slot that has the selected stream and no output, which is the one
-/// thing a field capture could not previously say. Fixing it is an upstream
-/// change. NOTE that this is NOT the field capture's shape either:
+/// So the crate half of this shape was a NAME, not a repair: a multiqueue
+/// census that logged the slot holding the selected stream with no output,
+/// which is the one thing a field capture could not previously say. Fixing it
+/// is an upstream change, and the patches below are that fix, which is why the
+/// census was retired (zero escalations across the whole reselect battery on
+/// the patched build). NOTE that this is NOT the field capture's shape either:
 /// `selecting-embedded-doesnt-show.txt` has a LIVE `text_4` routed beside the
 /// dead `text_0`, i.e. decodebin3 DID build the replacement output there. This
 /// is a third shape, found on the way.

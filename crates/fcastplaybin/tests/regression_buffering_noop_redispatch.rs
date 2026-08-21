@@ -1,6 +1,6 @@
 //! Regression for the state machine waiting on a `state-changed` GStreamer
-//! refuses to post. `FCAST_NO_SYNTHETIC_STATE_EDGE=1` restores the old
-//! behaviour.
+//! refuses to post. Without the crate's synthetic edge the old behaviour is
+//! back.
 //!
 //! Buffering is open when the load reports `Loaded`, so `player.rs`
 //! `uri_loaded` finds `set_playback_state` unable to act and drives the
@@ -139,10 +139,9 @@ impl Harness {
             .borrow_mut()
             .push(format!("buffering({percent}) -> {result:?}"));
         match result {
-            BufferingStateResult::Started(state) => self.apply(state),
+            BufferingStateResult::Started => self.apply(gst::State::Paused),
             BufferingStateResult::Buffering => {}
             BufferingStateResult::FinishedWithSeek(seek) => self.playbin.seek_async(seek),
-            BufferingStateResult::FinishedButWaitingSeek => {}
             BufferingStateResult::Finished(state) => {
                 if let Some(state) = state {
                     self.apply(state);

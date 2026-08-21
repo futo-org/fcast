@@ -12,13 +12,13 @@
 //!   keeps a user `pause()` bounded while a prepare is armed. `Job::SetState`
 //!   never aborts the swap gate.
 //! * `swap_gate.abort()` on the downward paths (`load`, `teardown`,
-//!   `Inner::drop`) is what lets a `stop()` join the prepared input's
-//!   streaming threads, which are otherwise parked in the gate's condvar.
-//! * The external-subtitle refusal in `Job::PrepareNext` (invariant 9) and
-//!   the generation its `PreparedFailed` carries are read by nothing.
-//! * `perform_gapless_swap`'s unlink-all-before-relink-any ordering
-//!   (invariant 6) fails SILENTLY, and the exactly-one-STREAM_START contract
-//!   at `fpb-aqueue` (invariant 5) anchors the held activation.
+//!   `Inner::drop`) is what lets a `stop()` join the prepared input's streaming
+//!   threads, which are otherwise parked in the gate's condvar.
+//! * The external-subtitle refusal in `Job::PrepareNext` (invariant 9) and the
+//!   generation its `PreparedFailed` carries are read by nothing.
+//! * `perform_gapless_swap`'s unlink-all-before-relink-any ordering (invariant
+//!   6) fails SILENTLY, and the exactly-one-STREAM_START contract at
+//!   `fpb-aqueue` (invariant 5) anchors the held activation.
 //!
 //! A wedge here is not an error or an EOS, the calls simply never return, so
 //! every blocking operation runs on its own thread under a bound.
@@ -112,11 +112,7 @@ fn encoders_available() -> bool {
 }
 
 fn tmp_path(name: &str) -> std::path::PathBuf {
-    std::env::temp_dir().join(format!(
-        "fcastplaybin-ginv-{}-{}",
-        std::process::id(),
-        name
-    ))
+    std::env::temp_dir().join(format!("fcastplaybin-ginv-{}-{}", std::process::id(), name))
 }
 
 fn run_to_eos(desc: &str) {
@@ -453,7 +449,7 @@ impl Harness {
     /// or streaming thread shows up here as a job that never completes.
     fn assert_worker_alive(&self, what: &str) {
         let (tx, rx) = mpsc::channel();
-        self.playbin.debug_graph_async(Box::new(move |_| {
+        self.playbin.barrier_async(Box::new(move || {
             let _ = tx.send(());
         }));
         let deadline = Instant::now() + Duration::from_secs(10);
@@ -730,13 +726,17 @@ fn prepare_is_refused_while_an_external_subtitle_is_attached() {
 
     // The refusal left the ordinary ending untouched.
     let eos_generation = Cell::new(None);
-    h.wait_for_since(mark, "EndOfStream after the refusal", |event, generation| {
-        let hit = matches!(event, PlaybinEvent::EndOfStream);
-        if hit {
-            eos_generation.set(Some(generation));
-        }
-        hit
-    });
+    h.wait_for_since(
+        mark,
+        "EndOfStream after the refusal",
+        |event, generation| {
+            let hit = matches!(event, PlaybinEvent::EndOfStream);
+            if hit {
+                eos_generation.set(Some(generation));
+            }
+            hit
+        },
+    );
     assert_eq!(
         eos_generation.get(),
         Some(first_generation),
@@ -783,7 +783,9 @@ fn exactly_one_stream_start_crosses_the_audio_queue_per_item() {
         if let Some(gst::PadProbeData::Event(event)) = &info.data
             && let gst::EventView::StreamStart(stream_start) = event.view()
         {
-            rec.lock().unwrap().push(stream_start.stream_id().to_string());
+            rec.lock()
+                .unwrap()
+                .push(stream_start.stream_id().to_string());
         }
         gst::PadProbeReturn::Ok
     });
@@ -811,9 +813,11 @@ fn exactly_one_stream_start_crosses_the_audio_queue_per_item() {
     // The release is EMITTED from the crossing's own probe, so by the time
     // the event reaches this thread the second crossing must be recorded.
     // The bounded poll only absorbs probe ordering on the pad itself.
-    h.wait_until("item B's STREAM_START at the queue", Duration::from_secs(2), || {
-        starts.lock().unwrap().len() >= 2
-    });
+    h.wait_until(
+        "item B's STREAM_START at the queue",
+        Duration::from_secs(2),
+        || starts.lock().unwrap().len() >= 2,
+    );
     {
         let seen = starts.lock().unwrap();
         assert_eq!(
@@ -1008,13 +1012,17 @@ fn seek_while_a_prepare_is_armed_does_not_wedge() {
     // Terminal progress under a bound. Whatever the crate decided about the
     // armed prepare, the session must END, and the ending must be coherent.
     let eos_generation = Cell::new(None);
-    h.wait_for_since(mark, "an EndOfStream after the seek", |event, generation| {
-        let hit = matches!(event, PlaybinEvent::EndOfStream);
-        if hit {
-            eos_generation.set(Some(generation));
-        }
-        hit
-    });
+    h.wait_for_since(
+        mark,
+        "an EndOfStream after the seek",
+        |event, generation| {
+            let hit = matches!(event, PlaybinEvent::EndOfStream);
+            if hit {
+                eos_generation.set(Some(generation));
+            }
+            hit
+        },
+    );
     h.assert_worker_alive("after the post-seek ending");
     let activated = h.log_has(|event, generation| {
         matches!(event, PlaybinEvent::PreparedActivated) && generation == prepared_generation
@@ -1082,7 +1090,6 @@ fn encode_av_text_clip(name: &str, pattern: &str, seconds: u32) -> String {
     format!("file://{}", path.display())
 }
 
-
 /// R1, the rare queue_autoplay boundary wedge (tracks never advertised),
 /// mechanism pin. The activation can run on a thread with no ordering
 /// against the audio data plane (a group-id rewrite disarms both the audio
@@ -1120,23 +1127,27 @@ fn an_arm_finding_the_boundary_already_crossed_releases_immediately() {
     let h = Harness::new();
     let _first_generation = h.load_and_play(&uri);
     let mark = h.mark();
-    let before = h.playbin.arm_time_activation_releases();
+    let before = h.playbin.stats().arm_time_activation_releases;
     let prepared_generation = h.playbin.prepare_next_async(MediaInput::Uri(uri.clone()));
 
     h.wait_for_since(mark, "PreparedActivated", |event, generation| {
         matches!(event, PlaybinEvent::PreparedActivated) && generation == prepared_generation
     });
     assert_eq!(
-        h.playbin.arm_time_activation_releases(),
+        h.playbin.stats().arm_time_activation_releases,
         before + 1,
         "identical stream ids must make the arm-time check see the edge as \
          spent and release right there; log: {:#?}",
         h.log.borrow()
     );
 
-    h.wait_for_since(mark, "the prepared item's EndOfStream", |event, generation| {
-        matches!(event, PlaybinEvent::EndOfStream) && generation == prepared_generation
-    });
+    h.wait_for_since(
+        mark,
+        "the prepared item's EndOfStream",
+        |event, generation| {
+            matches!(event, PlaybinEvent::EndOfStream) && generation == prepared_generation
+        },
+    );
     h.shutdown();
 }
 
@@ -1192,21 +1203,23 @@ fn a_late_activation_never_strands_the_held_events() {
             .prepare_next_async(MediaInput::Uri(second.clone()));
 
         h.wait_for_since(mark, "PreparedActivated", |event, generation| {
-            matches!(event, PlaybinEvent::PreparedActivated)
-                && generation == prepared_generation
+            matches!(event, PlaybinEvent::PreparedActivated) && generation == prepared_generation
         });
         let staged = {
             let seen = starts.lock().unwrap();
-            seen.len() >= 2
-                && Instant::now().duration_since(seen[1]) > Duration::from_millis(700)
+            seen.len() >= 2 && Instant::now().duration_since(seen[1]) > Duration::from_millis(700)
         };
         if staged {
             eprintln!("round {round}: the boundary crossing spent the edge inside the window");
         }
 
-        h.wait_for_since(mark, "the prepared item's EndOfStream", |event, generation| {
-            matches!(event, PlaybinEvent::EndOfStream) && generation == prepared_generation
-        });
+        h.wait_for_since(
+            mark,
+            "the prepared item's EndOfStream",
+            |event, generation| {
+                matches!(event, PlaybinEvent::EndOfStream) && generation == prepared_generation
+            },
+        );
         h.shutdown();
     }
 }

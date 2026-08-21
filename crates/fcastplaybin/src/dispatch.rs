@@ -14,11 +14,11 @@ use gst::prelude::*;
 use tracing::{debug, warn};
 
 use crate::{
-    FcastPlaybin, Inner,
+    Counters, FcastPlaybin, Inner,
     api::{ExternalSubId, PlaybinEvent},
     decisions,
     hands::{Effect, Outcome},
-    jobs::{Job, SelectJob},
+    jobs::{Job, QueuedAt, SelectJob},
     routing::{RoutedSids, StreamKind},
     selection,
     selection::{SelectionGate, TrackSelection, TrackSlot, TrackTarget},
@@ -79,12 +79,12 @@ const TEXT_DRAIN_INTERLOCK_BUDGET: Duration = Duration::from_secs(5);
 ///
 /// A repair count. Every one is a subtitle track that would otherwise have
 /// been selected into a demuxer that would swallow the request.
-static TEXT_DRAIN_INTERLOCKS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TEXT_DRAIN_INTERLOCKS: AtomicU64 = AtomicU64::new(0);
 
 /// Those of [`TEXT_DRAIN_INTERLOCKS`] that hit the budget and sent anyway.
 /// Zero is the invariant. Nonzero means a drain longer than the budget
 /// believes possible.
-static TEXT_DRAIN_INTERLOCK_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TEXT_DRAIN_INTERLOCK_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 
 impl Inner {
     /// Send one queued `SELECT_STREAMS` (see [`SelectJob`]). The only place
@@ -115,16 +115,13 @@ impl Inner {
         // route decision reading this mirror must see the intent THIS
         // selection carries, not the previous one. Pure intent on
         // purpose, unlike the park decision after the send, which also
-        // wants a linked chain. An empty collection_video_ids means
-        // kinds are unknowable and never counts as off, matching
+        // wants a linked chain. An empty `video_ids` means kinds are
+        // unknowable and never counts as off, matching
         // `decisions::deselects_video`.
         {
-            let routing = inner.routing.lock();
-            let video_off = !routing.collection_video_ids.is_empty()
-                && !routing
-                    .collection_video_ids
-                    .iter()
-                    .any(|vid| job.stream_ids.contains(vid));
+            let video_ids = inner.selection.lock().video_ids();
+            let video_off =
+                !video_ids.is_empty() && !video_ids.iter().any(|vid| job.stream_ids.contains(vid));
             inner.video_deselected.store(video_off, Ordering::SeqCst);
         }
 
@@ -159,12 +156,16 @@ impl Inner {
         // the routed pad's. Running after `send_event` lets decodebin3's
         // armed slot deactivation complete rather than racing it.
         let deselects_video = {
+            // Routing then selection, the crate's lock order (see
+            // `Inner::routing`), so the linked chain and the collection come
+            // from one snapshot the way they did off the routing mirror.
             let routing = inner.routing.lock();
             let video_linked = routing
                 .routed
                 .iter()
                 .any(|r| r.kind == StreamKind::Video && r.downstream.is_some());
-            decisions::deselects_video(video_linked, &routing.collection_video_ids, &job.stream_ids)
+            let video_ids = inner.selection.lock().video_ids();
+            decisions::deselects_video(video_linked, &video_ids, &job.stream_ids)
         };
         if deselects_video {
             inner.park_video_chain_for_deselect();
@@ -213,17 +214,14 @@ impl Inner {
     /// hit. An unbounded wait would trade a dead subtitle track for a dead
     /// select lane. Past the bound the event goes out anyway.
     ///
-    /// Lever: `FCAST_NO_TEXT_RESELECT_DRAIN_INTERLOCK`. Counted in
-    /// [`TEXT_DRAIN_INTERLOCKS`] / [`TEXT_DRAIN_INTERLOCK_TIMEOUTS`].
+    /// Counted in [`TEXT_DRAIN_INTERLOCKS`] /
+    /// [`TEXT_DRAIN_INTERLOCK_TIMEOUTS`].
     fn await_text_input_drain(
         inner: &Arc<Inner>,
         sid: &str,
         stream_ids: &[String],
         db3: &gst::Element,
     ) {
-        if std::env::var_os("FCAST_NO_TEXT_RESELECT_DRAIN_INTERLOCK").is_some() {
-            return;
-        }
         // Only a send that actually names the stream, and only in the mode
         // where the demuxer is the one being asked.
         if !stream_ids.iter().any(|id| id == sid) || !inner.upstream_owns_selection() {
@@ -254,7 +252,7 @@ impl Inner {
             "a text re-select would land while the demuxer is still draining this stream's \
              previous pad; holding the send until the drain lands"
         );
-        TEXT_DRAIN_INTERLOCKS.fetch_add(1, Ordering::SeqCst);
+        TEXT_DRAIN_INTERLOCKS.fetch_add(1, Ordering::Relaxed);
         while started.elapsed() < TEXT_DRAIN_INTERLOCK_BUDGET {
             // A core swap means this selection can never confirm anyway, and
             // the send below drops it; stop waiting for an item that is gone.
@@ -271,7 +269,7 @@ impl Inner {
             }
             std::thread::sleep(Duration::from_millis(10));
         }
-        TEXT_DRAIN_INTERLOCK_TIMEOUTS.fetch_add(1, Ordering::SeqCst);
+        TEXT_DRAIN_INTERLOCK_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
         warn!(
             %sid,
             budget = ?TEXT_DRAIN_INTERLOCK_BUDGET,
@@ -285,8 +283,7 @@ impl Inner {
     /// flips into upstream-selection mode when ANY input answers TRUE (its
     /// own FIXME: "things might break if there's a mix", and an external
     /// subtitle IS the mix). Cached per load: the answer cannot change
-    /// mid-item. Lever: `FCAST_NO_UPSTREAM_SELECTION_SPLIT` (set = pretend
-    /// no upstream ever owns selection, the old behaviour).
+    /// mid-item.
     ///
     /// Reads the tri-state below as "no upstream owner" when the query cannot
     /// be answered yet, which is what every caller here needs. Callers that
@@ -302,11 +299,6 @@ impl Inner {
     /// and the answer is genuinely unknown rather than false. A definite
     /// answer is cached (the mode cannot change mid-item), ignorance is not.
     fn upstream_selection_mode(&self) -> Option<bool> {
-        if std::env::var_os("FCAST_NO_UPSTREAM_SELECTION_SPLIT").is_some() {
-            // A definite answer and not ignorance: the lever exists to make
-            // the crate behave as if no upstream ever owned selection.
-            return Some(false);
-        }
         if let Some(known) = *self.upstream_selection.lock() {
             return Some(known);
         }
@@ -379,18 +371,11 @@ impl Inner {
     /// is wedged rather than slow, and the selection deadline (ten times
     /// this budget, with its own in-flight consult and its own give-up) is
     /// the right instrument. The fallback then skips, loudly.
-    ///
-    /// Under `FCAST_NO_HANDS` the in-flight table does not exist, the consult
-    /// reads "already sent" for everything, and this behaves exactly as it
-    /// did before. Lever: `FCAST_NO_UPSTREAM_CONFIRM_FALLBACK`.
     fn arm_upstream_confirm_fallback(
         inner: &Arc<Inner>,
         target: selection::TrackSelection,
         seqnum: gst::Seqnum,
     ) {
-        if std::env::var_os("FCAST_NO_UPSTREAM_CONFIRM_FALLBACK").is_some() {
-            return;
-        }
         let weak = Arc::downgrade(inner);
         let spawned = std::thread::Builder::new()
             .name("fpb-confirm-fallback".into())
@@ -514,50 +499,14 @@ impl FcastPlaybin {
     /// next dispatch, since a deadline is armed with its absolute due time.
     #[doc(hidden)]
     pub fn set_selection_deadline(&self, deadline: Duration) {
-        *self.inner.selection_deadline_dur.lock() = deadline;
+        self.inner.deadlines.lock().selection = deadline;
     }
 
     /// Shorten the refresh-seek deadline. For tests only: production callers
     /// keep [`REFRESH_DEADLINE`].
     #[doc(hidden)]
     pub fn set_refresh_deadline(&self, deadline: Duration) {
-        *self.inner.refresh_deadline_dur.lock() = deadline;
-    }
-
-    /// How many deadlines have fired, counting BOTH families: a selection
-    /// waiting for its `STREAMS_SELECTED` and a refresh seek waiting for its
-    /// `ASYNC_DONE`. (The name reads narrower than it is, and the tests rely
-    /// on the wider meaning; the two confirm/give-up counters below are
-    /// selection-only, because a refresh has no such outcomes.)
-    ///
-    /// Diagnostic counters for the deadline regression tests and for reading
-    /// soak logs; a healthy run leaves all three at zero. Not part of the
-    /// public API.
-    #[doc(hidden)]
-    pub fn selection_deadline_fires(&self) -> u64 {
-        self.inner.deadline_fires.load(Ordering::SeqCst)
-    }
-
-    /// How many deadline fires ended in a synthetic confirmation built from
-    /// the routing probe (see [`Job::SelectionDeadline`]).
-    #[doc(hidden)]
-    pub fn selection_deadline_confirms(&self) -> u64 {
-        self.inner.deadline_confirms.load(Ordering::SeqCst)
-    }
-
-    /// How many deadline fires exhausted their retries and reported what is
-    /// actually playing instead of what was asked for.
-    #[doc(hidden)]
-    pub fn selection_deadline_giveups(&self) -> u64 {
-        self.inner.deadline_giveups.load(Ordering::SeqCst)
-    }
-
-    /// How many deadline fires deferred to a select the hands had not sent
-    /// yet (see [`FcastPlaybin::selection_deadline_fired`]). Not part
-    /// of the public API.
-    #[doc(hidden)]
-    pub fn selection_deadline_deferrals(&self) -> u64 {
-        self.inner.deadline_deferrals.load(Ordering::SeqCst)
+        self.inner.deadlines.lock().refresh = deadline;
     }
 
     /// Shorten the deferral budget ([`SELECT_DEFER_BUDGET`]) so a test can
@@ -565,31 +514,7 @@ impl FcastPlaybin {
     /// shape and purpose as [`Self::set_selection_deadline`].
     #[doc(hidden)]
     pub fn set_select_defer_budget(&self, budget: Duration) {
-        *self.inner.select_defer_budget.lock() = budget;
-    }
-
-    /// How many dispatched selections were dropped by the in-flight guard
-    /// instead of sent (see `Self::dispatch_selection`). Not part of the
-    /// public API.
-    #[doc(hidden)]
-    pub fn dispatch_guard_skips(&self) -> u64 {
-        self.inner.dispatch_guard_skips.load(Ordering::SeqCst)
-    }
-
-    /// Text re-selects the drain interlock held back (see
-    /// [`TEXT_DRAIN_INTERLOCKS`]). Process-global, so read it as a delta. Not
-    /// part of the public API.
-    #[doc(hidden)]
-    pub fn text_drain_interlocks() -> u64 {
-        TEXT_DRAIN_INTERLOCKS.load(Ordering::SeqCst)
-    }
-
-    /// Drain interlocks that hit their budget and sent anyway (see
-    /// [`TEXT_DRAIN_INTERLOCK_TIMEOUTS`]). Zero is the invariant. Not part of
-    /// the public API.
-    #[doc(hidden)]
-    pub fn text_drain_interlock_timeouts() -> u64 {
-        TEXT_DRAIN_INTERLOCK_TIMEOUTS.load(Ordering::SeqCst)
+        self.inner.deadlines.lock().select_defer_budget = budget;
     }
 
     /// State a slot's desired track (latest wins): a stream id from the
@@ -635,8 +560,6 @@ impl FcastPlaybin {
             };
             // Read BEFORE the engine lock: the query takes the routing lock,
             // and the order is routing then selection (see `Inner::routing`).
-            // The lever makes the engine behave as if nothing upstream owned
-            // selection, so no request is ever answered locally.
             // NOT during a gapless activation. `applied` there already names
             // the INCOMING item's streams, and a synthetic report naming them
             // reaches `Inner::try_activate_prepared`, which IS the activation
@@ -646,7 +569,6 @@ impl FcastPlaybin {
             // parked streaming thread"). An activation posts a real collection
             // and selection of its own, which answers anything waiting behind
             // it, so nothing is owed here.
-            // Lever: `FCAST_NO_CONFIRM_APPLIED`.
             let activating = self
                 .inner
                 .swap_gate
@@ -654,25 +576,14 @@ impl FcastPlaybin {
                 .lock()
                 .activation_pending()
                 .is_some();
-            let upstream_owns = self.inner.upstream_owns_selection()
-                && !activating
-                && std::env::var_os("FCAST_NO_CONFIRM_APPLIED").is_none();
+            let upstream_owns = self.inner.upstream_owns_selection() && !activating;
             // How long the dispatch below may wait for its confirmation, read
-            // BEFORE the engine lock: each is its own mutex and the lock order
-            // here stays flat. `None` = do not arm at all, either because
-            // there is no tick to fire the deadline or because the lever says
-            // so. The engine wants an ABSOLUTE due time (it never reads a
-            // clock, see `SelectionEngine::arm_selection_deadline`), so only
-            // the length comes from here.
-            // Levers: `FCAST_NO_TICK`, `FCAST_NO_SELECTION_DEADLINE`,
-            // `FCAST_NO_REFRESH_DEADLINE`.
-            let tick_live = self.inner.tick_live();
-            let selection_deadline = (tick_live
-                && std::env::var_os("FCAST_NO_SELECTION_DEADLINE").is_none())
-            .then(|| *self.inner.selection_deadline_dur.lock());
-            let refresh_deadline = (tick_live
-                && std::env::var_os("FCAST_NO_REFRESH_DEADLINE").is_none())
-            .then(|| *self.inner.refresh_deadline_dur.lock());
+            // BEFORE the engine lock so the lock order here stays flat. One
+            // lock round for both: they live together (see `Deadlines`). The
+            // engine wants an ABSOLUTE due time (it never reads a clock, see
+            // `SelectionEngine::arm_selection_deadline`), so only the length
+            // comes from here.
+            let deadlines = *self.inner.deadlines.lock();
             let dispatch = {
                 let ctx = selection::PumpCtx {
                     gate,
@@ -690,21 +601,17 @@ impl FcastPlaybin {
                     Some(selection::Command::SelectStreams(target)) => {
                         let seqnum = gst::Seqnum::next();
                         engine.selection_dispatched(seqnum, target.clone());
-                        if let Some(dur) = selection_deadline {
-                            engine.arm_selection_deadline(
-                                seqnum,
-                                Instant::now() + dur,
-                                SELECTION_DEADLINE_RETRIES,
-                            );
-                        }
+                        engine.arm_selection_deadline(
+                            seqnum,
+                            Instant::now() + deadlines.selection,
+                            SELECTION_DEADLINE_RETRIES,
+                        );
                         Dispatch::Select(target, seqnum)
                     }
                     Some(selection::Command::RefreshSeek) => {
                         let seqnum = gst::Seqnum::next();
                         engine.refresh_dispatched(seqnum);
-                        if let Some(dur) = refresh_deadline {
-                            engine.arm_refresh_deadline(seqnum, Instant::now() + dur);
-                        }
+                        engine.arm_refresh_deadline(seqnum, Instant::now() + deadlines.refresh);
                         Dispatch::Refresh(seqnum)
                     }
                     // Recorded as a dispatch so the confirmation below settles
@@ -721,13 +628,11 @@ impl FcastPlaybin {
                         // post used to strand the wait for good. The deadline
                         // simply posts it again, which is a rescue this path
                         // never had.
-                        if let Some(dur) = selection_deadline {
-                            engine.arm_selection_deadline(
-                                seqnum,
-                                Instant::now() + dur,
-                                SELECTION_DEADLINE_RETRIES,
-                            );
-                        }
+                        engine.arm_selection_deadline(
+                            seqnum,
+                            Instant::now() + deadlines.selection,
+                            SELECTION_DEADLINE_RETRIES,
+                        );
                         Dispatch::ConfirmApplied(target, seqnum)
                     }
                 }
@@ -745,9 +650,6 @@ impl FcastPlaybin {
                 // at the instant the decision is taken, because a
                 // confirmation racing the queued job must never find a wait
                 // that has not been recorded yet.
-                //
-                // Lever: `FCAST_INLINE_DISPATCH` puts the whole execution back
-                // on this thread, v1's arm verbatim including the break.
                 Dispatch::Select(target, seqnum) => {
                     // The one decision input that is READ HERE and carried:
                     // whether this selection moves the subtitle slot off a
@@ -788,22 +690,12 @@ impl FcastPlaybin {
                         applied.is_some() && *applied != target.subtitle
                     };
                     let generation = self.inner.current_generation();
-                    if self.inner.inline_dispatch {
-                        if !self.dispatch_selection(
-                            target,
-                            seqnum,
-                            replacing,
-                            generation,
-                            Instant::now(),
-                        ) {
-                            break;
-                        }
-                    } else if !self.inner.queue_job(Job::DispatchSelection {
+                    if !self.inner.queue_job(Job::DispatchSelection {
                         target,
                         seqnum,
                         replacing,
                         generation,
-                        queued: Instant::now(),
+                        queued: QueuedAt(Instant::now()),
                     }) {
                         // No decider: nothing is ever going to send this, so
                         // the wait recorded a few lines above would sit until
@@ -831,8 +723,8 @@ impl FcastPlaybin {
     /// Carry out a selection [`Self::pump_selection`] has already dispatched:
     /// the eager text-branch work, then the `SELECT_STREAMS` itself.
     ///
-    /// Runs on the DECIDER through [`Job::DispatchSelection`] (the caller's
-    /// thread only under `FCAST_INLINE_DISPATCH`). Decision inputs that
+    /// Runs on the DECIDER through [`Job::DispatchSelection`], never on the
+    /// pumping caller. Decision inputs that
     /// describe the world the send lands IN - the upstream-selection mode,
     /// the attached externals, whether upstream owns selection - are read
     /// HERE, fresher than the caller could have read them and never staler
@@ -884,12 +776,7 @@ impl FcastPlaybin {
         // now only the one the engine is still waiting on does. That is
         // strictly closer to the engine's own model of one wait at a time,
         // and it removes a stale event racing the newer one at the demuxer.
-        //
-        // Lever: `FCAST_NO_DISPATCH_INFLIGHT_GUARD`.
-        if !inner.selection.lock().selection_in_flight(seqnum)
-            && std::env::var_os("FCAST_NO_DISPATCH_INFLIGHT_GUARD").is_none()
-        {
-            inner.dispatch_guard_skips.fetch_add(1, Ordering::SeqCst);
+        if !inner.selection.lock().selection_in_flight(seqnum) {
             debug!(
                 ?seqnum,
                 ?target,
@@ -907,10 +794,7 @@ impl FcastPlaybin {
         //
         // Only across a generation change. Within one item the carried
         // answer is the load-bearing one (see `Self::pump_selection`).
-        // Lever: `FCAST_NO_DISPATCH_REPLACING_REFRESH`.
-        let replacing = if generation != inner.current_generation()
-            && std::env::var_os("FCAST_NO_DISPATCH_REPLACING_REFRESH").is_none()
-        {
+        let replacing = if generation != inner.current_generation() {
             let fresh = {
                 let applied = inner.last_applied_subtitle.lock();
                 applied.is_some() && *applied != target.subtitle
@@ -1010,7 +894,6 @@ impl FcastPlaybin {
         // itself), only a CHANGED upstream-owned part is sent (a
         // no-op has no activation edge to confirm it), and an
         // unchanged one is confirmed locally.
-        // Lever: `FCAST_NO_UPSTREAM_SELECTION_SPLIT`.
         if self.inner.upstream_owns_selection() {
             // Sampled here rather than carried from the pump: what this
             // filter needs is which sids belong to an external input AT SEND
@@ -1035,64 +918,54 @@ impl FcastPlaybin {
                 .filter(|sid| !external_sids.contains(sid))
                 .collect();
             // COMPARED here, RECORDED when the event is actually sent (see
-            // the `Outcome::SelectSent` arm of `Self::effect_done`). The
-            // mirror answers "what did this crate last put upstream", and
-            // writing it here answered "what did it last INTEND to": a
-            // refused send, a lane skip or a superseded core then left it
-            // claiming ids that never went out, and the next dispatch of the
-            // same target read that as no-change and confirmed locally a
-            // selection the demuxer had never been told about.
-            let changed = {
-                let mut sorted: Vec<String> = upstream_ids.iter().map(|s| s.to_string()).collect();
-                sorted.sort();
-                *self.inner.last_upstream_ids.lock() != sorted
+            // the `Outcome::SelectSent` arm of `Self::effect_done`); the
+            // reasons live with the rule.
+            let split = {
+                let last_sent = self.inner.last_upstream_ids.lock();
+                decisions::select::upstream_split(&last_sent, &upstream_ids)
             };
-            // A CHANGED upstream part with nothing left in it is a deselect of
-            // every upstream-owned stream, and no `SELECT_STREAMS` can carry
-            // it (an empty event is refused, and the demuxer has no "select
-            // nothing"). Confirming it locally would tell the caller the slot
-            // is off while the demuxer keeps playing it, so refuse: the
-            // rollback keeps `applied` naming what is really playing and the
-            // desire stays divergent.
-            if changed && upstream_ids.is_empty() {
-                warn!(
-                    ?target,
-                    "an upstream-owned deselect names no stream; refusing it"
-                );
-                self.inner.selection.lock().dispatch_failed(seqnum);
-                return false;
-            }
-            if changed {
-                let main_input = {
-                    let routing = self.inner.routing.lock();
-                    routing
-                        .inputs
-                        .iter()
-                        .find(|input| input.external.is_none())
-                        .map(|input| input.element.clone())
-                };
-                if let Err(err) = self.select_streams_to(
-                    main_input,
-                    &upstream_ids,
-                    Some(seqnum),
-                    target.subtitle.clone(),
-                ) {
-                    warn!(?err, "selection dispatch refused");
+            match split {
+                decisions::select::UpstreamSplit::RefuseEmptyDeselect => {
+                    warn!(
+                        ?target,
+                        "an upstream-owned deselect names no stream; refusing it"
+                    );
                     self.inner.selection.lock().dispatch_failed(seqnum);
                     return false;
                 }
-                // Confirmation arrives from the demuxer with this
-                // seqnum; the translate arm keeps the crate-owned
-                // subtitle slot (see MessageView::StreamsSelected).
-                // Unless it does not, which is what the field
-                // showed: bounded fallback below.
-                Inner::arm_upstream_confirm_fallback(&self.inner, target.clone(), seqnum);
-            } else {
-                self.inner.post_synthetic_streams_selected(
-                    &target,
-                    seqnum,
-                    "the upstream-owned part did not change",
-                );
+                decisions::select::UpstreamSplit::Send => {
+                    let main_input = {
+                        let routing = self.inner.routing.lock();
+                        routing
+                            .inputs
+                            .iter()
+                            .find(|input| input.external.is_none())
+                            .map(|input| input.element.clone())
+                    };
+                    if let Err(err) = self.select_streams_to(
+                        main_input,
+                        &upstream_ids,
+                        Some(seqnum),
+                        target.subtitle.clone(),
+                    ) {
+                        warn!(?err, "selection dispatch refused");
+                        self.inner.selection.lock().dispatch_failed(seqnum);
+                        return false;
+                    }
+                    // Confirmation arrives from the demuxer with this
+                    // seqnum; the translate arm keeps the crate-owned
+                    // subtitle slot (see MessageView::StreamsSelected).
+                    // Unless it does not, which is what the field
+                    // showed: bounded fallback below.
+                    Inner::arm_upstream_confirm_fallback(&self.inner, target.clone(), seqnum);
+                }
+                decisions::select::UpstreamSplit::ConfirmLocally => {
+                    self.inner.post_synthetic_streams_selected(
+                        &target,
+                        seqnum,
+                        "the upstream-owned part did not change",
+                    );
+                }
             }
         } else if let Err(err) = self.select_streams(&ids, Some(seqnum)) {
             warn!(?err, "selection dispatch refused");
@@ -1219,7 +1092,7 @@ impl FcastPlaybin {
         //     legitimately outstanding, so the deadline simply extends: the
         //     advisory was re-armed when it fired.
         let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
-        if current != gst::State::Playing || pending != gst::State::VoidPending {
+        if !decisions::replay::settled_playing(current, pending) {
             debug!(
                 ?seqnum,
                 ?current,
@@ -1267,7 +1140,7 @@ impl FcastPlaybin {
         //     function is the only thing standing between a wedged lane and
         //     a channel that never answers again. So the deferral holds only
         //     while the lane MIGHT still deliver: past
-        //     [`Inner::select_defer_budget`] the entry has already produced
+        //     [`Deadlines::select_defer_budget`] the entry has already produced
         //     the tick's wedge WARN, the lane is provably not coming back on
         //     any timescale a caller cares about, and the fall-through to the
         //     timed-out logic below is the right answer - wrong about a
@@ -1275,18 +1148,15 @@ impl FcastPlaybin {
         //     self-correcting if the lane ever heals (a late send's
         //     confirmation arrives against a superseded record and is drained
         //     as an echo, exactly as the give-up's own doc describes).
-        //     Lever: `FCAST_NO_INFLIGHT_DEADLINE_DEFER` (the whole consult).
-        if std::env::var_os("FCAST_NO_INFLIGHT_DEADLINE_DEFER").is_none()
-            && let Some(age) = inner.hands.select_age(seqnum, Instant::now())
-        {
-            let budget = *inner.select_defer_budget.lock();
+        if let Some(age) = inner.hands.select_age(seqnum, Instant::now()) {
+            let budget = inner.deadlines.lock().select_defer_budget;
             if age < budget {
                 debug!(
                     ?seqnum,
                     ?age,
                     "a selection deadline fired for a dispatch the hands have not sent yet; waiting"
                 );
-                inner.deadline_deferrals.fetch_add(1, Ordering::SeqCst);
+                Counters::bump(&inner.counters.deadline_deferrals);
                 return;
             }
             warn!(
@@ -1304,8 +1174,7 @@ impl FcastPlaybin {
         //     decodebin3 posts nothing in this mode anyway, so a missing
         //     confirmation says nothing about whether the selection applied.
         //     Normally the 700ms `fpb-confirm-fallback` has settled this long
-        //     before; arriving here means that thread failed to spawn or its
-        //     lever is set.
+        //     before; arriving here means that thread failed to spawn.
         if inner.upstream_owns_selection() {
             warn!(
                 ?seqnum,
@@ -1317,7 +1186,7 @@ impl FcastPlaybin {
                 seqnum,
                 "the upstream selection deadline ran out",
             );
-            inner.deadline_confirms.fetch_add(1, Ordering::SeqCst);
+            Counters::bump(&inner.counters.deadline_confirms);
             return;
         }
 
@@ -1342,7 +1211,7 @@ impl FcastPlaybin {
                 seqnum,
                 "the selection deadline probe found it applied",
             );
-            inner.deadline_confirms.fetch_add(1, Ordering::SeqCst);
+            Counters::bump(&inner.counters.deadline_confirms);
             return;
         }
 
@@ -1373,7 +1242,7 @@ impl FcastPlaybin {
                     .flatten()
                     .cloned()
                     .collect();
-                let dur = *inner.selection_deadline_dur.lock();
+                let dur = inner.deadlines.lock().selection;
                 // The engine lock was released between timing the old dispatch
                 // out and here, and a caller pump can dispatch the user's NEWER
                 // request inside that window. Re-asserting the OLD target then
@@ -1472,9 +1341,10 @@ impl FcastPlaybin {
                 //   never a spurious one.
                 // * `last_upstream_ids` - upstream-selection bookkeeping only, and this arm is
                 //   unreachable in that mode (step (5) returns first).
-                // * `text_state_known` - seeded from decodebin3's REAL reports; a probe is not
-                //   one, and claiming knowledge from a selection that never applied is exactly
-                //   the seeding `collection_changed` is documented to refuse.
+                // * the engine's `ReportProgress` ladder - it climbs on decodebin3's REAL
+                //   reports; a probe is not one, and claiming a rung from a selection that
+                //   never applied is exactly the seeding `collection_changed` is documented to
+                //   refuse.
                 // * `unblock_selected_externals` - releases holds for an external that BECAME
                 //   selected. Nothing became selected here; the external's own hold release
                 //   rides its next real selection or the drain.
@@ -1495,7 +1365,7 @@ impl FcastPlaybin {
                     src: None,
                     debug: None,
                 });
-                inner.deadline_giveups.fetch_add(1, Ordering::SeqCst);
+                Counters::bump(&inner.counters.deadline_giveups);
             }
         }
     }

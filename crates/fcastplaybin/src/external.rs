@@ -16,10 +16,14 @@ use tracing::{debug, error, info, warn};
 use crate::{
     FcastPlaybin, Inner,
     api::{ExternalSubId, PlaybinEvent},
-    decisions, hands,
+    decisions::{
+        self,
+        replay::{ReplayAsk, ReplayFacts, ReplayVerdict, SettledFacts, VerifyFacts, VerifyVerdict},
+    },
+    hands,
     hands::{Effect, Outcome},
-    jobs::{Job, QueuedJob, ReplayJob, TimerJob},
-    routing::{Input, StreamKind},
+    jobs::{Job, ReplayJob, TimerJob},
+    routing::{Input, RoutingState, StreamKind},
     teardown::StartTimeGuard,
 };
 
@@ -31,21 +35,200 @@ pub(crate) const EXTERNAL_SUB_TIMEOUT: Duration = Duration::from_secs(5);
 /// single trigger may issue (see `Job::VerifyReplay`).
 pub(crate) const REPLAY_VERIFY_AFTER: Duration = Duration::from_millis(400);
 
-const REPLAY_ATTEMPTS: u32 = 3;
-
 /// How many times an external input that died before anything of it reached
 /// decodebin3 is re-attached (see [`Job::RetrySub`]). A genuinely bad URL
 /// exhausts these near-instantly and the materialization watchdog delivers
 /// the verdict.
 const MAX_ATTACH_RETRIES: u32 = 3;
 
-/// Whether a replay was REFUSED: pads were offered the seek and not one took
-/// it, so the replay is postponed to a moment the pipeline can carry it (see
-/// [`FcastPlaybin::replay_outcome`]). Zero pads offered is NOT a refusal, the
-/// input simply had no pads, and postponing there would owe a replay nothing
-/// can discharge.
-fn replay_refused(accepted: usize, total: usize) -> bool {
-    accepted == 0 && total > 0
+/// What one emitter's attempt to put a `Job::ReplaySub` in the queue came to
+/// (see [`Inner::claim_replay`]).
+pub(crate) enum ReplayClaim {
+    /// This call took the in-flight bit and the job is on its way.
+    Sent,
+    /// Another emitter already holds the bit for this `(id, epoch)`, so no
+    /// second job was queued. The pending replay carries the same key, so
+    /// anything riding on a replay's OUTCOME (a held hold, a hold release) is
+    /// still discharged by it.
+    Duplicate,
+    /// Nothing is on its way and nothing is owed: either the send was refused
+    /// and the bit this call set is back out, or no such incarnation is
+    /// attached to claim against at all.
+    Refused,
+}
+
+impl ReplayClaim {
+    /// Whether a replay for this `(id, epoch)` is on its way, which is what
+    /// anything riding on a replay's OUTCOME has to know (an owed hold, a
+    /// verification chain).
+    ///
+    /// A collapsed duplicate answers YES on purpose: the pending replay carries
+    /// the same key, so the single tail in [`FcastPlaybin::replay_outcome`]
+    /// discharges it. Only a refused send leaves nothing that could.
+    pub(crate) fn owed(&self) -> bool {
+        matches!(self, ReplayClaim::Sent | ReplayClaim::Duplicate)
+    }
+}
+
+impl Inner {
+    /// Queue one replay for `(id, epoch)` the way every emitter must: the
+    /// per-resource in-flight bit FIRST, then the job, and the bit back out if
+    /// the send is refused.
+    ///
+    /// The order is the whole point and it was written out at each emit site.
+    /// Setting the bit after the queue leaves the window
+    /// [`ExternalInput::replay_inflight`] exists to close, and a bit left set
+    /// behind a refused send silences every later emitter for this resource for
+    /// good.
+    ///
+    /// The collapse is here, one step EARLIER than `replay_subtitle`'s choke
+    /// point ([`ExternalInput::replay_seek_outstanding`]), which can only
+    /// collapse triggers while a seek is travelling; two jobs sitting in the
+    /// queue is a strictly earlier question.
+    ///
+    /// `who` names the emitter for the one collapse log line, which every site
+    /// used to carry its own copy of.
+    pub(crate) fn claim_replay(&self, id: ExternalSubId, epoch: u32, who: &str) -> ReplayClaim {
+        // The swap returning true IS the dedupe test, taken under the one lock
+        // that owns the resource. A read-then-write pair would reopen the
+        // window between the two acquisitions.
+        match self.take_replay_inflight(id, epoch) {
+            Some(true) => {
+                debug!(
+                    ?id,
+                    epoch,
+                    who,
+                    "a replay for this input is already queued or in flight; this emitter does \
+                     not add a second"
+                );
+                ReplayClaim::Duplicate
+            }
+            Some(false) => self.queue_claimed_replay(id, epoch),
+            // No such incarnation is attached, so there is no resource to claim
+            // and nothing a replay could discharge. Same answer as a refused
+            // send: nothing was taken, nothing is owed.
+            None => {
+                debug!(
+                    ?id,
+                    epoch, who, "no such external is attached; this emitter claims no replay"
+                );
+                ReplayClaim::Refused
+            }
+        }
+    }
+
+    /// Queue the job for a bit the caller has already set, and take that bit
+    /// back out if the send is refused.
+    fn queue_claimed_replay(&self, id: ExternalSubId, epoch: u32) -> ReplayClaim {
+        if !self.queue_job(Job::ReplaySub {
+            id,
+            epoch,
+            attempt: 0,
+        }) {
+            self.clear_replay_inflight(id, epoch);
+            return ReplayClaim::Refused;
+        }
+        ReplayClaim::Sent
+    }
+
+    /// Set `(id, epoch)`'s in-flight bit, returning what it was, or `None` if
+    /// no such external is attached.
+    ///
+    /// THE test-and-set every emitter claims through, and the only writer of
+    /// the bit besides [`Inner::clear_replay_inflight`] and the choke point's
+    /// own set.
+    fn take_replay_inflight(&self, id: ExternalSubId, epoch: u32) -> Option<bool> {
+        let mut routing = self.routing.lock();
+        let was = routing
+            .external_mut(id, epoch)
+            .map(|external| std::mem::replace(&mut external.replay_inflight, true))?;
+        self.sync_cue_gate(&routing, id);
+        Some(was)
+    }
+
+    /// Clear `(id, epoch)`'s in-flight bit. A no-op if the incarnation is gone,
+    /// which is the whole point of the bit living on the resource: a dead epoch
+    /// has no bit to leak.
+    pub(crate) fn clear_replay_inflight(&self, id: ExternalSubId, epoch: u32) {
+        let mut routing = self.routing.lock();
+        if let Some(external) = routing.external_mut(id, epoch) {
+            external.replay_inflight = false;
+        }
+        self.sync_cue_gate(&routing, id);
+    }
+
+    /// Whether a replay for `(id, epoch)` is emitted and not yet settled.
+    pub(crate) fn replay_inflight_for(&self, id: ExternalSubId, epoch: u32) -> bool {
+        self.routing
+            .lock()
+            .external(id, epoch)
+            .is_some_and(|external| external.replay_inflight)
+    }
+
+    /// Re-project `id`'s in-flight bits onto the misaligned-cue gate (see
+    /// [`Inner::replaying_externals`]).
+    ///
+    /// Guard-taking, and called from EVERY site that writes a resource bit or
+    /// takes a resource away, with the write already applied. Recomputed rather
+    /// than mirrored per write, so the gate cannot disagree with the resources
+    /// it stands for however the writes interleave, and so an id whose two
+    /// incarnations overlap keeps its gate until the last of them settles.
+    pub(crate) fn sync_cue_gate(&self, routing: &RoutingState, id: ExternalSubId) {
+        let replaying = routing
+            .inputs
+            .iter()
+            .filter_map(|input| input.external.as_ref())
+            .any(|external| external.id == id && external.replay_inflight);
+        let mut gate = self.replaying_externals.lock();
+        if replaying {
+            gate.insert(id);
+        } else {
+            gate.remove(&id);
+        }
+    }
+}
+
+/// What still gates an external input's buffers at its source pads.
+///
+/// ONE value, because the two gates are exclusive by construction and were
+/// two bools that could not both be true: the selection that discharges
+/// [`Hold::UntilSelected`] is the only writer of [`Hold::OwedToReplay`]
+/// ([`Inner::unblock_selected_externals`]), and the owed replay's outcome is
+/// the only writer of [`Hold::None`] beside it ([`Inner::release_owed_hold`]).
+/// The both-set state was representable and meant nothing.
+///
+/// The block probes are installed in BOTH gated states, so `None` is the only
+/// value that means buffers actually flow. What differs is what discharges
+/// the state: a selection naming the stream, or one replay's outcome.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Hold {
+    /// Nothing gates the buffers: the probes are off and the input delivers.
+    None,
+    /// Blocked at the input's source pads until a selection naming its stream
+    /// applies.
+    ///
+    /// An external input's buffers may only flow once decodebin3 has given
+    /// its stream a multiqueue slot WITH an output, i.e. once the stream is
+    /// selected. Pushing earlier dies not-linked (the slot's source pad has
+    /// nothing behind it and multiqueue relays that upstream), taking the
+    /// whole input down. Nothing about attaching makes selection win that
+    /// race: decodebin3 only learns the stream from the events the first
+    /// push carries, so the first push is inherently too early whenever the
+    /// stream is not auto-selected (another text stream already is) or the
+    /// caller attached it unselected.
+    ///
+    /// Held, the input survives indefinitely: its sticky events reach
+    /// decodebin3, one seeded GAP gets the stream slotted (see
+    /// [`Inner::seed_slot_for_held_pad`]) and therefore selectable, and the
+    /// buffers follow once `STREAMS_SELECTED` confirms the selection (see
+    /// [`Inner::unblock_selected_externals`]).
+    UntilSelected,
+    /// The selection that lifted [`Hold::UntilSelected`] also owes this input
+    /// a realigning replay, so its block probes are still installed and only
+    /// that replay's OUTCOME may remove them (see
+    /// [`Inner::release_owed_hold`], which names the paths an outcome can
+    /// arrive by).
+    OwedToReplay,
 }
 
 /// External-subtitle bookkeeping for an [`Input`] (`None` for the main
@@ -71,35 +254,65 @@ pub(crate) struct ExternalInput {
     /// video's origin: a mismatch means the switched-to cues WILL render
     /// shifted, so only then is the destructive replay justified.
     pub(crate) last_origin: gst::ClockTime,
-    /// Block this input's buffers at its source pads until a selection
-    /// naming its stream applies.
+    /// What still gates this input's buffers, and what discharges it (see
+    /// [`Hold`]). Gated from the first attach.
+    pub(crate) hold: Hold,
+    /// A replay this crate has emitted for this input and not yet seen the
+    /// outcome of.
     ///
-    /// An external input's buffers may only flow once decodebin3 has given
-    /// its stream a multiqueue slot WITH an output, i.e. once the stream is
-    /// selected. Pushing earlier dies not-linked (the slot's source pad has
-    /// nothing behind it and multiqueue relays that upstream), taking the
-    /// whole input down. Nothing about attaching makes selection win that
-    /// race: decodebin3 only learns the stream from the events the first
-    /// push carries, so the first push is inherently too early whenever the
-    /// stream is not auto-selected (another text stream already is) or the
-    /// caller attached it unselected.
+    /// THE per-resource in-flight bit. The reconcile pass may emit an effect
+    /// for a resource only when no effect for that resource is already in
+    /// flight, and the hands' table cannot answer this: it is per-EFFECT and
+    /// per-LANE, so it says "a replay is on the replay lane", never "a replay
+    /// for THIS external is outstanding". Without it a pass that runs while a
+    /// replay is mid-seek would emit a second one against the same input, and
+    /// the two would fight over its segment.
     ///
-    /// Held, the input survives indefinitely: its sticky events reach
-    /// decodebin3, one seeded GAP gets the stream slotted (see
-    /// [`Inner::seed_slot_for_held_pad`]) and therefore selectable, and the
-    /// buffers follow once `STREAMS_SELECTED` confirms the selection (see
-    /// [`Inner::unblock_selected_externals`]).
-    pub(crate) hold_until_selected: bool,
-    /// The selection that lifted `hold_until_selected` also owes this input a
-    /// realigning replay, so its block probes are still installed and only
-    /// that replay's OUTCOME may remove them (see
-    /// [`Inner::release_owed_hold`], which names the three paths an outcome
-    /// can arrive by).
-    hold_release_owed: bool,
+    /// ON THE RESOURCE, which is the F1 lesson made structural. It used to be
+    /// an `Inner` set keyed `(id, epoch)` with a hand-written cleanup in
+    /// `Inner::remove_input` that could not be forgotten, because a bit whose
+    /// input is gone never discharges and silences the pass for that resource
+    /// for good. Here an epoch bump builds a new [`ExternalInput`] and a detach
+    /// drops it, so the orphan is unrepresentable rather than asserted-absent.
+    /// Nothing may key replay state on "the current item" either: a gapless
+    /// activation clears the mirrors WITHOUT bumping any epoch.
+    ///
+    /// # Where it is set and cleared
+    ///
+    /// SET at the choke point, [`FcastPlaybin::replay_subtitle`], which every
+    /// replay funnels through - the reconcile pass, the selection-time replay,
+    /// the upstream adoption, `verify_replay`'s re-replay and the levered
+    /// drain. It is also set at the sites that QUEUE a `Job::ReplaySub`
+    /// ([`Inner::claim_replay`]), because the job runs later and the window
+    /// between queueing and running is a window in which the pass would
+    /// otherwise see both guards clear. Setting a set bit twice is free;
+    /// missing one is not.
+    ///
+    /// CLEARED in [`FcastPlaybin::replay_outcome`] (the decider tail every
+    /// outcome reaches, including the refusal), on `replay_subtitle`'s
+    /// slotless early return, in `run_lane_fallback`'s `Replay` arm (an
+    /// abandoned effect reports no outcome), and at the load reset
+    /// ([`Inner::clear_pending_timers`], which drops the queued jobs the bits
+    /// were taken for).
+    ///
+    /// # The second home
+    ///
+    /// The appsink's misaligned-cue gate reads this per cue on a STREAMING
+    /// thread and must not take the routing lock to do it, so it reads an
+    /// id-only projection instead (see [`Inner::replaying_externals`], which
+    /// [`Inner::sync_cue_gate`] recomputes from this field at every write).
+    pub(crate) replay_inflight: bool,
+    /// A replay verification is armed for this input, so a second arming
+    /// cannot start a rival chain. See [`Inner::arm_replay_verification`].
+    ///
+    /// On the resource for the same reason as `replay_inflight`, and it is the
+    /// stronger case of the two: a stranded key here poisons the incarnation
+    /// permanently, since no later verification for it can ever be armed.
+    pub(crate) verification_armed: bool,
     /// A replay's flushing seek is HANDED OFF for this input and has not
     /// settled yet.
     ///
-    /// Distinct from [`Inner::replay_inflight`], and the field defect is the
+    /// Distinct from `replay_inflight` above, and the field defect is the
     /// difference: that bit is set by the EMITTERS, before `Job::ReplaySub` is
     /// queued, so it is already set by the time `replay_subtitle` runs and
     /// cannot tell "my own job" from "somebody else's replay". This flag is
@@ -121,15 +334,40 @@ pub(crate) struct ExternalInput {
     fed_baseline: u64,
 }
 
-/// Replay flushing seeks actually HANDED OFF (to the replay lane, or run
-/// inline under the levers) by [`FcastPlaybin::replay_subtitle`].
+impl ExternalInput {
+    /// A freshly attached external input at `epoch`: the first attach
+    /// (`epoch` 0) and every attach RETRY build the same thing, so the field
+    /// story invariant 14 rests on is stated once.
+    ///
+    /// Held from the very first attach, because an unselected stream's first
+    /// push is fatal (see [`Hold::UntilSelected`]). Nothing is
+    /// owed, nothing is claimed, nothing is out, no cue has been fed, and
+    /// `last_origin` is ZERO because a file plays from its start.
+    pub(crate) fn fresh(id: ExternalSubId, uri: String, epoch: u32) -> Self {
+        Self {
+            id,
+            uri,
+            epoch,
+            task_dead: false,
+            last_origin: gst::ClockTime::ZERO,
+            hold: Hold::UntilSelected,
+            replay_inflight: false,
+            verification_armed: false,
+            replay_seek_outstanding: false,
+            fed_baseline: 0,
+        }
+    }
+}
+
+/// Replay flushing seeks actually HANDED OFF to the replay lane by
+/// [`FcastPlaybin::replay_subtitle`].
 ///
 /// `RECONCILE_EMITS` counts what the pass decided; this counts what reached
 /// the graph, from every emitter. A test that wants "exactly one replay per
 /// divergence" has to read this one: an emit that turned into two seeks, or a
 /// second emitter slipping one in beside the pass, is invisible in the
 /// decision count.
-static REPLAY_SEEKS_SENT: AtomicU64 = AtomicU64::new(0);
+pub(crate) static REPLAY_SEEKS_SENT: AtomicU64 = AtomicU64::new(0);
 
 /// `Job::ReplaySub` jobs that reached the worker queue.
 ///
@@ -150,7 +388,7 @@ pub(crate) static REPLAY_JOBS_QUEUED: AtomicU64 = AtomicU64::new(0);
 /// so every cue it delivers from now on renders shifted. It was silent apart
 /// from a per-pad `warn!`; the count is what makes "did this happen" a
 /// question a test and a field log can both answer.
-static FORWARD_SEEK_REFUSALS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static FORWARD_SEEK_REFUSALS: AtomicU64 = AtomicU64::new(0);
 
 /// Slot-seeding GAPs pushed and refused for a held external input (see
 /// [`Inner::seed_slot_for_held_pad`]). Read as deltas.
@@ -162,8 +400,8 @@ static FORWARD_SEEK_REFUSALS: AtomicU64 = AtomicU64::new(0);
 /// text link loop's caps gate refusing the join forever while the selection
 /// read as confirmed. The pair is what makes "was a seeding refused, and was it
 /// retried" a question a test and a field log can both answer.
-static SLOT_SEED_PUSHES: AtomicU64 = AtomicU64::new(0);
-static SLOT_SEED_REFUSALS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static SLOT_SEED_PUSHES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static SLOT_SEED_REFUSALS: AtomicU64 = AtomicU64::new(0);
 
 impl Inner {
     /// Decide what a bus error from a live external subtitle input means,
@@ -245,7 +483,7 @@ impl Inner {
     }
 
     /// Install the hold-until-selected block on one source pad of a held
-    /// external input (see [`ExternalInput::hold_until_selected`]).
+    /// external input (see [`Hold::UntilSelected`]).
     /// Serialized events pass, so the stream's sticky events reach
     /// decodebin3 and it stays advertised; buffers hold until
     /// [`Inner::unblock_selected_externals`] removes the probe. A no-op for
@@ -262,13 +500,22 @@ impl Inner {
         {
             let routing = inner.routing.lock();
             let held = routing.inputs.iter().any(|i| {
-                i.element == *element && i.external.as_ref().is_some_and(|e| e.hold_until_selected)
+                i.element == *element
+                    && i.external
+                        .as_ref()
+                        .is_some_and(|e| e.hold == Hold::UntilSelected)
             });
             if !held {
                 return;
             }
         }
         let seeded = AtomicBool::new(false);
+        // WEAK, because the probe lives on a pad the pipeline owns and the
+        // pipeline is owned by `Inner`. The seeding needs `Inner` only to read
+        // the staged refusal (see `TestStaging::slot_seed_refusal`); a dead
+        // `Inner` means the pipeline is being disposed and there is no slot
+        // left worth seeding.
+        let weak = Arc::downgrade(inner);
         let probe = pad.add_probe(
             gst::PadProbeType::BLOCK
                 | gst::PadProbeType::BUFFER
@@ -300,7 +547,9 @@ impl Inner {
                     // stream would stay unselectable for good.
                     if event.type_() == gst::EventType::Eos
                         && !seeded.load(Ordering::Relaxed)
-                        && Inner::seed_slot_for_held_pad(pad, None)
+                        && weak
+                            .upgrade()
+                            .is_some_and(|inner| inner.seed_slot_for_held_pad(pad, None))
                     {
                         seeded.store(true, Ordering::Relaxed);
                     }
@@ -323,7 +572,10 @@ impl Inner {
                         }
                         _ => None,
                     };
-                    if Inner::seed_slot_for_held_pad(pad, pts) {
+                    if weak
+                        .upgrade()
+                        .is_some_and(|inner| inner.seed_slot_for_held_pad(pad, pts))
+                    {
                         seeded.store(true, Ordering::Relaxed);
                     }
                 }
@@ -376,16 +628,20 @@ impl Inner {
     /// happen (see the `seeded` latch in
     /// [`Inner::block_held_external_pad`]).
     ///
-    /// Lever: `FCAST_FORCE_SLOT_SEED_REFUSAL` makes every push read as
+    /// Staging: `TestStaging::slot_seed_refusal` makes every push read as
     /// refused. The refusal comes from the pad going FLUSHING under the push
     /// - the realigning replay's own seek - which is a window no test can hit
-    /// on demand, so the RECOVERY gets a lever rather than going unpinned
-    /// (the same shape as `FCAST_FORCE_FORWARD_SEEK_REFUSAL`).
+    /// on demand, so the RECOVERY gets a staging knob rather than going
+    /// unpinned (the same shape as `TestStaging::forward_seek_refusal`).
     ///
     /// The "held" in the name is historical. `Inner::link_input_pad` seeds the
     /// MAIN input's data-less streams the same way, for the same reason
     /// (UPSTREAM-GSTREAMER-ISSUES.md C15).
-    pub(crate) fn seed_slot_for_held_pad(pad: &gst::Pad, pts: Option<gst::ClockTime>) -> bool {
+    pub(crate) fn seed_slot_for_held_pad(
+        &self,
+        pad: &gst::Pad,
+        pts: Option<gst::ClockTime>,
+    ) -> bool {
         // Zero duration: this announces no missing content, it only gives
         // decodebin3 a data-like event to react to. A cue may legitimately
         // start at the same instant.
@@ -393,10 +649,9 @@ impl Inner {
             .duration(gst::ClockTime::ZERO)
             .build();
         debug!(pad = %pad.name(), ?pts, "seeding a decodebin3 slot for the held external stream");
-        SLOT_SEED_PUSHES.fetch_add(1, Ordering::SeqCst);
-        let forced = std::env::var_os("FCAST_FORCE_SLOT_SEED_REFUSAL").is_some();
-        if forced || !pad.push_event(gap) {
-            SLOT_SEED_REFUSALS.fetch_add(1, Ordering::SeqCst);
+        SLOT_SEED_PUSHES.fetch_add(1, Ordering::Relaxed);
+        if self.stage_slot_seed_refusal() || !pad.push_event(gap) {
+            SLOT_SEED_REFUSALS.fetch_add(1, Ordering::Relaxed);
             warn!(pad = %pad.name(), "the held external input refused the slot-seeding gap");
             return false;
         }
@@ -405,7 +660,7 @@ impl Inner {
 
     /// Release the hold-until-selected blocks of every external input whose
     /// stream a just-applied selection names (see
-    /// [`ExternalInput::hold_until_selected`]). Once decodebin3 confirmed
+    /// [`Hold::UntilSelected`]). Once decodebin3 confirmed
     /// the stream selected, the flowing buffers reach the stream's multiqueue
     /// slot, which now has an output, and the subtitle plays.
     ///
@@ -424,7 +679,7 @@ impl Inner {
                 let held = input
                     .external
                     .as_ref()
-                    .is_some_and(|e| e.hold_until_selected);
+                    .is_some_and(|e| e.hold == Hold::UntilSelected);
                 if !held || input.block_probes.is_empty() {
                     continue;
                 }
@@ -436,12 +691,13 @@ impl Inner {
                     continue;
                 };
                 // Selected, so the hold's own condition is discharged either
-                // way. What the owed replay holds back is only the PROBES.
-                external.hold_until_selected = false;
+                // way. What the owed replay holds back is only the PROBES,
+                // which is the whole difference between the two values below.
                 if owed == Some((external.id, external.epoch)) {
-                    external.hold_release_owed = true;
+                    external.hold = Hold::OwedToReplay;
                     continue;
                 }
+                external.hold = Hold::None;
                 probes.append(&mut input.block_probes);
             }
             probes
@@ -452,7 +708,7 @@ impl Inner {
         }
         // AN OWING NEEDS AN OUTCOME LEFT TO DISCHARGE IT.
         //
-        // The caller decides `owed` by reading [`Inner::replay_inflight`]
+        // The caller decides `owed` by reading the per-resource in-flight bit
         // BEFORE this call - a rival replay already queued or in flight makes
         // it suppress its own and owe the hold to that one's key. But the
         // rival settles on the worker with no ordering against the caller's
@@ -468,7 +724,7 @@ impl Inner {
         // release is idempotent, so an outcome arriving inside this window
         // costs one extra no-op and nothing else.
         if let Some((id, epoch)) = owed
-            && !self.replay_inflight.lock().contains(&(id, epoch))
+            && !self.replay_inflight_for(id, epoch)
         {
             debug!(
                 ?id,
@@ -534,28 +790,30 @@ impl Inner {
             .collect()
     }
 
-    /// Settle [`ExternalInput::replay_seek_outstanding`]: this input's replay
-    /// seek is done travelling and the next one may be sent.
+    /// Settle one replay against its resource: the in-flight bit
+    /// ([`ExternalInput::replay_inflight`]) and the outstanding-seek flag
+    /// ([`ExternalInput::replay_seek_outstanding`]) both come off, so the
+    /// reconcile pass may emit again and the choke point may pass the next
+    /// seek.
     ///
-    /// Called from exactly the two places that discharge
-    /// [`Inner::replay_inflight`] - the outcome tail and the lane fallback -
-    /// because the two flags answer for the same seek and a flag outliving its
-    /// seek would silence every later replay for this input.
-    pub(crate) fn settle_replay_seek(inner: &Arc<Inner>, id: ExternalSubId, epoch: u32) {
+    /// Called from exactly the two places a replay can end - the outcome tail
+    /// and the lane fallback - and the two flags are settled together because
+    /// they answer for the same seek. Either one outliving it silences every
+    /// later replay for this input.
+    ///
+    /// One acquisition for both, plus the cue gate's re-projection.
+    pub(crate) fn settle_replay(inner: &Arc<Inner>, id: ExternalSubId, epoch: u32) {
         let mut routing = inner.routing.lock();
-        if let Some(external) = routing
-            .inputs
-            .iter_mut()
-            .filter_map(|input| input.external.as_mut())
-            .find(|external| external.id == id && external.epoch == epoch)
-        {
+        if let Some(external) = routing.external_mut(id, epoch) {
+            external.replay_inflight = false;
             external.replay_seek_outstanding = false;
         }
+        inner.sync_cue_gate(&routing, id);
     }
 
     /// Release the block probes of an external input whose hold was owed to
-    /// its realigning replay seek (see
-    /// [`ExternalInput::hold_release_owed`]). A no-op for every other input.
+    /// its realigning replay seek (see [`Hold::OwedToReplay`]). A no-op for
+    /// every other input.
     ///
     /// This is the whole of the fix for cues rendering against a different
     /// origin than the video. A held external's `last_origin` stays ZERO,
@@ -575,9 +833,8 @@ impl Inner {
     /// [`Inner::reconcile_subtitle_delivery`] re-asks at the next settled
     /// PLAYING, which is also the first moment a flushing seek could be
     /// accepted, and the tick's 1 Hz poke guarantees the asking happens whether
-    /// or not an edge comes. (Under `FCAST_NO_TEXT_RECONCILE` the v1 mechanism
-    /// is back and the owing lives in [`Inner::deferred_replays`].) Either way
-    /// the input would otherwise stay held for as long as that owing lasts,
+    /// or not an edge comes. The input would otherwise stay held for as long
+    /// as that owing lasts,
     /// which is the liveness half of the problem, and a held external that
     /// never unblocks shows no subtitles at all, a strictly worse failure than
     /// shifted ones. Nothing is lost by releasing here, because the eventual
@@ -590,7 +847,7 @@ impl Inner {
     /// unconditionality, so it has to hold where there IS no outcome.
     /// Idempotent by construction, which is what lets four paths own it, since
     /// the probes are taken out of the input under the routing lock and a
-    /// second release finds `hold_release_owed` already false. The fourth is
+    /// second release finds the hold already [`Hold::None`]. The fourth is
     /// [`Inner::unblock_selected_externals`]'s own tail, for the owing whose
     /// outcome had already passed by the time the flag was written.
     pub(crate) fn release_owed_hold(&self, id: ExternalSubId, epoch: u32) {
@@ -600,12 +857,12 @@ impl Inner {
                 input
                     .external
                     .as_ref()
-                    .is_some_and(|e| e.id == id && e.epoch == epoch && e.hold_release_owed)
+                    .is_some_and(|e| e.id == id && e.epoch == epoch && e.hold == Hold::OwedToReplay)
             }) else {
                 return;
             };
             if let Some(external) = input.external.as_mut() {
-                external.hold_release_owed = false;
+                external.hold = Hold::None;
             }
             std::mem::take(&mut input.block_probes)
         };
@@ -620,8 +877,9 @@ impl Inner {
     /// selection wants.
     ///
     /// The same two questions [`FcastPlaybin::verify_replay`] asks before it
-    /// concludes, asked before it RE-ASKS instead. A check re-armed across a
-    /// window that cannot decide it must not outlive its subject, or a
+    /// concludes, asked before it RE-ASKS instead, and asked through the same
+    /// predicate ([`Inner::selection_wants_external`]). A check re-armed across
+    /// a window that cannot decide it must not outlive its subject, or a
     /// detached input leaves a timer re-arming itself for the rest of the
     /// item. Routing then selection, the documented lock order.
     pub(crate) fn replay_chain_wanted(&self, id: ExternalSubId, epoch: u32) -> bool {
@@ -633,12 +891,7 @@ impl Inner {
         }) else {
             return false;
         };
-        let sids = input.stream_ids();
-        let selection = self.selection.lock();
-        selection
-            .subtitle_sid()
-            .is_some_and(|sid| sids.contains(&sid))
-            || selection.desires_external(id)
+        self.selection_wants_external(id, &input.stream_ids())
     }
 
     /// Queue [`Job::VerifyReplay`] after [`REPLAY_VERIFY_AFTER`], off the
@@ -652,45 +905,38 @@ impl Inner {
         // attempt counters escalated in lockstep down two rival chains.
         // Observed in the field as paired `VerifyReplay ... attempt=0` a
         // millisecond apart, then paired replays at attempt=1, 2, 3.
-        if !self.replay_checks_armed.lock().insert((id, epoch)) {
-            debug!(
-                ?id,
-                epoch, attempt, "a replay verification is already armed for this input"
-            );
-            return;
+        //
+        // The dedupe flag is taken and RELEASED before the arm below, so the
+        // routing lock is never held across `arm_timer` and the two locks keep
+        // no order between them.
+        {
+            let mut routing = self.routing.lock();
+            let Some(external) = routing.external_mut(id, epoch) else {
+                // Nothing to verify and nothing that could answer: the
+                // incarnation this check was decided against is gone.
+                debug!(
+                    ?id,
+                    epoch, attempt, "no such external is attached; arming no replay verification"
+                );
+                return;
+            };
+            if std::mem::replace(&mut external.verification_armed, true) {
+                debug!(
+                    ?id,
+                    epoch, attempt, "a replay verification is already armed for this input"
+                );
+                return;
+            }
         }
         // The tick's timer table, for the reason `arm_sub_watchdog` gives -
-        // and here the infallibility is the point of the repair below: an
-        // arm that cannot fail cannot strand the dedupe key it just took.
-        // Levers: `FCAST_NO_TICK`, `FCAST_NO_TICK_TIMERS`.
-        if self.tick_live() && std::env::var_os("FCAST_NO_TICK_TIMERS").is_none() {
-            self.arm_timer(
-                Instant::now() + REPLAY_VERIFY_AFTER,
-                TimerJob::VerifyReplay { id, epoch, attempt },
-            );
-            return;
-        }
-        let work_tx = self.work_tx.clone();
-        // Stamped at ARM time, for the reason `arm_sub_watchdog` gives.
-        let queue_epoch = self.queue_epoch.load(Ordering::SeqCst);
-        let spawned = std::thread::Builder::new()
-            .name("fpb-replay-check".into())
-            .spawn(move || {
-                std::thread::sleep(REPLAY_VERIFY_AFTER);
-                let _ = work_tx.send(QueuedJob {
-                    epoch: queue_epoch,
-                    job: Job::VerifyReplay { id, epoch, attempt },
-                });
-            });
-        if let Err(err) = spawned {
-            // Release the dedupe key. Without this the arm has failed AND
-            // poisoned the input incarnation: the key stays set, so every
-            // later attempt to arm a verification for this (id, epoch) is
-            // refused as "already armed" and no replay of it is ever checked
-            // again.
-            self.replay_checks_armed.lock().remove(&(id, epoch));
-            warn!(?err, ?id, "failed to arm the replay verification");
-        }
+        // and here its infallibility is load-bearing: an arm that cannot fail
+        // cannot strand the dedupe key it just took. A failed one-shot sleeper
+        // spawn used to leave that key set for good, so no later verification
+        // for this (id, epoch) could ever be armed either.
+        self.arm_timer(
+            Instant::now() + REPLAY_VERIFY_AFTER,
+            TimerJob::VerifyReplay { id, epoch, attempt },
+        );
     }
 
     /// Forward a just-performed user seek into every external subtitle
@@ -769,13 +1015,13 @@ impl Inner {
             )
             .build()
         };
-        // Lever: `FCAST_FORCE_FORWARD_SEEK_REFUSAL` makes every send read as
+        // Staging: `TestStaging::forward_seek_refusal` makes every send read as
         // refused. A refusal comes from a source's own seek handling deep
         // inside a parser chain (the field's was `rssubparse` converting the
         // TIME seek to BYTES and its upstream failing that), which no test can
-        // arrange from the outside, so the RECOVERY gets a lever instead of
-        // going unpinned.
-        let force_refusal = std::env::var_os("FCAST_FORCE_FORWARD_SEEK_REFUSAL").is_some();
+        // arrange from the outside, so the RECOVERY gets a staging knob instead
+        // of going unpinned.
+        let force_refusal = self.stage_forward_seek_refusal();
         for (key, pads) in targets {
             let mut accepted = 0usize;
             let total = pads.len();
@@ -852,7 +1098,7 @@ impl Inner {
         total: usize,
         position: gst::ClockTime,
     ) {
-        FORWARD_SEEK_REFUSALS.fetch_add(1, Ordering::SeqCst);
+        FORWARD_SEEK_REFUSALS.fetch_add(1, Ordering::Relaxed);
         error!(
             ?id,
             epoch,
@@ -861,17 +1107,7 @@ impl Inner {
             "an external subtitle input refused the forwarded seek on every pad, so its cues \
              are on the old timeline; replaying it to realign"
         );
-        let replay_key = (id, epoch);
-        if !self.replay_inflight.lock().insert(replay_key) {
-            return;
-        }
-        if !self.queue_job(Job::ReplaySub {
-            id,
-            epoch,
-            attempt: 0,
-        }) {
-            self.replay_inflight.lock().remove(&replay_key);
-        }
+        self.claim_replay(id, epoch, "the refused forward");
     }
 
     /// Whether this external's stream is advertised but has NO decodebin3
@@ -945,9 +1181,52 @@ impl Inner {
         })
     }
 
+    /// DELIVERED: some routed text branch is live and its decodebin3 pad
+    /// carries a sticky STREAM_START naming one of `sids`.
+    ///
+    /// GUARD-TAKING, because all three askers already hold the routing lock
+    /// and one of them ([`FcastPlaybin::verify_replay`]) holds it across other
+    /// reads it must not drop. Shared rather than copied because
+    /// `verify_replay` and [`Inner::reconcile_subtitle_delivery`] are a check
+    /// and a pass that must not disagree about what delivery means (the same
+    /// argument `subtitle_origin_matches_video` settles for `aligned`), and
+    /// [`Inner::external_branch_joined`] is the third copy of it.
+    ///
+    /// Sticky reads only, no pad locks beyond the sticky store.
+    pub(crate) fn text_stream_delivered(routing: &RoutingState, sids: &[String]) -> bool {
+        routing.routed.iter().any(|routed| {
+            routed.kind == StreamKind::Text
+                && routed.downstream.is_some()
+                && routed
+                    .db3_src_pad
+                    .sticky_event::<gst::event::StreamStart>(0)
+                    .is_some_and(|event| sids.iter().any(|sid| *sid == event.stream_id()))
+        })
+    }
+
+    /// WANTED: the selection still names one of `sids`, or still desires the
+    /// external itself.
+    ///
+    /// The second disjunct is not redundant. decodebin3 retracting the stream
+    /// (slot destroyed on side-input EOS) forces an applied subtitle-None while
+    /// the DESIRE still names this external, and the replay chain is the only
+    /// way back, so `applied` alone would end the chain on exactly the input
+    /// that needs it.
+    ///
+    /// Guard-taking on the ROUTING side (the caller holds it, and both askers
+    /// derive `sids` from it) and takes the selection lock itself, which is the
+    /// crate's documented order.
+    pub(crate) fn selection_wants_external(&self, id: ExternalSubId, sids: &[String]) -> bool {
+        let selection = self.selection.lock();
+        selection
+            .subtitle_sid()
+            .is_some_and(|sid| sids.contains(&sid))
+            || selection.desires_external(id)
+    }
+
     /// Whether one of this input's text streams is JOINED to a consumer
-    /// branch (routed, downstream wired, sticky STREAM_START naming it).
-    /// The same read `verify_replay` calls `delivered`.
+    /// branch. [`Inner::text_stream_delivered`] for one external, with the
+    /// lock taken here.
     fn external_branch_joined(&self, id: ExternalSubId, epoch: u32) -> bool {
         let routing = self.routing.lock();
         let Some(input) = routing.inputs.iter().find(|i| {
@@ -957,15 +1236,7 @@ impl Inner {
         }) else {
             return false;
         };
-        let sids = input.stream_ids();
-        routing.routed.iter().any(|routed| {
-            routed.kind == StreamKind::Text
-                && routed.downstream.is_some()
-                && routed
-                    .db3_src_pad
-                    .sticky_event::<gst::event::StreamStart>(0)
-                    .is_some_and(|event| sids.iter().any(|sid| *sid == event.stream_id()))
-        })
+        Self::text_stream_delivered(&routing, &input.stream_ids())
     }
 }
 
@@ -1024,19 +1295,7 @@ impl FcastPlaybin {
         // the caller's buffering state machine and wedge a paused pipeline
         // in "Buffering".
         let element = Inner::make_urisourcebin(uri, false)?;
-        let external = ExternalInput {
-            id,
-            uri: uri.to_string(),
-            epoch: 0,
-            // Held from the very first attach: an unselected stream's first
-            // push is fatal (see `ExternalInput::hold_until_selected`).
-            hold_until_selected: true,
-            hold_release_owed: false,
-            task_dead: false,
-            last_origin: gst::ClockTime::ZERO,
-            replay_seek_outstanding: false,
-            fed_baseline: 0,
-        };
+        let external = ExternalInput::fresh(id, uri.to_string(), 0);
         Inner::add_input(&self.inner, element, generation, Some(external))?;
         info!(?id, uri, "attached external subtitle input");
         self.arm_sub_watchdog(id, 0);
@@ -1048,50 +1307,27 @@ impl FcastPlaybin {
     /// no-ops if the input produced streams, was detached, or was re-armed
     /// (epoch mismatch) in the meantime.
     fn arm_sub_watchdog(&self, id: ExternalSubId, epoch: u32) {
-        let timeout = *self.inner.sub_timeout.lock();
-        // The tick owns bounded timers when it runs: a table entry cannot
-        // fail to arm and costs no thread. The sleeper below stays as the
-        // lever arm, verbatim.
-        // Levers: `FCAST_NO_TICK` (no tick at all), `FCAST_NO_TICK_TIMERS`.
-        if self.inner.tick_live() && std::env::var_os("FCAST_NO_TICK_TIMERS").is_none() {
-            self.inner
-                .arm_timer(Instant::now() + timeout, TimerJob::CheckSub { id, epoch });
-            return;
-        }
-        let work_tx = self.inner.work_tx.clone();
-        // A sleeper holds only a `Sender`, so it cannot go through
-        // `Inner::queue_job`. It stamps the queue epoch at ARM time, which is
-        // when the decision to check was taken (and is inert either way: the
-        // input `epoch` above is this job's real, sharper token).
-        let queue_epoch = self.inner.queue_epoch.load(Ordering::SeqCst);
-        let spawned = std::thread::Builder::new()
-            .name("fpb-sub-watchdog".into())
-            .spawn(move || {
-                std::thread::sleep(timeout);
-                let _ = work_tx.send(QueuedJob {
-                    epoch: queue_epoch,
-                    job: Job::CheckSub { id, epoch },
-                });
-            });
-        if let Err(err) = spawned {
-            warn!(?err, ?id, "failed to arm the subtitle watchdog");
-        }
+        let timeout = self.inner.deadlines.lock().sub_timeout;
+        // The tick owns bounded timers: a table entry cannot fail to arm and
+        // costs no thread.
+        self.inner
+            .arm_timer(Instant::now() + timeout, TimerJob::CheckSub { id, epoch });
     }
 
     /// Shorten the external-subtitle materialization timeout. For tests
     /// only: production callers keep [`EXTERNAL_SUB_TIMEOUT`].
     #[doc(hidden)]
     pub fn set_external_sub_timeout(&self, timeout: Duration) {
-        *self.inner.sub_timeout.lock() = timeout;
+        self.inner.deadlines.lock().sub_timeout = timeout;
     }
 
     /// Whether a replay for `(id, epoch)` is emitted and not yet settled (see
-    /// [`Inner::replay_inflight`]). The in-flight guard, readable so a test
-    /// can prove it is what suppresses a second emit. Not part of the public
-    /// API.
+    /// [`ExternalInput::replay_inflight`]). The in-flight guard, readable so a
+    /// test can prove it is what suppresses a second emit. Not part of the
+    /// public API.
     #[doc(hidden)]
     pub fn replay_inflight(&self, id: ExternalSubId, epoch: u32) -> bool {
-        self.inner.replay_inflight.lock().contains(&(id, epoch))
+        self.inner.replay_inflight_for(id, epoch)
     }
 
     /// Queue one `Job::ReplaySub` the way an emitter does (in-flight bit
@@ -1102,26 +1338,28 @@ impl FcastPlaybin {
     /// arrange by timing. Not part of the public API.
     #[doc(hidden)]
     pub fn queue_replay_sub(&self, id: ExternalSubId, epoch: u32) -> bool {
-        self.inner.replay_inflight.lock().insert((id, epoch));
-        let sent = self.inner.queue_job(Job::ReplaySub {
-            id,
-            epoch,
-            attempt: 0,
-        });
-        if !sent {
-            self.inner.replay_inflight.lock().remove(&(id, epoch));
-        }
-        sent
+        // Deliberately NOT `Inner::claim_replay`: this exists to put a rival
+        // job in the queue behind a bit an earlier emitter already holds,
+        // which is the one thing the collapse refuses to do.
+        self.inner.take_replay_inflight(id, epoch);
+        matches!(
+            self.inner.queue_claimed_replay(id, epoch),
+            ReplayClaim::Sent
+        )
     }
 
     /// Whether a replay verification is armed for `(id, epoch)` (see
-    /// [`Inner::replay_checks_armed`]). Readable so a test can prove the CHAIN
-    /// survives a window that cannot decide it, which is the whole difference
-    /// between the check re-asking and the reconcile pass being handed a
-    /// question it has no term for. Not part of the public API.
+    /// [`ExternalInput::verification_armed`]). Readable so a test can prove the
+    /// CHAIN survives a window that cannot decide it, which is the whole
+    /// difference between the check re-asking and the reconcile pass being
+    /// handed a question it has no term for. Not part of the public API.
     #[doc(hidden)]
     pub fn replay_check_armed(&self, id: ExternalSubId, epoch: u32) -> bool {
-        self.inner.replay_checks_armed.lock().contains(&(id, epoch))
+        self.inner
+            .routing
+            .lock()
+            .external(id, epoch)
+            .is_some_and(|external| external.verification_armed)
     }
 
     /// Run [`FcastPlaybin::verify_replay`] inline, the way its timer job does.
@@ -1133,7 +1371,7 @@ impl FcastPlaybin {
     }
 
     /// Block probes still installed for an external input's data hold (see
-    /// [`ExternalInput::hold_until_selected`]). The hold as a NUMBER, so a
+    /// [`Hold`]). The hold as a NUMBER, so a
     /// test can prove the probes actually came off. Not part of the public
     /// API.
     #[doc(hidden)]
@@ -1161,43 +1399,6 @@ impl FcastPlaybin {
         self.inner.unblock_selected_externals(selected_ids, owed);
     }
 
-    /// How many replay flushing seeks have actually been handed off (see
-    /// [`REPLAY_SEEKS_SENT`]). Process-global, so read it as a delta. Not part
-    /// of the public API.
-    #[doc(hidden)]
-    pub fn replay_seeks_sent() -> u64 {
-        REPLAY_SEEKS_SENT.load(Ordering::SeqCst)
-    }
-
-    /// How many `Job::ReplaySub` jobs reached the worker queue (see
-    /// [`REPLAY_JOBS_QUEUED`]). Process-global, so read it as a delta. Not
-    /// part of the public API.
-    #[doc(hidden)]
-    pub fn replay_jobs_queued() -> u64 {
-        REPLAY_JOBS_QUEUED.load(Ordering::SeqCst)
-    }
-
-    /// How many forwarded seeks an external input refused (see
-    /// [`FORWARD_SEEK_REFUSALS`]). Process-global, so read it as a delta. Not
-    /// part of the public API.
-    #[doc(hidden)]
-    pub fn forward_seek_refusals() -> u64 {
-        FORWARD_SEEK_REFUSALS.load(Ordering::SeqCst)
-    }
-
-    /// Slot-seeding GAPs pushed / refused for held external inputs (see
-    /// [`SLOT_SEED_PUSHES`]). Process-global, so read them as deltas. Not
-    /// part of the public API.
-    #[doc(hidden)]
-    pub fn slot_seed_pushes() -> u64 {
-        SLOT_SEED_PUSHES.load(Ordering::SeqCst)
-    }
-
-    #[doc(hidden)]
-    pub fn slot_seed_refusals() -> u64 {
-        SLOT_SEED_REFUSALS.load(Ordering::SeqCst)
-    }
-
     /// Run [`Inner::forward_seek_to_live_externals`] directly, so a test can
     /// exercise the forward and its refusal recovery without driving a whole
     /// transport seek through the state machine (which parks one behind the
@@ -1207,32 +1408,12 @@ impl FcastPlaybin {
         self.inner.forward_seek_to_live_externals(rate, position);
     }
 
-    /// In-flight replay bits whose `(id, epoch)` matches NO attached external.
-    ///
-    /// THE leak invariant, as a number. Every entry is discharged by
-    /// `replay_outcome`, by a lane fallback, by one of `replay_subtitle`'s
-    /// early returns, or by the input's removal - so an orphan means one of
-    /// those paths was missed, and the consequence is a resource the reconcile
-    /// pass will never act on again. Must be zero at any settled point. Not
-    /// part of the public API.
-    #[doc(hidden)]
-    pub fn replay_inflight_orphans(&self) -> usize {
-        let live: Vec<(ExternalSubId, u32)> = {
-            let routing = self.inner.routing.lock();
-            routing
-                .inputs
-                .iter()
-                .filter_map(|input| input.external.as_ref())
-                .map(|external| (external.id, external.epoch))
-                .collect()
-        };
-        self.inner
-            .replay_inflight
-            .lock()
-            .iter()
-            .filter(|key| !live.contains(key))
-            .count()
-    }
+    // THE LEAK INVARIANT is no longer a number, because it is no longer a
+    // reachable state. `replay_inflight_orphans()` counted in-flight bits whose
+    // `(id, epoch)` matched no attached external, which was the observable
+    // consequence of a missed discharge in an `Inner`-side set. The bit now
+    // lives on the resource, so an epoch that dies takes it along and an orphan
+    // cannot be constructed (see [`ExternalInput::replay_inflight`]).
 
     /// Whether any external subtitle input is currently attached. Callers
     /// gate flushing operations on this: a flush races the external inputs'
@@ -1326,12 +1507,14 @@ impl FcastPlaybin {
     /// caller ([`MAX_ATTACH_RETRIES`]); a genuinely bad URL exhausts the
     /// retries and the watchdog delivers the verdict.
     pub(crate) fn retry_subtitle(&self, id: ExternalSubId, epoch: u32) {
-        // BEFORE the routing lock below: the checks take it too. Outputless
-        // rides along for the give-up hand-off: that input HAS reached
-        // decodebin3's sink pads, so without it the guard below would judge
-        // it healthy and this retry a no-op.
-        let slotless = self.inner.external_stream_slotless(id, epoch)
-            || self.inner.external_stream_outputless(id, epoch);
+        // BEFORE the routing lock below: the check takes it too. Outputless
+        // ALONE, because slotless implies it: both require no routed pad to
+        // carry any of this input's text sids and slotless merely adds the
+        // drain requirement on top. Asking both was two routing-lock rounds
+        // for one answer. Outputless is the one that also covers the give-up
+        // hand-off: that input HAS reached decodebin3's sink pads, so without
+        // it the guard below would judge it healthy and this retry a no-op.
+        let outputless = self.inner.external_stream_outputless(id, epoch);
         {
             let routing = self.inner.routing.lock();
             let Some(input) = routing.inputs.iter().find(|i| {
@@ -1346,11 +1529,12 @@ impl FcastPlaybin {
             // job): the join-time replay owns recovery, and a replacement
             // would reintroduce the hazards the retry exists to avoid.
             //
-            // A SLOTLESS stream is the exception: it is linked and advertised
-            // and still cannot render, and only a fresh input gets a slot back
-            // (see `Inner::external_stream_slotless`). The replay hands those
-            // over here deliberately.
-            if (!input.stream_ids().is_empty() || !input.db3_sink_pads.is_empty()) && !slotless {
+            // An OUTPUTLESS stream is the exception: it is linked and
+            // advertised and still cannot render, and only a fresh input gets
+            // a slot back (see `Inner::external_stream_outputless`, which the
+            // slotless case implies). The replay hands those over here
+            // deliberately.
+            if (!input.stream_ids().is_empty() || !input.db3_sink_pads.is_empty()) && !outputless {
                 debug!(
                     ?id,
                     epoch, "input reached decodebin3 after all; leaving it be"
@@ -1369,17 +1553,7 @@ impl FcastPlaybin {
                 &self.inner,
                 element,
                 self.inner.current_generation(),
-                Some(ExternalInput {
-                    id,
-                    uri: uri.clone(),
-                    epoch: epoch + 1,
-                    hold_until_selected: true,
-                    hold_release_owed: false,
-                    task_dead: false,
-                    last_origin: gst::ClockTime::ZERO,
-                    replay_seek_outstanding: false,
-                    fed_baseline: 0,
-                }),
+                Some(ExternalInput::fresh(id, uri.clone(), epoch + 1)),
             )
         });
         match attach {
@@ -1420,36 +1594,44 @@ impl FcastPlaybin {
     ///
     /// # THE in-flight bit is set and cleared HERE, and only here
     ///
-    /// [`Inner::replay_inflight`] guards the reconcile pass against emitting a
-    /// second replay while one is outstanding, so it has to cover EVERY replay,
-    /// not the ones whose emit sites happened to remember. Five paths reach
-    /// this function - the reconcile pass, the selection-time replay, the
-    /// upstream adoption, `verify_replay`'s re-replay and the levered drain -
-    /// and setting the bit at each of them left three uncovered. The one that
-    /// bites: `verify_replay` clears `replay_checks_armed` at its top and hands
-    /// the seek to a lane, so for the whole lane window BOTH guards read clear
-    /// and the 1 Hz pass emits a rival replay against the same `(id, epoch)`.
+    /// [`ExternalInput::replay_inflight`] guards the reconcile pass against
+    /// emitting a second replay while one is outstanding, so it has to cover
+    /// EVERY replay, not the ones whose emit sites happened to remember. Five
+    /// paths reach this function - the reconcile pass, the selection-time
+    /// replay, the upstream adoption, `verify_replay`'s re-replay and the
+    /// levered drain - and setting the bit at each of them left three
+    /// uncovered. The one that bites: `verify_replay` clears its arming flag at
+    /// its top and hands the seek to a lane, so for the whole lane window BOTH
+    /// guards read clear and the 1 Hz pass emits a rival replay against the
+    /// same `(id, epoch)`.
     ///
     /// This function is the choke point every one of them funnels through, so
     /// the bit goes on immediately before the hand-off and comes off on every
     /// path that does NOT hand off. Discharged in
     /// [`FcastPlaybin::replay_outcome`], which every outcome reaches.
     pub(crate) fn replay_subtitle(&self, id: ExternalSubId, epoch: u32, attempt: u32) {
-        // Set FIRST, cleared on each early return below. Setting it after the
-        // guards would leave the same window this exists to close.
-        self.inner.replay_inflight.lock().insert((id, epoch));
+        // Set FIRST, in the acquisition that finds the input, so NO guard below
+        // ever runs against a clear bit. Setting it after the guards would
+        // leave the same window this exists to close.
+        //
+        // An input that is already gone has no bit to set and no bit to leak,
+        // which is the whole reason the bit lives on the resource.
         let pads: Vec<gst::Pad> = {
-            let routing = self.inner.routing.lock();
-            let Some(input) = routing.inputs.iter().find(|i| {
+            let mut routing = self.inner.routing.lock();
+            let Some(input) = routing.inputs.iter_mut().find(|i| {
                 i.external
                     .as_ref()
                     .is_some_and(|e| e.id == id && e.epoch == epoch)
             }) else {
                 debug!(?id, epoch, "stale subtitle replay job; input already gone");
-                self.inner.replay_inflight.lock().remove(&(id, epoch));
                 return;
             };
-            input.element.src_pads()
+            let pads = input.element.src_pads();
+            if let Some(external) = input.external.as_mut() {
+                external.replay_inflight = true;
+            }
+            self.inner.sync_cue_gate(&routing, id);
+            pads
         };
         // A replay CANNOT fix a stream decodebin3 has no slot for, and a
         // drained external is exactly that (see
@@ -1457,10 +1639,7 @@ impl FcastPlaybin {
         // get a slot back, so hand over to the retry instead of pushing a seek
         // into a pad whose multiqueue peer is gone (which kills the source with
         // "reason not-linked" and, four attempts later, gave up in silence).
-        // Lever: `FCAST_NO_SLOTLESS_EXTERNAL_REATTACH`.
-        if std::env::var_os("FCAST_NO_SLOTLESS_EXTERNAL_REATTACH").is_none()
-            && self.inner.external_stream_slotless(id, epoch)
-        {
+        if self.inner.external_stream_slotless(id, epoch) {
             warn!(
                 ?id,
                 epoch, attempt, "the external's stream has no decodebin3 slot; re-attaching it"
@@ -1472,19 +1651,28 @@ impl FcastPlaybin {
             // so a bit left set here would silence the reconcile pass for this
             // (id, epoch) permanently - on an external that is alive and
             // possibly misaligned.
-            self.inner.replay_inflight.lock().remove(&(id, epoch));
+            self.inner.clear_replay_inflight(id, epoch);
             self.inner.queue_job(Job::RetrySub { id, epoch });
             return;
         }
         let (rate, origin) = self.inner.video_timeline();
+        // Read OUTSIDE the routing lock: this was the crate's one site that
+        // took `external_cues_fed` under `routing`, and the two cue-feeding
+        // writers run lock-free of routing on streaming threads. The value
+        // only has to predate the hand-off: a cue fed between this read and
+        // the store below lands ABOVE the baseline, so `verify_replay`'s "the
+        // count moved" test can only get easier to satisfy, never falsely
+        // fail. That window already existed between the store and the send.
+        let fed_baseline = self
+            .inner
+            .external_cues_fed
+            .lock()
+            .get(&id)
+            .copied()
+            .unwrap_or(0);
         {
             let mut routing = self.inner.routing.lock();
-            if let Some(external) = routing
-                .inputs
-                .iter_mut()
-                .filter_map(|input| input.external.as_mut())
-                .find(|external| external.id == id && external.epoch == epoch)
-            {
+            if let Some(external) = routing.external_mut(id, epoch) {
                 // ONE seek per resource at a time. Two triggers may legitimately
                 // decide a replay is owed at the same instant - the join-time one
                 // and the selection-time one raced in the field, 276 us apart -
@@ -1513,13 +1701,7 @@ impl FcastPlaybin {
                 // The delivery-evidence window opens at the hand-off: the
                 // chain's verification requires the fed count to move past
                 // this (see `Inner::external_cues_fed`).
-                external.fed_baseline = self
-                    .inner
-                    .external_cues_fed
-                    .lock()
-                    .get(&id)
-                    .copied()
-                    .unwrap_or(0);
+                external.fed_baseline = fed_baseline;
             }
         }
         // ZERO THE PAD OFFSET this input's text branches carry, before the seek
@@ -1536,8 +1718,8 @@ impl FcastPlaybin {
         //
         // Measured on `subtitle_disable::external_enable_late_shows_position_
         // correct_cue`, 11 of 11 red with a stale offset and 38 of 38 green
-        // without one. Lever: `FCAST_NO_REPLAY_OFFSET_RESET`.
-        if std::env::var_os("FCAST_NO_REPLAY_OFFSET_RESET").is_none() {
+        // without one.
+        {
             let routing = self.inner.routing.lock();
             Inner::zero_text_offsets_for(&routing, id, epoch);
         }
@@ -1559,10 +1741,6 @@ impl FcastPlaybin {
         // makes the worker wait on itself. See [`ReplayJob`], and
         // `fuzz_buffering` seed 600055 (iters 4, actions 22) for the deterministic
         // reproducer, which fails 3 of 3 with the seek sent from here.
-        //
-        // The lever sends inline on the worker again, which is the whole of
-        // the change: both arms run the identical send and the identical
-        // outcome, and what differs is only which thread carries which half.
         let job = ReplayJob {
             pads,
             seek,
@@ -1573,12 +1751,8 @@ impl FcastPlaybin {
             rate,
             pipeline: Some(self.inner.pipeline.clone()),
         };
-        REPLAY_SEEKS_SENT.fetch_add(1, Ordering::SeqCst);
-        // The inline lever runs both halves HERE, so the replay never enters
-        // the hands at all: no envelope, nothing in flight, no `Done`.
-        if std::env::var_os("FCAST_INLINE_REPLAY_SEEK").is_some() {
-            Self::run_replay_seek(&self.inner, job);
-        } else if let Err(effect) = self.inner.enqueue_effect(Effect::ReplaySeek(job)) {
+        REPLAY_SEEKS_SENT.fetch_add(1, Ordering::Relaxed);
+        if let Err(effect) = self.inner.enqueue_effect(Effect::ReplaySeek(job)) {
             // No lane to send it, so the seek is not happening - but the hold
             // it owes is owed all the same, and nothing else will ever come
             // to release it (`queue_chain_join`'s lost-join fallback, for the
@@ -1587,29 +1761,6 @@ impl FcastPlaybin {
             warn!(?id, "the replay sender is gone, dropping the replay seek");
             Inner::run_lane_fallback(&self.inner, None, hands::LaneFallback::of(&effect));
         }
-    }
-
-    /// Send one replay's flushing seek and act on the outcome, in one call.
-    ///
-    /// The v1 shape, kept for the two arms that still want it on one thread:
-    /// `FCAST_INLINE_REPLAY_SEEK` (worker) and `FCAST_NO_HANDS` /
-    /// `FCAST_INLINE_REPLAY_OUTCOME` (the replay lane). The default arm runs
-    /// the two halves where they belong - [`Self::send_replay_seek`] on the
-    /// lane, [`Self::replay_outcome`] on the decider - which is the whole of
-    /// the difference between them.
-    pub(crate) fn run_replay_seek(inner: &Arc<Inner>, job: ReplayJob) -> Outcome {
-        let outcome = Self::send_replay_seek(job);
-        if let Outcome::ReplaySent {
-            sub_id,
-            epoch,
-            attempt,
-            accepted,
-            total,
-        } = outcome
-        {
-            Self::replay_outcome(inner, sub_id, epoch, attempt, accepted, total);
-        }
-        outcome
     }
 
     /// Send one replay's flushing seek. Runs on the replay lane (see
@@ -1696,176 +1847,100 @@ impl FcastPlaybin {
         // earlier: `replay_outcome` is the decider tail every outcome reaches,
         // including the refusal below and the lane's exactly-once settlement,
         // so clearing it here cannot leak a bit that would suppress the
-        // reconcile pass for this resource for good. See
-        // [`Inner::replay_inflight`].
-        inner.replay_inflight.lock().remove(&(id, epoch));
-        // The seek this outcome reports is no longer travelling, so the choke
-        // point may pass the next one (see `Inner::settle_replay_seek`).
-        Inner::settle_replay_seek(inner, id, epoch);
+        // reconcile pass for this resource for good. The seek this outcome
+        // reports is no longer travelling either, so the choke point may pass
+        // the next one: both in one acquisition (see `Inner::settle_replay`).
+        Inner::settle_replay(inner, id, epoch);
         inner.release_owed_hold(id, epoch);
-        // Not one pad took it. A pipeline at rest in PAUSED refuses a flushing
-        // seek on every pad, every push logging `Failed to push event ...
-        // state="paused"`, and the verification then correctly saw the stream
-        // still unaligned and replayed again. Four rounds of work that could
-        // not succeed by construction. Owe it to the moment the pipeline can
-        // carry it instead, and never arm a check that would spend an attempt
-        // rediscovering the same thing (the arming below cannot: it re-asks
-        // with the SAME attempt and the check defers its verdict while the
-        // pipeline is parked).
-        //
-        // Decided from the OUTCOME rather than from the pipeline state: a
-        // state check also matched a pipeline transiently at rest during a
-        // seek, where the seek IS accepted, and postponing there left the
-        // input unaligned for good.
-        if replay_refused(accepted, total) {
+        // The question comes from the OUTCOME rather than from the pipeline
+        // state (see [`decisions::replay::replay_ask`]), and each arm reads
+        // only the facts its own verdict needs.
+        let facts = match decisions::replay::replay_ask(accepted, total, attempt) {
+            ReplayAsk::Refusal => {
+                let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+                let parked = !decisions::replay::settled_playing(current, pending);
+                ReplayFacts::Refusal {
+                    parked,
+                    // Only the parked refusal can act on it, and the read
+                    // takes the routing then selection locks.
+                    chain_wanted: parked && inner.replay_chain_wanted(id, epoch),
+                }
+            }
+            ReplayAsk::Recheck => ReplayFacts::Recheck,
+            ReplayAsk::Exhaustion => ReplayFacts::Exhaustion {
+                unservable: inner.external_stream_outputless(id, epoch),
+                // Scoped to a JOINED branch so a slow caller's not-yet-joined
+                // input keeps the mild arm.
+                segmentless: inner.external_branch_joined(id, epoch)
+                    && inner.text_tail_segment().is_none(),
+                reattached: epoch > 0,
+            },
+        };
+        // Named for the two escalation log lines, which say which term fired.
+        let segmentless = matches!(facts, ReplayFacts::Exhaustion { segmentless: true, .. });
+        let verdict = decisions::replay::replay_verdict(facts);
+        if verdict.postponed() {
             // A new postponed item invalidates the last drain's no-op
             // verdict (see `Inner::drain_poke_parked`).
             inner.drain_poke_parked.store(false, Ordering::SeqCst);
-            if Inner::text_reconcile_levered() {
-                let mut owed = inner.deferred_replays.lock();
-                if !owed
-                    .iter()
-                    .any(|(oid, oepoch, _)| *oid == id && *oepoch == epoch)
-                {
-                    debug!(
-                        ?id,
-                        epoch, attempt, "postponing a replay the pipeline refused"
-                    );
-                    owed.push((id, epoch, attempt));
-                }
-                return;
-            }
-            // A refusal at rest in PAUSED is about the PIPELINE, not about the
-            // branch, so the question this replay was asked for is still open
-            // - and the reconcile pass can only carry it while the branch
-            // reads UNALIGNED. A replay the verification asked for because the
-            // branch was silent leaves an aligned one behind, which that pass
-            // calls converged, so deferring to it there loses the chain and
-            // the silence becomes permanent. Arm the check instead: it now
-            // holds its own verdict below a settled PLAYING (see
-            // [`FcastPlaybin::verify_replay`]), so this no longer "rediscovers
-            // the same thing" four times over - it waits with the
-            // delivery-evidence term intact for the first moment a flushing
-            // seek could be accepted, which is the same moment the pass would
-            // have re-emitted at. Same attempt: a refused seek performed none.
-            // Lever: `FCAST_NO_REPLAY_VERDICT_DEFERRAL` (a check that
-            // concludes anywhere WOULD burn the attempts, so the lever takes
-            // this arming with it).
-            let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
-            let parked = current != gst::State::Playing || pending != gst::State::VoidPending;
-            if parked
-                && std::env::var_os("FCAST_NO_REPLAY_VERDICT_DEFERRAL").is_none()
-                && inner.replay_chain_wanted(id, epoch)
-            {
+        }
+        match verdict {
+            ReplayVerdict::RearmSameAttempt => {
                 debug!(
                     ?id,
-                    epoch, attempt, "the pipeline refused the replay while parked; re-asking once \
+                    epoch,
+                    attempt,
+                    "the pipeline refused the replay while parked; re-asking once \
                      it can carry one"
                 );
                 inner.arm_replay_verification(id, epoch, attempt);
-                return;
             }
-            // RETURN, owing nothing. The refusal left the input unaligned, and
-            // unaligned is exactly what the reconcile pass observes at the
-            // next settled PLAYING - which is also the first moment a flushing
-            // seek could be accepted. Remembering the attempt would only have
-            // reproduced that schedule from memory.
-            debug!(
+            // Owing nothing: the reconcile pass observes the unaligned branch
+            // at the next settled PLAYING.
+            ReplayVerdict::LeaveToReconcile => debug!(
                 ?id,
                 epoch, attempt, "the pipeline refused the replay; the reconcile pass re-emits"
-            );
-            return;
+            ),
+            ReplayVerdict::ArmVerification => inner.arm_replay_verification(id, epoch, attempt),
+            ReplayVerdict::Fail => {
+                warn!(
+                    ?id,
+                    epoch,
+                    attempt,
+                    segmentless,
+                    "a re-attached external still cannot deliver; failing it"
+                );
+                inner.queue_job(Job::FailSub { id, epoch });
+            }
+            ReplayVerdict::Retry => {
+                warn!(
+                    ?id,
+                    epoch,
+                    attempt,
+                    segmentless,
+                    "the external's stream cannot deliver through decodebin3; re-attaching it"
+                );
+                inner.queue_job(Job::RetrySub { id, epoch });
+            }
+            ReplayVerdict::PokeJoin => {
+                // Loud, but not fatal: the input stays attached and servable.
+                warn!(
+                    ?id,
+                    epoch,
+                    attempt,
+                    "the external subtitle has not rendered after every replay attempt; \
+                     leaving it attached for the next join"
+                );
+                // The join is what is missing, so poke the thing that performs
+                // it rather than waiting for the caller's next settle point.
+                //
+                // A DIRECT call, not a queued poll: by default this outcome is
+                // already running on the decider, which is the thread the
+                // policy wants, and going through the queue would only
+                // postpone it behind whatever the receiver has just poked.
+                Inner::poll_text_policy(inner);
+            }
         }
-        // A replay can race the very slot swap that requested it (the
-        // re-delivery drains into a slot decodebin3 is still relinking), so
-        // check back once: a bounded sleeper, exactly like the sub watchdog.
-        if attempt < REPLAY_ATTEMPTS {
-            inner.arm_replay_verification(id, epoch, attempt);
-            return;
-        }
-        // Out of attempts. This used to end HERE in silence, which left the
-        // receiver reporting a subtitle track that renders nothing (in
-        // upstream-selection mode the crate's own merged report has already
-        // named this sid, so the caller believes the switch worked).
-        //
-        // It must NOT end in a detach either, which is what the first version
-        // of this escalation did and what the field then punished: exhaustion
-        // on an input that materialized and is DELIVERING into decodebin3 means
-        // "its branch has not joined yet", not "the file is
-        // bad". The join runs from `poll_text_policy` on the CALLER's cadence
-        // while these attempts run on a 400ms worker timer, so a slow caller
-        // loses the race and a perfectly servable external got detached and
-        // dropped from the user's track list (`ResourceNotFound` at the
-        // sender).
-        //
-        // So: only the case nothing can serve is failed, i.e. a stream with no
-        // carrier pad at all AFTER a re-attach already had its chance
-        // (`external_stream_slotless` hands the first occurrence to
-        // `Job::RetrySub`, which bumps the epoch). Anything with a carrier is
-        // left ATTACHED and merely reported loudly: the branch can still join
-        // on any later poll, join-time replay included, and the next selection
-        // finds a live input instead of a missing track.
-        // Lever: `FCAST_NO_REPLAY_GIVEUP_ESCALATION` (set = the original
-        // silent give-up, no warning and no failure either way).
-        if std::env::var_os("FCAST_NO_REPLAY_GIVEUP_ESCALATION").is_some() {
-            return;
-        }
-        // Slotless OR outputless: either way no pad can ever carry this
-        // stream, and only a fresh input gets a slot back. Outputless covers
-        // the fully wedged attach the slotless read is blind to (no drain
-        // was ever recorded, see `external_stream_outputless`).
-        let unservable = inner.external_stream_slotless(id, epoch)
-            || inner.external_stream_outputless(id, epoch);
-        // A JOINED branch whose tail never received a SEGMENT after a whole
-        // chain of flushing replays is just as unservable: the multiqueue
-        // destroyed the segment in flight (C12 family, the sibling of the
-        // rescued CAPS) and a replay cannot re-send what dies inside the
-        // slot, so left alone the reconcile pass re-emits a doomed chain
-        // every 2 s for the rest of the item. Scoped to a joined branch so a
-        // slow caller's not-yet-joined input keeps the mild arm below.
-        // Lever: `FCAST_NO_SEGMENTLESS_TAIL_ESCALATION`.
-        let segmentless = std::env::var_os("FCAST_NO_SEGMENTLESS_TAIL_ESCALATION").is_none()
-            && inner.external_branch_joined(id, epoch)
-            && inner.text_tail_segment().is_none();
-        if (unservable || segmentless) && epoch > 0 {
-            warn!(
-                ?id,
-                epoch,
-                attempt,
-                segmentless,
-                "a re-attached external still cannot deliver; failing it"
-            );
-            inner.queue_job(Job::FailSub { id, epoch });
-            return;
-        }
-        if unservable || segmentless {
-            warn!(
-                ?id,
-                epoch,
-                attempt,
-                segmentless,
-                "the external's stream cannot deliver through decodebin3; re-attaching it"
-            );
-            inner.queue_job(Job::RetrySub { id, epoch });
-            return;
-        }
-        // Loud, but not fatal: the input stays attached and servable.
-        warn!(
-            ?id,
-            epoch,
-            attempt,
-            "the external subtitle has not rendered after every replay attempt; \
-             leaving it attached for the next join"
-        );
-        // The join is what is missing, so poke the thing that performs it
-        // rather than waiting for the caller's next settle point.
-        //
-        // A DIRECT call, not a queued poll: by default this outcome is
-        // already running on the decider, which is the thread the policy
-        // wants, and going through the queue would only postpone it behind
-        // whatever the receiver has just poked. Under the levers this runs on
-        // the replay lane, where a direct call is what v1 did.
-        Inner::poll_text_policy(inner);
     }
 
     /// Worker side of the replay verification: the replay took iff the
@@ -1875,138 +1950,147 @@ impl FcastPlaybin {
     /// bounded.
     ///
     /// A verdict is only ever reached at a pipeline settled at PLAYING.
-    /// Anywhere below, the check RE-ARMS itself (under
-    /// `FCAST_NO_TEXT_RECONCILE` it holds itself into
-    /// [`Inner::deferred_verifications`] and the deferred-work drain re-arms
-    /// it instead), because a pipeline that is not flowing leaves the stickies
-    /// exactly as the input's previous tenure left them and they prove
-    /// nothing about this one. Either way the CHAIN survives the window: it
-    /// carries the delivery-evidence term the reconcile pass has no equivalent
-    /// of, so a question dropped here is a silent branch nothing re-asks
-    /// about.
+    /// Anywhere below, the check RE-ARMS itself, because a pipeline that is
+    /// not flowing leaves the stickies exactly as the input's previous tenure
+    /// left them and they prove nothing about this one. Re-arming, and not
+    /// deferring to [`Inner::reconcile_subtitle_delivery`]: the CHAIN must
+    /// survive the window because it carries the delivery-evidence term the
+    /// pass has no equivalent of, so a question dropped here is a silent
+    /// branch nothing re-asks about.
     pub(crate) fn verify_replay(&self, id: ExternalSubId, epoch: u32, attempt: u32) {
         // The chain this check belongs to has now run, so the next legitimate
         // arming is allowed. See `arm_replay_verification`.
-        self.inner.replay_checks_armed.lock().remove(&(id, epoch));
+        if let Some(external) = self.inner.routing.lock().external_mut(id, epoch) {
+            external.verification_armed = false;
+        }
         // A verdict needs evidence, and a pipeline below a settled PLAYING
         // has none. Nothing flows there, so the stickies read below are
         // leftovers of the input's previous tenure, and a spent input that
         // will never push another buffer still passes as aligned delivery.
         // Concluding here is what left the field's renderer linked to a dead
-        // input after rapid switches at a pipeline parked in Buffering. Hold
-        // the verdict instead. The deferred-work drain re-arms it once the
-        // pipeline is settled at PLAYING, where the postponed flush has run
-        // and delivery is observable. Checked before the routing lock so the
-        // state read never nests inside it. The lever restores the old
-        // conclude-anywhere behavior for interleaved A/B measurement and
-        // gates this whole change (the hold here, the drain of held
-        // verdicts, and the drain's selection re-verification).
-        if std::env::var_os("FCAST_NO_REPLAY_VERDICT_DEFERRAL").is_none() {
-            let (_, current, pending) = self.inner.pipeline.state(gst::ClockTime::ZERO);
-            if current != gst::State::Playing || pending != gst::State::VoidPending {
-                // A new postponed item invalidates the last drain's no-op
-                // verdict (see `Inner::drain_poke_parked`).
-                self.inner.drain_poke_parked.store(false, Ordering::SeqCst);
-                if Inner::text_reconcile_levered() {
-                    let mut held = self.inner.deferred_verifications.lock();
-                    if !held
-                        .iter()
-                        .any(|(hid, hepoch, _)| *hid == id && *hepoch == epoch)
-                    {
-                        debug!(
-                            ?id,
-                            epoch, attempt, "holding a replay verdict below a settled PLAYING"
-                        );
-                        held.push((id, epoch, attempt));
-                    }
-                    return;
-                }
-                // NO VERDICT, SO RE-ASK. Nothing is remembered - the ARMING is
-                // the question, held open across a window that cannot answer
-                // it - but the question itself must not be handed on, which
-                // is what returning here used to do.
-                //
-                // [`Inner::reconcile_subtitle_delivery`] asks a strictly
-                // WEAKER one. Its convergence test is `delivered && aligned`,
-                // two sticky reads that a joined branch and a post-seek
-                // segment satisfy on their own, and it has no
-                // delivery-evidence term at all. A burst the multiqueue
-                // destroyed in flight leaves a seated, aligned, SILENT branch,
-                // which reads as converged there on every later pass, so a
-                // replay deferred to it was never re-derived and the track
-                // rendered nothing for the rest of the item. The evidence term
-                // lives on THIS chain (`progressed`, below), and so does the
-                // attempt bound that makes asking about silence safe at all -
-                // silence is also what an external with no cue at this
-                // position looks like, and a 1 Hz pass acting on that would
-                // flush the branch forever. So the chain is what has to
-                // survive the window.
-                //
-                // The SAME attempt: a verdict that was not reached spends
-                // none. Bounded by the RESOURCE rather than by a counter - a
-                // detached or deselected input re-arms nothing, the re-arm
-                // stops the moment the pipeline can answer, and a load reset
-                // drops the timer with its dedupe key (see
-                // [`Inner::clear_pending_timers`]).
-                if !self.inner.replay_chain_wanted(id, epoch) {
-                    debug!(
-                        ?id,
-                        epoch, attempt, "no verdict below a settled PLAYING and nothing wants this \
-                         input any more; the chain ends here"
-                    );
-                    return;
-                }
+        // input after rapid switches at a pipeline parked in Buffering. Re-ask
+        // instead, until the pipeline is settled at PLAYING, where the
+        // postponed flush has run and delivery is observable. Checked before
+        // the routing lock so the state read never nests inside it.
+        let (_, current, pending) = self.inner.pipeline.state(gst::ClockTime::ZERO);
+        let (facts, sids) = if decisions::replay::settled_playing(current, pending) {
+            let (settled, sids) = self.replay_evidence(id, epoch);
+            (VerifyFacts::Settled(settled), sids)
+        } else {
+            // The re-ask asks the chain's own subject question, through the
+            // same predicate the settled arm concludes on (see
+            // [`Inner::replay_chain_wanted`]), so a chain cannot conclude on
+            // one answer and re-arm on another.
+            (
+                VerifyFacts::Unsettled {
+                    chain_wanted: self.inner.replay_chain_wanted(id, epoch),
+                },
+                Vec::new(),
+            )
+        };
+        // Named for the log line on the replay arm.
+        let (delivered, progressed) = match facts {
+            VerifyFacts::Settled(settled) => (settled.delivered, settled.progressed),
+            VerifyFacts::Unsettled { .. } => (false, false),
+        };
+        let verdict = decisions::replay::verify_verdict(facts);
+        if verdict.postponed() {
+            // A new postponed item invalidates the last drain's no-op
+            // verdict (see `Inner::drain_poke_parked`).
+            self.inner.drain_poke_parked.store(false, Ordering::SeqCst);
+        }
+        match verdict {
+            VerifyVerdict::RearmSameAttempt => {
                 debug!(
                     ?id,
-                    epoch, attempt, "no verdict below a settled PLAYING; re-asking once the \
+                    epoch,
+                    attempt,
+                    "no verdict below a settled PLAYING; re-asking once the \
                      pipeline can answer"
                 );
                 self.inner.arm_replay_verification(id, epoch, attempt);
-                return;
+            }
+            VerifyVerdict::ChainEnds => debug!(
+                ?id,
+                epoch,
+                attempt,
+                "no verdict below a settled PLAYING and nothing wants this \
+                 input any more; the chain ends here"
+            ),
+            // Detached or re-armed since this check was armed.
+            VerifyVerdict::Gone => {}
+            VerifyVerdict::SelectionMovedOn => debug!(
+                ?id,
+                attempt,
+                ?sids,
+                "replay check: selection moved on; not replaying"
+            ),
+            VerifyVerdict::Converged => {}
+            VerifyVerdict::ReplayAgain => {
+                debug!(
+                    ?id,
+                    attempt,
+                    delivered,
+                    progressed,
+                    "the switched-to stream is not rendering aligned; replaying"
+                );
+                self.replay_subtitle(id, epoch, attempt + 1);
             }
         }
-        let (delivered, fed_baseline) = {
+    }
+
+    /// The evidence a settled PLAYING makes readable, plus the input's stream
+    /// ids for the caller's log line.
+    ///
+    /// ONE routing acquisition for the whole projection, because the desire
+    /// term and `delivered` must answer for the same inputs list, and the
+    /// desire term is read through the same predicate the re-ask asks (see
+    /// [`Inner::selection_wants_external`], which carries why it is not
+    /// redundant with the applied selection). Routing then selection, the
+    /// documented lock order; the two reads that take other locks
+    /// (`subtitle_origin_matches_video`, `external_cues_fed`) happen after it
+    /// is dropped.
+    fn replay_evidence(
+        &self,
+        id: ExternalSubId,
+        epoch: u32,
+    ) -> (decisions::replay::SettledFacts, Vec<String>) {
+        // Nothing observed. `attached: false` is the incarnation being gone,
+        // and every later term is false because nothing read it.
+        let none = SettledFacts {
+            attached: false,
+            selection_wants: false,
+            delivered: false,
+            origin_matches: false,
+            progressed: false,
+        };
+        let (delivered, fed_baseline, sids) = {
             let routing = self.inner.routing.lock();
             let Some(input) = routing.inputs.iter().find(|i| {
                 i.external
                     .as_ref()
                     .is_some_and(|e| e.id == id && e.epoch == epoch)
             }) else {
-                return;
+                return (none, Vec::new());
             };
             let fed_baseline = input.external.as_ref().map(|e| e.fed_baseline).unwrap_or(0);
             let sids = input.stream_ids();
             // Only meaningful while this input's stream is still WANTED: a
-            // selection that moved on owns its own replay. `applied` alone
-            // cannot answer that: decodebin3 retracting the stream (slot
-            // destroyed on side-input EOS) forces an applied subtitle-None
-            // while the desire still names this external, and this chain
-            // (replay -> slotless -> re-attach) is the only way back.
-            let still_selected = {
-                let selection = self.inner.selection.lock();
-                selection
-                    .subtitle_sid()
-                    .is_some_and(|sid| sids.contains(&sid))
-                    || selection.desires_external(id)
-            };
-            if !still_selected {
-                debug!(
-                    ?id,
-                    attempt,
-                    ?sids,
-                    "replay check: selection moved on; not replaying"
+            // selection that moved on owns its own replay.
+            if !self.inner.selection_wants_external(id, &sids) {
+                return (
+                    SettledFacts {
+                        attached: true,
+                        ..none
+                    },
+                    sids,
                 );
-                return;
             }
-            let delivered = routing.routed.iter().any(|routed| {
-                routed.kind == StreamKind::Text
-                    && routed.downstream.is_some()
-                    && routed
-                        .db3_src_pad
-                        .sticky_event::<gst::event::StreamStart>(0)
-                        .is_some_and(|event| sids.iter().any(|sid| *sid == event.stream_id()))
-            });
-            (delivered, fed_baseline)
+            (
+                Inner::text_stream_delivered(&routing, &sids),
+                fed_baseline,
+                sids,
+            )
         };
         // Delivered is not enough: an input that joined the branch WITHOUT a
         // replay carries its own file-origin segment, and its cues render
@@ -2017,33 +2101,32 @@ impl FcastPlaybin {
         // [`Inner::subtitle_origin_matches_video`]). A drift between them
         // would be a check and a pass that disagree about what "aligned"
         // means, which is the one thing neither is allowed to do.
-        let aligned = delivered && self.inner.subtitle_origin_matches_video();
+        //
+        // Read only where it can matter: undelivered is unaligned either way.
+        let origin_matches = delivered && self.inner.subtitle_origin_matches_video();
         // Alignment alone cannot prove a cue survived the trip (see
         // [`Inner::external_cues_fed`]): a burst the multiqueue destroyed in
         // flight leaves a seated, aligned, silent branch, and concluding on
         // it here is what made that silence permanent. The chain succeeds
         // only when a cue reached the consumer since its hand-off.
-        // Lever: `FCAST_NO_REPLAY_DELIVERY_EVIDENCE` (set = alignment only).
-        let progressed = std::env::var_os("FCAST_NO_REPLAY_DELIVERY_EVIDENCE").is_some()
-            || self
-                .inner
-                .external_cues_fed
-                .lock()
-                .get(&id)
-                .copied()
-                .unwrap_or(0)
-                > fed_baseline;
-        if aligned && progressed {
-            return;
-        }
-        debug!(
-            ?id,
-            attempt,
-            delivered,
-            progressed,
-            "the switched-to stream is not rendering aligned; replaying"
-        );
-        self.replay_subtitle(id, epoch, attempt + 1);
+        let progressed = self
+            .inner
+            .external_cues_fed
+            .lock()
+            .get(&id)
+            .copied()
+            .unwrap_or(0)
+            > fed_baseline;
+        (
+            SettledFacts {
+                attached: true,
+                selection_wants: true,
+                delivered,
+                origin_matches,
+                progressed,
+            },
+            sids,
+        )
     }
 
     /// Worker side of the materialization watchdog: an input still without
@@ -2082,29 +2165,3 @@ impl FcastPlaybin {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The postponement rule of [`FcastPlaybin::replay_outcome`]: only a real
-    /// refusal (offered pads, zero takers) postpones. An input with no pads
-    /// at all is not refused, and any accepted pad means the seek travelled.
-    #[test]
-    fn a_replay_is_refused_only_when_offered_pads_all_declined() {
-        let cases: &[(usize, usize, bool)] = &[
-            (0, 0, false),
-            (0, 1, true),
-            (0, 5, true),
-            (1, 1, false),
-            (1, 5, false),
-            (5, 5, false),
-        ];
-        for (accepted, total, expected) in cases {
-            assert_eq!(
-                replay_refused(*accepted, *total),
-                *expected,
-                "accepted {accepted} of {total}"
-            );
-        }
-    }
-}

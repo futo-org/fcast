@@ -83,8 +83,8 @@
 //!
 //! # Verification
 //!
-//! * Green: no env vars, at any `--test-threads` (see [`init`]).
-//! * `FCAST_NO_SLOT_UNLATCH=1`: four of the seven go RED,
+//! * Green at any `--test-threads` (see [`init`]).
+//! * Without the slot unlatch four of the seven go RED,
 //!   [`re_activating_the_slot_src_pad_clears_the_latch`],
 //!   [`a_join_to_an_unactivated_branch_latches_the_slot_with_no_flush_at_all`]
 //!   and [`a_healed_slot_can_still_open_a_stream_on_a_branch_built_afterwards`]
@@ -894,7 +894,7 @@ fn re_activating_the_slot_src_pad_clears_the_latch() {
     let mut rig = Rig::new("reactivation-candidate");
     rig.latch_the_slot();
 
-    let repairs_before = FcastPlaybin::slot_unlatches();
+    let repairs_before = FcastPlaybin::global_stats().slot_unlatches;
     let flushed_downstream = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&flushed_downstream);
     rig.tqueue_sink
@@ -915,15 +915,15 @@ fn re_activating_the_slot_src_pad_clears_the_latch() {
     FcastPlaybin::unlatch_db3_slot_for_test(&rig.db3_src_pad);
 
     assert_eq!(
-        FcastPlaybin::slot_unlatch_failures(),
+        FcastPlaybin::global_stats().slot_unlatch_failures,
         0,
         "the re-activation must not fail"
     );
     assert!(
-        FcastPlaybin::slot_unlatches() > repairs_before,
+        FcastPlaybin::global_stats().slot_unlatches > repairs_before,
         "the repair must have RUN, not been skipped as clean, the rig staged a real latch \
          (clean: {})",
-        FcastPlaybin::slot_unlatch_clean()
+        FcastPlaybin::global_stats().slot_unlatch_clean
     );
 
     let before = rig.delivered.load(Ordering::SeqCst);
@@ -1092,10 +1092,10 @@ fn a_join_to_an_unactivated_branch_latches_the_slot_with_no_flush_at_all() {
 
     // The same repair, aimed at the same slot, for a completely different
     // trigger.
-    let repairs_before = FcastPlaybin::slot_unlatches();
+    let repairs_before = FcastPlaybin::global_stats().slot_unlatches;
     FcastPlaybin::unlatch_db3_slot_for_test(&rig.db3_src_pad);
     assert!(
-        FcastPlaybin::slot_unlatches() > repairs_before,
+        FcastPlaybin::global_stats().slot_unlatches > repairs_before,
         "the repair must have run against a join-latched slot too"
     );
     let before = rig.delivered.load(Ordering::SeqCst);
@@ -1145,7 +1145,7 @@ fn a_join_to_an_unactivated_branch_latches_the_slot_with_no_flush_at_all() {
 #[test]
 fn the_crate_flush_pair_is_what_takes_the_branch_segment_away() {
     let _serial = init();
-    let mut rig = Rig::new("segment-warnings");
+    let rig = Rig::new("segment-warnings");
     assert!(
         rig.wait_for_delivery(1),
         "the rig never delivered its first buffer"
@@ -1203,8 +1203,8 @@ fn the_crate_flush_pair_is_what_takes_the_branch_segment_away() {
 /// So this test is not a claim about the repair being wrong. It is the claim
 /// that the repair is a LOSS, and therefore that the only real fix is upstream
 /// of it, do not let a slot latch while data is piling up behind it (see
-/// [`the_park_is_wait_free_so_a_bring_up_leaves_nothing_queued_behind_a_latch`]
-/// and `Inner::bring_up_parking_sink`).
+/// [`the_unpark_releases_the_parked_push_so_the_backlog_reaches_the_branch`]
+/// and `Inner::retire_parking_sink`).
 ///
 /// Lever-independent on purpose: it stages the latch with a LINK, drives
 /// gstreamer directly, and would read the same on any build.
@@ -1240,10 +1240,10 @@ fn a_slot_latched_with_data_queued_behind_it_loses_all_of_it_to_the_heal() {
     // The branch comes up and the repair runs, exactly as `poll_text_policy`
     // would run it: everything downstream is now healthy.
     rig.bring_the_branch_up();
-    let repairs_before = FcastPlaybin::slot_unlatches();
+    let repairs_before = FcastPlaybin::global_stats().slot_unlatches;
     FcastPlaybin::unlatch_db3_slot_for_test(&rig.db3_src_pad);
     assert!(
-        FcastPlaybin::slot_unlatches() > repairs_before,
+        FcastPlaybin::global_stats().slot_unlatches > repairs_before,
         "the repair must have run"
     );
 
@@ -1266,7 +1266,7 @@ fn a_slot_latched_with_data_queued_behind_it_loses_all_of_it_to_the_heal() {
         before, 0,
         "the heal preserved {before} of the {QUEUED} buffers queued behind the latch. If \
          gst_single_queue_flush_queue has learned to keep them, C8b's whole premise (and \
-         Inner::bring_up_parking_sink's reason to exist) needs re-reading, check, do not \
+         Inner::retire_parking_sink's reason to exist) needs re-reading, check, do not \
          just update the number"
     );
     rig.shutdown();
@@ -1284,11 +1284,11 @@ fn a_slot_latched_with_data_queued_behind_it_loses_all_of_it_to_the_heal() {
 ///
 /// # Why the park is staged by hand rather than levered
 ///
-/// `FCAST_NO_WAITFREE_TEXT_PARK` would do it today, but this test is a record
-/// of what GStreamer does to a park at PAUSED, and that record should outlive
-/// the lever. It also keeps the pair honest: this one must stay green while its
-/// twin below flips, which is only meaningful if they cannot both be turned off
-/// by the same switch.
+/// A lever could have staged it while the wait-free PARK existed, but this
+/// test is a record of what GStreamer does to a park at PAUSED, and that
+/// record should outlive any lever, as it has. Staging by hand also keeps the
+/// pair honest: this one must stay green while its twin below flips, which is
+/// only meaningful if they cannot both be turned off by the same switch.
 #[test]
 fn a_park_at_paused_swallows_the_opening_and_its_removal_latches_the_slot() {
     let _serial = init();
@@ -1336,10 +1336,10 @@ fn a_park_at_paused_swallows_the_opening_and_its_removal_latches_the_slot() {
 
     // The join, and the heal that runs in the same poll.
     rig.join();
-    let repairs_before = FcastPlaybin::slot_unlatches();
+    let repairs_before = FcastPlaybin::global_stats().slot_unlatches;
     FcastPlaybin::unlatch_db3_slot_for_test(&rig.db3_src_pad);
     assert!(
-        FcastPlaybin::slot_unlatches() > repairs_before,
+        FcastPlaybin::global_stats().slot_unlatches > repairs_before,
         "the heal must have run against the latch the unpark created"
     );
 
@@ -1382,8 +1382,8 @@ fn a_park_at_paused_swallows_the_opening_and_its_removal_latches_the_slot() {
 /// # Verification
 ///
 /// * Green as shipped.
-/// * `FCAST_NO_WAITFREE_UNPARK=1` (the pre-C8b unpark) turns it RED on the
-///   latch assertion, and would turn it red again on the delivery count below.
+/// * The pre-C8b unpark turns it RED on the latch assertion, and would turn it
+///   red again on the delivery count below.
 #[test]
 fn the_unpark_releases_the_parked_push_so_the_backlog_reaches_the_branch() {
     let _serial = init();
@@ -1471,19 +1471,19 @@ fn a_healthy_slot_is_left_alone() {
         "the rig never delivered its first buffer"
     );
 
-    let repairs_before = FcastPlaybin::slot_unlatches();
-    let clean_before = FcastPlaybin::slot_unlatch_clean();
+    let repairs_before = FcastPlaybin::global_stats().slot_unlatches;
+    let clean_before = FcastPlaybin::global_stats().slot_unlatch_clean;
     // One probe, no wait: `unlatch_db3_slot` never polls (see there, the
     // poll it used to do cost `external_subtitle_lifecycle` a whole suite).
     FcastPlaybin::unlatch_db3_slot_for_test(&rig.db3_src_pad);
 
     assert_eq!(
-        FcastPlaybin::slot_unlatches(),
+        FcastPlaybin::global_stats().slot_unlatches,
         repairs_before,
         "a healthy slot must not be re-activated"
     );
     assert!(
-        FcastPlaybin::slot_unlatch_clean() > clean_before,
+        FcastPlaybin::global_stats().slot_unlatch_clean > clean_before,
         "and it must be COUNTED as clean, so a zero repair count is not confused with a \
          repair that never ran"
     );

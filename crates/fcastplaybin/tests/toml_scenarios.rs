@@ -25,6 +25,9 @@ use fcasttest::{
 };
 use gst::prelude::*;
 
+#[path = "support/census.rs"]
+mod census;
+
 /// Generous bound for anything the pipeline has to reach. Scenario media plays
 /// in real time (the sinks sync), so a busy box must not flake.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -184,11 +187,11 @@ impl Harness {
     }
 }
 
-/// The worker must answer a queued job within a bound. A graph-dump
+/// The worker must answer a queued job within a bound. A barrier
 /// round-trip proves it is not wedged inside a previous job.
 fn assert_worker_alive(harness: &Harness, what: &str) {
     let (tx, rx) = mpsc::channel();
-    harness.playbin.debug_graph_async(Box::new(move |_| {
+    harness.playbin.barrier_async(Box::new(move || {
         let _ = tx.send(());
     }));
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -347,6 +350,10 @@ fn every_scenario_file_plays_to_eos() {
         scenario_dir().display()
     );
 
+    // The widest sample of load/play/teardown this suite has, and every file
+    // is healthy media by construction, so every silent-failure counter must
+    // stay flat across the whole sweep.
+    let before = census::baseline();
     let total = files.len();
     let failures = sweep(&files);
     assert!(
@@ -359,6 +366,7 @@ fn every_scenario_file_plays_to_eos() {
             .collect::<Vec<_>>()
             .join("\n")
     );
+    census::assert_flat_all(&before, "the scenario-file sweep");
 }
 
 /// The sweep is only worth anything if a broken scenario actually turns it red,

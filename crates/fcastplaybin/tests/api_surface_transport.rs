@@ -17,11 +17,7 @@ use std::{
 use fcastplaybin::{
     AudioSink, FcastPlaybin, MediaInput, PlaybinEvent, SelectionGate, Sinks, StartPoint,
 };
-use fcasttest::{
-    scenario::ScenarioBuilder,
-    sink::FTestSink,
-    spec::Pacing,
-};
+use fcasttest::{scenario::ScenarioBuilder, sink::FTestSink, spec::Pacing};
 use gst::prelude::*;
 
 const EVENT_TIMEOUT: Duration = Duration::from_secs(40);
@@ -547,7 +543,11 @@ fn reverse_start_rate_at_the_sink() {
         video.time(),
         video.position()
     );
-    assert_eq!(video.rate(), -1.0, "the video sink sees the reverse segment");
+    assert_eq!(
+        video.rate(),
+        -1.0,
+        "the video sink sees the reverse segment"
+    );
     assert!(
         video.flags().contains(gst::SegmentFlags::TRICKMODE),
         "reverse always sets TRICKMODE, flags {:?}",
@@ -687,10 +687,16 @@ fn out_of_order_transport_calls() {
 
     // stop() twice in a row, both Ok.
     harness.playbin.stop().expect("first stop");
-    harness.playbin.stop().expect("second stop on a stopped instance");
+    harness
+        .playbin
+        .stop()
+        .expect("second stop on a stopped instance");
 
     // pause() on the stopped instance.
-    harness.playbin.pause().expect("pause on a stopped instance");
+    harness
+        .playbin
+        .pause()
+        .expect("pause on a stopped instance");
 
     // And a load still works after all of it.
     harness.load_and_wait(&second.uri(), zero);

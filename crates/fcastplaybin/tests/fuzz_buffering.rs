@@ -17,7 +17,7 @@
 //! which no suite has fuzzed before.
 //!
 //! The invariants are liveness ones. No pipeline error, a worker that answers
-//! a graph-dump round trip after every action, a machine that provably leaves
+//! a barrier round trip after every action, a machine that provably leaves
 //! Buffering whenever no recovery gate is held, and a bounded teardown. The
 //! timeline-alignment machinery stays in `fuzz_scenarios`, which owns it.
 
@@ -45,9 +45,12 @@ use fcasttest::{
 };
 use gst::prelude::*;
 
+#[path = "support/census.rs"]
+mod census;
+
 /// Bound for anything the pipeline has to reach.
 const EVENT_TIMEOUT: Duration = Duration::from_secs(25);
-/// The worker must answer a queued graph dump inside this.
+/// The worker must answer a queued barrier inside this.
 const WORKER_BOUND: Duration = Duration::from_secs(12);
 /// Bound for the final shutdown.
 const TEARDOWN_BOUND: Duration = Duration::from_secs(15);
@@ -657,15 +660,14 @@ impl Runner {
         self.outstanding_low.set(percent < 100);
         let result = self.sm.borrow_mut().buffering(percent);
         match result {
-            BufferingStateResult::Started(state) => {
+            BufferingStateResult::Started => {
                 // The machine's own entered-buffering edge, not to be
                 // confused with the broader unsettled window state() reports.
                 self.count(|coverage| coverage.buffering_entered += 1);
-                self.apply(state);
+                self.apply(gst::State::Paused);
             }
             BufferingStateResult::Buffering => {}
             BufferingStateResult::FinishedWithSeek(seek) => self.playbin.seek_async(seek),
-            BufferingStateResult::FinishedButWaitingSeek => {}
             BufferingStateResult::Finished(state) => {
                 if let Some(state) = state {
                     self.apply(state);
@@ -821,13 +823,10 @@ impl Runner {
     /// `player.rs` `seek_internal` with seekability known.
     fn seek(&self, position: gst::ClockTime) {
         self.playbin.cancel_selection_refresh();
-        let dispatched = self.sm.borrow_mut().seek_internal(
-            Seek {
-                position: Some(position),
-                rate: None,
-            },
-            None,
-        );
+        let dispatched = self.sm.borrow_mut().seek_internal(Seek {
+            position: Some(position),
+            rate: None,
+        });
         if let Some(seek) = dispatched {
             self.playbin.seek_async(seek);
         }
@@ -874,7 +873,7 @@ impl Runner {
         }
     }
 
-    /// A graph-dump round trip proves the worker is not wedged inside a job.
+    /// A barrier round trip proves the worker is not wedged inside a job.
     fn check_worker_alive(&self, bound: Duration) -> Checked {
         // Debug-only: stretch the bound so a wedged worker HANGS rather than
         // failing, which is what makes a gdb attach at native speed possible
@@ -885,7 +884,7 @@ impl Runner {
             Err(_) => bound,
         };
         let (tx, rx) = mpsc::channel();
-        self.playbin.debug_graph_async(Box::new(move |_| {
+        self.playbin.barrier_async(Box::new(move || {
             let _ = tx.send(());
         }));
         let deadline = Instant::now() + bound;
@@ -895,7 +894,7 @@ impl Runner {
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if Instant::now() >= deadline {
                         return Err(self.fail(format!(
-                            "the worker never answered a graph dump within {bound:?} \
+                            "the worker never answered a barrier within {bound:?} \
                              (receiver {:?}, pipeline {:?})",
                             self.state(),
                             self.playbin.state_summary()
@@ -1233,6 +1232,7 @@ fn fuzz_buffering_schedules() {
          (override with FCAST_FUZZ_SEED / FCAST_FUZZ_ITERS / FCAST_FUZZ_ACTIONS)"
     );
 
+    let census_before = census::baseline();
     let mut total = Coverage::default();
     for iteration in 0..iters {
         let case = Case::generate(seed, iteration, actions);
@@ -1292,4 +1292,9 @@ fn fuzz_buffering_schedules() {
             );
         }
     }
+
+    // Buffering churn is where the flush pairs and the descent bound get
+    // their worst interleavings, so this driver is the sample the
+    // silent-failure counters were put in for.
+    census::assert_flat_all(&census_before, "the buffering fuzz run");
 }

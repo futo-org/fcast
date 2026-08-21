@@ -17,6 +17,7 @@ use crate::{
     FcastPlaybin, Inner,
     api::{ExternalSubId, SubtitleFeedItem},
     decisions,
+    decisions::text_seat::TextEntryView,
     external::ExternalInput,
     flush::{FlowStage, FlushReason},
     hands,
@@ -55,15 +56,9 @@ const PARKED_TEXT_CUES: usize = 64;
 /// cost more than the fix.
 const PARKED_TEXT_REPLAY_WINDOW: Duration = Duration::from_secs(2);
 
-/// Cues handed to the consumer by [`Inner::take_parked_text_cues`], for
-/// tests (see [`FcastPlaybin::parked_text_cues_replayed`]).
-static PARKED_TEXT_CUES_REPLAYED: AtomicU64 = AtomicU64::new(0);
-
-/// Reader for [`PARKED_TEXT_CUES_REPLAYED`], for the `#[doc(hidden)]`
-/// accessor on [`FcastPlaybin`].
-pub(crate) fn parked_text_cues_replayed() -> u64 {
-    PARKED_TEXT_CUES_REPLAYED.load(Ordering::SeqCst)
-}
+/// Cues handed to the consumer by [`Inner::take_parked_text_cues`], read by
+/// tests through [`crate::GlobalStats`].
+pub(crate) static PARKED_TEXT_CUES_REPLAYED: AtomicU64 = AtomicU64::new(0);
 
 /// A byte counter on one input stream's parsed data, for bitrate
 /// inspection (see [`FcastPlaybin::stream_io_stats`]). The probe lives on
@@ -200,12 +195,6 @@ pub(crate) struct RoutedStream {
     /// ([`Inner::observed_seat_occupant`],
     /// [`Inner::subtitle_origin_matches_video`]).
     pub(crate) appsink: Option<gst::Element>,
-    /// The group id of the last STREAM_START this pad carried. An EOS on a
-    /// pad whose group is BEHIND the pipeline's active group belongs to a
-    /// previous item draining out during a gapless switch and is dropped
-    /// (uridecodebin3 keeps its gapless EOS drop open until every output
-    /// pad has flipped to the new group, this is the per-pad equivalent).
-    pub(crate) group: Option<gst::GroupId>,
     /// Text only. The link policy's dead-branch reclaim took this branch out
     /// because its pad carried no sticky segment with nothing left upstream to
     /// send one. While that stays true the entry must not relink (it holds the
@@ -286,6 +275,36 @@ pub(crate) struct RoutedStream {
     pub(crate) kind: StreamKind,
 }
 
+impl RoutedStream {
+    /// This entry as the text seat contest sees it (see
+    /// [`decisions::text_seat`]).
+    ///
+    /// `sid` is passed in rather than read here because the link loop needs the
+    /// stream id for its own reporting and both must come from ONE read: two
+    /// reads of a pad's sticky can straddle a STREAM_START and disagree about
+    /// which stream this entry carries.
+    pub(crate) fn text_view(
+        &self,
+        index: usize,
+        sid: Option<&str>,
+        allowed: Option<&str>,
+    ) -> TextEntryView {
+        TextEntryView {
+            index,
+            same_sid: allowed.is_some() && sid == allowed,
+            seated: self.downstream.is_some(),
+            superseded: self.superseded,
+            evicted_dead: self.evicted_dead,
+            saw_eos: self.saw_eos.load(Ordering::SeqCst),
+            has_segment: self
+                .db3_src_pad
+                .sticky_event::<gst::event::Segment>(0)
+                .is_some(),
+            flow: self.last_buffer.load(Ordering::Relaxed),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StreamKind {
     Video,
@@ -351,28 +370,85 @@ pub(crate) struct RoutingState {
     /// Routed streams. Text entries with `downstream: None` are parked
     /// awaiting the link policy (`poll_text_policy`).
     pub(crate) routed: Vec<RoutedStream>,
-    /// Stream ids of the VIDEO streams in the latest advertised collection
-    /// (cached by the bus translation, cleared per load). Lets
-    /// [`FcastPlaybin::select_streams`] tell a selection that DROPS video
-    /// entirely (video-chain deactivation needed) from a video-to-video
-    /// switch, whose new id is not routed yet and would otherwise look like
-    /// "no video".
-    pub(crate) collection_video_ids: Vec<String>,
     pub(crate) next_external_id: u64,
 }
 
-/// [`Inner::remove_input`] pads that got the flush pair, against those a
-/// quiescence probe let through with nothing.
-///
-/// SENT is the cost side - every send forwards downstream and briefly de-PLAYs
-/// both sinks - and it is nonzero on the default arm, because the skip that
-/// would have driven it to zero was measured to break the same-URL re-attach
-/// (see `Inner::remove_input`). SKIPPED only moves under
-/// `FCAST_REMOVE_INPUT_FLUSH_SKIP`. Both are here so the next attempt at the
-/// skip is measured rather than argued.
-static REMOVE_INPUT_PAIRS_SENT: AtomicU64 = AtomicU64::new(0);
+impl RoutingState {
+    /// The text seat contest's projection of the routed table, in routed
+    /// order, one row per TEXT entry (see [`decisions::text_seat`]).
+    ///
+    /// FORMED UNDER THE ROUTING LOCK AND DECIDED AFTER IT, the `refusals`
+    /// discipline applied to a decision: everything the four seat rules read
+    /// comes off this one walk, so no rule can answer against a table another
+    /// rule already changed, and none of them touches a pad or a lock.
+    ///
+    /// Rows keep their real `routed` index because two of the rules are ordered
+    /// on it and because the caller applies the verdict there.
+    pub(crate) fn text_seat_entries<'a>(
+        &'a self,
+        allowed: Option<&'a str>,
+    ) -> impl Iterator<Item = TextEntryView> + 'a {
+        self.routed
+            .iter()
+            .enumerate()
+            .filter(|(_, routed)| routed.kind == StreamKind::Text)
+            .map(move |(index, routed)| {
+                routed.text_view(index, routed.db3_src_pad.stream_id().as_deref(), allowed)
+            })
+    }
 
-static REMOVE_INPUT_PAIRS_SKIPPED: AtomicU64 = AtomicU64::new(0);
+    /// [`Self::text_seat_entries`] collected, for the rules that need the whole
+    /// table (ordering, freshest-of, all-of).
+    pub(crate) fn text_seat_view(&self, allowed: Option<&str>) -> Vec<TextEntryView> {
+        self.text_seat_entries(allowed).collect()
+    }
+
+    /// Every stream id belonging to an external (crate-attached) input.
+    ///
+    /// One walk, one lock hold, for callers that ask "is this sid ours" more
+    /// than once about the same report. Two holds can answer it two ways
+    /// across a concurrent attach or detach, and each `stream_ids()` call
+    /// allocates a `Vec<String>` per input.
+    pub(crate) fn external_stream_ids(&self) -> Vec<String> {
+        self.inputs
+            .iter()
+            .filter(|input| input.external.is_some())
+            .flat_map(|input| input.stream_ids())
+            .collect()
+    }
+
+    /// The attached external INCARNATION `(id, epoch)`, if it is still here.
+    ///
+    /// One walk, written once: every replay-side reader wants this exact pair
+    /// and an epoch mismatch is what makes a stale job inert (see
+    /// [`crate::external::ExternalInput::epoch`]).
+    pub(crate) fn external(&self, id: ExternalSubId, epoch: u32) -> Option<&ExternalInput> {
+        self.inputs
+            .iter()
+            .filter_map(|input| input.external.as_ref())
+            .find(|external| external.id == id && external.epoch == epoch)
+    }
+
+    /// [`Self::external`] for the writers of the per-resource replay state.
+    pub(crate) fn external_mut(
+        &mut self,
+        id: ExternalSubId,
+        epoch: u32,
+    ) -> Option<&mut ExternalInput> {
+        self.inputs
+            .iter_mut()
+            .filter_map(|input| input.external.as_mut())
+            .find(|external| external.id == id && external.epoch == epoch)
+    }
+}
+
+/// [`Inner::remove_input`] pads that got the flush pair.
+///
+/// The cost side: every send forwards downstream and briefly de-PLAYs both
+/// sinks, and it is nonzero because the quiescence skip that would have driven
+/// it to zero was measured to break the same-URL re-attach (see
+/// `Inner::remove_input`).
+pub(crate) static REMOVE_INPUT_PAIRS_SENT: AtomicU64 = AtomicU64::new(0);
 
 impl Inner {
     /// urisourcebin configured the way uridecodebin3 configures its source
@@ -485,7 +561,7 @@ impl Inner {
             .map(|c| c.db3.clone())
             .ok_or_else(|| anyhow!("no dynamic core"))?;
         // A held external's buffers must never reach decodebin3 while its
-        // stream is deselected (see `ExternalInput::hold_until_selected`).
+        // stream is deselected (see `Hold::UntilSelected`).
         // Installed BEFORE the link so no buffer can slip through: this runs
         // on the element's streaming thread ahead of any push through `pad`.
         Inner::block_held_external_pad(inner, element, pad);
@@ -515,82 +591,80 @@ impl Inner {
         // the pad's own streaming thread (serialized events must not come from
         // anywhere else) and BEFORE the EOS, since nothing may follow that. The
         // nested push is legal on the recursive stream lock.
-        // Lever: `FCAST_NO_EMPTY_STREAM_SLOT_SEED`.
-        if std::env::var_os("FCAST_NO_EMPTY_STREAM_SLOT_SEED").is_none() {
-            let produced = AtomicBool::new(false);
-            pad.add_probe(
-                gst::PadProbeType::BUFFER
-                    | gst::PadProbeType::BUFFER_LIST
-                    | gst::PadProbeType::EVENT_DOWNSTREAM,
-                move |pad, info| {
-                    match &info.data {
-                        Some(gst::PadProbeData::Buffer(_) | gst::PadProbeData::BufferList(_)) => {
-                            produced.store(true, Ordering::Relaxed);
-                        }
-                        Some(gst::PadProbeData::Event(event)) => match event.view() {
-                            // A GAP slots the stream by itself, so the seeding
-                            // is owed only where neither ever arrives.
-                            gst::EventView::Gap(_) => produced.store(true, Ordering::Relaxed),
-                            // `swap` rather than a load, so a second EOS cannot
-                            // seed twice. A slot survives a flush, so nothing
-                            // resets this.
-                            gst::EventView::Eos(_) if !produced.swap(true, Ordering::Relaxed) => {
-                                debug!(
-                                    pad = %pad.name(),
-                                    "an input stream ended without ever producing data; \
-                                     seeding its decodebin3 slot so it cannot strand the item"
-                                );
-                                Inner::seed_slot_for_held_pad(pad, None);
-                            }
-                            _ => {}
-                        },
-                        _ => {}
+        let produced = AtomicBool::new(false);
+        // WEAK for the same reason the held-external probe is (see
+        // [`Inner::block_held_external_pad`]).
+        let seed_weak = Arc::downgrade(inner);
+        pad.add_probe(
+            gst::PadProbeType::BUFFER
+                | gst::PadProbeType::BUFFER_LIST
+                | gst::PadProbeType::EVENT_DOWNSTREAM,
+            move |pad, info| {
+                match &info.data {
+                    Some(gst::PadProbeData::Buffer(_) | gst::PadProbeData::BufferList(_)) => {
+                        produced.store(true, Ordering::Relaxed);
                     }
-                    gst::PadProbeReturn::Ok
-                },
-            );
-        }
+                    Some(gst::PadProbeData::Event(event)) => match event.view() {
+                        // A GAP slots the stream by itself, so the seeding
+                        // is owed only where neither ever arrives.
+                        gst::EventView::Gap(_) => produced.store(true, Ordering::Relaxed),
+                        // `swap` rather than a load, so a second EOS cannot
+                        // seed twice. A slot survives a flush, so nothing
+                        // resets this.
+                        gst::EventView::Eos(_) if !produced.swap(true, Ordering::Relaxed) => {
+                            debug!(
+                                pad = %pad.name(),
+                                "an input stream ended without ever producing data; \
+                                 seeding its decodebin3 slot so it cannot strand the item"
+                            );
+                            if let Some(inner) = seed_weak.upgrade() {
+                                inner.seed_slot_for_held_pad(pad, None);
+                            }
+                        }
+                        _ => {}
+                    },
+                    _ => {}
+                }
+                gst::PadProbeReturn::Ok
+            },
+        );
 
         // Record input-side stream ends for the drained-resurrect park (see
         // `Inner::input_eos_sids`). EOS marks the stream drained, FLUSH_STOP
         // marks it restarted. A seek only flushes the streams it actually
         // restarts (a per-stream source leaves a deselected stream's pad
-        // untouched), so the flag self-maintains across seeks. Installed
-        // only while the park's lever is unset, so the lever restores the
-        // untracked behavior wholesale.
-        if std::env::var_os("FCAST_NO_DRAINED_RESURRECT_PARK").is_none() {
-            pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, {
-                let weak = Arc::downgrade(inner);
-                move |pad, info| {
-                    let Some(gst::PadProbeData::Event(event)) = &info.data else {
-                        return gst::PadProbeReturn::Ok;
-                    };
-                    let drained = match event.view() {
-                        gst::EventView::Eos(_) => true,
-                        gst::EventView::FlushStop(_) => false,
-                        _ => return gst::PadProbeReturn::Ok,
-                    };
-                    let Some(inner) = weak.upgrade() else {
-                        return gst::PadProbeReturn::Ok;
-                    };
-                    let Some(sid) = pad
-                        .sticky_event::<gst::event::StreamStart>(0)
-                        .map(|event| event.stream_id().to_string())
-                    else {
-                        return gst::PadProbeReturn::Ok;
-                    };
-                    let mut drained_sids = inner.input_eos_sids.lock();
-                    if drained {
-                        debug!(%sid, "input stream drained (EOS into decodebin3)");
-                        drained_sids.insert(sid);
-                    } else {
-                        debug!(%sid, "input stream restarted by a flush");
-                        drained_sids.remove(&sid);
-                    }
-                    gst::PadProbeReturn::Ok
+        // untouched), so the flag self-maintains across seeks.
+        pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, {
+            let weak = Arc::downgrade(inner);
+            move |pad, info| {
+                let Some(gst::PadProbeData::Event(event)) = &info.data else {
+                    return gst::PadProbeReturn::Ok;
+                };
+                let drained = match event.view() {
+                    gst::EventView::Eos(_) => true,
+                    gst::EventView::FlushStop(_) => false,
+                    _ => return gst::PadProbeReturn::Ok,
+                };
+                let Some(inner) = weak.upgrade() else {
+                    return gst::PadProbeReturn::Ok;
+                };
+                let Some(sid) = pad
+                    .sticky_event::<gst::event::StreamStart>(0)
+                    .map(|event| event.stream_id().to_string())
+                else {
+                    return gst::PadProbeReturn::Ok;
+                };
+                let mut drained_sids = inner.input_eos_sids.lock();
+                if drained {
+                    debug!(%sid, "input stream drained (EOS into decodebin3)");
+                    drained_sids.insert(sid);
+                } else {
+                    debug!(%sid, "input stream restarted by a flush");
+                    drained_sids.remove(&sid);
                 }
-            });
-        }
+                gst::PadProbeReturn::Ok
+            }
+        });
 
         if !Inner::record_linked_input_pad(inner, element, pad, sinkpad.clone()) {
             // Only reachable for an input already removed (detach racing a
@@ -638,10 +712,7 @@ impl Inner {
         // (`pad-added`), where the policy's bin surgery must never run, and the
         // request is coalesced (see `Inner::request_text_policy_poll`), so an
         // input exposing many pads at once costs one job.
-        // Lever: `FCAST_NO_INPUT_PAD_TEXT_POLL`.
-        if std::env::var_os("FCAST_NO_INPUT_PAD_TEXT_POLL").is_none() {
-            Inner::request_text_policy_poll(inner);
-        }
+        Inner::request_text_policy_poll(inner);
         Ok(())
     }
 
@@ -780,15 +851,13 @@ impl Inner {
     /// pinned adaptive-demuxer output loop, which is the whole reason the park
     /// exists; keeping a copy of a cue must not cost that.
     ///
-    /// `FCAST_NO_PARKED_TEXT_REPLAY` falls back to the discarding park, which
-    /// is the A/B partner for the assertion in `dash_testbed.rs`.
+    /// The park KEEPS unconditionally. A discarding park is the field bug
+    /// "subtitles start a few seconds in": the cues consumed between routing
+    /// and the branch's join have no second copy anywhere.
     pub(crate) fn park_text_stream(
         self: &Arc<Self>,
         source: &gst::Pad,
     ) -> Result<(gst::Element, gst::Pad)> {
-        if std::env::var_os("FCAST_NO_PARKED_TEXT_REPLAY").is_some() {
-            return self.park_stream(source);
-        }
         let sink = gst_app::AppSink::builder()
             .name(format!("fpb-textpark-{}", source.name()))
             .sync(false)
@@ -797,7 +866,6 @@ impl Inner {
             .max_buffers(PARKED_TEXT_CUES as u32)
             .enable_last_sample(false)
             .build();
-        sink.unset_element_flags(gst::ElementFlags::SINK);
 
         // Keyed by the PAD, not the stream id: the join reads the same key off
         // the same pad, and a pad outlives the moments where a stream id is
@@ -847,17 +915,7 @@ impl Inner {
                 .build(),
         );
 
-        let sink: gst::Element = sink.upcast();
-        self.pipeline
-            .add(&sink)
-            .context("adding the text parking sink")?;
-        sink.sync_state_with_parent()
-            .context("syncing the text parking sink")?;
-        let pad = sink.static_pad("sink").expect("appsink has a sink pad");
-        source
-            .link(&pad)
-            .context("linking text into its parking sink")?;
-        Ok((sink, pad))
+        self.install_parking_sink(sink.upcast(), source)
     }
 
     /// Take what the park kept, for a text stream that has just joined its
@@ -938,12 +996,10 @@ impl Inner {
             .filter(|(_, at)| {
                 first_join || now.saturating_duration_since(*at) <= PARKED_TEXT_REPLAY_WINDOW
             })
-            .filter_map(|(sample, _)| Inner::item_from_sample(&sample, self.bitmap_subs))
+            .filter_map(|(sample, _)| Inner::item_from_sample(&sample))
             .filter(|item| match item {
                 SubtitleFeedItem::Cue { origin, .. }
-                    if redeliverable
-                        && *origin != video_origin
-                        && !Inner::misaligned_cue_gate_off() =>
+                    if redeliverable && *origin != video_origin =>
                 {
                     dropped_misaligned += 1;
                     false
@@ -963,7 +1019,7 @@ impl Inner {
             Self::report_an_empty_park(pad, held);
         }
         if !items.is_empty() {
-            PARKED_TEXT_CUES_REPLAYED.fetch_add(items.len() as u64, Ordering::SeqCst);
+            PARKED_TEXT_CUES_REPLAYED.fetch_add(items.len() as u64, Ordering::Relaxed);
             // Arm the branch's entry probe to let its own STREAM_START pass
             // without clearing what is about to be handed over.
             self.suppress_text_clear
@@ -985,7 +1041,7 @@ impl Inner {
     /// capture and it cost this defect a whole round of misattribution: the
     /// park can be empty because nothing ever crossed the pad, or because
     /// everything that crossed it is stuck in decodebin3's single queue
-    /// behind a LATCHED slot (see [`Inner::bring_up_parking_sink`]), and in
+    /// behind a LATCHED slot (see [`Inner::retire_parking_sink`]), and in
     /// the second case the heal that runs microseconds later
     /// destroys it. `held` separates "kept nothing" from "kept only
     /// unshowable records" (a zero-length twin is kept and correctly
@@ -993,7 +1049,7 @@ impl Inner {
     /// reachable".
     ///
     /// Debug, one line per join, no counter: the counters that matter
-    /// (`JOINS_INTO_AN_INACTIVE_BRANCH`, [`FcastPlaybin::slot_unlatches`])
+    /// (`JOINS_INTO_AN_INACTIVE_BRANCH`, `SLOT_UNLATCHES`)
     /// already exist and this line is what makes them readable together.
     fn report_an_empty_park(pad: &gst::Pad, held: usize) {
         debug!(
@@ -1090,30 +1146,25 @@ impl Inner {
     /// fail** with this one (the failures spread across three tests of the
     /// attach/seek family, whose subject is precisely cues in flight). This
     /// version does not touch what the park consumes.
-    ///
-    /// Lever: `FCAST_NO_WAITFREE_UNPARK` restores the bare `set_state(NULL)`,
-    /// which is the A/B partner for `multiqueue_slot_unlatch`'s park tests.
     pub(crate) fn retire_parking_sink(sink: &gst::Element) {
-        if std::env::var_os("FCAST_NO_WAITFREE_UNPARK").is_none() {
-            let _ = sink.set_state(gst::State::Playing);
-            // THE BARRIER, and without it the fix is a coin toss.
-            //
-            // PAUSED -> PLAYING only BROADCASTS the preroll condition; the
-            // parked thread still has to be scheduled and re-take the preroll
-            // lock, and `gst_base_sink_wait_preroll` re-reads `sink->flushing`
-            // when it gets there. Racing straight on to the NULL below sets
-            // that flag first often enough to matter, measured directly on
-            // `multiqueue_slot_unlatch`'s park rig, which read the slot LATCHED
-            // on the run where the NULL won.
-            //
-            // Taking the sink pad's stream lock and dropping it again is the
-            // wait for that thread and nothing else: the pad is already
-            // unlinked (see [`Inner::unpark_stream_for_join`]) so no new chain
-            // call can start, and the one in flight is a `sync=false` render
-            // at PLAYING. Bounded by a buffer, not by a clock.
-            if let Some(pad) = sink.static_pad("sink") {
-                drop(pad.stream_lock());
-            }
+        let _ = sink.set_state(gst::State::Playing);
+        // THE BARRIER, and without it the fix is a coin toss.
+        //
+        // PAUSED -> PLAYING only BROADCASTS the preroll condition; the
+        // parked thread still has to be scheduled and re-take the preroll
+        // lock, and `gst_base_sink_wait_preroll` re-reads `sink->flushing`
+        // when it gets there. Racing straight on to the NULL below sets
+        // that flag first often enough to matter, measured directly on
+        // `multiqueue_slot_unlatch`'s park rig, which read the slot LATCHED
+        // on the run where the NULL won.
+        //
+        // Taking the sink pad's stream lock and dropping it again is the
+        // wait for that thread and nothing else: the pad is already
+        // unlinked (see [`Inner::unpark_stream_for_join`]) so no new chain
+        // call can start, and the one in flight is a `sync=false` render
+        // at PLAYING. Bounded by a buffer, not by a clock.
+        if let Some(pad) = sink.static_pad("sink") {
+            drop(pad.stream_lock());
         }
         let _ = sink.set_state(gst::State::Null);
     }
@@ -1128,20 +1179,36 @@ impl Inner {
             .property("enable-last-sample", false)
             .build()
             .context("creating a text parking sink")?;
-        // Keep it out of everything GstBin routes through SINK-flagged
-        // children (the `fpb-token-sink` treatment, for the same class of
-        // reason). An unsynced parking sink consumes at multiqueue speed, so
-        // it races toward the item's end: in the bin's POSITION fold (MAX over
-        // the flagged children) it can dominate the answer, and a `-1`
-        // DURATION from it poisons the duration fold entirely.
+        self.install_parking_sink(sink, source)
+    }
+
+    /// The tail both parks share: keep the sink out of GstBin's folds, add it,
+    /// bring it up, and link the source pad into it. The callers differ only
+    /// in the sink they build (a discarding fakesink, or the appsink that
+    /// keeps what it consumes).
+    ///
+    /// The flag unset keeps it out of everything GstBin routes through
+    /// SINK-flagged children (the `fpb-token-sink` treatment, for the same
+    /// class of reason). An unsynced parking sink consumes at multiqueue
+    /// speed, so it races toward the item's end: in the bin's POSITION fold
+    /// (MAX over the flagged children) it can dominate the answer, and a `-1`
+    /// DURATION from it poisons the duration fold entirely.
+    ///
+    /// `source` is the decodebin3 text pad itself (text bypasses ssync).
+    fn install_parking_sink(
+        &self,
+        sink: gst::Element,
+        source: &gst::Pad,
+    ) -> Result<(gst::Element, gst::Pad)> {
         sink.unset_element_flags(gst::ElementFlags::SINK);
         self.pipeline
             .add(&sink)
             .context("adding the text parking sink")?;
         sink.sync_state_with_parent()
             .context("syncing the text parking sink")?;
-        let pad = sink.static_pad("sink").expect("fakesink has a sink pad");
-        // `source` is the decodebin3 text pad itself (text bypasses ssync).
+        let pad = sink
+            .static_pad("sink")
+            .expect("a parking sink has a sink pad");
         source
             .link(&pad)
             .context("linking text into its parking sink")?;
@@ -1216,6 +1283,17 @@ impl Inner {
     /// flush complete there. That holds only because those paths make the
     /// state change BEFORE they block; see [`FcastPlaybin::teardown`], where it
     /// used to come last and wedged the worker for exactly this reason.
+    /// Whether a routed pad's stream id is one of `sids` (an input's own
+    /// streams, from [`Input::stream_ids`]).
+    ///
+    /// Compared as `&str`. The `sids.contains(&sid.to_string())` this replaces
+    /// allocated a String per routed entry per scan, and the removal path
+    /// scans the whole routed list three times with the routing lock held.
+    pub(crate) fn pad_sid_in(pad: &gst::Pad, sids: &[String]) -> bool {
+        pad.stream_id()
+            .is_some_and(|sid| sids.iter().any(|s| s.as_str() == sid.as_str()))
+    }
+
     pub(crate) fn remove_input_or_defer(inner: &Arc<Inner>, input: Input) {
         // A text branch of THIS input live in the graph is one way to leave
         // the slot's multiqueue task stuck inside the branch's tail, which is
@@ -1232,10 +1310,7 @@ impl Inner {
             routing.routed.iter().any(|routed| {
                 routed.kind == StreamKind::Text
                     && routed.downstream.is_some()
-                    && routed
-                        .db3_src_pad
-                        .stream_id()
-                        .is_some_and(|sid| sids.contains(&sid.to_string()))
+                    && Self::pad_sid_in(&routed.db3_src_pad, &sids)
             })
         };
         // A branch of THIS input is not the only thing that can hold the
@@ -1256,13 +1331,10 @@ impl Inner {
         // The drain is ordered to match: `Inner::run_deferred_text_work` runs
         // the disposals before the input removals, so by the time this removal
         // is retried the queue that blocked it is gone.
-        //
-        // `FCAST_NO_DISPOSAL_AWARE_DETACH_DEFERRAL` restores the old predicate.
-        let disposal_pending = !inner.deferred_text_disposal.lock().is_empty()
-            && std::env::var_os("FCAST_NO_DISPOSAL_AWARE_DETACH_DEFERRAL").is_none();
+        let disposal_pending = !inner.deferred_text_disposal.lock().is_empty();
         if (has_live_text || disposal_pending)
             && Inner::resting_paused(&inner.pipeline)
-            && std::env::var_os("FCAST_NO_TEXT_WORK_DEFERRAL").is_none()
+            && !inner.stage_text_work_deferral_off()
         {
             debug!(
                 generation = input.generation,
@@ -1277,28 +1349,40 @@ impl Inner {
         }
     }
 
-    pub(crate) fn remove_input(inner: &Arc<Inner>, input: Input) {
+    /// Take one input out of the graph. Six phases, strictly ordered: each
+    /// helper carries the comments saying what its order buys.
+    pub(crate) fn remove_input(inner: &Arc<Inner>, mut input: Input) {
         // Read before the fields below are moved out of `input`.
         let sids = input.stream_ids();
-        // EPOCH RETIREMENT for the reconcile pass's in-flight bit. Every
-        // removal path funnels here - the gapless reap of drained inputs, a
-        // user detach, a failed external, a cancelled prepare, the re-attach
-        // retry - so this is the one place that cannot be forgotten. An entry
-        // whose input is gone is dead weight that never discharges: it grows
-        // without bound across a long session and, if the id is ever reused at
-        // the same epoch, silences the pass for a live external. See
-        // [`Inner::replay_inflight`].
+        Self::retire_external_bookkeeping(inner, &input);
+        Self::silence_leaving_input(&mut input);
+        Self::detach_own_text_branches(inner, &sids);
+        Self::flush_leaving_db3_sinks(&input);
+        Self::null_and_release_input(inner, &input);
+        Self::census_remaining_after_removal(inner, &sids);
+    }
+
+    /// Phase 1: the external bookkeeping that does NOT die with the input.
+    fn retire_external_bookkeeping(inner: &Arc<Inner>, input: &Input) {
+        // The replay bookkeeping needs no retirement here: it lives ON the
+        // resource this call is dropping (see
+        // [`crate::external::ExternalInput::replay_inflight`]). Only the two
+        // things that DO NOT die with it are settled.
         if let Some(external) = input.external.as_ref() {
-            inner
-                .replay_inflight
-                .lock()
-                .remove(&(external.id, external.epoch));
             // The delivery-evidence count dies with the input: a re-attach
             // under the same id starts at a zero baseline, and stale counts
             // would satisfy its verification with the OLD tenure's cues.
             inner.external_cues_fed.lock().remove(&external.id);
+            // The cue gate is keyed by id alone, so it cannot see the epoch
+            // leave. Re-project it with this input already out of routing.
+            inner.sync_cue_gate(&inner.routing.lock(), external.id);
         }
-        if let Some(sig) = input.pad_added_sig {
+    }
+
+    /// Phase 2: stop the leaving input feeding anything, and take back its
+    /// probes and signal handler, before any graph surgery.
+    fn silence_leaving_input(input: &mut Input) {
+        if let Some(sig) = input.pad_added_sig.take() {
             input.element.disconnect(sig);
         }
         // DROP everything this input still pushes, BEFORE the flush and the
@@ -1316,23 +1400,20 @@ impl Inner {
         // A push probe returns GST_FLOW_OK before the peer is ever looked up
         // (gstpad.c runs them first), so from here the input pushes into the
         // void harmlessly. Nothing is lost: this input is leaving and goes to
-        // NULL a few lines down. Never removed, the pads die with the element.
+        // NULL in phase 5. Never removed, the pads die with the element.
         // Buffers only, so the flush pair and EOS below still travel.
-        // Lever: `FCAST_NO_INPUT_DROP_ON_REMOVE`.
         let guard_pads: Vec<gst::Pad> = input.taps.iter().map(|tap| tap.pad.clone()).collect();
-        if std::env::var_os("FCAST_NO_INPUT_DROP_ON_REMOVE").is_none() {
-            debug!(
-                pads = ?guard_pads.iter().map(|pad| pad.name().to_string()).collect::<Vec<_>>(),
-                "dropping the leaving input's data before its decodebin3 chain is taken apart"
+        debug!(
+            pads = ?guard_pads.iter().map(|pad| pad.name().to_string()).collect::<Vec<_>>(),
+            "dropping the leaving input's data before its decodebin3 chain is taken apart"
+        );
+        for pad in &guard_pads {
+            pad.add_probe(
+                gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+                |_pad, _info| gst::PadProbeReturn::Drop,
             );
-            for pad in &guard_pads {
-                pad.add_probe(
-                    gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
-                    |_pad, _info| gst::PadProbeReturn::Drop,
-                );
-            }
         }
-        for mut tap in input.taps {
+        for mut tap in std::mem::take(&mut input.taps) {
             if let Some(probe) = tap.probe.take() {
                 tap.pad.remove_probe(probe);
             }
@@ -1343,12 +1424,17 @@ impl Inner {
         // A cancelled prepare's block probes (a performed swap clears the
         // list itself). Any thread parked inside one was already woken and
         // flushed by the swap gate abort that precedes this removal.
-        for (pad, probe) in input.block_probes {
+        for (pad, probe) in std::mem::take(&mut input.block_probes) {
             pad.remove_probe(probe);
         }
         // A still-locked prepared input unlocks on its way out (harmless
         // for ordinary inputs).
         input.element.set_locked_state(false);
+    }
+
+    /// Phase 3: this input's own text branches leave the graph before the
+    /// flush pair below.
+    fn detach_own_text_branches(inner: &Arc<Inner>, sids: &[String]) {
         // This input's OWN text branches come out of the graph before the
         // flush below. A `FLUSH_START` on a decodebin3 sink pad does not stop
         // at the slot: gstpad forwards it through parsebin and multiqueue, out
@@ -1369,12 +1455,8 @@ impl Inner {
             routing
                 .routed
                 .iter_mut()
-                .filter(|routed| routed.kind == StreamKind::Text)
                 .filter(|routed| {
-                    routed
-                        .db3_src_pad
-                        .stream_id()
-                        .is_some_and(|sid| sids.contains(&sid.to_string()))
+                    routed.kind == StreamKind::Text && Self::pad_sid_in(&routed.db3_src_pad, &sids)
                 })
                 .filter_map(|routed| {
                     let downstream = routed.downstream.take()?;
@@ -1395,12 +1477,17 @@ impl Inner {
         for (db3_src_pad, downstream, tqueue, appsink) in text_parts {
             Inner::detach_text_parts(inner, &db3_src_pad, &downstream, tqueue, appsink, false);
         }
-        // The upstream unlink moves ABOVE the pair, and the pair is sent
-        // only where a push is actually parked.
+    }
+
+    /// Phase 4: the upstream unlink, then the flush pair on every decodebin3
+    /// sink pad this input holds.
+    fn flush_leaving_db3_sinks(input: &Input) {
+        // The upstream unlink moves ABOVE the pair, and the pair goes out on
+        // EVERY pad.
         //
-        // WHAT THE PAIR IS FOR, unchanged: a mid-push input's streaming thread
-        // parked inside its decodebin3 slot holds its own pad locks, and the
-        // NULL below deadlocks on them, which wedged the worker. Only a flush
+        // WHAT THE PAIR IS FOR: a mid-push input's streaming thread parked
+        // inside its decodebin3 slot holds its own pad locks, and the NULL
+        // below deadlocks on them, which wedged the worker. Only a flush
         // releases that push, and waiting would not.
         //
         // WHAT IT COSTS when nothing is parked: a `FLUSH_START` on a
@@ -1412,18 +1499,12 @@ impl Inner {
         // de-PLAYs the whole pipeline to wake a push that, in the common case,
         // was never parked at all.
         //
-        // So: unlink first (a) so no source can refill the slot and re-park
-        // between a FLUSH_STOP and the NULL - the campaign-5 shape documented
-        // at `Teardown::run` - and (b) so "at most one push can be in flight
-        // per pad" holds, which is what makes the probe below stable rather
-        // than a TOCTOU. `gst_pad_unlink` takes no stream lock, so it is safe
-        // at any state. `release_request_pad` stays BELOW the NULL.
-        // # THE QUIESCENCE SKIP IS OPT-IN, BECAUSE IT WAS MEASURED WRONG
+        // # SKIPPING THE PAIR ON A QUIESCENT PAD WAS MEASURED WRONG
         //
-        // Skipping the pair whenever no
-        // push is parked, on the reasoning that the pair exists ONLY to wake
-        // one. That reasoning is false, and the counter-evidence is
-        // deterministic: with the skip on,
+        // The obvious economy is to skip the pair whenever no push is parked,
+        // on the reasoning that the pair exists ONLY to wake one. That
+        // reasoning is false, and the counter-evidence is deterministic: with
+        // the skip on,
         // `external_subtitle_lifecycle::reattaching_the_same_url_after_a_detach_renders_again`
         // and `..._while_paused_renders_after_resume` both fail on "no DUPE
         // cue reached the renderer", 2 of 2, and pass 2 of 2 with the pair
@@ -1437,54 +1518,40 @@ impl Inner {
         // part of what makes decodebin3 retire the leaving input's src pads
         // promptly (`release_request_pad` -> `gst_decodebin_input_reset` sets
         // parsebin to NULL, and a parsebin whose push is parked deeper in the
-        // multiqueue cannot get there until something flushes). And the
-        // trylock is the wrong question for that: it reads THIS pad's stream
-        // lock, which says nothing about a thread parked further inside
-        // decodebin3. So the de-PLAY survives, and removing it needs
-        // a mechanism that retires the slot, not a better quiescence probe.
+        // multiqueue cannot get there until something flushes). And a trylock
+        // is the wrong question for that: it reads THIS pad's stream lock,
+        // which says nothing about a thread parked further inside decodebin3.
+        // So the de-PLAY survives, and removing it needs a mechanism that
+        // retires the slot, not a better quiescence probe.
         //
-        // The gate stays reachable so the next attempt starts from a running
-        // instrument rather than from this comment.
-        // Levers: `FCAST_NO_REMOVE_INPUT_FLUSH_SKIP` restores v1 wholesale
-        // (old order, unconditional pair); `FCAST_REMOVE_INPUT_FLUSH_SKIP`
-        // turns the measured-wrong skip back on.
-        let v1_order = std::env::var_os("FCAST_NO_REMOVE_INPUT_FLUSH_SKIP").is_some();
-        let try_skip = !v1_order && std::env::var_os("FCAST_REMOVE_INPUT_FLUSH_SKIP").is_some();
-        // The upstream unlink moves ABOVE the pair. This half IS shipped: it
-        // closes the campaign-5 refill race at this site (a FLUSH_STOP re-arms
-        // the pad and an as-fast-as-possible source refills the slot and
-        // re-parks before the NULL below - the shape `Teardown::run`
-        // documents), and it guarantees "at most one push in flight per pad",
-        // which is what any future skip predicate will need. Measured neutral:
+        // The unlink above the pair IS shipped on its own merits: it closes
+        // the campaign-5 refill race at this site (a FLUSH_STOP re-arms the
+        // pad and an as-fast-as-possible source refills the slot and re-parks
+        // before the NULL below - the shape `Teardown::run` documents), and it
+        // guarantees "at most one push in flight per pad". Measured neutral:
         // with the pair still sent, external_subtitle_lifecycle is 19/19.
         // `gst_pad_unlink` takes no stream lock, so it is safe at any state.
         // `release_request_pad` stays BELOW the NULL.
-        if !v1_order {
-            for db3_sink in &input.db3_sink_pads {
-                if let Some(peer) = db3_sink.peer() {
-                    let _ = peer.unlink(db3_sink);
-                }
+        for db3_sink in &input.db3_sink_pads {
+            if let Some(peer) = db3_sink.peer() {
+                let _ = peer.unlink(db3_sink);
             }
         }
         for db3_sink in &input.db3_sink_pads {
-            if try_skip && Self::pad_is_quiescent(db3_sink) {
-                REMOVE_INPUT_PAIRS_SKIPPED.fetch_add(1, Ordering::SeqCst);
-                debug!(
-                    pad = %db3_sink.name(),
-                    "no push is parked on the leaving input's pad; skipping the flush pair \
-                     (FCAST_REMOVE_INPUT_FLUSH_SKIP, measured to break the same-URL re-attach)"
-                );
-                continue;
-            }
             // A mid-push input's streaming thread is parked inside its
             // decodebin3 slot HOLDING ITS OWN PAD LOCKS, and the NULL below
             // deadlocks on them, which wedged the worker. The
             // BARE pair, deliberately: a segment replay here regressed the
             // external-subtitle reattach path, and this window closes at the
             // NULL below anyway (see `Inner::flush_db3_sink_pads`).
-            REMOVE_INPUT_PAIRS_SENT.fetch_add(1, Ordering::SeqCst);
+            REMOVE_INPUT_PAIRS_SENT.fetch_add(1, Ordering::Relaxed);
             Self::send_flush_pair(db3_sink, FlushReason::RemoveInput);
         }
+    }
+
+    /// Phase 5: the element to NULL, its request pads released, and the
+    /// element out of the pipeline.
+    fn null_and_release_input(inner: &Arc<Inner>, input: &Input) {
         // Losing the state change here is fine, the element is leaving.
         let _ = input.element.set_state(gst::State::Null);
         for db3_sink in &input.db3_sink_pads {
@@ -1498,6 +1565,10 @@ impl Inner {
             }
         }
         let _ = inner.pipeline.remove(&input.element);
+    }
+
+    /// Phase 6: the flow census over what the removal LEAVES BEHIND.
+    fn census_remaining_after_removal(inner: &Arc<Inner>, sids: &[String]) {
         // Cluster (c) of the four surgery sites. The pair above does NOT stop
         // at the slot - gstpad forwards it out of decodebin3's src pads and
         // downstream - so the pads worth reading are the ones this removal
@@ -1509,12 +1580,7 @@ impl Inner {
             routing
                 .routed
                 .iter()
-                .filter(|routed| {
-                    !routed
-                        .db3_src_pad
-                        .stream_id()
-                        .is_some_and(|sid| sids.contains(&sid.to_string()))
-                })
+                .filter(|routed| !Self::pad_sid_in(&routed.db3_src_pad, &sids))
                 .flat_map(|routed| {
                     std::iter::once(routed.db3_src_pad.clone()).chain(routed.downstream.clone())
                 })
@@ -1541,6 +1607,30 @@ impl Inner {
                 warn!(?err, pad = %pad.name(), "failed to route deferred pad");
             }
         }
+    }
+
+    /// What [`Inner::route_db3_pad`] does with a video pad, read once from the
+    /// mirrors and the pad's own sticky stream-start (see
+    /// [`decisions::route::VideoRoute`] for what each arm answers).
+    ///
+    /// Video only. The four mirrors are per-item video state and no other
+    /// kind consults them, so the reads stay off the audio and text paths.
+    fn video_disposition(inner: &Arc<Inner>, pad: &gst::Pad) -> decisions::route::VideoRoute {
+        let sticky = pad.sticky_event::<gst::event::StreamStart>(0);
+        let group = sticky.as_ref().and_then(|event| event.group_id());
+        let sid = sticky.map(|event| event.stream_id().to_string());
+        let facts = decisions::route::VideoFacts {
+            deselected: inner.video_deselected.load(Ordering::SeqCst),
+            stage_route_deselected: inner.stage_route_deselected_video(),
+            group_passing: group.is_some() && group == *inner.passing_eos_group.lock(),
+            input_drained: sid
+                .as_ref()
+                .is_some_and(|sid| inner.input_eos_sids.lock().contains(sid)),
+            rerouted: inner.video_unrouted_once.load(Ordering::SeqCst),
+        };
+        let route = decisions::route::video_route(facts);
+        debug!(pad = %pad.name(), ?sid, ?facts, ?route, "video route decision");
+        route
     }
 
     /// Route a decodebin3 output pad through streamsynchronizer into its
@@ -1626,9 +1716,6 @@ impl Inner {
         // dance needs it visible the moment `send_event(SELECT_STREAMS)`
         // returns, and this function also runs inline on `fpb-select` when
         // decodebin3 exposes the pad inside that send.
-        //
-        // Lever: `FCAST_INLINE_CHAIN_JOIN`.
-        let deferred_join = std::env::var_os("FCAST_INLINE_CHAIN_JOIN").is_none();
 
         // Request a streamsynchronizer sink/src pair and link `pad` into it.
         // A/V only, TEXT bypasses ssync entirely (see `RoutedStream`).
@@ -1646,145 +1733,63 @@ impl Inner {
             Ok((sink, src))
         };
 
-        // Set by the A/V arms when the chain's activation was deferred. The
-        // job is sent at the very END of this function, once the routing entry
-        // exists: `run_chain_join` refuses a join whose stream is no longer
-        // routed, and the entry is pushed below.
+        // Set by the A/V arms, which are the ones that defer an activation.
+        // The job is sent at the very END of this function, once the routing
+        // entry exists: `run_chain_join` refuses a join whose stream is no
+        // longer routed, and the entry is pushed below.
         let mut queue_join = false;
         let mut join_hold: Option<(gst::Pad, gst::PadProbeId)> = None;
 
         let (ssync_sink, ssync_src, downstream, park_pad, park_sink) = match kind {
-            // A video pad appearing while the crate's last dispatched
-            // selection turned video OFF is decodebin3's collection-default
-            // auto-select resurrecting the deselected stream (an attach
-            // makes it re-select over the applied state). Rebuilding the
-            // chain for it drops the pipeline into an async re-preroll that
-            // the deselected stream may never feed again, and that
-            // unfinished transition holds the receiver's pump gate closed
-            // forever, so the engine's corrective re-assert can never run
-            // (fuzz_buffering seed 300002, campaign 5). Park the pad the way
-            // text parks instead. The parking sink consumes the stream
-            // without any async element, the pipeline stays settled, the
-            // engine notices the divergence and re-asserts on the next
-            // pump, and decodebin3 drops the pad again. A genuine re-enable
-            // flips the dispatched intent before its selection reaches
-            // decodebin3, so it takes the rebuild arm below. The lever
-            // restores the unconditional rebuild and gates this whole
-            // change (the mirror it reads is inert without this read).
-            StreamKind::Video
-                if inner.video_deselected.load(Ordering::SeqCst)
-                    && std::env::var_os("FCAST_ROUTE_DESELECTED_VIDEO").is_none() =>
-            {
-                info!(
-                    pad = %pad.name(),
-                    "parking a resurrected video pad the dispatched selection has off"
-                );
-                let (sink, park) = inner.park_stream(pad)?;
-                (None, None, None, Some(park), Some(sink))
-            }
-            // A video pad re-routed for a group whose end has already
-            // entered streamsynchronizer cannot preroll a fresh chain. The
-            // stream's own end was consumed before the re-route (its EOS
-            // either passed with the old chain or died with the dropped
-            // slot), so the new branch will never see a buffer or an EOS.
-            // The sink parks in Ready->Paused forever, the async transition
-            // never completes, the receiver's pump gate never opens, and a
-            // sibling EOS arriving after the splice parks its streaming
-            // thread inside gst_stream_synchronizer_wait against the fresh
-            // pad (fuzz_buffering seed 1600058, gdb captured: multiqueue
-            // src in gststreamsynchronizer.c:480 behind the resurrected
-            // pad, the video source task idle at EOS, see the findings
-            // entry on the drained-resurrect park). This also enforces the
-            // invariant the sibling-pass gate below states, that once one
-            // EOS of a group entered ssync the group MUST complete, which a
-            // fresh EOS-less pad makes impossible.
-            //
-            // Parking trades the permanent wedge for a silent video slot on
-            // the drained remainder of the item. A flushing seek restarts
-            // the streams and clears the mirror (see `Job::Seek`), so a
-            // re-enable after a seek still builds the chain normally.
-            // Lever: `FCAST_NO_DRAINED_RESURRECT_PARK` restores the
-            // unconditional rebuild (the seek-side clear is gated on the
-            // same lever).
-            StreamKind::Video
-                if std::env::var_os("FCAST_NO_DRAINED_RESURRECT_PARK").is_none() && {
-                    // Two signals, either one marks the stream drained.
-                    // The group mirror covers a stream whose end reached
-                    // the OUTPUT before the re-route. The input-side set
-                    // covers a stream whose end was consumed invisibly
-                    // (its slot was dropped while deselected, so no output
-                    // probe ever saw it, fuzz_buffering seed 1600008).
-                    let sticky = pad.sticky_event::<gst::event::StreamStart>(0);
-                    let group = sticky.as_ref().and_then(|event| event.group_id());
-                    let group_passing = group.is_some() && group == *inner.passing_eos_group.lock();
-                    let sid = sticky.map(|event| event.stream_id().to_string());
-                    let input_drained = sid
-                        .as_ref()
-                        .is_some_and(|sid| inner.input_eos_sids.lock().contains(sid));
-                    let rerouted = inner.video_unrouted_once.load(Ordering::SeqCst);
-                    debug!(
+            // The three video dispositions, and the wedge each park answers,
+            // are written down on [`decisions::route::VideoRoute`]. Both parks
+            // are the same surgery; only the log line differs.
+            StreamKind::Video => match Self::video_disposition(inner, pad) {
+                decisions::route::VideoRoute::ParkDeselected => {
+                    info!(
                         pad = %pad.name(),
-                        ?sid,
-                        group_passing,
-                        input_drained,
-                        rerouted,
-                        "drained-resurrect check"
+                        "parking a resurrected video pad the dispatched selection has off"
                     );
-                    (group_passing || input_drained) && rerouted
-                } =>
-            {
-                info!(
-                    pad = %pad.name(),
-                    "parking a re-routed video pad of a drained stream"
-                );
-                let (sink, park) = inner.park_stream(pad)?;
-                (None, None, None, Some(park), Some(sink))
-            }
-            StreamKind::Video => {
-                let (ss_sink, ss_src) = attach_ssync()?;
-                if deferred_join {
+                    let (sink, park) = inner.park_stream(pad)?;
+                    (None, None, None, Some(park), Some(sink))
+                }
+                decisions::route::VideoRoute::ParkDrained => {
+                    info!(
+                        pad = %pad.name(),
+                        "parking a re-routed video pad of a drained stream"
+                    );
+                    let (sink, park) = inner.park_stream(pad)?;
+                    (None, None, None, Some(park), Some(sink))
+                }
+                decisions::route::VideoRoute::Build => {
+                    let (ss_sink, ss_src) = attach_ssync()?;
                     // Membership only: the chain has to be in the pipeline for
                     // the link below to be legal, but its ACTIVATION is what
                     // blocks, and that goes to `fpb-join`.
                     inner.attach_video_chain()?;
-                } else {
-                    // Put the video chain into the pipeline (also the recovery
-                    // from a mid-item deselect's parked chain).
-                    inner.ensure_video_chain()?;
-                }
-                let entry = inner
-                    .video_entry
-                    .static_pad("sink")
-                    .ok_or_else(|| anyhow!("fpb-vqueue sink missing"))?;
-                ss_src.link(&entry).context("linking video chain")?;
-                if deferred_join {
+                    let entry = inner
+                        .video_entry
+                        .static_pad("sink")
+                        .ok_or_else(|| anyhow!("fpb-vqueue sink missing"))?;
+                    ss_src.link(&entry).context("linking video chain")?;
                     // AFTER the link, which cannot race: the only thread that
                     // ever pushes on `ss_src` is the one inside this call.
                     join_hold = Inner::hold_chain_entry(&ss_src);
                     queue_join = true;
-                } else {
-                    inner.finish_preroll_token();
+                    (Some(ss_sink), Some(ss_src), Some(entry), None, None)
                 }
-                (Some(ss_sink), Some(ss_src), Some(entry), None, None)
-            }
+            },
             StreamKind::Audio => {
                 let (ss_sink, ss_src) = attach_ssync()?;
-                if !deferred_join {
-                    // Build this load's fresh audio sink (see
-                    // `Inner::audio`). The prefix is already active.
-                    inner.ensure_audio_sink()?;
-                }
+                // The audio sink itself is built by the join (see
+                // `Inner::audio`); the prefix is already active.
                 let entry = inner
                     .audio_entry
                     .static_pad("sink")
                     .ok_or_else(|| anyhow!("fpb-aqueue sink missing"))?;
                 ss_src.link(&entry).context("linking audio chain")?;
-                if deferred_join {
-                    join_hold = Inner::hold_chain_entry(&ss_src);
-                    queue_join = true;
-                } else {
-                    inner.finish_preroll_token();
-                }
+                join_hold = Inner::hold_chain_entry(&ss_src);
+                queue_join = true;
                 (Some(ss_sink), Some(ss_src), Some(entry), None, None)
             }
             StreamKind::Text => {
@@ -1828,8 +1833,9 @@ impl Inner {
                 let pad_group = pad
                     .sticky_event::<gst::event::StreamStart>(0)
                     .and_then(|event| event.group_id());
-                let (should_drop, pending, behind) = inner.gapless_eos_check_and_mark(pad_group);
-                if should_drop {
+                if let decisions::EosGate::Drop { pending, behind } =
+                    inner.gapless_eos_check_and_mark(pad_group)
+                {
                     debug!(
                         pad = %pad.name(),
                         pending,
@@ -1870,20 +1876,52 @@ impl Inner {
                         // THIS pad still carries a previous group (see
                         // `Inner::gapless_eos_gate`). The pad's sticky
                         // stream-start at EOS time is the ending stream's,
-                        // an authoritative fallback when the recorded group
-                        // is missing.
-                        let pad_group = {
-                            let routing = inner.routing.lock();
-                            routing
-                                .routed
-                                .iter()
-                                .find(|r| &r.db3_src_pad == pad)
-                                .and_then(|r| r.group)
-                        }
-                        .or_else(|| {
-                            pad.sticky_event::<gst::event::StreamStart>(0)
-                                .and_then(|event| event.group_id())
-                        });
+                        // and it is the whole record: nothing is cached.
+                        //
+                        // NO CRATE LOCK, which is the point (this runs on a
+                        // decodebin3 slot's streaming thread, and the routing
+                        // lock is held across pipeline surgery). The read is
+                        // exact anyway:
+                        //
+                        // - `gst_pad_push_event` STORES a sticky event on the
+                        //   src pad before any EVENT_DOWNSTREAM probe runs
+                        //   (gstpad.c: `store_sticky_event` under the pad's
+                        //   object lock, then `check_sticky` pushes the
+                        //   pending stickies in sticky order, which puts
+                        //   STREAM_START ahead of EOS). A probe therefore
+                        //   never sees a sticky OLDER than the event it is
+                        //   judging, and an EOS arriving here is preceded on
+                        //   this pad by its own stream-start.
+                        // - Downstream serialized events on one pad come from
+                        //   that pad's single streaming thread, and one
+                        //   entering through the peer sink pad takes that
+                        //   pad's STREAM_LOCK first. So a gapless swap cannot
+                        //   rewrite THIS pad's sticky mid-probe: the next
+                        //   item's STREAM_START is strictly after this EOS.
+                        // - Stickies that crossed before this probe existed
+                        //   are stored too, which is why the old per-pad cache
+                        //   needed a prepare-time resync pass and this does
+                        //   not.
+                        // - Nothing drops a stream-start on a routed output
+                        //   pad (the only Drop verdicts on these pads are the
+                        //   two EOS gates, both EOS-only), so the sticky and
+                        //   what actually flowed downstream agree.
+                        // - FLUSH_STOP clears sticky EOS/SEGMENT but keeps
+                        //   STREAM_START, so a seek does not blind the gate.
+                        //
+                        // `None` means the pad carries no stream-start at all,
+                        // which the decision treats as an unknown group and
+                        // never drops for - the same answer the unset cache
+                        // gave through its sticky fallback.
+                        //
+                        // Per-group all-or-nothing does NOT need a consistent
+                        // snapshot ACROSS pads: the decision reads only this
+                        // pad's group, and what ties a group's siblings
+                        // together is `passing_eos_group`, held across the
+                        // verdict and the commit below.
+                        let pad_group = pad
+                            .sticky_event::<gst::event::StreamStart>(0)
+                            .and_then(|event| event.group_id());
                         let av = matches!(kind, StreamKind::Video | StreamKind::Audio);
                         // Group consistency with streamsynchronizer: once
                         // one EOS of this group passed into ssync, its
@@ -1913,17 +1951,11 @@ impl Inner {
                             }
                         }
                     }
-                    // STREAM_START: record the pad's group; a group change
-                    // activates a pending prepared item.
+                    // STREAM_START: a group change activates a pending
+                    // prepared item. Nothing is recorded per pad - the
+                    // sticky this event just became IS the record the EOS
+                    // arm above reads.
                     Some(group) => {
-                        if let Some(group) = group {
-                            let mut routing = inner.routing.lock();
-                            if let Some(routed) =
-                                routing.routed.iter_mut().find(|r| &r.db3_src_pad == pad)
-                            {
-                                routed.group = Some(group);
-                            }
-                        }
                         inner.note_output_stream_start(group, &pad.name());
                     }
                 }
@@ -1932,14 +1964,15 @@ impl Inner {
         });
 
         debug!(pad = %pad.name(), ?kind, linked = downstream.is_some(), "routed decodebin3 pad");
-        // Seed the pad's group from its sticky stream-start: the live event
-        // may already have passed (it flows the moment the link above
-        // completes, possibly before the probe existed). The sticky is
-        // authoritative either way.
-        let group = pad
+        // Seed the pipeline's active group from this pad's sticky
+        // stream-start: the live event may already have passed (it flows the
+        // moment the link above completes, possibly before the probe
+        // existed), and without a positively known active group the EOS gate
+        // cannot call anything behind. The sticky is authoritative either way.
+        if let Some(group) = pad
             .sticky_event::<gst::event::StreamStart>(0)
-            .and_then(|event| event.group_id());
-        if let Some(group) = group {
+            .and_then(|event| event.group_id())
+        {
             let mut active = inner.active_group.lock();
             if active.is_none() {
                 *active = Some(group);
@@ -1973,7 +2006,6 @@ impl Inner {
         // about what reached the sinks: a dropped EOS still means the slot
         // behind this ghost is over. Folding the two would tie an observation
         // to a decision that is not about it.
-        // Lever: `FCAST_NO_TEXT_OUTPUT_EOS_TAP`.
         let saw_eos = Arc::new(AtomicBool::new(false));
         if kind == StreamKind::Text {
             // THE REUSE-SHAPE ASK. decodebin3 can re-point an EXISTING text
@@ -2019,42 +2051,40 @@ impl Inner {
                     gst::PadProbeReturn::Ok
                 }
             });
-            if std::env::var_os("FCAST_NO_TEXT_OUTPUT_EOS_TAP").is_none() {
-                pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, {
-                    let saw_eos = Arc::clone(&saw_eos);
-                    let poke_on_alive = Arc::clone(&poke_on_alive);
-                    let weak = Arc::downgrade(inner);
-                    move |pad, info| {
-                        let Some(gst::PadProbeData::Event(event)) = &info.data else {
-                            return gst::PadProbeReturn::Ok;
-                        };
-                        let ended = match event.view() {
-                            gst::EventView::Eos(_) => true,
-                            gst::EventView::FlushStop(_) | gst::EventView::StreamStart(_) => false,
-                            _ => return gst::PadProbeReturn::Ok,
-                        };
-                        // Takes NO crate lock and waits for nothing: this runs
-                        // on the slot's streaming thread, which the routing
-                        // lock is held across pipeline surgery against. The
-                        // ask below keeps that contract: an atomic swap and a
-                        // coalesced job send.
-                        if saw_eos.swap(ended, Ordering::SeqCst) != ended {
-                            debug!(
-                                pad = %pad.name(),
-                                ended,
-                                "a routed text output's decodebin3 slot changed liveness"
-                            );
-                            if !ended {
-                                poke_on_alive.store(true, Ordering::SeqCst);
-                                if let Some(inner) = weak.upgrade() {
-                                    Inner::request_text_policy_poll(&inner);
-                                }
+            pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, {
+                let saw_eos = Arc::clone(&saw_eos);
+                let poke_on_alive = Arc::clone(&poke_on_alive);
+                let weak = Arc::downgrade(inner);
+                move |pad, info| {
+                    let Some(gst::PadProbeData::Event(event)) = &info.data else {
+                        return gst::PadProbeReturn::Ok;
+                    };
+                    let ended = match event.view() {
+                        gst::EventView::Eos(_) => true,
+                        gst::EventView::FlushStop(_) | gst::EventView::StreamStart(_) => false,
+                        _ => return gst::PadProbeReturn::Ok,
+                    };
+                    // Takes NO crate lock and waits for nothing: this runs
+                    // on the slot's streaming thread, which the routing
+                    // lock is held across pipeline surgery against. The
+                    // ask below keeps that contract: an atomic swap and a
+                    // coalesced job send.
+                    if saw_eos.swap(ended, Ordering::SeqCst) != ended {
+                        debug!(
+                            pad = %pad.name(),
+                            ended,
+                            "a routed text output's decodebin3 slot changed liveness"
+                        );
+                        if !ended {
+                            poke_on_alive.store(true, Ordering::SeqCst);
+                            if let Some(inner) = weak.upgrade() {
+                                Inner::request_text_policy_poll(&inner);
                             }
                         }
-                        gst::PadProbeReturn::Ok
                     }
-                });
-            }
+                    gst::PadProbeReturn::Ok
+                }
+            });
         }
         let mut routing = inner.routing.lock();
         routing.routed.push(RoutedStream {
@@ -2066,7 +2096,6 @@ impl Inner {
             park_sink,
             tqueue: None,
             appsink: None,
-            group,
             evicted_dead: false,
             superseded: false,
             ever_joined: false,
@@ -2076,11 +2105,10 @@ impl Inner {
         });
         drop(routing);
 
-        // A new text stream may be linkable right away, and a (re)arriving video
-        // stream may unblock a parked one. A DEFERRED video join runs it on
-        // `fpb-join` instead, after the chain is up: text must not be spliced
-        // into a chain that is still parked at READY, and this call is
-        // itself pipeline surgery that has no business on a streaming thread.
+        // A new text stream may be linkable right away. A (re)arriving video
+        // stream may unblock a parked one too, but that poll belongs to
+        // `run_chain_join`, after the chain is up: text must not be spliced
+        // into a chain that is still parked at READY.
         //
         // ASKED for, not performed - the last of the four foreign threads that
         // used to run the link policy. The surgery it decides is the one the
@@ -2100,17 +2128,8 @@ impl Inner {
         // Deliberately NOT folded into the settled-PLAYING drain
         // (`Job::DrainTextWork`): the link must happen at settled PAUSED, or a
         // switch performed while paused stays invisible until resume.
-        let poll_here = match kind {
-            StreamKind::Text => true,
-            StreamKind::Video => !deferred_join,
-            StreamKind::Audio => false,
-        };
-        if poll_here {
-            if inner.inline_route_text_poll {
-                Inner::poll_text_policy(inner);
-            } else {
-                Inner::request_text_policy_poll(inner);
-            }
+        if kind == StreamKind::Text {
+            Inner::request_text_policy_poll(inner);
         }
         // Last, so the routing entry above is already visible: the join
         // re-validates against it. The joiner would block on the route gate
@@ -2262,19 +2281,14 @@ impl Inner {
         if routed.kind == StreamKind::Text {
             // This callback runs on a streaming thread, where the disposal's
             // blocking flush is forbidden, so it is handed to the worker.
-            // The unlink itself still happens here and does not block. The
-            // lever restores the previous inline dispatch for interleaved
-            // A/B measurement and gates this whole change.
+            // The unlink itself still happens here and does not block.
             //
-            // F7 WARNING on the lever: running the disposal inline puts it on
-            // a STREAMING thread, and the disposal reaches
+            // The F7 hazard the deferral avoids: the disposal reaches
             // `upstream_owns_selection` through `detach_text_parts` - a cached
             // `Selectable` peer_query. Querying a demuxer from its own
-            // streaming thread is the blocking-call hazard the phase-3 F7 row
-            // names. The default arm cannot reach it (the decider owns the
-            // disposal); the lever is for measurement, not for shipping.
-            let defer_disposal = std::env::var_os("FCAST_INLINE_UNROUTE_DISPOSAL").is_none();
-            Inner::detach_text_branch(inner, &mut routed, defer_disposal);
+            // streaming thread is the phase-3 F7 blocking-call row. Only the
+            // decider ever runs it, so this arm cannot reach it.
+            Inner::detach_text_branch(inner, &mut routed, true);
         } else if let (Some(ssync_src), Some(downstream)) = (&routed.ssync_src, &routed.downstream)
         {
             let _ = ssync_src.unlink(downstream);
@@ -2307,56 +2321,25 @@ impl Inner {
             // Both halves are pipeline surgery and this runs on decodebin3's
             // pad-removed callback, so they go to the worker. See
             // [`Job::VideoChainGone`] for the wedge that taught us.
-            //
-            // A/B lever for bisecting regressions without a rebuild, like
-            // FCAST_NO_SELECTION_REPLAY.
-            if std::env::var_os("FCAST_INLINE_VIDEO_CHAIN_TEARDOWN").is_some() {
-                Inner::park_text_streams(inner);
-                inner.remove_video_chain();
-            } else {
-                inner.queue_job(Job::VideoChainGone);
-            }
+            inner.queue_job(Job::VideoChainGone);
         }
     }
 
     /// Stream kind from the pad's sticky stream-start event (decodebin3
     /// stamps a GstStream on its output pads), with a caps fallback.
     fn stream_kind_of(pad: &gst::Pad) -> Option<StreamKind> {
-        if let Some(stream) = pad.stream() {
-            let ty = stream.stream_type();
-            if ty.contains(gst::StreamType::VIDEO) {
-                return Some(StreamKind::Video);
-            }
-            if ty.contains(gst::StreamType::AUDIO) {
-                return Some(StreamKind::Audio);
-            }
-            if ty.contains(gst::StreamType::TEXT) {
-                return Some(StreamKind::Text);
-            }
-        }
-        let caps = pad.current_caps()?;
-        decisions::kind_from_caps_name(caps.structure(0)?.name())
+        // A GstStream carrying none of the three type flags falls through to
+        // caps, same as a pad with no GstStream at all.
+        pad.stream()
+            .and_then(|stream| decisions::kind_from_stream_type(stream.stream_type()))
+            .or_else(|| {
+                let caps = pad.current_caps()?;
+                decisions::kind_from_caps_name(caps.structure(0)?.name())
+            })
     }
 }
 
 impl FcastPlaybin {
-    /// How many [`Inner::remove_input`] pads got the flush pair. Every one
-    /// briefly de-PLAYs the pipeline, and the count is the size of the problem
-    /// that has NOT been solved (see `Inner::remove_input`). Not
-    /// part of the public API.
-    #[doc(hidden)]
-    pub fn remove_input_pairs_sent() -> u64 {
-        REMOVE_INPUT_PAIRS_SENT.load(Ordering::SeqCst)
-    }
-
-    /// How many `remove_input` pads a quiescence probe let through with
-    /// no pair. Zero unless `FCAST_REMOVE_INPUT_FLUSH_SKIP` is set. Not part
-    /// of the public API.
-    #[doc(hidden)]
-    pub fn remove_input_pairs_skipped() -> u64 {
-        REMOVE_INPUT_PAIRS_SKIPPED.load(Ordering::SeqCst)
-    }
-
     /// Diagnostic: "kind:pad-name" for every currently-routed decodebin3
     /// stream. Compare against the media's stream collection to spot a
     /// selected stream whose pad never got routed.
@@ -2411,7 +2394,11 @@ mod tests {
                 true,
             ),
             // A named sid must be live on a pad of ITS kind.
-            (sids(&["v0"], &[], &[]), target(Some("v0"), None, None), true),
+            (
+                sids(&["v0"], &[], &[]),
+                target(Some("v0"), None, None),
+                true,
+            ),
             (sids(&[], &[], &[]), target(Some("v0"), None, None), false),
             (
                 sids(&["v1"], &[], &[]),

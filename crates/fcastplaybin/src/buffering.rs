@@ -1,9 +1,11 @@
 //! Buffering and seekability queries about how much of the timeline is
 //! already in hand.
 
+use std::sync::atomic::Ordering;
+
 use gst::prelude::*;
 
-use crate::FcastPlaybin;
+use crate::{FcastPlaybin, Inner};
 
 /// A buffered region of the current media, expressed as fractions `[0.0, 1.0]`
 /// of the whole timeline. Derived from a `GST_QUERY_BUFFERING` in `PERCENT`
@@ -15,8 +17,10 @@ pub struct BufferedRange {
     pub stop: f64,
 }
 
-/// Overall buffering state plus the buffered ranges, for the inspector. See
-/// [`FcastPlaybin::buffering_info`].
+/// Overall buffering state for the inspector. See
+/// [`FcastPlaybin::buffering_info`]. The buffered regions themselves come
+/// from [`FcastPlaybin::buffered_ranges`], which the scrubber polls on its
+/// own cadence.
 #[derive(Debug, Clone)]
 pub struct BufferingInfo {
     /// Fill level of the buffer that gates playback, `0..=100`.
@@ -28,13 +32,69 @@ pub struct BufferingInfo {
     pub mode: gst::BufferingMode,
     /// Estimated time until the buffer is full, when known.
     pub buffering_left: Option<gst::ClockTime>,
-    /// Buffered regions of the media (may be empty even when the query
-    /// otherwise succeeds).
-    pub ranges: Vec<BufferedRange>,
 }
 
 /// `PERCENT`-format buffering values run `0..=GST_FORMAT_PERCENT_MAX`.
 const GST_FORMAT_PERCENT_MAX: f64 = 1_000_000.0;
+
+/// Where [`FcastPlaybin::buffered_ahead`] found `current-level-time` the last
+/// time it walked the graph.
+///
+/// The LEVELS cannot be cached (they move with every buffer), but WHERE to
+/// read them only changes when the graph does, and the walk is what costs:
+/// `iterate_recurse` over the whole pipeline plus a factory-name compare and
+/// a property lookup per element, several times per 100 ms tick in the
+/// receiver, taking the same bin locks the streaming threads take. So the
+/// walk runs on a graph edge instead of on a poll, and a poll is a handful of
+/// property reads.
+///
+/// Re-walked when [`Inner::level_probes_dirty`] says the graph moved: every
+/// deep element add/remove under the pipeline, plus the load reset. Multiqueue
+/// SLOTS come and go with no element edge at all, which is why the multiqueue
+/// pads are re-read per poll rather than cached.
+///
+/// Weak refs throughout: a diagnostic probe list must never be the reason an
+/// element outlives its removal, and a dead probe simply drops out of the next
+/// poll.
+#[derive(Default)]
+pub(crate) struct LevelProbes {
+    /// Elements answering `current-level-time` element-wide.
+    elements: Vec<gst::glib::WeakRef<gst::Element>>,
+    /// Multiqueues, which answer per SINK PAD.
+    multiqueues: Vec<gst::glib::WeakRef<gst::Element>>,
+}
+
+impl LevelProbes {
+    /// Re-discover the probes with one walk of the graph.
+    fn rewalk(&mut self, pipeline: &gst::Pipeline) {
+        self.elements.clear();
+        self.multiqueues.clear();
+        let mut it = pipeline.iterate_recurse();
+        while let Ok(Some(elem)) = it.next() {
+            match elem.factory().map(|f| f.name()).as_deref() {
+                // queue2, downloadbuffer, queue and appsrc (the SABR source's
+                // per-track feed buffer) expose the level element-wide.
+                Some("queue2" | "downloadbuffer" | "queue" | "appsrc") => {
+                    if elem.find_property("current-level-time").is_some() {
+                        self.elements.push(elem.downgrade());
+                    }
+                }
+                Some("multiqueue") => self.multiqueues.push(elem.downgrade()),
+                _ => {}
+            }
+        }
+    }
+}
+
+impl Inner {
+    /// Make [`FcastPlaybin::buffered_ahead`] re-walk before its next read.
+    ///
+    /// Lock-free on purpose: the graph edges that call this arrive on
+    /// streaming threads (see [`Inner::level_probes_dirty`]).
+    pub(crate) fn invalidate_level_probes(&self) {
+        self.level_probes_dirty.store(true, Ordering::Relaxed);
+    }
+}
 
 /// Convert a `PERCENT`-format buffering bound to a `[0.0, 1.0]` fraction.
 fn percent_fraction(v: gst::GenericFormattedValue) -> Option<f64> {
@@ -81,9 +141,9 @@ impl FcastPlaybin {
         buffered_ranges_from(&query)
     }
 
-    /// Full buffering state (fill percent, mode, rates, ranges) for the
-    /// inspector, from a single `GST_QUERY_BUFFERING`. `None` when nothing in
-    /// the pipeline can answer the query.
+    /// Full buffering state (fill percent, mode, ETA) for the inspector,
+    /// from a single `GST_QUERY_BUFFERING`. `None` when nothing in the
+    /// pipeline can answer the query.
     pub fn buffering_info(&self) -> Option<BufferingInfo> {
         let mut query = gst::query::Buffering::new(gst::Format::Percent);
         if !self.inner.pipeline.query(query.query_mut()) {
@@ -97,7 +157,6 @@ impl FcastPlaybin {
             mode,
             buffering_left: (buffering_left_ms > 0)
                 .then(|| gst::ClockTime::from_mseconds(buffering_left_ms as u64)),
-            ranges: buffered_ranges_from(&query),
         })
     }
 
@@ -108,26 +167,31 @@ impl FcastPlaybin {
     /// buffer) expose it element-wide, multiqueue per sink pad. Returns the
     /// deepest level found (the network-side buffer), `None` if nothing
     /// reports one. Poll it to size a buffered-ahead nub on the scrubber.
+    ///
+    /// Reads through a cached probe list (`LevelProbes`), so a poll walks the
+    /// graph only when the graph has changed since the last one.
     pub fn buffered_ahead(&self) -> Option<gst::ClockTime> {
+        let inner = &self.inner;
+        let mut probes = inner.level_probes.lock();
+        // Cleared BEFORE the walk: an element added during it re-dirties the
+        // bit and the next poll picks it up, where clearing after would drop
+        // that edge for good.
+        if inner.level_probes_dirty.swap(false, Ordering::Relaxed) {
+            probes.rewalk(&inner.pipeline);
+        }
+
         let mut best: Option<u64> = None;
-        let mut it = self.inner.pipeline.iterate_recurse();
-        while let Ok(Some(elem)) = it.next() {
-            let level_ns = match elem.factory().map(|f| f.name()).as_deref() {
-                Some("queue2" | "downloadbuffer" | "queue" | "appsrc") => elem
-                    .find_property("current-level-time")
-                    .map(|_| elem.property::<u64>("current-level-time")),
-                Some("multiqueue") => elem
-                    .sink_pads()
-                    .iter()
-                    .filter_map(|pad| {
-                        pad.find_property("current-level-time")
-                            .map(|_| pad.property::<u64>("current-level-time"))
-                    })
-                    .max(),
-                _ => None,
-            };
-            if let Some(ns) = level_ns {
-                best = Some(best.map_or(ns, |b| b.max(ns)));
+        let mut deepen = |ns: u64| best = Some(best.map_or(ns, |b: u64| b.max(ns)));
+        for elem in probes.elements.iter().filter_map(|weak| weak.upgrade()) {
+            deepen(elem.property::<u64>("current-level-time"));
+        }
+        for mq in probes.multiqueues.iter().filter_map(|weak| weak.upgrade()) {
+            // Per SLOT, and slots appear without an element edge, so this half
+            // is not cacheable (see [`LevelProbes`]).
+            for pad in mq.sink_pads() {
+                if pad.find_property("current-level-time").is_some() {
+                    deepen(pad.property::<u64>("current-level-time"));
+                }
             }
         }
         best.filter(|ns| *ns > 0).map(gst::ClockTime::from_nseconds)

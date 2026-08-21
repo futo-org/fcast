@@ -1,7 +1,7 @@
 //! The GStreamer bus: event emission, error attribution and the
 //! translation of bus messages into [`crate::PlaybinEvent`]s.
 
-use std::sync::{Arc, atomic::Ordering};
+use std::sync::Arc;
 
 use gst::prelude::*;
 use tracing::{debug, warn};
@@ -9,10 +9,12 @@ use tracing::{debug, warn};
 use crate::{
     FcastPlaybin, Inner,
     api::{AfterCancel, ErrorOrigin, ExternalSubId, MessageHook, PlaybinEvent},
-    decisions,
+    decisions::{
+        self,
+        selection_replay::{SelectionReplay, selection_replay_action},
+    },
     jobs::Job,
     routing::StreamKind,
-    selection,
     selection::TrackSelection,
 };
 
@@ -92,14 +94,28 @@ impl Inner {
     /// decides what a real error means (a teardown, usually), and unlatching
     /// under it would hide a pipeline that genuinely cannot run.
     fn queue_state_unlatch(&self) {
-        if std::env::var_os("FCAST_NO_ERROR_STATE_UNLATCH").is_some() {
-            return;
-        }
         self.queue_job(Job::ClearStateFailure);
     }
 
-    /// A pipeline settle re-drives the text link, the way the two arms below
-    /// re-drive the text drain.
+    /// Everything a pipeline settle owes the text branches: the postponed
+    /// WORK (see [`Job::DrainTextWork`]) and the postponed LINK
+    /// ([`Inner::request_text_policy_poll_on_settle`]).
+    ///
+    /// Both bus arms that see a settle owe both, in this order. The state is a
+    /// parameter because only the caller knows where it comes from, which is
+    /// the arms' only real difference (see each call site).
+    ///
+    /// Queues only. This runs on a streaming thread and the worker does the
+    /// blocking part.
+    fn settle_text_redrive(&self, current: gst::State, pending: gst::State) {
+        if self.has_deferred_text_work() {
+            self.queue_job(Job::DrainTextWork);
+        }
+        self.request_text_policy_poll_on_settle(current, pending);
+    }
+
+    /// A pipeline settle re-drives the text link, the way
+    /// [`Inner::settle_text_redrive`] re-drives the text drain beside it.
     ///
     /// [`Inner::poll_text_policy`] refuses to link below a settled `>= PAUSED`
     /// ([`decisions::text_may_link`]), and the only asks (a decodebin3 pad
@@ -108,19 +124,15 @@ impl Inner {
     /// and never leaves PAUSED renders no cue at all. Reaching PLAYING hides
     /// the gap because that edge brings joins and drains with polls attached.
     ///
-    /// Both callers matter. A PAUSED-to-PAUSED seek posts no state-changed
-    /// (see the `AsyncDone` arm), and a load settles through state-changed.
+    /// Both of the funnel's arms matter. A PAUSED-to-PAUSED seek posts no
+    /// state-changed (see the `AsyncDone` arm), and a load settles through
+    /// state-changed.
     ///
     /// Narrow on purpose. Only when the seat is genuinely empty while a
     /// subtitle is applied and not explicitly off, so a settled pipeline whose
     /// text is already joined queues nothing. Asked for, not performed. This
     /// runs on a streaming thread and the surgery belongs to the decider.
-    ///
-    /// Lever: `FCAST_NO_SETTLE_TEXT_POLL`.
     fn request_text_policy_poll_on_settle(&self, current: gst::State, pending: gst::State) {
-        if std::env::var_os("FCAST_NO_SETTLE_TEXT_POLL").is_some() {
-            return;
-        }
         if !decisions::text_may_link(current, pending) {
             return;
         }
@@ -142,19 +154,11 @@ impl Inner {
                 return;
             }
         }
-        // [`Inner::request_text_policy_poll`]'s coalescing, without its
-        // `FCAST_INLINE_TEXT_POLL` arm. That lever runs the surgery on the
-        // asking thread, and this thread is never allowed to.
-        if self.poll_queued.swap(true, Ordering::SeqCst) {
-            self.poll_policy_coalesced.fetch_add(1, Ordering::SeqCst);
-            return;
-        }
-        debug!("a pipeline settle found a text stream routed with its seat empty; polling");
-        if !self.queue_job(Job::PollTextPolicy) {
-            // No decider left to clear the bit, and a bit left set silences
-            // every later poll (see `Inner::request_text_policy_poll`).
-            self.poll_queued.store(false, Ordering::SeqCst);
-        }
+        // The shared coalescing guard: this is a bus thread, so it may only
+        // ASK. Reason string of its own, hence not `request_text_policy_poll`.
+        self.queue_coalesced_text_poll(Some(
+            "a pipeline settle found a text stream routed with its seat empty",
+        ));
     }
 
     /// Classify a bus message source by the generation-tagged inputs.
@@ -242,8 +246,15 @@ impl Inner {
                     ErrorSource::Stale => ErrorOrigin::Stale,
                     ErrorSource::Unknown => ErrorOrigin::Unknown,
                 };
-                // Diagnostic only. Supersession is decided by the event's
-                // generation and attribution by `origin`, not by this URI.
+                // NOT diagnostic. Supersession is decided by the event's
+                // generation and attribution by `origin`, but the receiver
+                // classifies on this field: `MediaErrorKind::from_glib_error`
+                // takes `failed_uri.is_some()` as "the failing element was an
+                // input", which is what splits a ResourceError into
+                // NetworkFailure vs OutputFailure, and the URI's host becomes
+                // the localized error's detail (receiver-core
+                // `application.rs`, the `PlayerEvent::Error` arm). A `None`
+                // here where a URI exists is a user-visible misclassification.
                 let failed_uri = msg
                     .src()
                     .and_then(|src| src.dynamic_cast_ref::<gst::URIHandler>())
@@ -280,16 +291,10 @@ impl Inner {
                     return None;
                 }
                 // Every pipeline state edge re-attempts the postponed
-                // text-branch work (see [`Job::DrainTextWork`]). On the bus
-                // this only queues. The worker does the blocking part.
-                if self.has_deferred_text_work() {
-                    self.queue_job(Job::DrainTextWork);
-                }
-                // ... and the postponed text LINK, off the message's own
-                // fields rather than a re-query: they are exactly what the
-                // link gate reads, and they cannot race the commit that
-                // posted them.
-                self.request_text_policy_poll_on_settle(change.current(), change.pending());
+                // text-branch work and link, off the message's own fields
+                // rather than a re-query: they are exactly what the link gate
+                // reads, and they cannot race the commit that posted them.
+                self.settle_text_redrive(change.current(), change.pending());
                 PlaybinEvent::StateChanged {
                     old: change.old(),
                     current: change.current(),
@@ -302,333 +307,9 @@ impl Inner {
                 PlaybinEvent::RequestState(state)
             }
             MessageView::StreamCollection(collection) => {
-                if self.message_from_external_input(msg) {
-                    debug!(
-                        src = ?msg.src().map(|s| s.name()),
-                        "Ignoring a partial stream collection from an external subtitle input"
-                    );
-                    return None;
-                }
-                let collection = collection.stream_collection();
-                // The prepared next input's collection belongs to the next
-                // item. Hold it back and deliver it at activation, after
-                // PreparedActivated and stamped with the new generation
-                // (the input-posted form is caught by ancestry, the
-                // decodebin3-posted form by its stream ids).
-                //
-                // Must stay ahead of the decodebin3 filter below. The gapless
-                // handoff needs the next item's collection as early as the
-                // prepared input can post it.
-                if self.message_from_prepared_input(msg) || self.collection_is_prepared(&collection)
-                {
-                    debug!("holding the prepared next input's stream collection");
-                    if let Some(prepared) = self.prepared.lock().as_mut() {
-                        prepared.pending_collection = Some(collection);
-                    }
-                    return None;
-                }
-                // Only decodebin3's collection is the merged one, and only
-                // its stream ids may appear in a `SELECT_STREAMS` sent to
-                // decodebin3. Several elements post partial collections, each
-                // naming a single stream, interleaved with the merged ones.
-                //
-                // Feeding partials to the selection engine makes the
-                // collection appear to shrink, so reconciliation reads empty
-                // slots as deselection and actively deselects tracks the
-                // caller never touched.
-                //
-                // Matching the current core also drops a collection from a
-                // decodebin3 the load already superseded.
-                // A/B lever for bisecting regressions without a rebuild.
-                let from_db3 = std::env::var_os("FCAST_NO_DB3_COLLECTION_FILTER").is_some() || {
-                    let core = self.core.lock();
-                    match (core.as_ref(), msg.src()) {
-                        (Some(core), Some(src)) => src == core.db3.upcast_ref::<gst::Object>(),
-                        _ => false,
-                    }
-                };
-                if !from_db3 {
-                    debug!(
-                        src = ?msg.src().map(|s| s.name()),
-                        "ignoring a partial stream collection that is not decodebin3's merged one"
-                    );
-                    return None;
-                }
-                // Cache the collection's video ids before the caller can
-                // react to the event. `select_streams` classifies a no-video
-                // selection with them.
-                {
-                    let mut routing = self.routing.lock();
-                    routing.collection_video_ids = collection
-                        .iter()
-                        .filter(|s| s.stream_type().contains(gst::StreamType::VIDEO))
-                        .filter_map(|s| s.stream_id().map(|id| id.to_string()))
-                        .collect();
-                }
-                // The selection engine reconciles against the new collection
-                // before the caller can react to the event.
-                let streams = collection
-                    .iter()
-                    .filter_map(|s| {
-                        let sid = s.stream_id()?.to_string();
-                        let typ = s.stream_type();
-                        let kind = if typ.contains(gst::StreamType::VIDEO) {
-                            StreamKind::Video
-                        } else if typ.contains(gst::StreamType::AUDIO) {
-                            StreamKind::Audio
-                        } else if typ.contains(gst::StreamType::TEXT) {
-                            StreamKind::Text
-                        } else {
-                            return None;
-                        };
-                        Some(selection::CollectionStream { sid, kind })
-                    })
-                    .collect();
-                self.selection.lock().collection_changed(streams);
-                PlaybinEvent::StreamCollection(collection)
+                self.on_stream_collection(msg, collection.stream_collection())?
             }
-            MessageView::StreamsSelected(streams) => {
-                // The prepared next input's report about itself must not be
-                // read as the live pipeline's selection. A stream-aware
-                // adaptive demuxer posts its own streams-selected the moment
-                // it reaches PAUSED, ahead of any boundary. Consumers below
-                // speak about the item that is decoding, matching the
-                // treatment of its buffering, duration and collection.
-                //
-                // Untreated, the report names exactly the prepared input's
-                // stream ids, `try_activate_prepared` reads it as the gapless
-                // switch and runs the activation with nothing linked, the
-                // still-playing input is removed, and the demuxer dies of
-                // `not-linked`. Pull-driven parse chains never announce a
-                // selection of their own, so only adaptive sources hit this.
-                if self.adaptive_prepare_hold() && self.message_from_prepared_input(msg) {
-                    debug!("dropping the prepared next input's own selection report");
-                    return None;
-                }
-                let mut video = None;
-                let mut audio = None;
-                let mut subtitle = None;
-                let mut all_ids = Vec::new();
-
-                for stream in streams.streams() {
-                    let typ = stream.stream_type();
-                    let id = stream.stream_id().map(|id| id.to_string());
-                    if let Some(id) = &id {
-                        all_ids.push(id.clone());
-                    }
-
-                    if typ.contains(gst::StreamType::VIDEO) {
-                        video = id;
-                    } else if typ.contains(gst::StreamType::AUDIO) {
-                        audio = id;
-                    } else if typ.contains(gst::StreamType::TEXT) {
-                        subtitle = id;
-                    }
-                }
-
-                // An upstream-selection demuxer reports only its own streams,
-                // so absence of an external input's text there must not
-                // deselect it. Merge the crate-owned slot back in (cache-only
-                // read, this runs on a streaming thread). Same lever as the
-                // dispatch split.
-                if subtitle.is_none() && *self.upstream_selection.lock() == Some(true) {
-                    let kept = self.selection.lock().subtitle_sid();
-                    if let Some(sid) = kept {
-                        let is_external = self.routing.lock().inputs.iter().any(|input| {
-                            input.external.is_some() && input.stream_ids().contains(&sid)
-                        });
-                        if is_external {
-                            debug!(%sid, "keeping the external subtitle an upstream report cannot speak about");
-                            all_ids.push(sid.clone());
-                            subtitle = Some(sid);
-                        }
-                    }
-                }
-
-                // Track the upstream-owned active set (every report, minus
-                // external-input sids) so the dispatch split can tell a real
-                // upstream change from a no-op. An adaptive demuxer only
-                // confirms an activation edge, so a no-op send would leave the
-                // engine awaiting a confirmation that cannot come.
-                {
-                    let mut upstream_ids: Vec<String> = {
-                        let routing = self.routing.lock();
-                        all_ids
-                            .iter()
-                            .filter(|sid| {
-                                !routing.inputs.iter().any(|input| {
-                                    input.external.is_some() && input.stream_ids().contains(sid)
-                                })
-                            })
-                            .cloned()
-                            .collect()
-                    };
-                    upstream_ids.sort();
-                    *self.last_upstream_ids.lock() = upstream_ids;
-                }
-
-                // A selection naming the prepared input's streams is the
-                // gapless switch. Adopt the next item's generation and
-                // deliver its held-back collection first, so this selection
-                // event arrives in a fresh load's order and stamping.
-                self.try_activate_prepared(&all_ids);
-
-                // The hold release must follow the replay decision below so
-                // it can wait for the realigning seek. Releasing here renders
-                // a just-selected external against the wrong origin. See
-                // `Inner::release_owed_hold`. The lever restores the old
-                // (unconditional, earlier) position for A/B comparison.
-                let inline_hold_release = std::env::var_os("FCAST_NO_OWED_HOLD_RELEASE").is_some();
-                if inline_hold_release {
-                    self.unblock_selected_externals(&all_ids, None);
-                }
-
-                let seqnum = msg.seqnum();
-                // The previously applied subtitle, for the selection-time
-                // replay below. Tracked here rather than read off the engine,
-                // whose `applied` is optimistic (set at dispatch) and by
-                // confirmation time already names the new target.
-                let previous_subtitle =
-                    std::mem::replace(&mut *self.last_applied_subtitle.lock(), subtitle.clone());
-                // Record what applied (and settle/overtake the in-flight
-                // dispatch) before the caller sees the event. The caller's
-                // pump then dispatches any re-assertion or queued work.
-                self.selection.lock().streams_selected(
-                    seqnum,
-                    &TrackSelection {
-                        video: video.clone(),
-                        audio: audio.clone(),
-                        subtitle: subtitle.clone(),
-                    },
-                );
-
-                // Selection-time replay, the pad-reuse counterpart of the
-                // join-time one. Switching between text streams makes
-                // decodebin3 swap the stream on the already-linked output
-                // pad, so no join (and no join-time replay) ever fires. The
-                // replay restarts an external whose task died deselected and
-                // re-aligns its timeline, so a selection that moves onto an
-                // external with the branch already live queues it here. A
-                // fresh join sees an unlinked branch and keeps its join-time
-                // replay. A same-sid re-assertion is skipped so a redundant
-                // SELECT_STREAMS cannot blink the current cue.
-                // The external whose hold release the replay below owes, if
-                // any (see `Inner::release_owed_hold`).
-                let mut owed_release: Option<(ExternalSubId, u32)> = None;
-                if let Some(sid) = &subtitle
-                    && previous_subtitle.as_deref() != Some(sid.as_str())
-                    // A/B lever for diagnosing switch regressions without a
-                    // rebuild.
-                    && std::env::var_os("FCAST_NO_SELECTION_REPLAY").is_none()
-                {
-                    let (target, branch_live) = {
-                        let routing = self.routing.lock();
-                        let branch_live = routing
-                            .routed
-                            .iter()
-                            .any(|r| r.kind == StreamKind::Text && r.downstream.is_some());
-                        let target = routing.inputs.iter().find_map(|input| {
-                            let external = input.external.as_ref()?;
-                            input.stream_ids().contains(sid).then_some((
-                                external.id,
-                                external.epoch,
-                                external.last_origin,
-                                external.task_dead,
-                            ))
-                        });
-                        (target, branch_live)
-                    };
-                    if let Some((id, epoch, last_origin, task_dead)) = target {
-                        let (_, origin) = self.video_timeline();
-                        // With every text branch parked there is no pad swap
-                        // to wait on and no join to replay from, and a drained
-                        // external whose multiqueue slot was reclaimed has no
-                        // pad carrying its sid at all. Only this re-push
-                        // brings it back.
-                        // Lever: `FCAST_NO_PARKED_SELECTION_REPLAY`.
-                        let parked_needs_push = !branch_live
-                            && std::env::var_os("FCAST_NO_PARKED_SELECTION_REPLAY").is_none();
-                        if task_dead || origin != last_origin || parked_needs_push {
-                            // The input's cues would render shifted, so the
-                            // destructive flush-replay must run before
-                            // anything wrong reaches the screen.
-                            debug!(
-                                ?id,
-                                sid,
-                                %origin,
-                                %last_origin,
-                                task_dead,
-                                branch_live,
-                                "the selection moved onto a dead, differently-timed or slotless external; replaying it"
-                            );
-                            // The release of this input's hold belongs to the
-                            // replay, and only if the job is really on its
-                            // way. A failed send leaves nothing that could
-                            // discharge it. The per-resource in-flight bit is
-                            // read so a duplicate replay collapses here rather
-                            // than in `replay_subtitle`.
-                            let already = !self.replay_inflight.lock().insert((id, epoch));
-                            let sent = if already {
-                                debug!(
-                                    ?id,
-                                    epoch,
-                                    "a replay for this input is already queued or in flight; the \
-                                     selection does not add a second"
-                                );
-                                true
-                            } else {
-                                let sent = self.queue_job(Job::ReplaySub {
-                                    id,
-                                    epoch,
-                                    attempt: 0,
-                                });
-                                if !sent {
-                                    self.replay_inflight.lock().remove(&(id, epoch));
-                                }
-                                sent
-                            };
-                            // Owed either way. The hold is discharged by the
-                            // outcome of a replay for this `(id, epoch)`
-                            // (`Inner::release_owed_hold`), and a suppressed
-                            // duplicate carries the same key. The bit is read
-                            // HERE and the owing is written by the call below,
-                            // so the rival's outcome can settle in between and
-                            // find nothing owed; `unblock_selected_externals`
-                            // re-reads the bit at its tail for exactly that
-                            // window.
-                            if sent && !inline_hold_release {
-                                owed_release = Some((id, epoch));
-                            }
-                        } else {
-                            // Same timeline. A still-alive input delivers on
-                            // its own, and a flush now races the very swap
-                            // this selection started. The verification
-                            // replays only if nothing arrives.
-                            debug!(
-                                ?id,
-                                sid,
-                                "the selection moved onto an external with a live text branch; arming its replay check"
-                            );
-                            self.arm_replay_verification(id, epoch, 0);
-                        }
-                    }
-                }
-
-                // An external held blocked until selected may flow now (see
-                // `ExternalInput::hold_until_selected`), except the one whose
-                // realigning replay was just queued. That one waits for the
-                // seek (see `Inner::release_owed_hold`).
-                if !inline_hold_release {
-                    self.unblock_selected_externals(&all_ids, owed_release);
-                }
-
-                PlaybinEvent::StreamsSelected {
-                    video,
-                    audio,
-                    subtitle,
-                    seqnum,
-                }
-            }
+            MessageView::StreamsSelected(streams) => self.on_streams_selected(msg, streams)?,
             MessageView::ClockLost(_) => PlaybinEvent::ClockLost,
             MessageView::AsyncDone(_) => {
                 if !msg.src().map(|s| s == pipeline_obj).unwrap_or(false) {
@@ -638,16 +319,12 @@ impl Inner {
                 // exclusivity, see the selection module docs).
                 self.selection.lock().refresh_done();
                 // An async settle is a state edge too (a PAUSED-to-PAUSED
-                // seek posts no state-changed), so it also re-attempts the
-                // postponed text-branch work.
-                if self.has_deferred_text_work() {
-                    self.queue_job(Job::DrainTextWork);
-                }
-                // ... and the postponed text link. The state has to be READ
-                // here (an async settle carries none), which is sound
+                // seek posts no state-changed), so it re-attempts the same
+                // postponed text-branch work and link. The state has to be
+                // READ here (an async settle carries none), which is sound
                 // precisely because this message says the transition is over.
                 let (_, current, pending) = self.pipeline.state(gst::ClockTime::ZERO);
-                self.request_text_policy_poll_on_settle(current, pending);
+                self.settle_text_redrive(current, pending);
                 PlaybinEvent::AsyncDone
             }
             MessageView::DurationChanged(_) => {
@@ -701,6 +378,288 @@ impl Inner {
             _ => return None,
         };
         Some(event)
+    }
+
+    /// The STREAM_COLLECTION arm: three filters, then the engine's seeding.
+    ///
+    /// `None` for every collection that is not the live decodebin3's merged
+    /// one. Each filter has a different reason and their ORDER is load-bearing;
+    /// see the comments inline.
+    fn on_stream_collection(
+        &self,
+        msg: &gst::Message,
+        collection: gst::StreamCollection,
+    ) -> Option<PlaybinEvent> {
+        if self.message_from_external_input(msg) {
+            debug!(
+                src = ?msg.src().map(|s| s.name()),
+                "Ignoring a partial stream collection from an external subtitle input"
+            );
+            return None;
+        }
+        // The prepared next input's collection belongs to the next item. Hold
+        // it back and deliver it at activation, after PreparedActivated and
+        // stamped with the new generation (the input-posted form is caught by
+        // ancestry, the decodebin3-posted form by its stream ids).
+        //
+        // Must stay ahead of the decodebin3 filter below. The gapless handoff
+        // needs the next item's collection as early as the prepared input can
+        // post it.
+        if self.message_from_prepared_input(msg) || self.collection_is_prepared(&collection) {
+            debug!("holding the prepared next input's stream collection");
+            if let Some(prepared) = self.prepared.lock().as_mut() {
+                prepared.pending_collection = Some(collection);
+            }
+            return None;
+        }
+        // Only decodebin3's collection is the merged one, and only its stream
+        // ids may appear in a `SELECT_STREAMS` sent to decodebin3. Several
+        // elements post partial collections, each naming a single stream,
+        // interleaved with the merged ones.
+        //
+        // Feeding partials to the selection engine makes the collection appear
+        // to shrink, so reconciliation reads empty slots as deselection and
+        // actively deselects tracks the caller never touched.
+        //
+        // Matching the current core also drops a collection from a decodebin3
+        // the load already superseded.
+        let from_db3 = {
+            let core = self.core.lock();
+            match (core.as_ref(), msg.src()) {
+                (Some(core), Some(src)) => src == core.db3.upcast_ref::<gst::Object>(),
+                _ => false,
+            }
+        };
+        if !from_db3 {
+            debug!(
+                src = ?msg.src().map(|s| s.name()),
+                "ignoring a partial stream collection that is not decodebin3's merged one"
+            );
+            return None;
+        }
+        // The selection engine reconciles against the new collection before the
+        // caller can react to the event. Shared with the gapless boundary's
+        // seeding (`Inner::adopt_collection`).
+        self.adopt_collection(&collection);
+        Some(PlaybinEvent::StreamCollection(collection))
+    }
+
+    /// The STREAMS_SELECTED arm, which is not translation: the prepared-input
+    /// filter, the upstream/external merge, the mirror writes, the gapless
+    /// activation trigger, the engine's confirmation and the selection-time
+    /// replay policy, in that order.
+    ///
+    /// The order is the content. The merge has to finish before anything reads
+    /// the id set, `try_activate_prepared` has to run before the engine records
+    /// a confirmation so the event lands in the new item's stamping, and the
+    /// hold releases come last because they render against the origin the
+    /// replay decision may just have invalidated.
+    fn on_streams_selected(
+        &self,
+        msg: &gst::Message,
+        streams: &gst::message::StreamsSelected,
+    ) -> Option<PlaybinEvent> {
+        // The prepared next input's report about itself must not be read as the
+        // live pipeline's selection. A stream-aware adaptive demuxer posts its
+        // own streams-selected the moment it reaches PAUSED, ahead of any
+        // boundary. Consumers below speak about the item that is decoding,
+        // matching the treatment of its buffering, duration and collection.
+        //
+        // Untreated, the report names exactly the prepared input's stream ids,
+        // `try_activate_prepared` reads it as the gapless switch and runs the
+        // activation with nothing linked, the still-playing input is removed,
+        // and the demuxer dies of `not-linked`. Pull-driven parse chains never
+        // announce a selection of their own, so only adaptive sources hit this.
+        if self.adaptive_prepare_hold() && self.message_from_prepared_input(msg) {
+            debug!("dropping the prepared next input's own selection report");
+            return None;
+        }
+        let mut video = None;
+        let mut audio = None;
+        let mut subtitle = None;
+        let mut all_ids = Vec::new();
+
+        for stream in streams.streams() {
+            let id = stream.stream_id().map(|id| id.to_string());
+            if let Some(id) = &id {
+                all_ids.push(id.clone());
+            }
+
+            match decisions::kind_from_stream_type(stream.stream_type()) {
+                Some(StreamKind::Video) => video = id,
+                Some(StreamKind::Audio) => audio = id,
+                Some(StreamKind::Text) => subtitle = id,
+                None => {}
+            }
+        }
+
+        // The crate-owned sids, taken once. Both readers below ask the same
+        // membership question about this one report, and under two separate
+        // holds a concurrent attach or detach can answer them differently (the
+        // merge keeps a sid the filter then treats as upstream-owned, or the
+        // reverse). Routing before selection, the crate's lock order, and
+        // released before either.
+        let external_sids = self.routing.lock().external_stream_ids();
+
+        // An upstream-selection demuxer reports only its own streams, so
+        // absence of an external input's text there must not deselect it. Merge
+        // the crate-owned slot back in (cache-only read, this runs on a
+        // streaming thread). Same lever as the dispatch split.
+        if subtitle.is_none() && *self.upstream_selection.lock() == Some(true) {
+            let kept = self.selection.lock().subtitle_sid();
+            if let Some(sid) = kept {
+                if external_sids.contains(&sid) {
+                    debug!(%sid, "keeping the external subtitle an upstream report cannot speak about");
+                    all_ids.push(sid.clone());
+                    subtitle = Some(sid);
+                }
+            }
+        }
+
+        // Track the upstream-owned active set (every report, minus
+        // external-input sids) so the dispatch split can tell a real upstream
+        // change from a no-op. An adaptive demuxer only confirms an activation
+        // edge, so a no-op send would leave the engine awaiting a confirmation
+        // that cannot come.
+        {
+            let mut upstream_ids: Vec<String> = all_ids
+                .iter()
+                .filter(|sid| !external_sids.contains(sid))
+                .cloned()
+                .collect();
+            upstream_ids.sort();
+            *self.last_upstream_ids.lock() = upstream_ids;
+        }
+
+        // A selection naming the prepared input's streams is the gapless
+        // switch. Adopt the next item's generation and deliver its held-back
+        // collection first, so this selection event arrives in a fresh load's
+        // order and stamping.
+        self.try_activate_prepared(&all_ids);
+
+        let seqnum = msg.seqnum();
+        // The previously applied subtitle, for the selection-time replay below.
+        // Tracked here rather than read off the engine, whose `applied` is
+        // optimistic (set at dispatch) and by confirmation time already names
+        // the new target.
+        let previous_subtitle =
+            std::mem::replace(&mut *self.last_applied_subtitle.lock(), subtitle.clone());
+        // Record what applied (and settle/overtake the in-flight dispatch)
+        // before the caller sees the event. The caller's pump then dispatches
+        // any re-assertion or queued work.
+        self.selection.lock().streams_selected(
+            seqnum,
+            &TrackSelection {
+                video: video.clone(),
+                audio: audio.clone(),
+                subtitle: subtitle.clone(),
+            },
+        );
+
+        let owed_release =
+            self.selection_time_replay(subtitle.as_deref(), previous_subtitle.as_deref());
+
+        // An external held blocked until selected may flow now (see
+        // `Hold::UntilSelected`), except the one whose realigning replay was
+        // just queued. That one waits for the seek (see
+        // `Inner::release_owed_hold`).
+        //
+        // AFTER the replay decision above, deliberately: releasing ahead of it
+        // renders a just-selected external against the wrong origin.
+        self.unblock_selected_externals(&all_ids, owed_release);
+
+        Some(PlaybinEvent::StreamsSelected {
+            video,
+            audio,
+            subtitle,
+            seqnum,
+        })
+    }
+
+    /// The selection-time replay, the pad-reuse counterpart of the join-time
+    /// one, and the external whose hold release it owes (see
+    /// [`Inner::release_owed_hold`]).
+    ///
+    /// Switching between text streams makes decodebin3 swap the stream on the
+    /// already-linked output pad, so no join (and no join-time replay) ever
+    /// fires. A selection that moves onto an external with the branch already
+    /// live queues the replay here instead; a fresh join sees an unlinked
+    /// branch and keeps its join-time replay.
+    ///
+    /// Two gates before the rule ([`selection_replay_action`]), both needing
+    /// locks it must not take: a same-sid re-assertion is skipped so a
+    /// redundant SELECT_STREAMS cannot blink the current cue, and only a sid
+    /// belonging to an attached external input has anything to replay.
+    fn selection_time_replay(
+        &self,
+        subtitle: Option<&str>,
+        previous_subtitle: Option<&str>,
+    ) -> Option<(ExternalSubId, u32)> {
+        let sid = subtitle.filter(|sid| previous_subtitle != Some(sid))?;
+        // Routing before selection, the crate's lock order, and both facts the
+        // rule reads about routing taken under the one hold.
+        let (target, branch_live) = {
+            let routing = self.routing.lock();
+            let branch_live = routing
+                .routed
+                .iter()
+                .any(|r| r.kind == StreamKind::Text && r.downstream.is_some());
+            let target = routing.inputs.iter().find_map(|input| {
+                let external = input.external.as_ref()?;
+                input.stream_ids().iter().any(|id| id == sid).then_some((
+                    external.id,
+                    external.epoch,
+                    external.last_origin,
+                    external.task_dead,
+                ))
+            });
+            (target, branch_live)
+        };
+        let (id, epoch, last_origin, task_dead) = target?;
+        let (_, origin) = self.video_timeline();
+        match selection_replay_action(task_dead, origin, last_origin, branch_live) {
+            SelectionReplay::Replay => {
+                // The input's cues would render shifted, so the destructive
+                // flush-replay must run before anything wrong reaches the
+                // screen.
+                debug!(
+                    ?id,
+                    sid,
+                    %origin,
+                    %last_origin,
+                    task_dead,
+                    branch_live,
+                    "the selection moved onto a dead, differently-timed or slotless external; replaying it"
+                );
+                // The release of this input's hold belongs to the replay, and
+                // only if the job is really on its way. A failed send leaves
+                // nothing that could discharge it. The per-resource in-flight
+                // bit is taken so a duplicate replay collapses here rather than
+                // in `replay_subtitle` (see `Inner::claim_replay`).
+                let claim = self.claim_replay(id, epoch, "the selection");
+                // Owed on a collapsed duplicate too (`ReplayClaim::owed`): the
+                // hold is discharged by the outcome of a replay for this
+                // `(id, epoch)` (`Inner::release_owed_hold`) and the pending one
+                // carries the same key. The bit is taken HERE and the owing is
+                // written by the caller's `unblock_selected_externals`, so the
+                // rival's outcome can settle in between and find nothing owed;
+                // `unblock_selected_externals` re-reads the bit at its tail for
+                // exactly that window.
+                claim.owed().then_some((id, epoch))
+            }
+            SelectionReplay::ArmVerification => {
+                // Same timeline. A still-alive input delivers on its own, and a
+                // flush now races the very swap this selection started. The
+                // verification replays only if nothing arrives.
+                debug!(
+                    ?id,
+                    sid,
+                    "the selection moved onto an external with a live text branch; arming its replay check"
+                );
+                self.arm_replay_verification(id, epoch, 0);
+                None
+            }
+        }
     }
 }
 

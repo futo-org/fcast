@@ -18,10 +18,7 @@
 //!
 //! # Why these tests serialize
 //!
-//! Two pipelines at once would be two subtitle consumers at once. (Until step
-//! 6 this file also WROTE its lever into the process environment, because the
-//! transport was opt-in and read once per pipeline at construction; the flip
-//! retired the write and the lever went with it.)
+//! Two pipelines at once would be two subtitle consumers at once.
 //!
 //! # One harness change here
 //!
@@ -64,8 +61,8 @@ const CUE_STEP: gst::ClockTime = gst::ClockTime::from_mseconds(250);
 /// Long enough that no test reaches EOS while it is still asserting.
 const MEDIA_DURATION: gst::ClockTime = gst::ClockTime::from_seconds(120);
 
-/// Serializes the whole file. Two pipelines at once would also be two
-/// consumers at once, and [`init`] writes the process environment.
+/// Serializes the whole file: two pipelines at once would be two consumers
+/// at once.
 static PIPELINE: Mutex<()> = Mutex::new(());
 
 fn init() {
@@ -727,19 +724,6 @@ fn a_load_supersession_clears_the_consumer() {
 /// decoders land, and the two being mirror images is what makes the move
 /// a one-line change and a visible one.
 fn bitmap_track_is_carried_and_quiet(key: &str, caps: gst::Caps, format: BitmapSubFormat) {
-    // THE MASTER LEVER TAKES THIS CLAIM AWAY ON PURPOSE. With
-    // `FCAST_NO_BITMAP_SUBS=1` no bitmap track is carried at all, which is the
-    // rollback working rather than a failure, so the three flipped cases
-    // report NO VERDICT there instead of asserting a carriage the lever
-    // forbids. Their old loud contract is not lost: `tests/bitmap_lever.rs` is
-    // that contract, kept, with the lever in front of it.
-    if std::env::var_os("FCAST_NO_BITMAP_SUBS").is_some() {
-        println!(
-            "NO VERDICT: FCAST_NO_BITMAP_SUBS is set, so {key} is refused rather than carried; \
-             tests/bitmap_lever.rs owns that arm"
-        );
-        return;
-    }
     let cues = (0..400u32)
         .map(|index| {
             let start = CUE_STEP * u64::from(index);
@@ -903,8 +887,6 @@ fn unrenderable_track_is_loud_and_harmless(key: &str, caps: gst::Caps) {
 /// every bitmap format before the gate learned to answer per format. It keeps
 /// its subject and inverts its claim: the branch links, the packets reach the
 /// consumer, and the `SubtitleTrackUnsupported` it used to demand never fires.
-/// Its old contract lives on under the master lever, in
-/// `tests/bitmap_lever.rs`.
 ///
 /// The caps here carry `codec_data`, which is the real matroska shape and the
 /// one thing VOBSUB needs that the other two do not: its palette is out of
@@ -1129,9 +1111,7 @@ fn subtitles_off_and_shutdown_from_paused_do_not_wedge() {
 /// once per poll, for as long as the pipeline stays paused, with the incoming
 /// track never linked and no cue after the switch.
 ///
-/// RED with the postponement restored (`FCAST_NO_TEXT_WORK_DEFERRAL` is the
-/// other direction -- it forces the inline path everywhere -- so the red arm
-/// here is the code change itself).
+/// RED with the postponement restored, which is the code change itself.
 #[test]
 fn a_paused_disposal_frees_the_branch_for_the_next_link() {
     let _lock = PIPELINE.lock();
@@ -1324,9 +1304,14 @@ fn a_second_load_reports_the_unsupported_track_again() {
 /// queue's SINK pad while the parked push holds its SRC pad's stream lock.
 /// `tqueue.set_state(Null)` then joins that loop task and never returns.
 ///
-/// `FCAST_NO_TEXT_WORK_DEFERRAL` is what puts a resting-PAUSED detach on the
-/// mid-play path; the geometry it exposes is the same one a detach during any
-/// non-resting transition reaches on its own.
+/// `stage_text_work_deferral_off` puts this instance's disposals back on the
+/// calling thread. On the path this test takes the knob is inert either way
+/// (`defer_disposal` is false, so the disposal is inline regardless: the
+/// resting-PAUSED postponement was removed with subtitleoverlay, see
+/// `Inner::detach_text_parts`); it is kept because the pad-removed path can
+/// still reach the deferral. The geometry
+/// this test exposes is the same one a detach during any non-resting
+/// transition reaches on its own.
 #[test]
 fn an_inline_disposal_of_a_parked_paused_branch_does_not_wedge() {
     let _lock = PIPELINE.lock();
@@ -1341,16 +1326,9 @@ fn an_inline_disposal_of_a_parked_paused_branch_does_not_wedge() {
     // prerolled one into the appsink: that parked push is the whole subject.
     thread::sleep(Duration::from_millis(300));
 
-    // SAFETY: `PIPELINE` is held, so no other test in this binary is running.
-    unsafe { std::env::set_var("FCAST_NO_TEXT_WORK_DEFERRAL", "1") };
-    struct Restore;
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            // SAFETY: as above, the pipeline lock is still held.
-            unsafe { std::env::remove_var("FCAST_NO_TEXT_WORK_DEFERRAL") };
-        }
-    }
-    let _restore = Restore;
+    // PER INSTANCE: same predicate, same path, and no other pipeline in the
+    // binary is put on it.
+    harness.playbin.stage_text_work_deferral_off(true);
 
     // On a build without the pair this never returns, so it runs off the test
     // thread and the assertion stays on it.

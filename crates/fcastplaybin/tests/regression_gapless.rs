@@ -608,7 +608,7 @@ impl Harness {
     /// streaming thread shows up here as a job that never completes.
     fn assert_worker_alive(&self, what: &str) {
         let (tx, rx) = mpsc::channel();
-        self.playbin.debug_graph_async(Box::new(move |_| {
+        self.playbin.barrier_async(Box::new(move || {
             let _ = tx.send(());
         }));
         let deadline = Instant::now() + Duration::from_secs(10);

@@ -90,12 +90,6 @@ fn cues(count: u32, step: gst::ClockTime, tag: &str) -> Vec<CueSpec> {
         .collect()
 }
 
-/// Whether the text policy is running inline on the caller (the phase-3
-/// step-5 lever), which is the one arm where property 3 says something else.
-fn inline_poll() -> bool {
-    std::env::var_os("FCAST_INLINE_TEXT_POLL").is_some()
-}
-
 fn gate(paused: bool) -> SelectionGate {
     SelectionGate {
         quiet: true,
@@ -305,9 +299,9 @@ fn parked_drain_pokes_are_bounded_and_the_edge_drain_still_runs() {
     // per poll (about POLL_ROUNDS of them, this exact loop is the caller
     // side of the field busy loop). The verdict-based suppression admits
     // the first poke and swallows the rest.
-    let before = playbin.drain_text_job_count();
-    let polls_before = playbin.poll_policy_job_count();
-    let folds_before = playbin.poll_policy_coalesced();
+    let before = playbin.stats().drain_text_job_count;
+    let polls_before = playbin.stats().poll_policy_job_count;
+    let folds_before = playbin.stats().poll_policy_coalesced;
     for _ in 0..POLL_ROUNDS {
         playbin.poll_text_policy();
         while let Ok(event) = events.try_recv() {
@@ -317,37 +311,26 @@ fn parked_drain_pokes_are_bounded_and_the_edge_drain_still_runs() {
         }
         thread::sleep(Duration::from_millis(5));
     }
-    let queued = playbin.drain_text_job_count() - before;
+    let queued = playbin.stats().drain_text_job_count - before;
 
     // Property 3, first half. The polls themselves are now worker jobs, and
     // this loop is the caller shape that must not accumulate them.
-    let poll_jobs = playbin.poll_policy_job_count() - polls_before;
-    let folded = playbin.poll_policy_coalesced() - folds_before;
+    let poll_jobs = playbin.stats().poll_policy_job_count - polls_before;
+    let folded = playbin.stats().poll_policy_coalesced - folds_before;
     assert!(
         poll_jobs <= POLL_ROUNDS,
         "{poll_jobs} text-policy jobs reached the worker for {POLL_ROUNDS} polls: a poll \
          must never produce more than one job"
     );
-    if inline_poll() {
-        // The lever's arm: the poll runs on the CALLER, so there is nothing
-        // to queue and nothing to fold. Asserted rather than skipped, so the
-        // arm proves it is the arm it claims to be.
-        assert_eq!(
-            (poll_jobs, folded),
-            (0, 0),
-            "FCAST_INLINE_TEXT_POLL is set, so no poll may reach the worker at all"
-        );
-    } else {
-        // Minus one: the counter is bumped by the WORKER, and the last
-        // poll's job may still be sitting in the queue. At most one can be,
-        // because the coalescing admits exactly one outstanding poll.
-        assert!(
-            poll_jobs + folded >= POLL_ROUNDS - 1,
-            "{poll_jobs} jobs + {folded} folds account for fewer than {POLL_ROUNDS} polls: \
-             a poll that is neither queued nor folded is a lost edge, and the text branch \
-             it would have linked waits for a settle point that may never come"
-        );
-    }
+    // Minus one: the counter is bumped by the WORKER, and the last poll's job
+    // may still be sitting in the queue. At most one can be, because the
+    // coalescing admits exactly one outstanding poll.
+    assert!(
+        poll_jobs + folded >= POLL_ROUNDS - 1,
+        "{poll_jobs} jobs + {folded} folds account for fewer than {POLL_ROUNDS} polls: \
+         a poll that is neither queued nor folded is a lost edge, and the text branch \
+         it would have linked waits for a settle point that may never come"
+    );
     assert!(
         queued >= 1,
         "no drain job reached the worker at all during {POLL_ROUNDS} polls: the poke \
@@ -365,26 +348,24 @@ fn parked_drain_pokes_are_bounded_and_the_edge_drain_still_runs() {
     // idle worker keeps up with, so they prove the accounting but not the
     // FOLD. Outrun it deliberately: a caller that asks faster than the
     // decider answers must find its question already pending.
-    let polls_before = playbin.poll_policy_job_count();
-    let folds_before = playbin.poll_policy_coalesced();
+    let polls_before = playbin.stats().poll_policy_job_count;
+    let folds_before = playbin.stats().poll_policy_coalesced;
     for _ in 0..POLL_BURST {
         playbin.poll_text_policy();
     }
-    let poll_jobs = playbin.poll_policy_job_count() - polls_before;
-    let folded = playbin.poll_policy_coalesced() - folds_before;
-    if !inline_poll() {
-        assert!(
-            folded >= 1,
-            "{POLL_BURST} back-to-back polls produced {poll_jobs} jobs and folded none of \
-             them: the coalescing is not happening, so a polling caller's load reaches the \
-             worker one job at a time"
-        );
-        assert!(
-            poll_jobs <= POLL_BURST && poll_jobs + folded >= POLL_BURST - 1,
-            "{poll_jobs} jobs + {folded} folds do not account for {POLL_BURST} polls \
-             exactly once each (one may legitimately still be queued and unrun)"
-        );
-    }
+    let poll_jobs = playbin.stats().poll_policy_job_count - polls_before;
+    let folded = playbin.stats().poll_policy_coalesced - folds_before;
+    assert!(
+        folded >= 1,
+        "{POLL_BURST} back-to-back polls produced {poll_jobs} jobs and folded none of \
+         them: the coalescing is not happening, so a polling caller's load reaches the \
+         worker one job at a time"
+    );
+    assert!(
+        poll_jobs <= POLL_BURST && poll_jobs + folded >= POLL_BURST - 1,
+        "{poll_jobs} jobs + {folded} folds do not account for {POLL_BURST} polls \
+         exactly once each (one may legitimately still be queued and unrun)"
+    );
 
     // Property 2. The suppression verdict is standing right now, and the
     // resume must still drain the postponed disposal with NO further

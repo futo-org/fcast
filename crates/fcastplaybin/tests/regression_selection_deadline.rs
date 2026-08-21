@@ -27,41 +27,32 @@
 //! with the pipeline as src and passes through, or the tests would be eating
 //! the rescue they are measuring.
 //!
-//! # Verification
+//! # What each test pins
 //!
-//! * Green: no env vars.
-//! * RED per test, each under the lever for the behaviour it pins:
-//!   * `a_swallowed_streams_selected_still_confirms_by_reprobe` with
-//!     `FCAST_NO_SELECTION_DEADLINE=1`: no confirmation of the switch ever
-//!     arrives (the wait times out) - the L-2 latch, verbatim.
-//!   * `a_swallowed_async_done_cannot_latch_refreshing` with
-//!     `FCAST_NO_REFRESH_DEADLINE=1`: `RefreshSeekFailed` never arrives and the
-//!     later track change never dispatches - the L-1 latch, verbatim.
-//!   * `tick_repokes_parked_deferred_work_without_caller_polls` with
-//!     `FCAST_NO_TICK_DRAIN_POKE=1 FCAST_NO_TICK_RECONCILE_POKE=1`: the drain
-//!     job count freezes after the first parked verdict. BOTH levers, and the
-//!     reason is worth recording, because the single-lever RED this entry used
-//!     to claim stopped biting when the reconcile pass became lever-only and
-//!     nobody noticed (green under `FCAST_NO_TICK_DRAIN_POKE=1` alone, on
-//!     either transport). The tick's reconcile poke queues the SAME
-//!     `Job::DrainTextWork`, at the same 1 Hz, for as long as the crate holds
-//!     an item, and the two pokes are mutually exclusive by construction, so
-//!     with the drain poke levered off the reconcile poke simply takes over and
-//!     the counter cannot tell them apart. That mutual exclusion is also what
-//!     makes the GREEN run attributable: while postponed work is pending and
-//!     the drain poke is live, the reconcile poke is the one suppressed.
-//!   * `a_deadline_racing_its_confirmation_is_a_noop` with
-//!     `FCAST_NO_SELECTION_DEADLINE=1`: no deadline ever fires, so the race the
-//!     test exists to stage never happens and its setup times out.
-//!   * `a_deadline_does_not_act_on_a_selection_the_lane_has_not_sent` with
-//!     `FCAST_NO_INFLIGHT_DEADLINE_DEFER=1`: the deadline decides about a
-//!     `SELECT_STREAMS` that is still parked on the select lane and reports a
-//!     selection that has not happened - the phase-2 residual, verbatim.
-//! * RED wholesale with `FCAST_NO_TICK=1` (no tick thread at all): every test
-//!   here reverts to the v1 behaviour it was written against.
-//! * `FCAST_NO_HANDS=1` SKIPS the two in-flight tests (they print NO VERDICT):
-//!   the v1 sender loops register nothing in flight, so the table they measure
-//!   is not there to measure. Everything else here is unaffected by that lever.
+//! * `a_swallowed_streams_selected_still_confirms_by_reprobe`: without the
+//!   selection deadline no confirmation of the switch ever arrives - the L-2
+//!   latch, verbatim.
+//! * `a_swallowed_async_done_cannot_latch_refreshing`: without the refresh
+//!   deadline `RefreshSeekFailed` never arrives and the later track change
+//!   never dispatches - the L-1 latch, verbatim.
+//! * `tick_repokes_parked_deferred_work_without_caller_polls`: without the
+//!   tick's pokes the drain job count freezes after the first parked verdict.
+//!   BOTH pokes have to be absent to see it, which is worth recording: the
+//!   reconcile poke queues the SAME `Job::DrainTextWork`, at the same 1 Hz, for
+//!   as long as the crate holds an item, so with only the drain poke gone the
+//!   reconcile poke takes over and the counter cannot tell them apart. The two
+//!   are mutually exclusive by construction, and that is also what makes a
+//!   GREEN run attributable: while postponed work is pending and the drain poke
+//!   is live, the reconcile poke is the one suppressed.
+//! * `a_deadline_racing_its_confirmation_is_a_noop`: with no deadline firing at
+//!   all the race the test exists to stage never happens.
+//! * `a_deadline_does_not_act_on_a_selection_the_lane_has_not_sent`: without
+//!   the in-flight consult the deadline decides about a `SELECT_STREAMS` that
+//!   is still parked on the select lane and reports a selection that has not
+//!   happened - the phase-2 residual, verbatim.
+//!
+//! With no tick thread at all every test here reverts to the v1 behaviour it
+//! was written against.
 
 use std::{
     sync::{
@@ -412,14 +403,14 @@ fn audio_selections(seen: &[PlaybinEvent], sid: &str) -> usize {
 
 /// Park the worker until the returned sender is dropped.
 ///
-/// `DumpGraph`'s callback runs ON the worker and the snapshot walk is already
-/// finished when it is invoked, so the parked worker holds no crate lock: the
-/// test thread can keep queueing jobs and calling the synchronous API
-/// meanwhile (`regression_job_generation_gate.rs`).
+/// `Barrier`'s callback runs ON the worker and the job body is nothing but
+/// that call, so the parked worker holds no crate lock: the test thread can
+/// keep queueing jobs and calling the synchronous API meanwhile
+/// (`regression_job_generation_gate.rs`).
 fn stall_worker(playbin: &FcastPlaybin) -> mpsc::Sender<()> {
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let (parked_tx, parked_rx) = mpsc::channel::<()>();
-    playbin.debug_graph_async(Box::new(move |_snapshot| {
+    playbin.barrier_async(Box::new(move || {
         let _ = parked_tx.send(());
         let _ = release_rx.recv_timeout(BOUND);
     }));
@@ -433,7 +424,7 @@ fn stall_worker(playbin: &FcastPlaybin) -> mpsc::Sender<()> {
 /// completion on the worker.
 fn drain_worker(playbin: &FcastPlaybin) {
     let (done_tx, done_rx) = mpsc::channel::<()>();
-    playbin.debug_graph_async(Box::new(move |_snapshot| {
+    playbin.barrier_async(Box::new(move || {
         let _ = done_tx.send(());
     }));
     done_rx
@@ -477,15 +468,15 @@ fn a_swallowed_streams_selected_still_confirms_by_reprobe() {
         "the hook never ate a confirmation, so nothing was ever lost and this test proves nothing"
     );
     assert!(
-        rig.playbin.selection_deadline_confirms() >= 1,
+        rig.playbin.stats().selection_deadline_confirms >= 1,
         "the switch was reported without a deadline confirming it from the probe: \
          confirms={}, fires={}, giveups={}",
-        rig.playbin.selection_deadline_confirms(),
-        rig.playbin.selection_deadline_fires(),
-        rig.playbin.selection_deadline_giveups(),
+        rig.playbin.stats().selection_deadline_confirms,
+        rig.playbin.stats().selection_deadline_fires,
+        rig.playbin.stats().selection_deadline_giveups,
     );
     assert_eq!(
-        rig.playbin.selection_deadline_giveups(),
+        rig.playbin.stats().selection_deadline_giveups,
         0,
         "the selection WAS applied; giving up on it means the probe did not see it"
     );
@@ -555,7 +546,7 @@ fn a_swallowed_async_done_cannot_latch_refreshing() {
     // a fire means the seek WAS performed and its confirmation was the thing
     // that went missing.
     assert!(
-        rig.playbin.selection_deadline_fires() >= 1,
+        rig.playbin.stats().selection_deadline_fires >= 1,
         "the refresh was reported failed without any deadline firing, so one of the \
          pre-existing drop paths answered and the swallowed ASYNC_DONE was never the cause"
     );
@@ -675,13 +666,13 @@ fn tick_repokes_parked_deferred_work_without_caller_polls() {
     /// suppressed poll storm's own bound is 40 over a comparable window.
     const AT_MOST: u64 = 8;
 
-    let before = rig.playbin.drain_text_job_count();
+    let before = rig.playbin.stats().drain_text_job_count;
     let until = Instant::now() + WINDOW;
     while Instant::now() < until {
         rig.drain();
         thread::sleep(Duration::from_millis(20));
     }
-    let poked = rig.playbin.drain_text_job_count() - before;
+    let poked = rig.playbin.stats().drain_text_job_count - before;
     assert!(
         poked >= AT_LEAST,
         "{poked} drain jobs over {WINDOW:?} with no caller poll and no state edge \
@@ -767,14 +758,14 @@ fn a_deadline_racing_its_confirmation_is_a_noop() {
     // would then be measuring the wrong window.
     let release = stall_worker(&rig.playbin);
     assert_eq!(
-        rig.playbin.selection_deadline_fires(),
+        rig.playbin.stats().selection_deadline_fires,
         0,
         "a deadline fired before the worker was parked, so the fire this test \
          stages is not the first one and the stage is not the one described"
     );
     rig.wait_for(
         "a deadline fire to reach the stalled worker's queue",
-        move |playbin, _| playbin.selection_deadline_fires() >= 1,
+        move |playbin, _| playbin.stats().selection_deadline_fires >= 1,
     );
 
     // Deliver the confirmation late. Posting re-enters the bus sync handler on
@@ -807,12 +798,12 @@ fn a_deadline_racing_its_confirmation_is_a_noop() {
         &rig.seen[from..]
     );
     assert_eq!(
-        rig.playbin.selection_deadline_confirms(),
+        rig.playbin.stats().selection_deadline_confirms,
         0,
         "the deadline posted a synthetic confirmation for an already confirmed selection"
     );
     assert_eq!(
-        rig.playbin.selection_deadline_giveups(),
+        rig.playbin.stats().selection_deadline_giveups,
         0,
         "the deadline gave up on an already confirmed selection"
     );
@@ -846,15 +837,6 @@ const APPLY_BOUND: Duration = Duration::from_millis(500);
 #[test]
 fn a_busy_decider_delays_a_switch_without_breaking_its_bound() {
     init();
-    // The lever puts the dispatch back on the caller, where a parked decider
-    // delays nothing and there is no queue age to measure.
-    if std::env::var_os("FCAST_INLINE_DISPATCH").is_some() {
-        println!(
-            "NO VERDICT: FCAST_INLINE_DISPATCH executes the dispatch on the calling thread, \
-             so a parked decider is not in front of it"
-        );
-        return;
-    }
     let media = ScenarioBuilder::new("busydecider")
         .video("video_0")
         .audio("audio_0")
@@ -1024,9 +1006,9 @@ impl LaneHold {
 /// is in flight, and the real confirmation still lands and is correct once the
 /// lane is released.
 ///
-/// RED under `FCAST_NO_INFLIGHT_DEADLINE_DEFER=1`. Which of the two wrong
-/// answers comes out depends on where the send is parked, and this staging
-/// produces the confirming one: the crate's own route ran INSIDE the send (the
+/// Without the in-flight consult, which of the two wrong answers comes out
+/// depends on where the send is parked, and this staging produces the
+/// confirming one: the crate's own route ran INSIDE the send (the
 /// topology is deliberately visible the moment `send_event` returns, and here
 /// it is visible before that), so the probe finds the target routed and posts
 /// a synthetic confirmation for an event that has not been sent. Parked one
@@ -1036,18 +1018,6 @@ impl LaneHold {
 #[test]
 fn a_deadline_does_not_act_on_a_selection_the_lane_has_not_sent() {
     init();
-    // The subject is the hands' in-flight table, and `FCAST_NO_HANDS` runs
-    // the v1 sender loops, which have none: the property cannot exist there,
-    // so this is a skip rather than a RED arm. The RED arm for the behaviour
-    // is `FCAST_NO_INFLIGHT_DEADLINE_DEFER`, which keeps the table and only
-    // stops the deadline consulting it.
-    if std::env::var_os("FCAST_NO_HANDS").is_some() {
-        println!(
-            "NO VERDICT: FCAST_NO_HANDS runs the v1 sender loops, which register nothing \
-             in flight, so there is no table for the deadline to consult"
-        );
-        return;
-    }
     // Sparse cues on purpose: the text slot's source pad has to be IDLE when
     // decodebin3 arms its reconfiguration probe, or the reconfiguration runs
     // on the multiqueue's streaming thread and the lane is never entered.
@@ -1095,7 +1065,7 @@ fn a_deadline_does_not_act_on_a_selection_the_lane_has_not_sent() {
     let hold = Arc::new(LaneHold::default());
     hold.install(&db3);
 
-    let fires_before = rig.playbin.selection_deadline_fires();
+    let fires_before = rig.playbin.stats().selection_deadline_fires;
     let from = rig.seen.len();
     hold.arm();
     rig.playbin.request_track(
@@ -1143,8 +1113,8 @@ fn a_deadline_does_not_act_on_a_selection_the_lane_has_not_sent() {
         let deadline = Instant::now() + LANE_HELD;
         loop {
             rig.drain();
-            if rig.playbin.selection_deadline_fires() >= want || Instant::now() >= deadline {
-                break rig.playbin.selection_deadline_fires() - fires_before;
+            if rig.playbin.stats().selection_deadline_fires >= want || Instant::now() >= deadline {
+                break rig.playbin.stats().selection_deadline_fires - fires_before;
             }
             thread::sleep(Duration::from_millis(10));
         }
@@ -1154,25 +1124,20 @@ fn a_deadline_does_not_act_on_a_selection_the_lane_has_not_sent() {
     // deferral says the job ran, got past the settledness and gapless gates,
     // asked the hands and was told the event is still on the lane - which is
     // precisely the decision point every assertion below is about.
-    // Except under the lever, which is the ARM that must fail on the
-    // divergence below rather than on this scaffolding: with the consult
-    // turned off there is no deferral to count, and asserting one here would
-    // hide the wrong answer the lever exists to expose.
     assert!(
-        std::env::var_os("FCAST_NO_INFLIGHT_DEADLINE_DEFER").is_some()
-            || rig.playbin.selection_deadline_deferrals() >= 1,
+        rig.playbin.stats().selection_deadline_deferrals >= 1,
         "no deadline deferred to the parked send in {LANE_HELD:?} (fires={waited}), so \
          nothing below is evidence: the consult was never reached"
     );
     assert_eq!(
-        rig.playbin.selection_deadline_giveups(),
+        rig.playbin.stats().selection_deadline_giveups,
         0,
         "the deadline gave up on a selection the lane had not sent yet, and adopted a \
          reality the parked send is about to contradict; fires={waited}, events: {:?}",
         &rig.seen[from..]
     );
     assert_eq!(
-        rig.playbin.selection_deadline_confirms(),
+        rig.playbin.stats().selection_deadline_confirms,
         0,
         "the deadline decided a parked selection had applied and confirmed it from the \
          probe, off a routing entry the send made on its way IN; fires={waited}, \
@@ -1203,7 +1168,7 @@ fn a_deadline_does_not_act_on_a_selection_the_lane_has_not_sent() {
     drain_worker(&rig.playbin);
     rig.drain();
     assert_eq!(
-        rig.playbin.selection_deadline_giveups(),
+        rig.playbin.stats().selection_deadline_giveups,
         0,
         "the deadline gave up after all; events: {:?}",
         &rig.seen[from..]
@@ -1240,9 +1205,9 @@ fn a_deadline_does_not_act_on_a_selection_the_lane_has_not_sent() {
 /// A lane that never comes back must not be able to silence the deadline for
 /// good: deferring forever would trade a premature divergence for the
 /// permanent latch the deadline exists to prevent. Past
-/// `Inner::select_defer_budget` the crate stops waiting and lets the ordinary
-/// timed-out logic run - wrong about a reality that may still change, but
-/// loud, unlatching, and self-correcting if the lane heals.
+/// `Deadlines::select_defer_budget` the crate stops waiting and lets the
+/// ordinary timed-out logic run - wrong about a reality that may still change,
+/// but loud, unlatching, and self-correcting if the lane heals.
 ///
 /// Same wedge as the test above, with the budget shortened below the hold so
 /// the fall-through is reachable inside a test. What is asserted is the
@@ -1251,13 +1216,6 @@ fn a_deadline_does_not_act_on_a_selection_the_lane_has_not_sent() {
 #[test]
 fn the_deferral_to_an_unsent_selection_is_bounded() {
     init();
-    if std::env::var_os("FCAST_NO_HANDS").is_some() {
-        println!(
-            "NO VERDICT: FCAST_NO_HANDS runs the v1 sender loops, which register nothing \
-             in flight, so there is no deferral to bound"
-        );
-        return;
-    }
     let cues: Vec<CueSpec> = (0..30u64)
         .map(|index| {
             let start = gst::ClockTime::from_seconds(index + 1);
@@ -1304,8 +1262,8 @@ fn the_deferral_to_an_unsent_selection_is_bounded() {
     let hold = Arc::new(LaneHold::default());
     hold.install(&db3);
 
-    let decided_before =
-        rig.playbin.selection_deadline_confirms() + rig.playbin.selection_deadline_giveups();
+    let decided_before = rig.playbin.stats().selection_deadline_confirms
+        + rig.playbin.stats().selection_deadline_giveups;
     hold.arm();
     rig.playbin
         .request_track(TrackSlot::Subtitle, TrackTarget::Stream(Some(subtitle)));
@@ -1341,9 +1299,9 @@ fn the_deferral_to_an_unsent_selection_is_bounded() {
     let until = Instant::now() + LANE_HELD;
     while Instant::now() < until {
         rig.drain();
-        deferred |= rig.playbin.selection_deadline_deferrals() >= 1;
-        let decisions =
-            rig.playbin.selection_deadline_confirms() + rig.playbin.selection_deadline_giveups();
+        deferred |= rig.playbin.stats().selection_deadline_deferrals >= 1;
+        let decisions = rig.playbin.stats().selection_deadline_confirms
+            + rig.playbin.stats().selection_deadline_giveups;
         if deferred && decisions > decided_before {
             decided = true;
             break;

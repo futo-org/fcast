@@ -1,6 +1,7 @@
 //! RED regression for the video-reenable wedge, reduced from `fuzz_buffering`
-//! seed 1600031. Lever: `FCAST_READY_PARK_DESELECTED_VIDEO=1` restores the old
-//! behaviour and wedges this test. Long-form record: NEXT-FIXES-PLAN.md.
+//! seed 1600031. Parking a deselected video chain with a READY descent
+//! restores the old behaviour and wedges this test. Long-form record:
+//! NEXT-FIXES-PLAN.md.
 //!
 //! A mid-item video deselect used to park the chain with a sink-first READY
 //! descent, aborting the clock wait of decodebin3's multiqueue slot task

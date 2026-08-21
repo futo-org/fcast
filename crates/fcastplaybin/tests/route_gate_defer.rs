@@ -36,8 +36,9 @@
 use std::{
     cell::RefCell,
     sync::{
-        Arc, mpsc,
+        Arc,
         atomic::{AtomicBool, Ordering},
+        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -144,7 +145,10 @@ fn pad_token(text: &str, at: usize) -> Option<String> {
     let line_end = text[at..].find('\n').map_or(text.len(), |i| at + i);
     let line = &text[line_start..line_end];
     let field = line.find("pad=")?;
-    let token = line[field + 4..].split_whitespace().next()?.trim_matches('"');
+    let token = line[field + 4..]
+        .split_whitespace()
+        .next()?
+        .trim_matches('"');
     (!token.is_empty()).then(|| token.to_owned())
 }
 
@@ -367,7 +371,7 @@ impl Harness {
     /// The worker answers a queued job. A wedged worker answers nothing.
     fn assert_worker_alive(&self, what: &str) {
         let (tx, rx) = mpsc::channel();
-        self.playbin.debug_graph_async(Box::new(move |_snapshot| {
+        self.playbin.barrier_async(Box::new(move || {
             let _ = tx.send(());
         }));
         let deadline = Instant::now() + CALL_BOUND;

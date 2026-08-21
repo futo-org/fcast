@@ -450,11 +450,11 @@ fn find_element(harness: &Harness, factory: &str) -> Option<gst::Element> {
         })
 }
 
-/// The worker must answer a queued job within a bound: a graph-dump round-trip
+/// The worker must answer a queued job within a bound: a barrier round-trip
 /// proves it is not wedged inside a previous job.
 fn assert_worker_alive(harness: &Harness, what: &str) {
     let (tx, rx) = mpsc::channel();
-    harness.playbin.debug_graph_async(Box::new(move |_| {
+    harness.playbin.barrier_async(Box::new(move || {
         let _ = tx.send(());
     }));
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -1202,8 +1202,9 @@ fn attach_and_select(harness: &Harness, uri: &str) -> (fcastplaybin::ExternalSub
 /// input, so a `None` origin is the norm there.
 ///
 /// A genuinely misaligned cue reads `Some(0)`, which this keeps and asserts on
-/// (measured with `FCAST_NO_SELECTION_REPLAY=1`, where the unaligned segment IS
-/// stickied on the tail, so the test still catches the regression it guards).
+/// (measured with the selection replay taken out, where the unaligned segment
+/// IS stickied on the tail, so the test still catches the regression it
+/// guards).
 fn placed_with_prefix(tap: &TextTap, prefix: &str) -> Vec<(String, gst::ClockTime)> {
     tapped_with_prefix(tap, prefix)
         .into_iter()

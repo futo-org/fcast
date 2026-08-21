@@ -39,7 +39,7 @@ fn four_bit_run(length: u32) -> Vec<u8> {
     let mut bits: Vec<u8> = Vec::new();
     let mut acc: u32 = 0;
     let mut used = 0usize;
-    let mut push =
+    let push =
         |value: u32, count: usize, bits: &mut Vec<u8>, acc: &mut u32, used: &mut usize| {
             for step in (0..count).rev() {
                 *acc = (*acc << 1) | ((value >> step) & 1);

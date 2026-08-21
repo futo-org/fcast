@@ -5,8 +5,10 @@ use crate::{
     api::{AfterCancel, PlaybinEvent},
     gapless::SwapState,
     hands::Outcome,
-    jobs::{Job, Refusal, StalePolicy, poison_refusal, stale_policy},
-    levers::BitmapSubsEnabled,
+    jobs::{
+        Callback, Job, QueuedAt, Refusal, SnapshotCallback, StalePolicy, poison_refusal,
+        stale_policy,
+    },
     routing::StreamKind,
 };
 
@@ -65,7 +67,7 @@ fn stale_policy_drop_set_is_exactly_load_recoverclock_attachsub_dispatchselectio
         seqnum: gst::Seqnum::next(),
         replacing: true,
         generation: 1,
-        queued: std::time::Instant::now(),
+        queued: QueuedAt(std::time::Instant::now()),
     };
     pinned(dispatch, StalePolicy::Drop);
 
@@ -115,9 +117,15 @@ fn stale_policy_drop_set_is_exactly_load_recoverclock_attachsub_dispatchselectio
     };
     pinned(replay, StalePolicy::Run);
     let dump = Job::DumpGraph {
-        done: Box::new(|_| {}),
+        done: SnapshotCallback(Box::new(|_| {})),
     };
     pinned(dump, StalePolicy::Run);
+    // Touches nothing, and a caller is parked on it. Dropping a barrier
+    // strands that caller for the length of its own bound.
+    let barrier = Job::Barrier {
+        done: Callback(Box::new(|| {})),
+    };
+    pinned(barrier, StalePolicy::Run);
     pinned(
         Job::CancelPrepared {
             notify: true,
@@ -204,7 +212,7 @@ fn the_poison_gate_settles_every_job_a_caller_waits_on() {
     settles(
         Job::Stop {
             target: gst::State::Null,
-            done: Some(Box::new(|| {})),
+            done: Some(Callback(Box::new(|| {}))),
         },
         "barrier",
     );
@@ -218,9 +226,16 @@ fn the_poison_gate_settles_every_job_a_caller_waits_on() {
     );
     settles(
         Job::DumpGraph {
-            done: Box::new(|_| {}),
+            done: SnapshotCallback(Box::new(|_| {})),
         },
         "snapshot",
+    );
+    // The worker-liveness barrier the suites queue. Nothing else releases it.
+    settles(
+        Job::Barrier {
+            done: Callback(Box::new(|| {})),
+        },
+        "barrier",
     );
 
     // Event-awaiting callers, each parked on exactly one outcome.
@@ -280,7 +295,7 @@ fn the_poison_gate_settles_every_job_a_caller_waits_on() {
         seqnum: gst::Seqnum::next(),
         replacing: true,
         generation: 1,
-        queued: std::time::Instant::now(),
+        queued: QueuedAt(std::time::Instant::now()),
     };
     settles(dispatch, "dispatch-failed");
     settles(
@@ -380,11 +395,10 @@ fn a_refused_load_reports_the_uri_it_would_have_played() {
 /// What this test USED to pin, and what it means that it no longer can:
 /// the answer was a three-way `Option<DeferredTextWork>` and two levers
 /// could still reach `Flush`, one from an undecidable upstream-selection
-/// mode (`FCAST_EAGER_FLUSH_ON_UNKNOWN_MODE`) and one from a db3-owned
-/// replace (`FCAST_EAGER_REPLACE_FLUSH`). Both arms and both levers are
-/// gone with subtitleoverlay, whose sticky re-push cascade the flush
-/// deadlocked against; the mode argument went with them, because every
-/// remaining arm answers the same thing.
+/// mode and one from a db3-owned replace. Both arms, and the levers that
+/// reached them, are gone with subtitleoverlay, whose sticky re-push
+/// cascade the flush deadlocked against; the mode argument went with them,
+/// because every remaining arm answers the same thing.
 #[test]
 fn the_eager_park_covers_off_and_replace_and_nothing_else() {
     assert!(park_text_before_dispatch(true, false), "subtitle-off");
@@ -577,13 +591,13 @@ fn caps_name_kind_fallback() {
 /// must NOT appear here, which is exactly the kind of claim a test has to
 /// hold down.
 ///
-/// Asked with every bitmap format ENABLED, so a `None` for a subpicture
-/// caps means one thing only: no decoder exists for it yet. Each vertical
-/// moves its line here as it lands (P10).
+/// Every bitmap format is carried, so a `None` for a subpicture caps means
+/// one thing only: no decoder exists for it yet. Each vertical moves its
+/// line here as it lands (P10).
 #[test]
 fn consumer_caps_gate() {
     gst::init().unwrap();
-    let format_of = |caps: gst::Caps| consumer_stream_format(&caps, BitmapSubsEnabled::all());
+    let format_of = |caps: gst::Caps| consumer_stream_format(&caps);
     let text = |fmt: &str| {
         gst::Caps::builder("text/x-raw")
             .field("format", fmt)
@@ -644,72 +658,10 @@ fn consumer_caps_gate() {
     );
 }
 
-/// The master lever gives back the pre-phase-6 answers: every subpicture
-/// caps refused, and the text arm untouched.
-///
-/// No longer vacuous: PGS answers `Bitmap(Pgs)` without the lever and
-/// `None` with it, so the loop below is now a real rollback proof for that
-/// format and stays a shape proof for the other two.
-#[test]
-fn the_master_bitmap_lever_restores_the_loud_refusal() {
-    gst::init().unwrap();
-    let levered = BitmapSubsEnabled::from_levers(|lever| lever == "FCAST_NO_BITMAP_SUBS");
-    assert_eq!(
-        levered,
-        BitmapSubsEnabled::none(),
-        "the master lever must take every format down, not just its own"
-    );
-    for name in ["subpicture/x-pgs", "subpicture/x-dvd", "subpicture/x-dvb"] {
-        assert_eq!(
-            consumer_stream_format(&gst::Caps::builder(name).build(), levered),
-            None,
-            "{name} was carried under the master lever"
-        );
-    }
-    assert_eq!(
-        consumer_stream_format(
-            &gst::Caps::builder("text/x-raw")
-                .field("format", "utf8")
-                .build(),
-            levered
-        ),
-        Some(ConsumerStreamFormat::Text(super::SubtitleTextFormat::Utf8)),
-        "a bitmap lever must not touch the text arm"
-    );
-}
-
-/// Each per-format lever takes down its own format and nothing else, the
-/// property that makes rolling back ONE format possible.
-#[test]
-fn each_bitmap_lever_disables_exactly_its_own_format() {
-    let only = |lever: &'static str| BitmapSubsEnabled::from_levers(move |l| l == lever);
-    let all = BitmapSubsEnabled::all();
-
-    assert_eq!(
-        only("FCAST_NO_PGS_SUBS"),
-        BitmapSubsEnabled { pgs: false, ..all }
-    );
-    assert_eq!(
-        only("FCAST_NO_VOBSUB_SUBS"),
-        BitmapSubsEnabled {
-            vobsub: false,
-            ..all
-        }
-    );
-    assert_eq!(
-        only("FCAST_NO_DVB_SUBS"),
-        BitmapSubsEnabled { dvb: false, ..all }
-    );
-    // No lever set at all: the shipping default is everything on, and only
-    // the implemented set holds the formats back.
-    assert_eq!(BitmapSubsEnabled::from_levers(|_| false), all);
-}
-
 /// The cue-IR mode is chosen by a buffer META, never by the caps: a parser
 /// in `text-format=cue-ir` negotiates plain `format=utf8`, so this gate's
-/// answer for a cue-IR stream is, and must stay, `Utf8`. That is what
-/// makes `FCAST_NO_CUE_IR` a bit-for-bit restoration of the old
-/// negotiation: there is no negotiation difference to restore.
+/// answer for a cue-IR stream is, and must stay, `Utf8`. Cue-IR is a payload
+/// difference only; there is no negotiation difference at all.
 #[test]
 fn cue_ir_streams_are_indistinguishable_at_the_caps_gate() {
     gst::init().unwrap();
@@ -717,7 +669,7 @@ fn cue_ir_streams_are_indistinguishable_at_the_caps_gate() {
         .field("format", "utf8")
         .build();
     assert_eq!(
-        consumer_stream_format(&caps, BitmapSubsEnabled::all()),
+        consumer_stream_format(&caps),
         Some(ConsumerStreamFormat::Text(super::SubtitleTextFormat::Utf8)),
         "cue-ir must not be reachable from caps alone"
     );
@@ -825,11 +777,8 @@ fn a_cue_under_a_reverse_segment_still_names_a_forward_window() {
         .segment(&segment)
         .build();
 
-    let (start_rt, end_rt) = cue_bounds(crate::Inner::item_from_sample(
-        &sample,
-        BitmapSubsEnabled::all(),
-    ))
-    .expect("a cue inside a reverse segment is still a cue");
+    let (start_rt, end_rt) = cue_bounds(crate::Inner::item_from_sample(&sample))
+        .expect("a cue inside a reverse segment is still a cue");
     let end_rt = end_rt.expect("the unit carried a duration, so the window is closed");
     assert!(
         end_rt > start_rt,
@@ -857,10 +806,7 @@ fn a_cue_spanning_the_segment_start_is_clipped_onto_it() {
         gst::ClockTime::from_seconds(2),
     );
     assert_eq!(
-        cue_bounds(crate::Inner::item_from_sample(
-            &sample,
-            BitmapSubsEnabled::all()
-        )),
+        cue_bounds(crate::Inner::item_from_sample(&sample)),
         Some((gst::ClockTime::ZERO, Some(gst::ClockTime::from_seconds(1)))),
         "the covering cue must start at the segment and keep its real end"
     );
@@ -880,10 +826,7 @@ fn an_open_ended_cue_before_the_segment_is_clamped_rather_than_dropped() {
         gst::ClockTime::from_seconds(2),
     );
     assert_eq!(
-        cue_bounds(crate::Inner::item_from_sample(
-            &sample,
-            BitmapSubsEnabled::all()
-        )),
+        cue_bounds(crate::Inner::item_from_sample(&sample)),
         Some((gst::ClockTime::ZERO, None))
     );
 }
@@ -902,7 +845,7 @@ fn a_cue_wholly_before_the_segment_is_still_dropped() {
         gst::ClockTime::from_seconds(2),
     );
     assert!(
-        crate::Inner::item_from_sample(&sample, BitmapSubsEnabled::all()).is_none(),
+        crate::Inner::item_from_sample(&sample).is_none(),
         "a cue that ends before the segment begins has nothing to show"
     );
 }
@@ -920,10 +863,7 @@ fn a_cue_inside_the_segment_keeps_both_of_its_bounds() {
         gst::ClockTime::from_seconds(2),
     );
     assert_eq!(
-        cue_bounds(crate::Inner::item_from_sample(
-            &sample,
-            BitmapSubsEnabled::all()
-        )),
+        cue_bounds(crate::Inner::item_from_sample(&sample)),
         Some((
             gst::ClockTime::from_seconds(1),
             Some(gst::ClockTime::from_seconds(2))
@@ -944,7 +884,7 @@ fn a_bitmap_unit_spanning_the_segment_start_is_clipped_and_shortened() {
         Some(gst::ClockTime::from_seconds(2)),
         gst::ClockTime::from_seconds(2),
     );
-    match crate::Inner::item_from_sample(&sample, BitmapSubsEnabled::all()) {
+    match crate::Inner::item_from_sample(&sample) {
         Some(SubtitleFeedItem::Bitmap { rt, duration, .. }) => {
             assert_eq!(rt, gst::ClockTime::ZERO);
             assert_eq!(duration, Some(gst::ClockTime::from_seconds(1)));
@@ -964,7 +904,7 @@ fn a_bitmap_unit_wholly_before_the_segment_is_still_dropped() {
         Some(gst::ClockTime::from_seconds(1)),
         gst::ClockTime::from_seconds(2),
     );
-    assert!(crate::Inner::item_from_sample(&sample, BitmapSubsEnabled::all()).is_none());
+    assert!(crate::Inner::item_from_sample(&sample).is_none());
 }
 
 /// A record that occupies NO time is not a cue. Some tracks carry a
@@ -986,7 +926,7 @@ fn a_zero_length_record_is_not_a_cue() {
         gst::ClockTime::from_seconds(2),
     );
     assert!(
-        crate::Inner::item_from_sample(&sample, BitmapSubsEnabled::all()).is_none(),
+        crate::Inner::item_from_sample(&sample).is_none(),
         "a record with start == end can never be shown"
     );
 }
@@ -1003,7 +943,7 @@ fn a_record_ending_exactly_at_the_segment_start_is_refused() {
         Some(gst::ClockTime::from_seconds(1)),
         gst::ClockTime::from_seconds(2),
     );
-    assert!(crate::Inner::item_from_sample(&sample, BitmapSubsEnabled::all()).is_none());
+    assert!(crate::Inner::item_from_sample(&sample).is_none());
 }
 
 /// Field crash: a sender's Load carried `speed: 0.0`, which reached
@@ -1013,11 +953,165 @@ fn a_record_ending_exactly_at_the_segment_start_is_refused() {
 /// The load entry coerces such rates to 1.0x instead.
 #[test]
 fn a_zero_or_non_finite_start_rate_is_coerced_to_1x() {
-    use crate::pipeline::sanitize_start_rate;
+    use crate::decisions::sanitize_start_rate;
     for bad in [0.0, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         assert_eq!(sanitize_start_rate(bad), 1.0, "rate {bad}");
     }
     for ok in [1.0, 2.0, 0.5, -1.0] {
         assert_eq!(sanitize_start_rate(ok), ok, "rate {ok}");
     }
+}
+
+/// TRICKMODE exactly for reverse or above 2.0x. The 2.0 boundary is
+/// INCLUSIVE on the full-quality side: a 2x "watch faster" keeps every
+/// frame, and only just above it starts dropping.
+#[test]
+fn trickmode_is_reverse_or_strictly_above_two_x() {
+    let full_quality = [0.5, 1.0, 1.25, 1.5, 2.0];
+    for rate in full_quality {
+        let flags = seek_flags_for(rate);
+        assert!(
+            !flags.contains(gst::SeekFlags::TRICKMODE),
+            "rate {rate} must stay full quality"
+        );
+        assert!(flags.contains(gst::SeekFlags::FLUSH));
+    }
+    let trick = [2.0000001, 2.5, 4.0, -0.5, -1.0, -2.0];
+    for rate in trick {
+        let flags = seek_flags_for(rate);
+        assert!(
+            flags.contains(gst::SeekFlags::TRICKMODE),
+            "rate {rate} must enable trickmode"
+        );
+        assert!(flags.contains(gst::SeekFlags::FLUSH));
+    }
+}
+
+/// THE LEVERS ARE GONE: no `FCAST_<NAME>` token may appear anywhere in `src/`
+/// (plus `build.rs`) except the names on [`ALLOWED`].
+///
+/// The predecessor of this gate asked the weaker question (is every name
+/// mentioned also READ somewhere?), which was right while the levers existed.
+/// They do not: every levered arm is deleted and every arm now runs
+/// unconditionally, so a reintroduced `FCAST_*` name is either a resurrected
+/// lever or prose describing a mechanism that is not there. Both are the
+/// failure this gate exists to stop, and neither is something the compiler
+/// can see, since the mentions live in comments.
+///
+/// The allow-list is for `FCAST_*` names that are NOT levers: build- and
+/// test-harness knobs that gate no shipping behaviour. Adding to it needs
+/// that argument written next to the entry.
+///
+/// SCOPE: `src/` and `build.rs`. `tests/` is deliberately out, because the
+/// suites read their own harness knobs through local helpers (`env_u64`,
+/// `env_secs`) that this rule cannot tell from prose.
+#[test]
+fn no_fcast_lever_name_survives_anywhere_in_src() {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    /// `FCAST_LOOM` selects `cfg(loom)` for this package alone (`build.rs`),
+    /// which swaps the `hands` primitives for the model checker's in a TEST
+    /// build. It gates no shipping code path, so it is not a lever.
+    const ALLOWED: &[&str] = &["FCAST_LOOM"];
+
+    // Every `FCAST_<NAME>` token on one line, with its byte offset.
+    fn levers_in(line: &str) -> Vec<(usize, String)> {
+        const PREFIX: &str = "FCAST_";
+        let bytes = line.as_bytes();
+        let mut out = Vec::new();
+        let mut from = 0;
+        while let Some(rel) = line[from..].find(PREFIX) {
+            let at = from + rel;
+            let mut end = at + PREFIX.len();
+            while end < bytes.len()
+                && (bytes[end].is_ascii_uppercase()
+                    || bytes[end].is_ascii_digit()
+                    || bytes[end] == b'_')
+            {
+                end += 1;
+            }
+            // `FCAST_*` in prose is the family, not a name.
+            if end > at + PREFIX.len() {
+                out.push((at, line[at..end].to_string()));
+            }
+            from = at + PREFIX.len();
+        }
+        out
+    }
+
+    // The scanner must actually find tokens, or an empty answer below would
+    // read as a pass. The probe is ASSEMBLED rather than written out: a
+    // literal here would be a real mention in a real src/ file and this very
+    // test would report itself.
+    let p = "FCAST_";
+    assert_eq!(
+        levers_in(&format!("read {p}NO_TICK and {p}X2, not {p}* or {p}lower")),
+        vec![(5, format!("{p}NO_TICK")), (23, format!("{p}X2")),],
+        "the token scanner is broken"
+    );
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut files = vec![root.join("build.rs")];
+    let mut dirs = vec![root.join("src")];
+    while let Some(dir) = dirs.pop() {
+        for entry in std::fs::read_dir(&dir).expect("the crate's src/ is readable") {
+            let path = entry.expect("a readable directory entry").path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|ext| ext == "rs") {
+                // `.rs` only, which also keeps merge leftovers (`lib.rs.orig`)
+                // out of the answer.
+                files.push(path);
+            }
+        }
+    }
+    assert!(
+        files.len() > 10,
+        "the src/ walk found {} files",
+        files.len()
+    );
+
+    let mut scanned = 0usize;
+    let mut mentions: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for path in &files {
+        let Ok(text) = std::fs::read_to_string(path) else {
+            continue;
+        };
+        scanned += 1;
+        let file = path
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+        for (no, line) in text.lines().enumerate() {
+            for (_, name) in levers_in(line) {
+                if ALLOWED.contains(&name.as_str()) {
+                    continue;
+                }
+                mentions
+                    .entry(name)
+                    .or_default()
+                    .insert(format!("{file}:{}", no + 1));
+            }
+        }
+    }
+    assert!(
+        scanned > 10,
+        "only {scanned} files were readable, so the scan itself is broken"
+    );
+
+    let found: Vec<String> = mentions
+        .iter()
+        .map(|(name, sites)| {
+            let sites: Vec<&str> = sites.iter().map(String::as_str).collect();
+            format!("{name} ({})", sites.join(", "))
+        })
+        .collect();
+    assert!(
+        found.is_empty(),
+        "the levers are gone; these `FCAST_*` names are back in src/. Delete the lever and \
+         its prose (keeping WHY it existed), or add a non-lever knob to ALLOWED with the \
+         argument for it:\n  {}",
+        found.join("\n  ")
+    );
 }

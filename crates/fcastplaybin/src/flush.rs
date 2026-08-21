@@ -4,7 +4,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use gst::prelude::*;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::{FcastPlaybin, Inner};
 
@@ -97,6 +97,15 @@ impl FlushReason {
 /// is fixed and small, so a lock-free array indexed by the enum is the same
 /// observable instrument without a lock on the flush path or a non-const
 /// hasher in a `static`.
+///
+/// # RELAXED, like every other counter in this file
+///
+/// Nothing branches on a census counter, so no reader needs the increment
+/// ordered against anything else it might observe. `Relaxed` keeps per-counter
+/// coherence and monotonicity, which is all the assertions ask for ("this
+/// reason fired", "this reason never fires", `after - before` around a joined
+/// thread). The only sites that keep a stronger ordering are the ones a
+/// DECISION reads, and none of those are counters.
 static FLUSH_PAIRS: [AtomicU64; FlushReason::ALL.len()] =
     [const { AtomicU64::new(0) }; FlushReason::ALL.len()];
 
@@ -107,7 +116,7 @@ static FLUSH_PAIRS: [AtomicU64; FlushReason::ALL.len()] =
 /// FLUSH_STOP on an inactive pad, leaving the pad flushing for good. Crate
 /// side, complementing the downstream-observed `flush_pairs_matched` census in
 /// `fcasttest/src/sink.rs`.
-static FLUSH_PAIR_ACTIVITY_TRANSITIONS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static FLUSH_PAIR_ACTIVITY_TRANSITIONS: AtomicU64 = AtomicU64::new(0);
 
 /// Where a flow census was taken: the four pad-surgery clusters.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -159,16 +168,16 @@ static FLOW_CENSUS_FLUSHING: [AtomicU64; FlowStage::ALL.len()] =
 /// stream that is now alive again. What it must never be is silent, which is
 /// what it was before this counter existed: the whole defect fits between one
 /// adaptivedemux2 warning and no cues at all.
-static SLOT_UNLATCHES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static SLOT_UNLATCHES: AtomicU64 = AtomicU64::new(0);
 
 /// Slots [`Inner::unlatch_db3_slot`] read as healthy, i.e. there was nothing
 /// to repair. The overwhelmingly common case, counted so that a zero in
 /// [`SLOT_UNLATCHES`] can be told apart from an un-latch that never ran.
-static SLOT_UNLATCH_CLEAN: AtomicU64 = AtomicU64::new(0);
+pub(crate) static SLOT_UNLATCH_CLEAN: AtomicU64 = AtomicU64::new(0);
 
 /// Latched slots the re-activation did NOT clear. Zero is the invariant, and a
 /// nonzero count means a text track is dead with the repair in place.
-static SLOT_UNLATCH_FAILURES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static SLOT_UNLATCH_FAILURES: AtomicU64 = AtomicU64::new(0);
 
 /// Text slots whose sticky CAPS multiqueue destroyed in flight and
 /// [`Inner::rescue_lost_text_slot_caps`] put back.
@@ -177,37 +186,38 @@ static SLOT_UNLATCH_FAILURES: AtomicU64 = AtomicU64::new(0);
 /// count is one external subtitle track that would otherwise have been
 /// selected, confirmed, parked and silent for the life of the item. Healthy
 /// value is zero and it only moves on the race described at the repair.
-static TEXT_CAPS_RESCUES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TEXT_CAPS_RESCUES: AtomicU64 = AtomicU64::new(0);
 
 /// Lost text CAPS the restore did NOT get back onto the slot. Zero is the
 /// invariant, and a nonzero count means a subtitle track is silent for the item
 /// with the repair in place.
-static TEXT_CAPS_RESCUE_FAILURES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TEXT_CAPS_RESCUE_FAILURES: AtomicU64 = AtomicU64::new(0);
 
-/// Times [`Inner::adopt_outputless_text_slot`] FOUND the selected text stream
-/// sitting in a decodebin3 multiqueue slot with no output pad.
+/// One pass over the routing table's TEXT entries, for the slot repairs that
+/// run at the tail of [`Inner::poll_text_policy`].
 ///
-/// A FAILURE count, and the one this defect had no instrument for at all:
-/// every count is a re-selected subtitle track that decodebin3 fetched and then
-/// stranded inside itself. Counted whatever the repair's lever says, so the
-/// lever measures the REPAIR and not the crate's ability to see the shape.
-static OUTPUTLESS_TEXT_SLOTS: AtomicU64 = AtomicU64::new(0);
-
-/// Those of [`OUTPUTLESS_TEXT_SLOTS`] where the sink's CAPS was still there to
-/// be stored onto the slot src, i.e. where the repair had something to do. A
-/// REPAIR count.
-static OUTPUTLESS_TEXT_SLOT_ADOPTIONS: AtomicU64 = AtomicU64::new(0);
-
-/// How long the selected text stream may sit in an output-less multiqueue slot
-/// before [`Inner::adopt_outputless_text_slot`] describes it and acts.
+/// They each used to walk `routing.routed` themselves, which is one lock
+/// acquisition per repair on the decider for three filtered scans over the
+/// same handful of entries. The buckets are disjoint by `downstream`, so one
+/// pass fills all three and every repair reads the SAME instant of the routing
+/// table instead of three that can disagree.
 ///
-/// Longer than the state's legitimate lifetime and short enough to be a repair
-/// rather than an epitaph. The healthy path passes THROUGH this shape twice on
-/// a fast subtitle round trip (the demuxer has not answered the re-select yet,
-/// or decodebin3 has the stream and not yet its caps) and both of those clear
-/// in milliseconds. A second is three orders of magnitude over that and still
-/// inside the window where a viewer reads the track as "slow", not "broken".
-const OUTPUTLESS_TEXT_SLOT_GRACE: std::time::Duration = std::time::Duration::from_secs(1);
+/// Built under the lock and read outside it, the `refusals` discipline the
+/// rest of this crate is written to: the consumers join a multiqueue task or
+/// take pad object locks that streaming threads hold, and neither may happen
+/// under a crate lock.
+struct TextPadSurvey {
+    /// Text entries with a LIVE branch that is not flushing right now. The
+    /// scope [`Inner::heal_latched_text_slots`] argues for: joined only, with
+    /// parked branches deliberately excluded.
+    live: Vec<gst::Pad>,
+    /// Text entries with NO live branch whose decodebin3 ghost carries no
+    /// caps, the visible symptom [`Inner::rescue_lost_text_slot_caps`] repairs.
+    capsless_parked: Vec<gst::Pad>,
+    /// Text entries with no live branch that DO carry caps, the only ones
+    /// [`Inner::stage_text_caps_loss`] can take a caps away from.
+    capsful_parked: Vec<gst::Pad>,
+}
 
 impl Inner {
     /// THE crate's flush pair, on one pad, counted.
@@ -226,24 +236,8 @@ impl Inner {
     /// flushing permanently, with a FLUSH_START that no FLUSH_STOP ever
     /// answers. The transition is cheap to observe and impossible to spot in
     /// a log, so it is counted and shouted about instead.
-    ///
-    /// `FCAST_FLUSH_TAP` adds the per-pair detail line (pad, parent, reason)
-    /// the seqnum correlation cannot give us: all ten crate sends are
-    /// unstamped and the crate never reads a flush seqnum, so attribution has
-    /// to come from the sender's side.
     pub(crate) fn send_flush_pair(pad: &gst::Pad, reason: FlushReason) {
-        FLUSH_PAIRS[reason as usize].fetch_add(1, Ordering::SeqCst);
-        if std::env::var_os("FCAST_FLUSH_TAP").is_some() {
-            info!(
-                pad = %pad.name(),
-                parent = ?pad.parent_element().map(|element| element.name().to_string()),
-                reason = reason.name(),
-                linked = pad.is_linked(),
-                active = pad.is_active(),
-                last_flow = ?pad.last_flow_result(),
-                "flush tap: sending a crate-origin flush pair"
-            );
-        }
+        FLUSH_PAIRS[reason as usize].fetch_add(1, Ordering::Relaxed);
         let active_before = pad.is_active();
         let _ = pad.send_event(gst::event::FlushStart::new());
         // `reset_time = FALSE`, and the flag is the whole point of this line.
@@ -267,12 +261,9 @@ impl Inner {
         // does: `remove_event_by_type (pad, GST_EVENT_SEGMENT)`
         // (gstpad.c:5919) is unconditional, which is why
         // [`Inner::flush_db3_sink_pads`] still has to replay the sticky.
-        //
-        // Lever: `FCAST_FLUSH_STOP_RESETS_TIME` restores the v1 `true`.
-        let reset_time = std::env::var_os("FCAST_FLUSH_STOP_RESETS_TIME").is_some();
-        let _ = pad.send_event(gst::event::FlushStop::new(reset_time));
+        let _ = pad.send_event(gst::event::FlushStop::new(false));
         if active_before && !pad.is_active() {
-            FLUSH_PAIR_ACTIVITY_TRANSITIONS.fetch_add(1, Ordering::SeqCst);
+            FLUSH_PAIR_ACTIVITY_TRANSITIONS.fetch_add(1, Ordering::Relaxed);
             error!(
                 pad = %pad.name(),
                 parent = ?pad.parent_element().map(|element| element.name().to_string()),
@@ -370,8 +361,8 @@ impl Inner {
     /// # Every stage's invariant is ZERO, and it was not always so
     ///
     /// One stage used to be nonzero by construction: `dispose_text_branch`
-    /// surveyed subtitleoverlay's shared `subtitle_sink`, which with
-    /// `FCAST_FLUSH_TAP` read `Ok` immediately BEFORE the disposal's own seat
+    /// surveyed subtitleoverlay's shared `subtitle_sink`, which read `Ok`
+    /// immediately BEFORE the disposal's own seat
     /// pair and `Flushing` immediately after it, on a pad that was active
     /// and unlinked, put there by the crate's own pair. It was benign (the next
     /// `poll_text_policy` link re-activated the pad and delivered) and it left
@@ -382,7 +373,7 @@ impl Inner {
     pub(crate) fn flow_census(stage: FlowStage, pads: &[gst::Pad]) {
         for pad in pads {
             if pad.is_active() && matches!(pad.last_flow_result(), Err(gst::FlowError::Flushing)) {
-                FLOW_CENSUS_FLUSHING[stage as usize].fetch_add(1, Ordering::SeqCst);
+                FLOW_CENSUS_FLUSHING[stage as usize].fetch_add(1, Ordering::Relaxed);
                 warn!(
                     stage = stage.name(),
                     pad = %pad.name(),
@@ -419,22 +410,87 @@ impl Inner {
         (factory.name() == "multiqueue").then_some(target)
     }
 
+    /// THE LATCH TEST, in one place: is this multiqueue slot's SRC pad latched
+    /// FLUSHING?
+    ///
+    /// [`Inner::slot_reads_latched`] (the read) and [`Inner::unlatch_db3_slot`]
+    /// (the repair) both gate on it, and they must keep agreeing by
+    /// construction: a read that says "latched" where the repair says "clean"
+    /// is an instrument pointing at nothing.
+    ///
+    /// The `is_active` conjunct is required, never optional. gstpad writes
+    /// FLUSHING into `last_flow_result` as bookkeeping at construction
+    /// (gstpad.c:441) and on every deactivation (1143), so without it the read
+    /// is a noise source and the repair a data destroyer; see
+    /// [`Inner::flow_census`] for the measurement. Two atomic reads, no wait,
+    /// safe to call from a log line.
+    fn slot_pad_is_latched(slot_src: &gst::Pad) -> bool {
+        slot_src.is_active() && matches!(slot_src.last_flow_result(), Err(gst::FlowError::Flushing))
+    }
+
+    /// The multiqueue SINK pad that pairs with a slot's SRC pad.
+    ///
+    /// multiqueue names a slot's two pads `src_%u` and `sink_%u` off one id, so
+    /// the sink is derivable from the src, which is what every caps repair here
+    /// needs (the fingerprint is "the sink has the caps and the src does not").
+    /// `None` for a pad that is not a slot src.
+    fn slot_sink_of(slot_src: &gst::Pad) -> Option<gst::Pad> {
+        let element = slot_src.parent_element()?;
+        let name = slot_src.name();
+        let id = name.strip_prefix("src_")?;
+        element.static_pad(&format!("sink_{id}"))
+    }
+
+    /// A pad's sticky inventory as `Type+Type+...`, for a log line.
+    fn sticky_names(pad: &gst::Pad) -> String {
+        let mut out = Vec::new();
+        pad.sticky_events_foreach(|event| {
+            out.push(format!("{:?}", event.type_()));
+            std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
+        });
+        out.join("+")
+    }
+
+    /// A pad's sticky events, cloned, in the order gstpad hands them out.
+    fn sticky_events(pad: &gst::Pad) -> Vec<gst::Event> {
+        let mut out = Vec::new();
+        pad.sticky_events_foreach(|event| {
+            out.push(event.clone());
+            std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
+        });
+        out
+    }
+
+    /// STREAM_START FIRST, but only when the slot's src pad has gone EOS: an
+    /// EOS pad refuses every store (`goto eos`) and STREAM_START is the only
+    /// event that clears the flag. Re-storing the pad's own STREAM_START does
+    /// that and nothing else, since `gst_event_replace` with the identical
+    /// pointer changes no state; the sink's is the fallback for a slot whose
+    /// src never carried one.
+    ///
+    /// Both caps repairs need this preamble before their own store, and they
+    /// need the SAME one: a slot the preamble leaves EOSed swallows the store
+    /// that follows and the track stays dead with the repair in place.
+    fn clear_slot_eos_for_store(slot_src: &gst::Pad, slot_sink: &gst::Pad) {
+        if slot_src.pad_flags().contains(gst::PadFlags::EOS)
+            && let Some(stream_start) = Self::sticky_event_of(slot_src, gst::EventType::StreamStart)
+                .or_else(|| Self::sticky_event_of(slot_sink, gst::EventType::StreamStart))
+            && let Err(err) = slot_src.store_sticky_event(&stream_start)
+        {
+            warn!(slot_pad = %slot_src.name(), ?err, "could not clear the slot's EOS flag");
+        }
+    }
+
     /// The latch READ on its own, with no repair attached: `Some(true)` if the
     /// slot behind this decodebin3 output is latched FLUSHING, `Some(false)` if
     /// it is healthy, `None` if there is no multiqueue slot to read (a decoded
     /// stream, see [`Inner::multiqueue_slot_behind`]).
     ///
-    /// The same two conditions [`Inner::unlatch_db3_slot`] gates on, and for
-    /// the same reason: `is_active` is required because gstpad writes FLUSHING
-    /// into `last_flow_result` on every deactivation as bookkeeping
-    /// (gstpad.c:1147), which is the trap [`Inner::flow_census`] documents.
-    /// Two atomic reads, no wait, safe to call from a log line.
+    /// The same test [`Inner::unlatch_db3_slot`] gates its repair on, shared
+    /// rather than copied; see [`Inner::slot_pad_is_latched`].
     pub(crate) fn slot_reads_latched(db3_src_pad: &gst::Pad) -> Option<bool> {
         let slot_src = Self::multiqueue_slot_behind(db3_src_pad)?;
-        Some(
-            slot_src.is_active()
-                && matches!(slot_src.last_flow_result(), Err(gst::FlowError::Flushing)),
-        )
+        Some(Self::slot_pad_is_latched(&slot_src))
     }
 
     /// The whole caps path behind a routed text pad, rendered for one log line:
@@ -449,14 +505,6 @@ impl Inner {
     /// lost-caps fingerprint, and it is one grep rather than a 76 MB
     /// `GST_DEBUG` capture.
     pub(crate) fn caps_path_dump(db3_src_pad: &gst::Pad) -> String {
-        fn stickies(pad: &gst::Pad) -> String {
-            let mut out = Vec::new();
-            pad.sticky_events_foreach(|event| {
-                out.push(format!("{:?}", event.type_()));
-                std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
-            });
-            out.join("+")
-        }
         fn describe(tag: &str, pad: &gst::Pad) -> String {
             format!(
                 "{tag}[{}:{} mode={:?} flags={:?} active={} flow={:?} caps={:?} sticky={}]",
@@ -469,7 +517,7 @@ impl Inner {
                 pad.is_active(),
                 pad.last_flow_result(),
                 pad.current_caps().map(|c| c.to_string()),
-                stickies(pad),
+                Inner::sticky_names(pad),
             )
         }
         let mut parts = vec![describe("ghost", db3_src_pad)];
@@ -488,10 +536,7 @@ impl Inner {
                             .map(|f| f.name().to_string())
                             .unwrap_or_default()
                     ));
-                    // multiqueue names its pads src_%u / sink_%u by the same id.
-                    if let Some(id) = target.name().strip_prefix("src_")
-                        && let Some(mq_sink) = element.static_pad(&format!("sink_{id}"))
-                    {
+                    if let Some(mq_sink) = Self::slot_sink_of(&target) {
                         parts.push(describe("mqsink", &mq_sink));
                         if let Some(peer) = mq_sink.peer() {
                             parts.push(describe("mqsinkpeer", &peer));
@@ -580,20 +625,12 @@ impl Inner {
     /// the same `poll_text_policy` call that joined it. Waiting here bought at
     /// most one tick of promptness and paid for it in decider latency on every
     /// disposal that had nothing wrong with it.
-    ///
-    /// Lever: `FCAST_NO_SLOT_UNLATCH` restores the pre-fix behaviour exactly
-    /// (no read, no repair, at either call site).
     pub(crate) fn unlatch_db3_slot(db3_src_pad: &gst::Pad) {
-        if std::env::var_os("FCAST_NO_SLOT_UNLATCH").is_some() {
-            return;
-        }
         let Some(slot_src) = Self::multiqueue_slot_behind(db3_src_pad) else {
             return;
         };
-        if !(slot_src.is_active()
-            && matches!(slot_src.last_flow_result(), Err(gst::FlowError::Flushing)))
-        {
-            SLOT_UNLATCH_CLEAN.fetch_add(1, Ordering::SeqCst);
+        if !Self::slot_pad_is_latched(&slot_src) {
+            SLOT_UNLATCH_CLEAN.fetch_add(1, Ordering::Relaxed);
             return;
         }
         warn!(
@@ -623,11 +660,7 @@ impl Inner {
         // in the pad's own store without pushing anything downstream, which is
         // the property that made re-activation the winning candidate in the
         // first place.
-        let mut stickies = Vec::new();
-        slot_src.sticky_events_foreach(|event| {
-            stickies.push(event.clone());
-            std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
-        });
+        let stickies = Self::sticky_events(&slot_src);
         // Deactivate THEN activate: `gst_pad_set_active (pad, TRUE)` on a pad
         // that is already active is a no-op, so the clearing half
         // (`gst_single_queue_flush (mq, sq, FALSE, TRUE)`) is only reachable
@@ -645,9 +678,9 @@ impl Inner {
             }
         }
         if reactivated && slot_src.is_active() {
-            SLOT_UNLATCHES.fetch_add(1, Ordering::SeqCst);
+            SLOT_UNLATCHES.fetch_add(1, Ordering::Relaxed);
         } else {
-            SLOT_UNLATCH_FAILURES.fetch_add(1, Ordering::SeqCst);
+            SLOT_UNLATCH_FAILURES.fetch_add(1, Ordering::Relaxed);
             error!(
                 slot_pad = %slot_src.name(),
                 active = slot_src.is_active(),
@@ -713,11 +746,9 @@ impl Inner {
     /// The routing lock is taken to COLLECT and released before anything
     /// touches the graph, the `refusals` discipline the rest of this crate is
     /// written to. `unlatch_db3_slot` joins a multiqueue task, which is
-    /// precisely the shape that must never run under a crate lock.
-    pub(crate) fn heal_latched_text_slots(inner: &std::sync::Arc<Inner>) {
-        if std::env::var_os("FCAST_NO_SLOT_UNLATCH").is_some() {
-            return;
-        }
+    /// precisely the shape that must never run under a crate lock. The
+    /// collecting is [`TextPadSurvey`]'s, shared with the repair below it.
+    fn heal_latched_text_slots(survey: &TextPadSurvey) {
         // PARKED BRANCHES ARE DELIBERATELY NOT COVERED, and the reasoning
         // inverted once, so it is worth stating.
         //
@@ -731,27 +762,14 @@ impl Inner {
         // defect is about: `gst_single_queue_flush_queue` destroys what the
         // slot holds (gstmultiqueue.c:3513-3538), and what a parked slot holds
         // is the backlog the park exists to keep. The extension was buying a
-        // repair for a latch that [`Inner::bring_up_parking_sink`] now prevents
-        // outright, and paying for it in exactly the currency at issue.
+        // repair for a latch that [`Inner::retire_parking_sink`]'s PLAYING
+        // barrier now prevents outright, and paying for it in exactly the
+        // currency at issue.
         //
         // So the scope stays JOINED-ONLY: `downstream` in the routing entry,
-        // and not flushing right now.
-        let live: Vec<gst::Pad> = {
-            let routing = inner.routing.lock();
-            routing
-                .routed
-                .iter()
-                .filter(|routed| {
-                    routed.kind == crate::routing::StreamKind::Text
-                        && routed.downstream.as_ref().is_some_and(|downstream| {
-                            !downstream.pad_flags().contains(gst::PadFlags::FLUSHING)
-                        })
-                })
-                .map(|routed| routed.db3_src_pad.clone())
-                .collect()
-        };
-        for pad in live {
-            Self::unlatch_db3_slot(&pad);
+        // and not flushing right now, which is `TextPadSurvey::live`.
+        for pad in &survey.live {
+            Self::unlatch_db3_slot(pad);
         }
     }
 
@@ -828,305 +846,62 @@ impl Inner {
     /// what makes the repair land in the right order relative to whatever else
     /// the slot is about to send.
     ///
-    /// Lever: `FCAST_NO_TEXT_CAPS_RESCUE` restores the pre-fix behaviour
-    /// exactly (no read, no repair). Counted in [`TEXT_CAPS_RESCUES`].
-    pub(crate) fn rescue_lost_text_slot_caps(inner: &std::sync::Arc<Inner>) {
-        if std::env::var_os("FCAST_NO_TEXT_CAPS_RESCUE").is_some() {
-            return;
-        }
+    /// Counted in [`TEXT_CAPS_RESCUES`].
+    fn rescue_lost_text_slot_caps(survey: &TextPadSurvey) {
         // Collected under the routing lock and repaired outside it, the
         // `refusals` discipline: the stores below take pad object locks that
-        // streaming threads hold.
-        let capsless: Vec<gst::Pad> = {
-            let routing = inner.routing.lock();
-            routing
-                .routed
-                .iter()
-                .filter(|routed| {
-                    routed.kind == crate::routing::StreamKind::Text
-                        && routed.downstream.is_none()
-                        && routed.db3_src_pad.current_caps().is_none()
-                })
-                .map(|routed| routed.db3_src_pad.clone())
-                .collect()
-        };
-        for pad in capsless {
-            Self::rescue_slot_caps(&pad);
+        // streaming threads hold. See [`TextPadSurvey`].
+        for pad in &survey.capsless_parked {
+            Self::rescue_slot_caps(pad);
         }
     }
 
-    /// decodebin3's own multiqueue, found by factory rather than by name.
-    ///
-    /// The element is an implementation detail of decodebin3 with an
-    /// auto-generated name (`multiqueue0`, `multiqueue1`, … per process), so a
-    /// name lookup would be a coin flip across two loads. There is exactly one
-    /// per decodebin3 (`gst_decodebin3_init`).
-    fn db3_multiqueue(db3: &gst::Element) -> Option<gst::Element> {
-        db3.downcast_ref::<gst::Bin>()?
-            .children()
-            .into_iter()
-            .find(|child| {
-                child
-                    .factory()
-                    .is_some_and(|factory| factory.name() == "multiqueue")
-            })
-    }
-
-    /// One multiqueue slot decodebin3 has built NO OUTPUT for, described for a
-    /// log line and (when it can be) repaired. See
-    /// [`Inner::adopt_outputless_text_slot`].
-    fn describe_slot(slot_src: &gst::Pad, slot_sink: &gst::Pad) -> String {
-        fn stickies(pad: &gst::Pad) -> String {
-            let mut out = Vec::new();
-            pad.sticky_events_foreach(|event| {
-                out.push(format!("{:?}", event.type_()));
-                std::ops::ControlFlow::Continue(gst::EventForeachAction::Keep)
-            });
-            out.join("+")
-        }
-        format!(
-            "{}[caps={:?} sticky={} eos={} active={} flow={:?} linked={}] <- {}[caps={:?} \
-             sticky={} sid={:?}]",
-            slot_src.name(),
-            slot_src.current_caps().map(|c| c.to_string()),
-            stickies(slot_src),
-            slot_src.pad_flags().contains(gst::PadFlags::EOS),
-            slot_src.is_active(),
-            slot_src.last_flow_result(),
-            slot_src.is_linked(),
-            slot_sink.name(),
-            slot_sink.current_caps().map(|c| c.to_string()),
-            stickies(slot_sink),
-            slot_sink.stream_id().as_deref(),
-        )
-    }
-
-    /// The re-select's OTHER half: a multiqueue slot that carries the selected
-    /// text stream and that decodebin3 built no OUTPUT PAD for, so the stream
-    /// dies inside decodebin3 with nothing in the crate's routing to name.
-    ///
-    /// # The mechanism
-    ///
-    /// An adaptive input answers SELECTABLE, so `dbin->upstream_handles_
-    /// selection` is 1 and `handle_stream_switch()` (the function that assigns
-    /// outputs to slots) is never called at all (gstdecodebin3.c:3663 guards
-    /// it on `!dbin->upstream_handles_selection`). The ONLY remaining path that
-    /// attaches an output to a slot is `mq_slot_check_reconfiguration()`, and
-    /// `multiqueue_src_probe()` calls it on **`GST_EVENT_CAPS` and nothing
-    /// else** (:3690-3694).
-    ///
-    /// So on a re-select the demuxer exposes a FRESH pad, decodebin3 builds a
-    /// FRESH SLOT for it, clears and EOSes the OLD slot the routed output still
-    /// ghosts, and the fresh slot gets an output only if a CAPS crosses it. A
-    /// re-select whose stream is re-fetched but whose CAPS never crosses the
-    /// slot therefore leaves the whole track inside decodebin3, invisible to
-    /// every rule in [`Inner::poll_text_policy`], which can only reason about
-    /// pads that exist.
-    ///
-    /// # What this does, and the honest limit on it
-    ///
-    /// It is [`Inner::rescue_lost_text_slot_caps`] one step further out. That
-    /// one walks in from a ROUTED OUTPUT pad and so cannot reach a slot with no
-    /// output at all; this one enumerates decodebin3's multiqueue directly and
-    /// looks for the same fingerprint (the slot's SINK pad has the caps, its
-    /// SRC pad does not) on a slot no output ghosts. Storing the sink's caps
-    /// onto the slot src makes decodebin3's own probe fire on the slot's next
-    /// serialized push and build the output it should have built.
-    ///
-    /// THE LIMIT, stated because it decides what this can and cannot repair:
-    /// `gst_pad_store_sticky_event` does not push. It marks the pad
-    /// `PENDING_EVENTS`, and the slot's own streaming thread delivers the
-    /// corrected set on its next activity. A slot that has already EOSed and
-    /// drained HAS no next activity, and no store can invent one. So this is a
-    /// repair for the window between the slot appearing and its drain, which is
-    /// why the seat's follow-up poll (see the tail of
-    /// [`Inner::poll_text_policy`]) matters to it: without a poll in that
-    /// window there is nobody to run this.
-    ///
-    /// Lever: `FCAST_NO_OUTPUTLESS_TEXT_SLOT_ADOPT`. Counted in
-    /// [`OUTPUTLESS_TEXT_SLOT_ADOPTIONS`]; the census it logs is emitted
-    /// whatever the lever says, because a shape nobody can see is how this
-    /// defect survived two passes.
-    pub(crate) fn adopt_outputless_text_slot(inner: &std::sync::Arc<Inner>, allowed: &str) {
-        let Some(db3) = inner.core.lock().as_ref().map(|core| core.db3.clone()) else {
-            return;
+    /// [`TextPadSurvey`] taken, off one routing-lock acquisition.
+    fn text_pad_survey(inner: &std::sync::Arc<Inner>) -> TextPadSurvey {
+        let mut survey = TextPadSurvey {
+            live: Vec::new(),
+            capsless_parked: Vec::new(),
+            capsful_parked: Vec::new(),
         };
-        let Some(mq) = Self::db3_multiqueue(&db3) else {
-            return;
-        };
-        // Which slots decodebin3 HAS an output for. A text output with no
-        // decoder ghosts the slot src directly, so the ghost target is the slot
-        // (see [`Inner::multiqueue_slot_behind`]); a decoded stream's ghost
-        // targets its decoder and simply never matches, which is correct: that
-        // slot is not one this can reason about.
-        let ghosted: Vec<gst::Pad> = db3
-            .src_pads()
-            .into_iter()
-            .filter_map(|pad| {
-                pad.downcast_ref::<gst::GhostPad>()
-                    .and_then(|ghost| ghost.target())
-            })
-            .collect();
-        for slot_src in mq.src_pads() {
-            if ghosted.contains(&slot_src) {
-                continue;
-            }
-            let Some(id) = slot_src.name().strip_prefix("src_").map(str::to_owned) else {
-                continue;
-            };
-            let Some(slot_sink) = mq.static_pad(&format!("sink_{id}")) else {
-                continue;
-            };
-            // WHOSE stream this slot carries. The src pad's sticky STREAM_START
-            // is the authority when it has one (it is what decodebin3's own
-            // probe would read); the sink's is the fallback for a slot whose
-            // loop has not pushed anything yet.
-            let sid = slot_src.stream_id().or_else(|| slot_sink.stream_id());
-            if sid.as_deref() != Some(allowed) {
-                continue;
-            }
-            // DESCRIBED ONCE per (stream, load), and only once the shape has
-            // outlasted [`OUTPUTLESS_TEXT_SLOT_GRACE`]; see
-            // [`Inner::outputless_text_slots_reported`] for why both. The
-            // repair below runs on every poll either way.
-            let key = (allowed.to_string(), inner.current_generation());
-            let first = {
-                let mut watch = inner.outputless_text_slots_reported.lock();
-                match watch.get(&key) {
-                    // Already described for this (stream, load).
-                    Some(None) => false,
-                    Some(Some(since)) if since.elapsed() >= OUTPUTLESS_TEXT_SLOT_GRACE => {
-                        watch.insert(key, None);
-                        true
-                    }
-                    Some(Some(_)) => false,
-                    None => {
-                        watch.insert(key, Some(std::time::Instant::now()));
-                        false
-                    }
+        let routing = inner.routing.lock();
+        for routed in routing
+            .routed
+            .iter()
+            .filter(|routed| routed.kind == crate::routing::StreamKind::Text)
+        {
+            match &routed.downstream {
+                Some(downstream) if !downstream.pad_flags().contains(gst::PadFlags::FLUSHING) => {
+                    survey.live.push(routed.db3_src_pad.clone());
                 }
-            };
-            if first {
-                OUTPUTLESS_TEXT_SLOTS.fetch_add(1, Ordering::SeqCst);
-                warn!(
-                    sid = %allowed,
-                    slot = %Self::describe_slot(&slot_src, &slot_sink),
-                    grace = ?OUTPUTLESS_TEXT_SLOT_GRACE,
-                    "the selected text stream is in a decodebin3 multiqueue slot that has NO \
-                     output pad, so nothing downstream of decodebin3 can ever see it: in \
-                     upstream-selection mode an output is attached to a slot only by a CAPS \
-                     event crossing it (gstdecodebin3.c:3690)"
-                );
-            }
-            // ACTED ON ONCE per (stream, load), on the same edge as the census
-            // above: a repair that fires on every poll for as long as it does
-            // not work is a loop, and both of the arms below cost real work.
-            if !first || std::env::var_os("FCAST_NO_OUTPUTLESS_TEXT_SLOT_ADOPT").is_some() {
-                continue;
-            }
-            // THE SLOT THAT HAS EVERYTHING AND STILL HAS NO OUTPUT, which is
-            // what a WORKING re-emit leaves behind and an upstream defect keeps.
-            //
-            // Captured with `GST_DEBUG=decodebin3:6` on the field-paced round
-            // trip, at the instant the re-emitted CAPS crosses the fresh slot:
-            //
-            // ```text
-            // mq_slot_get_or_create_output:<multiqueue1:src_4> Reassigning to output …:text_1
-            // mq_slot_reassign:<multiqueue1:src_3> Unlinking from previous output
-            // mq_slot_reassign:<multiqueue1:src_3> Attempting to re-assing output stream
-            // mq_slot_reassign:<multiqueue1:src_3> No target slot, removing output
-            // db_output_stream_free:<fpb-decodebin:text_1> Freeing
-            // ```
-            //
-            // decodebin3 picks the just-freed output of the DESELECTED external
-            // (`text_1`) to recycle for the new slot, and the reassign that was
-            // meant to detach it from its old slot DESTROYS it instead, because
-            // that old slot's own stream has nowhere left to go. The slot it was
-            // chosen for is left with a stream, a caps and no output, and
-            // nothing ever revisits the decision.
-            //
-            // The crate cannot reach inside that, but it can make decodebin3
-            // take the decision AGAIN with the recycling candidate gone: a
-            // second item re-emit re-pushes the stream's CAPS across the slot,
-            // and `mq_slot_get_or_create_output` then has no free output to ruin
-            // and creates one.
-            //
-            // THE REPAIR THAT WAS TRIED HERE AND MEASURED WRONG, recorded
-            // because the next reader will think of it too.
-            //
-            // The obvious answer is to make decodebin3 take the decision again
-            // with the recycling candidate gone: a flushing seek at the MAIN
-            // INPUT ELEMENT (never the pipeline, so an external's pads are not
-            // touched) re-downloads the track and re-pushes its CAPS across the
-            // slot. It does exactly that, the demuxer re-fetches and the CAPS
-            // crosses, and it FREEZES THE ITEM: eight runs of
-            // `dash_embedded_text_rejoins_after_a_round_trip_through_an_external`,
-            // eight failures, video flat at 76 buffers (~5 s of media) with no
-            // text branch at all, against 8/8 passing without it.
-            //
-            // Which is the engine's own refusal, measured a second time from
-            // the other side: `SelectionEngine::pump` cancels the re-emit flush
-            // whenever an external subtitle input is attached because "any
-            // flush races the external inputs' reconfiguration and can freeze
-            // the item". Confining the seek to one ELEMENT does not confine its
-            // FLUSH. It still travels decodebin3 into sinks the external
-            // shares, while the external's own pads keep their pre-flush
-            // stickies, so the gate applies to this seek as much as to the
-            // pipeline-wide one. It is not the direction out of here.
-            if slot_src.current_caps().is_some() {
-                continue;
-            }
-            let Some(caps_event) = Self::sticky_caps_event(&slot_sink) else {
-                // No caps ever reached this slot, so there is nothing to put
-                // back and inventing one would be the crate deciding a format
-                // it was never told (the same refusal
-                // [`Inner::rescue_slot_caps`] makes).
-                //
-                // MEASURED as the reproduction's actual shape, which is why
-                // this arm is documented rather than defensive: `sink_4` came
-                // out `caps=None sticky=StreamStart+Segment+StreamCollection`,
-                // i.e. the demuxer exposed the pad, pushed its opening events
-                // and was deselected again before any CAPS or buffer followed.
-                // Nothing was lost inside decodebin3 here, nothing ever
-                // arrived. That is what makes this a SEND-side defect and puts
-                // the repair in [`Inner::await_text_input_drain`].
-                warn!(
-                    sid = %allowed,
-                    slot = %slot_src.name(),
-                    "no CAPS ever reached this slot's sink either, so there is nothing to \
-                     restore; the stream never traversed decodebin3 at all"
-                );
-                continue;
-            };
-            // STREAM_START FIRST on an EOSed pad, verbatim from
-            // [`Inner::rescue_slot_caps`]: an EOS pad refuses every store
-            // (`goto eos`) and STREAM_START is the only event that clears the
-            // flag.
-            if slot_src.pad_flags().contains(gst::PadFlags::EOS)
-                && let Some(stream_start) =
-                    Self::sticky_event_of(&slot_src, gst::EventType::StreamStart)
-                        .or_else(|| Self::sticky_event_of(&slot_sink, gst::EventType::StreamStart))
-                && let Err(err) = slot_src.store_sticky_event(&stream_start)
-            {
-                warn!(slot_pad = %slot_src.name(), ?err, "could not clear the slot's EOS flag");
-            }
-            if let Err(err) = slot_src.store_sticky_event(&caps_event) {
-                warn!(
-                    slot_pad = %slot_src.name(),
-                    ?err,
-                    "could not store the CAPS that would make decodebin3 build this slot's output"
-                );
-                continue;
-            }
-            if slot_src.current_caps().is_some() {
-                OUTPUTLESS_TEXT_SLOT_ADOPTIONS.fetch_add(1, Ordering::SeqCst);
-                warn!(
-                    slot_pad = %slot_src.name(),
-                    "stored the slot sink's CAPS onto the outputless slot's src pad; \
-                     decodebin3's own CAPS probe builds the output on the slot's next push"
-                );
+                // A branch that IS flushing right now says nothing about its
+                // slot, which is the second of the heal's three conditions.
+                Some(_) => {}
+                None if routed.db3_src_pad.current_caps().is_none() => {
+                    survey.capsless_parked.push(routed.db3_src_pad.clone());
+                }
+                None => survey.capsful_parked.push(routed.db3_src_pad.clone()),
             }
         }
+        survey
+    }
+
+    /// The two slot repairs that run back to back at the tail of
+    /// [`Inner::poll_text_policy`], off ONE survey.
+    ///
+    /// ORDER IS PART OF THE CONTRACT: the heal first, because a branch it
+    /// repairs was about to become a silent dead track and the loudest thing in
+    /// the log should be the repair; the rescue after, because it only ever
+    /// matters for a stream the caps gate has just refused and running it here
+    /// means the very next poll is the one that joins.
+    ///
+    /// Safe to survey together because the two buckets are disjoint by
+    /// `downstream` and the heal touches neither: `unlatch_db3_slot`
+    /// re-activates a multiqueue slot's src pad and stores its stickies back,
+    /// which changes no routing entry and no parked ghost's caps.
+    pub(crate) fn heal_and_rescue_text_slots(inner: &std::sync::Arc<Inner>) {
+        let survey = Self::text_pad_survey(inner);
+        Self::heal_latched_text_slots(&survey);
+        Self::rescue_lost_text_slot_caps(&survey);
     }
 
     /// One pad's worth of [`Inner::rescue_lost_text_slot_caps`]. Reads the
@@ -1140,14 +915,7 @@ impl Inner {
         if slot_src.current_caps().is_some() {
             return;
         }
-        let Some(element) = slot_src.parent_element() else {
-            return;
-        };
-        // multiqueue names a slot's pads `src_%u` / `sink_%u` off one id.
-        let Some(id) = slot_src.name().strip_prefix("src_").map(str::to_owned) else {
-            return;
-        };
-        let Some(slot_sink) = element.static_pad(&format!("sink_{id}")) else {
+        let Some(slot_sink) = Self::slot_sink_of(&slot_src) else {
             return;
         };
         let Some(caps_event) = Self::sticky_caps_event(&slot_sink) else {
@@ -1174,20 +942,7 @@ impl Inner {
         // cosmetic one. `store_sticky_event` inserts at the right index by
         // itself (`gstpad.c`, the `sticky_order` walk), so the array comes out
         // correctly ordered either way and the hole buys nothing.
-        //
-        // STREAM_START FIRST, but only when the pad has gone EOS: an EOS pad
-        // refuses every store (`goto eos`) and STREAM_START is the only event
-        // that clears the flag. Re-storing the pad's own STREAM_START does that
-        // and nothing else, since `gst_event_replace` with the identical pointer
-        // changes no state.
-        if slot_src.pad_flags().contains(gst::PadFlags::EOS)
-            && let Some(stream_start) =
-                Self::sticky_event_of(&slot_src, gst::EventType::StreamStart)
-                    .or_else(|| Self::sticky_event_of(&slot_sink, gst::EventType::StreamStart))
-            && let Err(err) = slot_src.store_sticky_event(&stream_start)
-        {
-            warn!(slot_pad = %slot_src.name(), ?err, "could not clear the slot's EOS flag");
-        }
+        Self::clear_slot_eos_for_store(&slot_src, &slot_sink);
         if let Err(err) = slot_src.store_sticky_event(&caps_event) {
             warn!(
                 slot_pad = %slot_src.name(),
@@ -1211,9 +966,9 @@ impl Inner {
         // split from [`SLOT_UNLATCH_FAILURES`]: the counter must mean the track
         // is alive again, or a green dashboard would outlive a dead subtitle.
         if slot_src.current_caps().is_some() {
-            TEXT_CAPS_RESCUES.fetch_add(1, Ordering::SeqCst);
+            TEXT_CAPS_RESCUES.fetch_add(1, Ordering::Relaxed);
         } else {
-            TEXT_CAPS_RESCUE_FAILURES.fetch_add(1, Ordering::SeqCst);
+            TEXT_CAPS_RESCUE_FAILURES.fetch_add(1, Ordering::Relaxed);
             error!(
                 slot_pad = %slot_src.name(),
                 "restoring a lost text CAPS onto a multiqueue slot FAILED; the text track is \
@@ -1235,7 +990,7 @@ impl Inner {
         found
     }
 
-    /// TEST FAULT INJECTION (see [`Inner::stage_text_caps_loss`]): destroy one
+    /// TEST FAULT INJECTION (see `TestStaging::text_caps_loss`): destroy one
     /// parked text stream's sticky CAPS on the decodebin3 ghost and on the
     /// multiqueue slot behind it, leaving the slot's SINK pad holding it.
     ///
@@ -1247,26 +1002,13 @@ impl Inner {
     /// test stages a single loss rather than a permanent one and the recovery
     /// is what is being measured.
     pub(crate) fn stage_text_caps_loss(inner: &std::sync::Arc<Inner>) {
-        if !inner
-            .stage_text_caps_loss
-            .load(std::sync::atomic::Ordering::SeqCst)
-        {
+        if !inner.stage_text_caps_loss_armed() {
             return;
         }
-        let candidates: Vec<gst::Pad> = {
-            let routing = inner.routing.lock();
-            routing
-                .routed
-                .iter()
-                .filter(|routed| {
-                    routed.kind == crate::routing::StreamKind::Text
-                        && routed.downstream.is_none()
-                        && routed.db3_src_pad.current_caps().is_some()
-                })
-                .map(|routed| routed.db3_src_pad.clone())
-                .collect()
-        };
-        for pad in candidates {
+        // Runs far ahead of the repairs, before the gate rather than after it,
+        // so it takes its own survey; see the call site for why the staging has
+        // to land on the poll BEFORE the one that observes the loss.
+        for pad in Self::text_pad_survey(inner).capsful_parked {
             let Some(slot_src) = Self::multiqueue_slot_behind(&pad) else {
                 continue;
             };
@@ -1286,9 +1028,7 @@ impl Inner {
                 slot_pad = %slot_src.name(),
                 "TEST STAGING: destroying a parked text stream's sticky CAPS"
             );
-            inner
-                .stage_text_caps_loss
-                .store(false, std::sync::atomic::Ordering::SeqCst);
+            inner.stage_disarm_text_caps_loss();
             return;
         }
     }
@@ -1328,7 +1068,6 @@ impl Inner {
     /// re-linked or released. Text pads, `remove_input` and
     /// `dispose_text_branch_on` keep the bare pair.
     ///
-    /// Lever: `FCAST_NO_FLUSH_SEGMENT_RESTORE`.
     /// # RESIDUAL: the restore is not atomic with the pair, and the field has
     /// caught it
     ///
@@ -1350,19 +1089,13 @@ impl Inner {
     /// ([`Teardown::run`], [`Inner::flush_parked_text_pushes`]), the sources
     /// stop pushing immediately after, and `segment_sticky_census`'s
     /// stop-driven rig therefore shows an empty window whether the restore is
-    /// present or absent (measured: `FCAST_NO_FLUSH_SEGMENT_RESTORE=1` passes
-    /// the ordering assertion too). Taking a blocking stream lock on the
+    /// present or absent (measured: the ordering assertion passes with the
+    /// restore taken out too). Taking a blocking stream lock on the
     /// teardown path is exactly the shape three fuzz seeds have wedged on
     /// before, and it is not worth doing unproven. What DID ship is the
     /// `reset_time = FALSE` half in [`Inner::send_flush_pair`], which is the
     /// sink-side damage and is provable.
-    ///
-    /// Lever: `FCAST_NO_FLUSH_SEGMENT_RESTORE`.
     pub(crate) fn flush_db3_sink_pads(pads: &[gst::Pad]) {
-        if std::env::var_os("FCAST_NO_FLUSH_SEGMENT_RESTORE").is_some() {
-            Self::flush_pads(pads, FlushReason::TeardownDb3);
-            return;
-        }
         for pad in pads {
             // Read BEFORE the FLUSH_START. After the pair the pad has no
             // segment left to read.
@@ -1377,32 +1110,30 @@ impl Inner {
 }
 
 impl FcastPlaybin {
-    /// How many flush pairs THIS CRATE has sent, over every reason (see
-    /// [`FlushReason`]). Not part of the public API.
+    /// How many flush pairs THIS CRATE has sent for ONE reason, by the name
+    /// [`FlushReason::name`] gives it. Panics on an unknown name rather than
+    /// answering zero: a typo in an assertion that silently passes is worse
+    /// than a test that fails loudly. Not part of the public API.
     ///
-    /// # These six are associated functions, not methods
+    /// # These are associated functions, not methods
     ///
     /// The counters they read are process-global (see [`FLUSH_PAIRS`]): the
     /// teardown pairs are sent after `Inner` is gone, so there is no handle
     /// left to call a method on at the moment they matter most. A test that
     /// drops its playbin to force a teardown reads them as
-    /// `FcastPlaybin::crate_flush_pairs()`. The consequence to keep in mind is
-    /// that a test binary's counts are CUMULATIVE across its tests, so useful
-    /// assertions are "this reason fired" and "this reason never fires", never
-    /// "this reason fired exactly twice".
-    #[doc(hidden)]
-    pub fn crate_flush_pairs() -> u64 {
-        FLUSH_PAIRS.iter().map(|c| c.load(Ordering::SeqCst)).sum()
-    }
-
-    /// [`FcastPlaybin::crate_flush_pairs`] for ONE reason, by the name
-    /// [`FlushReason::name`] gives it. Panics on an unknown name rather than
-    /// answering zero: a typo in an assertion that silently passes is worse
-    /// than a test that fails loudly. Not part of the public API.
+    /// `FcastPlaybin::crate_flush_pairs_for("teardown_db3")`. The consequence
+    /// to keep in mind is that a test binary's counts are CUMULATIVE across its
+    /// tests, so useful assertions are "this reason fired" and "this reason
+    /// never fires", never "this reason fired exactly twice".
+    ///
+    /// PER REASON, never a whole-sum: a total over all seven reasons cannot say
+    /// which one moved, which is the only question this census exists to
+    /// answer. [`FcastPlaybin::crate_flush_pair_breakdown`] is the "everything"
+    /// reader, and it keeps the attribution.
     #[doc(hidden)]
     pub fn crate_flush_pairs_for(reason: &str) -> u64 {
         match FlushReason::ALL.iter().find(|kind| kind.name() == reason) {
-            Some(kind) => FLUSH_PAIRS[*kind as usize].load(Ordering::SeqCst),
+            Some(kind) => FLUSH_PAIRS[*kind as usize].load(Ordering::Relaxed),
             None => panic!(
                 "unknown flush reason {reason:?}; known reasons: {:?}",
                 FlushReason::ALL.map(FlushReason::name)
@@ -1419,76 +1150,10 @@ impl FcastPlaybin {
             .map(|kind| {
                 (
                     kind.name(),
-                    FLUSH_PAIRS[*kind as usize].load(Ordering::SeqCst),
+                    FLUSH_PAIRS[*kind as usize].load(Ordering::Relaxed),
                 )
             })
             .collect()
-    }
-
-    /// Flush pairs whose pad went from active to INACTIVE across the
-    /// pair, where the FLUSH_STOP is discarded and the pad stays flushing
-    /// (see [`FLUSH_PAIR_ACTIVITY_TRANSITIONS`]). Zero is the invariant. Not
-    /// part of the public API.
-    #[doc(hidden)]
-    pub fn flush_pair_activity_transitions() -> u64 {
-        FLUSH_PAIR_ACTIVITY_TRANSITIONS.load(Ordering::SeqCst)
-    }
-
-    /// decodebin3 multiqueue slots this crate's own flush pair latched and
-    /// [`Inner::unlatch_db3_slot`] then re-activated (see [`SLOT_UNLATCHES`]).
-    /// A REPAIR count, not a failure count. Not part of the public API.
-    #[doc(hidden)]
-    pub fn slot_unlatches() -> u64 {
-        SLOT_UNLATCHES.load(Ordering::SeqCst)
-    }
-
-    /// Text slots whose in-flight sticky CAPS multiqueue destroyed across
-    /// a flush and [`Inner::rescue_lost_text_slot_caps`] put back (see
-    /// [`TEXT_CAPS_RESCUES`]). A REPAIR count, not a failure count.
-    /// Process-global, so read it as a delta. Not part of the public API.
-    #[doc(hidden)]
-    pub fn text_caps_rescues() -> u64 {
-        TEXT_CAPS_RESCUES.load(Ordering::SeqCst)
-    }
-
-    /// Lost text CAPS the restore did NOT recover (see
-    /// [`TEXT_CAPS_RESCUE_FAILURES`]). Zero is the invariant. Not part of the
-    /// public API.
-    #[doc(hidden)]
-    pub fn text_caps_rescue_failures() -> u64 {
-        TEXT_CAPS_RESCUE_FAILURES.load(Ordering::SeqCst)
-    }
-
-    /// Times the selected text stream was found in a decodebin3 multiqueue slot
-    /// with no output pad (see [`OUTPUTLESS_TEXT_SLOTS`]). A FAILURE count.
-    /// Process-global, so read it as a delta. Not part of the public API.
-    #[doc(hidden)]
-    pub fn outputless_text_slots() -> u64 {
-        OUTPUTLESS_TEXT_SLOTS.load(Ordering::SeqCst)
-    }
-
-    /// Outputless slots the CAPS store reached (see
-    /// [`OUTPUTLESS_TEXT_SLOT_ADOPTIONS`]). A REPAIR count. Process-global, so
-    /// read it as a delta. Not part of the public API.
-    #[doc(hidden)]
-    pub fn outputless_text_slot_adoptions() -> u64 {
-        OUTPUTLESS_TEXT_SLOT_ADOPTIONS.load(Ordering::SeqCst)
-    }
-
-    /// Disposals whose slot was NOT latched (see [`SLOT_UNLATCH_CLEAN`]), so a
-    /// zero [`FcastPlaybin::slot_unlatches`] can be told apart from an
-    /// un-latch that never ran at all. Not part of the public API.
-    #[doc(hidden)]
-    pub fn slot_unlatch_clean() -> u64 {
-        SLOT_UNLATCH_CLEAN.load(Ordering::SeqCst)
-    }
-
-    /// Latched slots the re-activation did not clear (see
-    /// [`SLOT_UNLATCH_FAILURES`]). Zero is the invariant. Not part of the
-    /// public API.
-    #[doc(hidden)]
-    pub fn slot_unlatch_failures() -> u64 {
-        SLOT_UNLATCH_FAILURES.load(Ordering::SeqCst)
     }
 
     /// [`Inner::unlatch_db3_slot`] against a pad a TEST built, so the probe
@@ -1501,8 +1166,7 @@ impl FcastPlaybin {
 
     /// [`Inner::retire_parking_sink`] against a sink a TEST added to its own
     /// pipeline, so `multiqueue_slot_unlatch`'s park rig drives the SHIPPED
-    /// unpark (and its `FCAST_NO_WAITFREE_UNPARK` lever) rather than a copy of
-    /// it. Not part of the public API.
+    /// unpark rather than a copy of it. Not part of the public API.
     #[doc(hidden)]
     pub fn retire_parking_sink_for_test(sink: &gst::Element) {
         Inner::retire_parking_sink(sink);
@@ -1515,26 +1179,23 @@ impl FcastPlaybin {
         Inner::slot_reads_latched(db3_src_pad)
     }
 
-    /// Pads that stayed in the graph reading FLUSHING after a pad
-    /// surgery, over every stage (see [`Inner::flow_census`]). Every remaining
-    /// stage's invariant is ZERO. The one that was nonzero by construction,
-    /// `dispose_text_branch`, was subtitleoverlay's shared `subtitle_sink` and
-    /// died with it. Not part of the public API.
-    #[doc(hidden)]
-    pub fn flow_census_flushing() -> u64 {
-        FLOW_CENSUS_FLUSHING
-            .iter()
-            .map(|c| c.load(Ordering::SeqCst))
-            .sum()
-    }
-
-    /// [`FcastPlaybin::flow_census_flushing`] for ONE stage, by the name
-    /// [`FlowStage::name`] gives it. Panics on an unknown name. Not part of
-    /// the public API.
+    /// Pads that stayed in the graph reading FLUSHING after a pad surgery, for
+    /// ONE stage, by the name [`FlowStage::name`] gives it (see
+    /// [`Inner::flow_census`]). Panics on an unknown name. Not part of the
+    /// public API.
+    ///
+    /// Every remaining stage's invariant is ZERO. The one that was nonzero by
+    /// construction, `dispose_text_branch`, was subtitleoverlay's shared
+    /// `subtitle_sink` and died with it.
+    ///
+    /// PER STAGE, never a whole-sum: a stage is a PLACE and the total tells you
+    /// nothing about which one moved, the point [`Inner::flow_census`] makes at
+    /// its own tail. [`FcastPlaybin::flow_census_breakdown`] is the
+    /// "everything" reader, and it keeps the attribution.
     #[doc(hidden)]
     pub fn flow_census_flushing_for(stage: &str) -> u64 {
         match FlowStage::ALL.iter().find(|kind| kind.name() == stage) {
-            Some(kind) => FLOW_CENSUS_FLUSHING[*kind as usize].load(Ordering::SeqCst),
+            Some(kind) => FLOW_CENSUS_FLUSHING[*kind as usize].load(Ordering::Relaxed),
             None => panic!(
                 "unknown flow census stage {stage:?}; known stages: {:?}",
                 FlowStage::ALL.map(FlowStage::name)
@@ -1551,7 +1212,7 @@ impl FcastPlaybin {
             .map(|kind| {
                 (
                     kind.name(),
-                    FLOW_CENSUS_FLUSHING[*kind as usize].load(Ordering::SeqCst),
+                    FLOW_CENSUS_FLUSHING[*kind as usize].load(Ordering::Relaxed),
                 )
             })
             .collect()

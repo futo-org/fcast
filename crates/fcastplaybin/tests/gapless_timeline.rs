@@ -679,10 +679,11 @@ impl Harness {
     /// Setting the property here isolates that churn from everything else on
     /// the boundary: nothing about the media, the timing or the crate's own
     /// sequence changes, only whether decodebin3 volunteers the text stream.
-    /// Set on one binary via the env lever so the comparison can be
+    /// Set on one binary via `FCAST_TL_NO_AUTO_TEXT` so the comparison can be
     /// INTERLEAVED, which on this machine is the only kind that means
-    /// anything.
-    fn apply_auto_select_text_lever(&self, db3: &gst::Element) {
+    /// anything. A rig knob: it touches decodebin3 directly and gates nothing
+    /// in the crate.
+    fn apply_auto_select_text_knob(&self, db3: &gst::Element) {
         if std::env::var_os("FCAST_TL_NO_AUTO_TEXT").is_none() {
             return;
         }
@@ -692,7 +693,7 @@ impl Harness {
                 .note("decodebin3 auto-select-text set to false");
         } else {
             // Unpatched GStreamer. Say so rather than silently measuring
-            // nothing: an A/B where the lever does not exist reports two
+            // nothing: an A/B where the property does not exist reports two
             // identical arms and looks like "no effect".
             self.timeline
                 .note("decodebin3 has NO auto-select-text property (unpatched build)");
@@ -811,7 +812,7 @@ impl Harness {
                     timeline.note(format!("decodebin3 removed {}", pad.name()));
                 }
             });
-            self.apply_auto_select_text_lever(&db3);
+            self.apply_auto_select_text_knob(&db3);
         }
 
         // Only the TRANSITIONS are recorded: one mark per buffer would be 480

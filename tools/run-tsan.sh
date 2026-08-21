@@ -19,7 +19,7 @@
 #   tools/run-tsan.sh fcast-video:engine_stress   # a target in another package
 #   tools/run-tsan.sh --canaries-only       # just the instrument check
 #   tools/run-tsan.sh --skip-canaries fuzz_scenarios
-#   FCAST_NO_HANDS=1 tools/run-tsan.sh      # every FCAST_* var is passed through
+#   FCAST_FUZZ_SEED=7 tools/run-tsan.sh     # every FCAST_* var is passed through
 #   TSAN_FILTER='a_specific_test' tools/run-tsan.sh fuzz_buffering
 #
 # COST: the instrumented build is a full -Zbuild-std rebuild of std and every

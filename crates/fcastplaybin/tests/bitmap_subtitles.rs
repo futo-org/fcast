@@ -12,8 +12,6 @@
 //! `SubtitleTrackUnsupported` goes out, a flushing seek clears before it
 //! redelivers, and a paused pipeline never wedges.
 //!
-//! `tests/bitmap_lever.rs` owns the `FCAST_NO_BITMAP_SUBS=1` refusal arm.
-//!
 //! Serialized because there is one subtitle consumer per pipeline and the
 //! crate's feed is the probe point.
 
@@ -44,22 +42,6 @@ const SET_STEP: gst::ClockTime = gst::ClockTime::from_mseconds(250);
 const MEDIA_DURATION: gst::ClockTime = gst::ClockTime::from_seconds(120);
 
 static PIPELINE: Mutex<()> = Mutex::new(());
-
-/// Whether the master lever has taken this whole file's subject away.
-///
-/// `FCAST_NO_BITMAP_SUBS=1` refuses every bitmap format, which is exactly what
-/// the tests below assert does not happen, so they report no verdict instead.
-/// `tests/bitmap_lever.rs` asserts the lever's own contract.
-fn no_verdict_under_the_master_lever() -> bool {
-    if std::env::var_os("FCAST_NO_BITMAP_SUBS").is_none() {
-        return false;
-    }
-    println!(
-        "NO VERDICT: FCAST_NO_BITMAP_SUBS is set, so no bitmap track is carried at all; \
-         tests/bitmap_lever.rs owns that arm"
-    );
-    true
-}
 
 fn init() {
     static INIT: std::sync::Once = std::sync::Once::new();
@@ -420,9 +402,6 @@ fn find_element(bin: &gst::Bin, factory: &str) -> Option<gst::Element> {
 /// cannot reassemble what it was never given); no `SubtitleTrackUnsupported`.
 #[test]
 fn a_pgs_track_reaches_the_consumer_as_bitmap_packets() {
-    if no_verdict_under_the_master_lever() {
-        return;
-    }
     let _lock = PIPELINE.lock();
     init();
     let media = scenario("bitmappgsfeed");
@@ -504,9 +483,6 @@ fn a_pgs_track_reaches_the_consumer_as_bitmap_packets() {
 /// picture.
 #[test]
 fn a_seek_clears_before_the_redelivered_display_sets() {
-    if no_verdict_under_the_master_lever() {
-        return;
-    }
     let _lock = PIPELINE.lock();
     init();
     let media = scenario("bitmappgsseek");
@@ -603,9 +579,6 @@ fn paused_with_a_live_branch(key: &str) -> (Harness, ScenarioHandle) {
 /// both callbacks.
 #[test]
 fn a_paused_link_delivers_a_display_set_without_resuming() {
-    if no_verdict_under_the_master_lever() {
-        return;
-    }
     let _lock = PIPELINE.lock();
     init();
     let (harness, media) = paused_with_a_live_branch("bitmappgspaused");
@@ -632,9 +605,6 @@ fn a_paused_link_delivers_a_display_set_without_resuming() {
 /// case. What must never happen is a wedge or a timeline reset.
 #[test]
 fn a_paused_pgs_toggle_does_not_wedge_and_delivers_at_resume() {
-    if no_verdict_under_the_master_lever() {
-        return;
-    }
     let _lock = PIPELINE.lock();
     init();
     let media = scenario("bitmappgstoggle");
@@ -724,9 +694,6 @@ fn a_paused_pgs_toggle_does_not_wedge_and_delivers_at_resume() {
 /// palette this format carries on the caps.
 #[test]
 fn a_vobsub_track_reaches_the_consumer_with_its_palette() {
-    if no_verdict_under_the_master_lever() {
-        return;
-    }
     let _lock = PIPELINE.lock();
     init();
     let media = vobsub_scenario("bitmapvobfeed");
@@ -776,9 +743,6 @@ fn a_vobsub_track_reaches_the_consumer_with_its_palette() {
 /// test above.
 #[test]
 fn a_paused_vobsub_redelivery_covers_the_frozen_frame() {
-    if no_verdict_under_the_master_lever() {
-        return;
-    }
     let _lock = PIPELINE.lock();
     init();
     let media = vobsub_scenario("bitmapvobpaused");
@@ -850,9 +814,6 @@ fn a_paused_vobsub_redelivery_covers_the_frozen_frame() {
 /// packet after it depends on state the decoder never saw.
 #[test]
 fn the_real_vobsub_sample_plays_through_a_seek_without_a_decode_error() {
-    if no_verdict_under_the_master_lever() {
-        return;
-    }
     let _lock = PIPELINE.lock();
     init();
     let Some(uri) = sample_media() else {
@@ -952,9 +913,6 @@ fn sample_media() -> Option<String> {
 /// reordering packets leaves the decoder with a page it can never close.
 #[test]
 fn a_dvb_track_reaches_the_consumer_as_its_own_packets() {
-    if no_verdict_under_the_master_lever() {
-        return;
-    }
     let _lock = PIPELINE.lock();
     init();
     let media = dvb_scenario("bitmapdvbfeed");
@@ -1009,9 +967,6 @@ fn a_dvb_track_reaches_the_consumer_as_its_own_packets() {
 /// A DVB track selected, the pipeline PLAYING, the position advancing.
 #[test]
 fn a_dvb_track_does_not_wedge_the_pipeline() {
-    if no_verdict_under_the_master_lever() {
-        return;
-    }
     let _lock = PIPELINE.lock();
     init();
     let media = dvb_scenario("bitmapdvbwedge");
@@ -1045,9 +1000,6 @@ fn a_dvb_track_does_not_wedge_the_pipeline() {
 /// about the framing the field actually delivers.
 #[test]
 fn the_generated_transport_stream_reaches_the_consumer_through_tsdemux() {
-    if no_verdict_under_the_master_lever() {
-        return;
-    }
     let _lock = PIPELINE.lock();
     init();
     let Some(uri) = dvb_fixture() else {

@@ -72,10 +72,7 @@ fn an_undecodable_load_errors_instead_of_aborting() {
         return;
     }
 
-    let page = std::env::temp_dir().join(format!(
-        "fcast-undecodable-{}.mkv",
-        std::process::id()
-    ));
+    let page = std::env::temp_dir().join(format!("fcast-undecodable-{}.mkv", std::process::id()));
     std::fs::write(
         &page,
         "<!DOCTYPE html><html><head><title>totally a video</title></head>\

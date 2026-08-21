@@ -19,18 +19,17 @@
 //! These three tests are the three shapes that mismatch takes.
 //!
 //! The interleaving is deterministic, not timed: the tests park the worker
-//! inside a `debug_graph_async` whose callback blocks (it runs ON the worker),
+//! inside a `barrier_async` whose callback blocks (it runs ON the worker),
 //! queue their work into the stalled queue, supersede it, and release. A
-//! second `debug_graph_async` is the barrier that says every earlier job has
+//! second `barrier_async` is the barrier that says every earlier job has
 //! finished. No sleeps decide anything here.
 //!
 //! # Verification
 //!
-//! * Green: no env vars.
-//! * RED with `FCAST_NO_JOB_GENERATION_GATE=1`, per test:
+//! * RED without the job generation gate, per test:
 //!   * `a_load_superseded_by_a_newer_load_never_runs`: both loads run, so the
 //!     first `Loaded` after the release carries the SUPERSEDED generation and
-//!     `stale_job_drops()` stays 0.
+//!     `stats().stale_job_drops` stays 0.
 //!   * `an_attach_queued_before_a_load_is_dropped_not_applied`: the attach
 //!     executes against the new item, so `ExternalSubtitleFailed` never arrives
 //!     (the wait times out) and a TEXT stream joins the collection of an
@@ -186,16 +185,16 @@ fn wait_loaded(events: &Events, seen: &mut Vec<(PlaybinEvent, u64)>) -> u64 {
 
 /// Park the worker until the returned sender is dropped or used.
 ///
-/// `DumpGraph`'s callback runs ON the worker thread and the snapshot walk is
-/// already finished when it is invoked, so the parked worker holds no crate
-/// lock: the test thread can keep queueing jobs AND call the synchronous API
-/// meanwhile. That is the whole interleaving primitive - it replaces the
+/// `Barrier`'s callback runs ON the worker thread and the job body is nothing
+/// but that call, so the parked worker holds no crate lock: the test thread
+/// can keep queueing jobs AND call the synchronous API meanwhile. That is the
+/// whole interleaving primitive - it replaces the
 /// sleep a "queue something, then supersede it before the worker looks"
 /// test would otherwise need.
 fn stall_worker(playbin: &FcastPlaybin) -> mpsc::Sender<()> {
     let (release_tx, release_rx) = mpsc::channel::<()>();
     let (parked_tx, parked_rx) = mpsc::channel::<()>();
-    playbin.debug_graph_async(Box::new(move |_snapshot| {
+    playbin.barrier_async(Box::new(move || {
         let _ = parked_tx.send(());
         let _ = release_rx.recv_timeout(BOUND);
     }));
@@ -210,7 +209,7 @@ fn stall_worker(playbin: &FcastPlaybin) -> mpsc::Sender<()> {
 /// polling and no grace period.
 fn drain_worker(playbin: &FcastPlaybin) {
     let (done_tx, done_rx) = mpsc::channel::<()>();
-    playbin.debug_graph_async(Box::new(move |_snapshot| {
+    playbin.barrier_async(Box::new(move || {
         let _ = done_tx.send(());
     }));
     done_rx
@@ -294,7 +293,7 @@ fn a_load_superseded_by_a_newer_load_never_runs() {
          events seen: {seen:?}"
     );
     assert!(
-        playbin.stale_job_drops() >= 1,
+        playbin.stats().stale_job_drops >= 1,
         "nothing was reported dropped, so the load cannot have been gated"
     );
 
@@ -386,7 +385,7 @@ fn an_attach_queued_before_a_load_is_dropped_not_applied() {
         text_stream_ids(&seen)
     );
     assert!(
-        playbin.stale_job_drops() >= 1,
+        playbin.stats().stale_job_drops >= 1,
         "nothing was reported dropped, so the attach cannot have been gated"
     );
 
@@ -471,7 +470,7 @@ fn a_clock_recovery_queued_before_a_stop_does_not_restart_the_pipeline() {
         "the stopped pipeline reported PLAYING again: {resurrected:?}"
     );
     assert!(
-        playbin.stale_job_drops() >= 1,
+        playbin.stats().stale_job_drops >= 1,
         "nothing was reported dropped, so the recovery cannot have been gated"
     );
 

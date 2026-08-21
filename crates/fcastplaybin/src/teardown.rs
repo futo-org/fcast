@@ -22,7 +22,7 @@ use crate::{
 
 /// Teardown descents that blew [`TEARDOWN_DESCENT_BUDGET`] and were
 /// detached ([`Teardown::run`]).
-static TEARDOWN_DESCENT_STUCK: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TEARDOWN_DESCENT_STUCK: AtomicU64 = AtomicU64::new(0);
 
 /// Rescue threads that blew [`RESCUE_DISARM_BUDGET`] in [`WakeRescue::disarm`]
 /// and were detached, poisoning the crate ([`Inner::teardown_poisoned`]).
@@ -32,14 +32,14 @@ static TEARDOWN_DESCENT_STUCK: AtomicU64 = AtomicU64::new(0);
 /// stopped touching it. Loud on purpose: this is the counter that says "the
 /// wedge happened, and the worker survived it", which is a different claim from
 /// "nothing went wrong".
-static RESCUE_DISARM_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static RESCUE_DISARM_TIMEOUTS: AtomicU64 = AtomicU64::new(0);
 
 /// Times [`StartTimeGuard`] had to put the pipeline's START TIME back after a
 /// side-input flush moved it (see that type). Must be read as a delta, and a
 /// nonzero delta is the FIELD DEFECT happening and being repaired, not a
 /// health metric: the number exists so a test can prove the repair fired and
 /// so a field log names the moment.
-static START_TIME_RESTORES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static START_TIME_RESTORES: AtomicU64 = AtomicU64::new(0);
 
 /// Put the pipeline's START TIME back after an operation that pushes a
 /// `FLUSH_STOP` with `reset_time = TRUE` into a SIDE branch.
@@ -88,8 +88,6 @@ static START_TIME_RESTORES: AtomicU64 = AtomicU64::new(0);
 /// correct: PAUSED -> PLAYING compares it against `start_time`
 /// (gstpipeline.c:453) purely to decide whether to recompute the base time,
 /// and a resume from PAUSED wants that recompute.
-///
-/// Lever: `FCAST_NO_START_TIME_GUARD` restores the field behaviour.
 pub(crate) struct StartTimeGuard {
     pipeline: gst::Pipeline,
     /// Never `None`: [`Self::hold`] declines to exist when the pipeline's
@@ -99,9 +97,6 @@ pub(crate) struct StartTimeGuard {
 
 impl StartTimeGuard {
     pub(crate) fn hold(pipeline: Option<&gst::Pipeline>) -> Option<Self> {
-        if std::env::var_os("FCAST_NO_START_TIME_GUARD").is_some() {
-            return None;
-        }
         let pipeline = pipeline?;
         // NONE is PLAYING, where `reset_start_time` returns without writing
         // ("application asked to not reset stream_time", gstpipeline.c:331).
@@ -120,7 +115,7 @@ impl Drop for StartTimeGuard {
         if self.pipeline.start_time() == Some(self.saved) {
             return;
         }
-        START_TIME_RESTORES.fetch_add(1, Ordering::SeqCst);
+        START_TIME_RESTORES.fetch_add(1, Ordering::Relaxed);
         warn!(
             saved = %self.saved,
             observed = ?self.pipeline.start_time(),
@@ -207,52 +202,34 @@ enum DisarmOutcome {
 pub(crate) struct WakeRescue {
     /// Hanging this up is the cancellation. Dropped by `disarm`.
     cancel: Option<mpsc::Sender<()>>,
-    /// The rescue thread's own "I am done" channel, so `disarm` can wait for
-    /// it with a BOUND rather than with `join` (see there). Sent on every path
-    /// out of the thread, cancelled or not.
-    finished: Option<mpsc::Receiver<()>>,
-    handle: Option<std::thread::JoinHandle<()>>,
+    /// The rescue thread, waited for with a BOUND rather than with `join`
+    /// (see [`BoundedHelper`] and [`WakeRescue::disarm`]). `None` only when
+    /// the thread could not be spawned at all.
+    helper: Option<BoundedHelper>,
 }
 
 impl WakeRescue {
     fn arm(inner: &Arc<Inner>, target: gst::State) -> Self {
-        if std::env::var_os("FCAST_NO_TEARDOWN_RESCUE").is_some() {
-            return WakeRescue {
-                cancel: None,
-                finished: None,
-                handle: None,
-            };
-        }
         let (cancel, cancelled) = mpsc::channel();
-        let (done, finished) = mpsc::channel();
         let inner = Arc::clone(inner);
-        let handle = std::thread::Builder::new()
-            .name("fpb-tdrescue".into())
-            .spawn(move || {
-                // Anything but a timeout means the wake finished (or the
-                // teardown thread went away): nothing to rescue.
-                if cancelled.recv_timeout(TEARDOWN_WAKE_BUDGET)
-                    == Err(mpsc::RecvTimeoutError::Timeout)
-                {
-                    warn!(
-                        ?target,
-                        "the teardown wake is still parked after {TEARDOWN_WAKE_BUDGET:?}, \
-                         taking the pipeline down from the rescue thread"
-                    );
-                    let _gate = Inner::gate(&inner);
-                    let _ = inner.pipeline.set_state(target);
-                    debug!(?target, "the rescue descent finished");
-                }
-                // Sent LAST and on EVERY path ([`Teardown::bounded_descent`]'s
-                // idiom): a hangup with no send means this thread panicked,
-                // which `disarm` reads as finished just the same.
-                let _ = done.send(());
-            })
-            .ok();
+        let helper = BoundedHelper::spawn("fpb-tdrescue", move || {
+            // Anything but a timeout means the wake finished (or the
+            // teardown thread went away): nothing to rescue.
+            if cancelled.recv_timeout(TEARDOWN_WAKE_BUDGET) == Err(mpsc::RecvTimeoutError::Timeout)
+            {
+                warn!(
+                    ?target,
+                    "the teardown wake is still parked after {TEARDOWN_WAKE_BUDGET:?}, \
+                     taking the pipeline down from the rescue thread"
+                );
+                let _gate = Inner::gate(&inner);
+                let _ = inner.pipeline.set_state(target);
+                debug!(?target, "the rescue descent finished");
+            }
+        });
         WakeRescue {
             cancel: Some(cancel),
-            finished: Some(finished),
-            handle,
+            helper,
         }
     }
 
@@ -295,34 +272,84 @@ impl WakeRescue {
     /// It also means the gate is gone for good, so the teardown MUST NOT
     /// continue (see [`FcastPlaybin::teardown`]): its very next statement takes
     /// that same gate.
-    ///
-    /// Lever: `FCAST_NO_RESCUE_DISARM_BOUND` restores the unconditional join.
     fn disarm(mut self) -> DisarmOutcome {
         drop(self.cancel.take());
-        let Some(handle) = self.handle.take() else {
+        let Some(helper) = self.helper.take() else {
             return DisarmOutcome::Joined;
         };
-        let finished = self.finished.take();
-        if finished.is_none() || std::env::var_os("FCAST_NO_RESCUE_DISARM_BOUND").is_some() {
-            let _ = handle.join();
+        if helper.wait(RESCUE_DISARM_BUDGET) {
             return DisarmOutcome::Joined;
         }
-        let finished = finished.expect("checked above");
-        // Anything but a timeout means the rescue is over (a value, or a
-        // hangup from a panicking helper).
-        if finished.recv_timeout(RESCUE_DISARM_BUDGET) != Err(mpsc::RecvTimeoutError::Timeout) {
-            let _ = handle.join();
-            return DisarmOutcome::Joined;
-        }
-        RESCUE_DISARM_TIMEOUTS.fetch_add(1, Ordering::SeqCst);
+        RESCUE_DISARM_TIMEOUTS.fetch_add(1, Ordering::Relaxed);
         error!(
             "the rescue descent has not returned after {RESCUE_DISARM_BUDGET:?}; detaching it \
              so the worker is released. The pipeline is descending on a thread below this \
              crate (a multiqueue loop parked in a blocking probe across a decodebin3 ghost-pad \
              retarget, see UPSTREAM-GSTREAMER-ISSUES.md) and nothing here may touch it again"
         );
-        drop(handle);
         DisarmOutcome::Detached
+    }
+}
+
+/// A helper thread that is waited for with a BUDGET and DETACHED on timeout,
+/// the teardown's one spawn-wait-detach idiom.
+///
+/// Both users are threads that exist precisely because the work they carry can
+/// stop returning: [`WakeRescue`]'s descent and
+/// [`Teardown::bounded_descent`]'s. A `join` on either is an unbounded wait on
+/// a wedge below this crate, which is the thing being escaped, so neither may
+/// join without a bound. The two wrote the same protocol twice and each cited
+/// the other as its source.
+///
+/// The "done" send is the wait's signal, and it lives HERE rather than in the
+/// bodies so it cannot be forgotten on a path: it is sent LAST, after the body
+/// returns, and a hangup with no send means the body panicked, which is a
+/// finished helper just the same.
+struct BoundedHelper {
+    finished: mpsc::Receiver<()>,
+    handle: std::thread::JoinHandle<()>,
+}
+
+impl BoundedHelper {
+    /// `None` when the thread could not be spawned; the caller decides what a
+    /// missing helper means (inline work, or nothing to wait for).
+    fn spawn(name: &str, body: impl FnOnce() + Send + 'static) -> Option<Self> {
+        let (done, finished) = mpsc::channel();
+        match std::thread::Builder::new()
+            .name(name.to_owned())
+            .spawn(move || {
+                body();
+                let _ = done.send(());
+            }) {
+            Ok(handle) => Some(Self { finished, handle }),
+            Err(err) => {
+                warn!(?err, name, "could not spawn a bounded teardown helper");
+                None
+            }
+        }
+    }
+
+    /// `true` when the helper finished inside `budget` (it is then joined),
+    /// `false` when it did not and was DETACHED. A detached helper owns
+    /// everything it needs and keeps its graph alive; the caller counts and
+    /// shouts, because only the caller knows what was leaked.
+    fn wait(self, budget: Duration) -> bool {
+        // Anything but a timeout means the body is over: a value, or a hangup
+        // from a panicking helper.
+        if self.finished.recv_timeout(budget) != Err(mpsc::RecvTimeoutError::Timeout) {
+            let _ = self.handle.join();
+            return true;
+        }
+        drop(self.handle);
+        false
+    }
+}
+
+/// NULL an element the pipeline's descent could not reach, because it parks
+/// outside the pipeline. See the call site in [`Teardown::run`] for why.
+fn null_if_orphaned(element: &gst::Element) {
+    if element.parent().is_none() {
+        let _ = element.set_state(gst::State::Null);
     }
 }
 
@@ -379,10 +406,7 @@ impl Teardown {
     /// It is not what wedged, and a push parked on something the descent does
     /// not signal still needs it (see that function for the two-obstacle
     /// argument).
-    ///
-    /// `FCAST_TEARDOWN_INPUTS_BEFORE_PIPELINE` restores the old order.
     fn run(self) {
-        let inputs_first = std::env::var_os("FCAST_TEARDOWN_INPUTS_BEFORE_PIPELINE").is_some();
         let Teardown {
             pipeline,
             video_sink,
@@ -414,23 +438,16 @@ impl Teardown {
 
         // THE DESCENT, bounded. Its handles are refcounted, so the helper it
         // may run on keeps its own graph alive and this thread owes it nothing.
-        Self::bounded_descent(&pipeline, &inputs, inputs_first);
+        Self::bounded_descent(&pipeline, &inputs);
 
-        // Between video items the caller sink parks at READY OUTSIDE the
-        // pipeline (`remove_video_chain`), so the NULL above never reaches
-        // it and the final unref would trip GStreamer's dispose-in-READY
-        // CRITICAL. Down it explicitly when it is orphaned. THE one place the
-        // crate NULLs the caller's sink, and it is a teardown: the pipeline it
-        // belonged to is gone.
-        if video_sink.parent().is_none() {
-            let _ = video_sink.set_state(gst::State::Null);
-        }
-        // Same treatment for the chain's queue: it parks at READY outside
-        // the pipeline between video items, and disposing it there trips the
-        // same CRITICAL.
-        if video_entry.parent().is_none() {
-            let _ = video_entry.set_state(gst::State::Null);
-        }
+        // Between video items the caller sink and the chain's queue park at
+        // READY OUTSIDE the pipeline (`remove_video_chain`), so the NULL above
+        // never reaches them and the final unref would trip GStreamer's
+        // dispose-in-READY CRITICAL. Down them explicitly when orphaned. THE
+        // one place the crate NULLs the caller's sink, and it is a teardown:
+        // the pipeline it belonged to is gone.
+        null_if_orphaned(&video_sink);
+        null_if_orphaned(&video_entry);
     }
 
     /// Run the teardown's descent on `fpb-descent` and wait
@@ -451,9 +468,9 @@ impl Teardown {
     /// reclaim a graph whose state change is stuck inside a mechanism
     /// element's lock, and forcing one would be a use-after-free rather than a
     /// leak. It is logged at `error!` with a counter
-    /// ([`FcastPlaybin::teardown_descent_stuck`]) so it can never be a quiet
-    /// regression, and only after fifteen seconds of a descent that has
-    /// genuinely stopped.
+    /// ([`GlobalStats::teardown_descent_stuck`](crate::GlobalStats)) so it can
+    /// never be a quiet regression, and only after fifteen seconds of a
+    /// descent that has genuinely stopped.
     ///
     /// # Thread identity is not violated
     ///
@@ -462,69 +479,42 @@ impl Teardown {
     /// `fpb-teardown` and is never joined, and [`WakeRescue`] performs the
     /// pipeline's descent from `fpb-tdrescue` when the wake ahead of it parks.
     /// `Teardown`'s fields are owned handles by design for exactly this.
-    ///
-    /// Lever: `FCAST_NO_TEARDOWN_DESCENT_BOUND` restores the inline,
-    /// unbounded descent.
-    fn bounded_descent(pipeline: &gst::Pipeline, inputs: &[gst::Element], inputs_first: bool) {
-        fn descend(pipeline: &gst::Pipeline, inputs: &[gst::Element], inputs_first: bool) {
-            if !inputs_first {
-                let _ = pipeline.set_state(gst::State::Null);
-            }
+    fn bounded_descent(pipeline: &gst::Pipeline, inputs: &[gst::Element]) {
+        // The PIPELINE first, then the inputs (see `Teardown::run` for the
+        // seed-1600058 wedge the other order deterministically reproduced).
+        fn descend(pipeline: &gst::Pipeline, inputs: &[gst::Element]) {
+            let _ = pipeline.set_state(gst::State::Null);
+            debug!("drop: pipeline down");
             for element in inputs {
                 let _ = element.set_state(gst::State::Null);
             }
             debug!("drop: inputs down");
-            if inputs_first {
-                let _ = pipeline.set_state(gst::State::Null);
-            }
-            debug!("drop: pipeline down");
         }
 
-        if std::env::var_os("FCAST_NO_TEARDOWN_DESCENT_BOUND").is_some() {
-            descend(pipeline, inputs, inputs_first);
-            return;
-        }
-        let (done, finished) = mpsc::channel();
         let carried_pipeline = pipeline.clone();
         let carried_inputs = inputs.to_vec();
-        let spawned = std::thread::Builder::new()
-            .name("fpb-descent".into())
-            .spawn(move || {
-                descend(&carried_pipeline, &carried_inputs, inputs_first);
-                // Sent LAST. A hangup without a send means the descent
-                // panicked, which is a finished descent either way.
-                let _ = done.send(());
-            });
-        let handle = match spawned {
-            Ok(handle) => handle,
-            Err(err) => {
-                // Out of threads at a teardown. An unbounded descent is worse
-                // than a bounded one and far better than no descent at all: a
-                // pipeline unref'd from PLAYING trips CRITICALs and leaks
-                // every element in it.
-                warn!(
-                    ?err,
-                    "could not spawn the teardown descent thread; descending inline"
-                );
-                descend(pipeline, inputs, inputs_first);
-                return;
-            }
+        let helper = BoundedHelper::spawn("fpb-descent", move || {
+            descend(&carried_pipeline, &carried_inputs);
+        });
+        let Some(helper) = helper else {
+            // Out of threads at a teardown. An unbounded descent is worse
+            // than a bounded one and far better than no descent at all: a
+            // pipeline unref'd from PLAYING trips CRITICALs and leaks
+            // every element in it.
+            warn!("could not spawn the teardown descent thread; descending inline");
+            descend(pipeline, inputs);
+            return;
         };
-        // Anything but a timeout means the descent is over (the WakeRescue
-        // idiom): a value, or a hangup from a panicking helper.
-        if finished.recv_timeout(TEARDOWN_DESCENT_BUDGET) != Err(mpsc::RecvTimeoutError::Timeout) {
-            let _ = handle.join();
+        if helper.wait(TEARDOWN_DESCENT_BUDGET) {
             return;
         }
-        TEARDOWN_DESCENT_STUCK.fetch_add(1, Ordering::SeqCst);
+        TEARDOWN_DESCENT_STUCK.fetch_add(1, Ordering::Relaxed);
         error!(
             "the teardown descent has not returned after {TEARDOWN_DESCENT_BUDGET:?}; \
              leaking the descent thread and its graph so the carrying thread is released. \
              A set_state(NULL) that never returns means adaptivedemux2 leaked its \
              scheduler lock and no recovery reaches a descent"
         );
-        // Detach. The helper owns everything it needs.
-        drop(handle);
     }
 }
 
@@ -569,10 +559,10 @@ impl Teardown {
 // `tests/regression_teardown_thread.rs` manufactures the race and goes from 3
 // failures in 3 to 3 passes in 3, so the path it walks is closed. The
 // `toml_scenarios` soak did NOT follow: 42 runs per arm, interleaved on one
-// binary, gave 2 signal-11 runs and 2 warning-emitting runs with
-// `FCAST_TEARDOWN_ON_ANY_THREAD=1` against 1 and 1 without it. At that base
-// rate 2 against 1 is noise, so a second route to the same symptom is still
-// open and none of this should be read as closing it.
+// binary, gave 2 signal-11 runs and 2 warning-emitting runs with the descent
+// forced to run in place whatever the thread, against 1 and 1 with the handoff
+// below. At that base rate 2 against 1 is noise, so a second route to the same
+// symptom is still open and none of this should be read as closing it.
 //
 // The likeliest remaining one, UNPROVEN and stated so nobody has to rediscover
 // the shape of the search: `Inner`'s OWN fields drop on the calling thread
@@ -581,9 +571,6 @@ impl Teardown {
 // from there, and GStreamer's dispose deactivates its pads exactly as the
 // descent would have. `Teardown` holds the pipeline, the video chain and the
 // inputs; it does not hold every element `Inner` owns.
-//
-// `FCAST_TEARDOWN_ON_ANY_THREAD` runs the descent in place again, whatever
-// the thread, for an A/B without a rebuild. It gates the whole change.
 impl Drop for Inner {
     fn drop(&mut self) {
         debug!("dropping the playbin core");
@@ -656,8 +643,7 @@ impl Drop for Inner {
         // legitimately runs off the decider, because `Inner` is already gone
         // when it happens and the link side cannot run at all (the
         // teardown-boundary exemption spelled out in `Inner::decider_only`).
-        let foreign = std::thread::current().name().is_none()
-            && std::env::var_os("FCAST_TEARDOWN_ON_ANY_THREAD").is_none();
+        let foreign = std::thread::current().name().is_none();
         if !foreign {
             teardown.run();
             return;
@@ -680,32 +666,6 @@ impl Drop for Inner {
 }
 
 impl FcastPlaybin {
-    /// Teardown descents that blew [`TEARDOWN_DESCENT_BUDGET`] and were
-    /// detached (see [`Teardown::run`]). Zero is the invariant; a nonzero
-    /// count is a leaked thread plus a leaked graph, logged at error. Not part
-    /// of the public API.
-    #[doc(hidden)]
-    pub fn teardown_descent_stuck() -> u64 {
-        TEARDOWN_DESCENT_STUCK.load(Ordering::SeqCst)
-    }
-
-    /// Rescue descents that blew [`RESCUE_DISARM_BUDGET`] and were detached,
-    /// poisoning the crate (see [`WakeRescue::disarm`]). Zero is the invariant;
-    /// a nonzero count means one teardown could not take its pipeline down and
-    /// every job since has been refused. Not part of the public API.
-    #[doc(hidden)]
-    pub fn rescue_disarm_timeouts() -> u64 {
-        RESCUE_DISARM_TIMEOUTS.load(Ordering::SeqCst)
-    }
-
-    /// How many times a side-input flush reset the pipeline's start time and
-    /// [`StartTimeGuard`] put it back. Process-global, so read it as a delta.
-    /// Not part of the public API.
-    #[doc(hidden)]
-    pub fn start_time_restores() -> u64 {
-        START_TIME_RESTORES.load(Ordering::SeqCst)
-    }
-
     /// Full teardown to `target` (READY or NULL): drop the pipeline, remove
     /// every input (releasing its network/file resources NOW rather than at
     /// the next load) and drop the per-load audio sink. The video chain, if
@@ -827,8 +787,6 @@ impl FcastPlaybin {
     /// thread keeps it matched; the rescue only ever moves the descent
     /// underneath a pair that is already stuck.
     ///
-    /// Lever: `FCAST_NO_TEARDOWN_RESCUE` restores the unrescued teardown.
-    ///
     /// # RESIDUAL, measured, not closed
     ///
     /// A rescued teardown can still report `pipeline (Paused, Ready)`, the
@@ -919,23 +877,12 @@ impl FcastPlaybin {
         }
         Inner::remove_all_inputs(&self.inner);
         self.inner.remove_audio_sink();
-        // Everything desired/applied/in-flight belonged to the torn-down
-        // item. Branch disposals, input removals and replays stay pending:
-        // their targets outlive the item and their drains no-op when stale.
-        self.inner.selection.lock().reset();
-        *self.inner.last_applied_subtitle.lock() = None;
-        *self.inner.upstream_selection.lock() = None;
-        self.inner.last_upstream_ids.lock().clear();
-        // Per-item and keyed by a decodebin3 pad NAME the next load's fresh
-        // core hands out again (full argument at the load reset, which clears
-        // the same two). A stop is an item ending, so they end with it.
-        self.inner.parked_text_cues.lock().clear();
-        self.inner.suppress_text_clear.lock().clear();
-        // Same as the load reset: the inputs those timers were armed for are
-        // gone with the item.
-        self.inner.clear_pending_timers();
-        *self.inner.intended_timeline.lock() = (1.0, gst::ClockTime::ZERO);
-        self.inner.video_deselected.store(false, Ordering::SeqCst);
+        // A stop IS an item ending, so it ends everything the item owned - the
+        // same list a load clears, and the same list by construction (see
+        // `Inner::reset_item_state`). No generation is allocated here: a stop
+        // ends an item without starting one, and the events a straggler still
+        // posts belong to the item that just ended.
+        self.inner.reset_item_state();
         Ok(())
     }
 }

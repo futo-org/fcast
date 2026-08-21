@@ -11,7 +11,7 @@ use tracing::{debug, error, info};
 use crate::{
     FcastPlaybin, Inner,
     api::{AfterCancel, PlaybinEvent},
-    decisions::{EosGate, gapless_eos_decision},
+    decisions::{self, EosGate, gapless_eos_decision},
     jobs::Job,
     routing::{Input, StreamKind},
     selection,
@@ -86,7 +86,8 @@ fn selection_covered_by(selected_ids: &[String], known: &[String]) -> bool {
 /// none of the prepared item's streams to select, so an ambiguous report can
 /// only be about the item still playing. A selection naming ids the current
 /// item does NOT carry is unambiguous and activates as before, which keeps
-/// the `FCAST_NO_ADAPTIVE_PREPARE_HOLD` reading intact.
+/// the adaptive prepare hold's reading intact (see
+/// [`Inner::adaptive_prepare_hold`]).
 fn activation_decision(
     selected_ids: &[String],
     prepared_ids: &[String],
@@ -155,6 +156,26 @@ impl SwapGate {
         self.cond.notify_all();
         aborted
     }
+
+    /// [`Self::abort`] for a CANCEL rather than a downward transition: it
+    /// refuses once the block probe has performed the swap, because past that
+    /// the relink is live and the activation is imminent, and ripping the
+    /// now-active input out mid-stream is not a cancel. `Err` carries the
+    /// generation whose activation was left to finish.
+    ///
+    /// Atomic against that surgery: one lock hold covers the test and the
+    /// abort. `pending` is what distinguishes the in-flight window from a
+    /// long-completed activation (which leaves `swapped` set but clears
+    /// `pending`), see [`SwapState::activation_pending`].
+    pub(crate) fn abort_unless_activating(&self) -> Result<SwapState, u64> {
+        let mut state = self.state.lock();
+        if let Some(generation) = state.activation_pending() {
+            return Err(generation);
+        }
+        let aborted = std::mem::take(&mut *state);
+        self.cond.notify_all();
+        Ok(aborted)
+    }
 }
 
 /// What a `cancel_prepared` did. The distinction is load-bearing for the
@@ -205,6 +226,179 @@ fn cancel_synthesizes_eos(dropped_eos: bool, after: AfterCancel) -> bool {
     dropped_eos && matches!(after, AfterCancel::Nothing)
 }
 
+/// The selection engine's view of a stream collection: ids with a routable
+/// kind, dropped otherwise. The one conversion, so the load path and the
+/// gapless boundary cannot seed the engine differently (see
+/// [`Inner::adopt_collection`]).
+fn collection_streams(collection: &gst::StreamCollection) -> Vec<selection::CollectionStream> {
+    collection
+        .iter()
+        .filter_map(|s| {
+            let sid = s.stream_id()?.to_string();
+            let kind = decisions::kind_from_stream_type(s.stream_type())?;
+            Some(selection::CollectionStream { sid, kind })
+        })
+        .collect()
+}
+
+/// The audio facts a gapless activation needs about the incoming item, taken
+/// in one pass over its collection (see [`Inner::arm_or_emit_activation`]).
+#[derive(Default)]
+struct AudioAnchor {
+    /// Any AUDIO stream, WITH OR WITHOUT an id. Invariant 5 hangs off this
+    /// and not off `sids`: an id-less audio stream still crosses the audio
+    /// queue, so the activation must still be held for the sink boundary.
+    has_audio: bool,
+    /// The audio stream ids, for the arm-time sticky STREAM_START check.
+    sids: Vec<String>,
+}
+
+/// One pass for both halves (the two scans this replaces read the same
+/// collection twice with the same predicate).
+fn audio_anchor(
+    streams: impl IntoIterator<Item = (gst::StreamType, Option<gst::glib::GString>)>,
+) -> AudioAnchor {
+    let mut anchor = AudioAnchor::default();
+    for (ty, sid) in streams {
+        if !ty.contains(gst::StreamType::AUDIO) {
+            continue;
+        }
+        anchor.has_audio = true;
+        if let Some(sid) = sid {
+            anchor.sids.push(sid.to_string());
+        }
+    }
+    anchor
+}
+
+/// One side of the gapless relink, projected off a pad so the plan is pure.
+/// Index-aligned with the caller's own pad vector, which is how a plan names
+/// pads.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PadFacts {
+    /// The sticky STREAM_START's id, absent on a pad that has not carried one
+    /// yet.
+    sid: Option<String>,
+    /// The GstStream's type, absent on a pad with no stream event.
+    stream_type: Option<gst::StreamType>,
+}
+
+/// What [`plan_pad_reuse`] decided, in indices into the caller's `new` pads
+/// and `old` (src pad, decodebin3 sink pad) pairs.
+#[derive(Debug, Default, PartialEq, Eq)]
+struct PadPlan {
+    /// (new pad, old pair) reusing the old decodebin3 sink pad, in the order
+    /// the links must be made.
+    links: Vec<(usize, usize)>,
+    /// New pads with no old slot to inherit: fresh request pads.
+    fresh: Vec<usize>,
+    /// Old pairs with no successor: their decodebin3 slot ends here.
+    release: Vec<usize>,
+}
+
+/// A live A/V output slot whose kind has no successor stream, which makes the
+/// whole swap impossible (see [`plan_pad_reuse`]).
+#[derive(Debug, PartialEq, Eq)]
+struct NoSuccessor(StreamKind);
+
+/// The pure half of [`Inner::perform_gapless_swap`]: which prepared pad
+/// inherits which decodebin3 sink pad. Plan first, mutate after - a failed
+/// plan must leave the links alone.
+///
+/// A live A/V output slot whose kind has NO successor stream cannot switch
+/// gaplessly. Its sink outlives the stream: the hold drops the old item's
+/// EOS, nothing removes an audio sink mid-item, and the bin can then never
+/// aggregate the NEW item's end-of-stream (a silent autoplay wedge); a dying
+/// video slot can conversely EOS every remaining sink between items. Refused
+/// here, before the caller touches any link.
+///
+/// Matching is BY STREAM TYPE, the uridecodebin3 criterion (invariant 7): a
+/// reused sink pad keeps the decodebin3 slot (and its output pad) alive
+/// across the switch. Prefer the old pad whose stream is ROUTED (selected):
+/// a multi-track item also has unselected sibling pads of the same type, and
+/// handing the successor to one of those would let the playing slot die
+/// instead (the exact wedge the coverage check exists for).
+///
+/// The NEW side needs the mirror preference. `src_pads()` order comes from
+/// urisourcebin's parallel parse chains and is racy, and the first same-type
+/// pad claims the reused slot. When a multi-track item's UNSELECTED sibling
+/// won that race, the stream decodebin3 will actually select landed on a
+/// fresh slot whose output decision ran before the new collection was
+/// current, was refused, and was never revisited (the R1 boundary wedge, half
+/// of it). decodebin3's default selection takes the first stream of each type
+/// in collection order, collection order is container track order, and the
+/// parsed stream ids embed the track number, so sorting the pads by stream id
+/// hands the reused slot to the stream that will play. The collection itself
+/// cannot be the rank: the prepared input often posts it only AFTER the swap.
+/// Pads without a sticky stream-start sort last.
+fn plan_pad_reuse(
+    new: &[PadFacts],
+    old: &[PadFacts],
+    routed_ids: &[String],
+    routed_kinds: &[StreamKind],
+) -> Result<PadPlan, NoSuccessor> {
+    for (kind, want) in [
+        (StreamKind::Video, gst::StreamType::VIDEO),
+        (StreamKind::Audio, gst::StreamType::AUDIO),
+    ] {
+        if !routed_kinds.contains(&kind) {
+            continue;
+        }
+        let covered = new
+            .iter()
+            .any(|f| f.stream_type.is_some_and(|ty| ty.contains(want)));
+        if !covered {
+            return Err(NoSuccessor(kind));
+        }
+    }
+
+    // The sid rank, stable so id-less pads keep their arrival order.
+    let mut order: Vec<usize> = (0..new.len()).collect();
+    order.sort_by(|&a, &b| {
+        (new[a].sid.is_none(), new[a].sid.as_deref())
+            .cmp(&(new[b].sid.is_none(), new[b].sid.as_deref()))
+    });
+
+    let mut taken = vec![false; old.len()];
+    let mut plan = PadPlan::default();
+    for ni in order {
+        let want = new[ni].stream_type;
+        let type_matches = |idx: usize, taken: &[bool]| {
+            !taken[idx]
+                && match want {
+                    None => true,
+                    Some(want) => old[idx].stream_type == Some(want),
+                }
+        };
+        let selected = |idx: usize| {
+            old[idx]
+                .sid
+                .as_deref()
+                .is_some_and(|sid| routed_ids.iter().any(|r| r == sid))
+        };
+        let matched = (0..old.len())
+            .find(|&idx| type_matches(idx, &taken) && selected(idx))
+            .or_else(|| (0..old.len()).find(|&idx| type_matches(idx, &taken)));
+        match matched {
+            Some(idx) => {
+                taken[idx] = true;
+                plan.links.push((ni, idx));
+            }
+            None => plan.fresh.push(ni),
+        }
+    }
+    plan.release = (0..old.len()).filter(|&idx| !taken[idx]).collect();
+    Ok(plan)
+}
+
+/// [`PadFacts`] off a live pad, the only impure part of the plan's inputs.
+fn pad_facts(pad: &gst::Pad) -> PadFacts {
+    PadFacts {
+        sid: pad.stream_id().map(|sid| sid.to_string()),
+        stream_type: pad.stream().map(|s| s.stream_type()),
+    }
+}
+
 /// The user-facing half of a gapless activation, held back from decodebin3's
 /// output until the new item's audio actually reaches the sink. See
 /// [`Inner::held_activation`].
@@ -246,12 +440,14 @@ impl Inner {
     /// `Inner::translate_message`). With the generation adopted, the probes
     /// take themselves off as stragglers and the hold is gone.
     ///
-    /// Lever: `FCAST_NO_ADAPTIVE_PREPARE_HOLD` (set = off) restores the
-    /// pre-fix reading, i.e. the prepared input's self-report counts as the
-    /// activation. It is the bite: with it set, a DASH prepare errors
+    /// The bite, measured against the pre-fix reading in which the prepared
+    /// input's self-report counted as the activation: a DASH prepare errors
     /// `not-linked` within ~50 ms and takes the playing item with it.
+    ///
+    /// Unconditional. Kept as a named predicate so the bus filter that carries
+    /// it reads as the rule it implements.
     pub(crate) fn adaptive_prepare_hold(&self) -> bool {
-        std::env::var_os("FCAST_NO_ADAPTIVE_PREPARE_HOLD").is_none()
+        true
     }
 
     /// Whether a stream collection consists purely of the prepared input's
@@ -268,24 +464,26 @@ impl Inner {
         )
     }
 
-    /// Refresh the recorded output groups from each routed pad's sticky
-    /// stream-start. Route-time recording is best-effort (the first
-    /// stream-start can pass while the pad is being routed, before the
-    /// probe exists); by prepare time the stickies are authoritative.
-    pub(crate) fn refresh_output_groups(inner: &Arc<Inner>) {
-        let mut routing = inner.routing.lock();
-        let mut seen = None;
-        for routed in routing.routed.iter_mut() {
-            if let Some(group) = routed
-                .db3_src_pad
-                .sticky_event::<gst::event::StreamStart>(0)
-                .and_then(|event| event.group_id())
-            {
-                routed.group = Some(group);
-                seen = Some(group);
-            }
-        }
-        drop(routing);
+    /// Backstop for [`Inner::active_group`]: seed it from a routed pad's
+    /// sticky stream-start if nothing has yet. Route time seeds it too, but
+    /// only from a sticky that had already arrived; a pad routed ahead of its
+    /// first stream-start leaves the slot unset until the output probe fires.
+    /// Both EOS gates and the activation trigger need the current group
+    /// positively known BEFORE a swap arms, so a prepare re-asks.
+    ///
+    /// Per-pad groups are not recorded anywhere: each pad's sticky is its own
+    /// record, read where it is needed (see the routed-pad EOS gate in
+    /// `route_db3_pad`).
+    pub(crate) fn seed_active_group(inner: &Arc<Inner>) {
+        let seen = {
+            let routing = inner.routing.lock();
+            routing.routed.iter().rev().find_map(|routed| {
+                routed
+                    .db3_src_pad
+                    .sticky_event::<gst::event::StreamStart>(0)
+                    .and_then(|event| event.group_id())
+            })
+        };
         if let Some(group) = seen {
             let mut active = inner.active_group.lock();
             if active.is_none() {
@@ -329,11 +527,10 @@ impl Inner {
     /// The post-streamsynchronizer gate's half of the EOS hold: the same
     /// decision ([`gapless_eos_decision`]) with no sibling-pass arm and
     /// nothing to commit, because ssync already completed the group.
-    /// Returns (drop, pending, behind).
-    pub(crate) fn gapless_eos_check_and_mark(
-        &self,
-        pad_group: Option<gst::GroupId>,
-    ) -> (bool, bool, bool) {
+    ///
+    /// Returns the gate itself: whether to drop is `Drop`, and the two
+    /// reasons only exist on that arm, so they cannot be read on a pass.
+    pub(crate) fn gapless_eos_check_and_mark(&self, pad_group: Option<gst::GroupId>) -> EosGate {
         let active_group = *self.active_group.lock();
         let retired_group = *self.retired_group.lock();
         // One lock hold for the check AND the drop record: a cancel between
@@ -348,18 +545,12 @@ impl Inner {
             state.pending.is_some(),
             false,
         );
-        match gate {
-            EosGate::Drop { pending, behind } => {
-                if pending {
-                    // The item's end is consumed for good; a cancelled swap
-                    // must synthesize it (see `SwapState::dropped_eos`).
-                    state.dropped_eos = true;
-                }
-                (true, pending, behind)
-            }
-            // Neither reason held, so both are false by construction.
-            _ => (false, false, false),
+        if let EosGate::Drop { pending: true, .. } = gate {
+            // The item's end is consumed for good; a cancelled swap must
+            // synthesize it (see `SwapState::dropped_eos`).
+            state.dropped_eos = true;
         }
+        gate
     }
 
     /// The routed-pad EOS gate: decide and commit under ONE critical
@@ -409,14 +600,8 @@ impl Inner {
     /// BRANCHES. It is cleared only when a live video branch received the
     /// flush. A video stream deselected at seek time is not restarted by
     /// the seek, so its drained state stands and the drained-resurrect park
-    /// in `route_db3_pad` must still see the mirror. Gated on that park's
-    /// lever, `FCAST_NO_DRAINED_RESURRECT_PARK` (without the park the
-    /// mirror has no route-time reader and the pre-existing behavior never
-    /// cleared it).
+    /// in `route_db3_pad` must still see the mirror.
     pub(crate) fn clear_passing_eos_after_flush(&self) {
-        if std::env::var_os("FCAST_NO_DRAINED_RESURRECT_PARK").is_some() {
-            return;
-        }
         let video_live = self
             .routing
             .lock()
@@ -491,10 +676,10 @@ impl Inner {
     /// so the title/duration switch lands with the sound. Audio-less items
     /// emit them here, keeping the activation-then-collection order.
     fn activate_prepared_now(&self, prepared: PreparedNext, retired: Option<gst::GroupId>) {
-        // TEST FAULT INJECTION (see [`Inner::stage_activation_delay_ms`]).
+        // TEST FAULT INJECTION (see [`TestStaging::activation_delay_ms`]).
         // Before any effect of the activation, so the whole function is late
         // the way a busy bus thread makes it late.
-        let staged_delay = self.stage_activation_delay_ms.load(Ordering::SeqCst);
+        let staged_delay = self.stage_activation_delay_ms();
         if staged_delay > 0 {
             std::thread::sleep(std::time::Duration::from_millis(staged_delay));
         }
@@ -528,14 +713,8 @@ impl Inner {
         }
 
         // Per-item state rolls like a load's reset, EXCEPT the user's own track
-        // intent: see `SelectionEngine::reset_across_gapless`. A plain `reset()`
-        // here discarded a subtitle-off and the boundary relinked the text
-        // branch the user had turned off
-        // (`regression_gapless::subtitle_disable_survives_a_gapless_transition`).
-        self.selection.lock().reset_across_gapless();
-        *self.last_applied_subtitle.lock() = None;
-        *self.upstream_selection.lock() = None;
-        self.last_upstream_ids.lock().clear();
+        // intent (the `across_gapless` half of the shared list).
+        self.reset_track_state(true);
         // The outgoing item's cues describe a timeline this pipeline has just
         // left. Nothing else tells the renderer so at a gapless boundary: no
         // flush crosses it (that is the point of gapless), and the branch
@@ -556,121 +735,133 @@ impl Inner {
         // the flush it carried: the only eager work left is the
         // PARK, and the park runs inline on the deciding thread at the moment
         // it is decided, so there is no per-item state left to leak across a
-        // gapless boundary. `FCAST_NO_ACTIVATION_TEXT_WORK_CLEAR` went with it.
+        // gapless boundary. The lever that restored the clear went with it.
         *self.intended_timeline.lock() = (1.0, gst::ClockTime::ZERO);
-        {
-            let mut routing = self.routing.lock();
-            routing.collection_video_ids = prepared
-                .pending_collection
-                .as_ref()
-                .map(|collection| {
-                    collection
-                        .iter()
-                        .filter(|s| s.stream_type().contains(gst::StreamType::VIDEO))
-                        .filter_map(|s| s.stream_id().map(|id| id.to_string()))
-                        .collect()
-                })
-                .unwrap_or_default();
-        }
 
         // The selection engine is pipeline truth and updates NOW (a track
         // command must act on the item that is actually decoding), even though
         // the caller-facing collection event is held with the switch below.
-        let has_audio = prepared
-            .pending_collection
-            .as_ref()
-            .is_some_and(|collection| {
-                collection
-                    .iter()
-                    .any(|s| s.stream_type().contains(gst::StreamType::AUDIO))
-            });
-        if let Some(collection) = prepared.pending_collection.as_ref() {
-            let streams = collection
-                .iter()
-                .filter_map(|s| {
-                    let sid = s.stream_id()?.to_string();
-                    let typ = s.stream_type();
-                    let kind = if typ.contains(gst::StreamType::VIDEO) {
-                        StreamKind::Video
-                    } else if typ.contains(gst::StreamType::AUDIO) {
-                        StreamKind::Audio
-                    } else if typ.contains(gst::StreamType::TEXT) {
-                        StreamKind::Text
-                    } else {
-                        return None;
-                    };
-                    Some(selection::CollectionStream { sid, kind })
-                })
-                .collect();
-            self.selection.lock().collection_changed(streams);
-        }
-
-        // The user-facing switch: hold it for the sink boundary if the item
-        // has audio to anchor the release on, else emit it now (an audio-less
-        // item never crosses the audio queue, so there is nothing to wait for).
-        let audio_sids: Vec<String> = prepared
-            .pending_collection
-            .as_ref()
-            .map(|collection| {
-                collection
-                    .iter()
-                    .filter(|s| s.stream_type().contains(gst::StreamType::AUDIO))
-                    .filter_map(|s| s.stream_id().map(|id| id.to_string()))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let held = HeldActivation {
-            collection: prepared.pending_collection,
-        };
-        if has_audio {
-            // The release edge may ALREADY have passed. This function can run
-            // on a bus posting thread (the selection trigger) with no ordering
-            // against the audio data plane, and on a reused slot the new
-            // item's STREAM_START can cross a near-empty fpb-aqueue before the
-            // arm below. Exactly one STREAM_START crosses per item, so arming
-            // after the edge would hold forever, which was the rare
-            // queue_autoplay boundary wedge (tracks never advertised).
-            //
-            // The aqueue src sticky answers "did it cross" race-free. gstpad
-            // stores a serialized sticky BEFORE the probes run
-            // (gst_pad_push_event, store_sticky_event ahead of check_sticky),
-            // so under this lock either the sticky still names the old item
-            // and the release probe has not fired (arming is safe, the probe
-            // must wait for this lock), or it names the new item and the edge
-            // is spent (emit now). Two queue items with identical stream ids
-            // read as already-crossed and emit a queue-depth early, the
-            // pre-hold seam behavior, degraded but never wedged.
-            let mut slot = self.held_activation.lock();
-            let crossed = self
-                .audio_entry
-                .static_pad("src")
-                .and_then(|src| src.sticky_event::<gst::event::StreamStart>(0))
-                .is_some_and(|event| {
-                    let sid = event.stream_id();
-                    audio_sids.iter().any(|known| known.as_str() == sid)
-                });
-            if crossed {
-                drop(slot);
-                // Counted PER INSTANCE so a test can pin this branch without
-                // scanning a process-global log buffer every other test in
-                // the binary writes into (see
-                // `FcastPlaybin::arm_time_activation_releases`).
-                self.arm_time_releases.fetch_add(1, Ordering::SeqCst);
-                info!(
-                    generation = prepared.generation,
-                    "gapless activation released at arm, the audio boundary had already crossed"
-                );
-                self.emit_held(held);
-            } else {
-                *slot = Some(held);
+        //
+        // AT THIS POINT, ahead of the audio scan, because the select lane reads
+        // the collection's video ids off the engine
+        // (`SelectionEngine::video_ids`) and the routing mirror deleted from
+        // here answered for the incoming item from this instant. Adopting later
+        // would leave a window where the engine still reads empty. Empty from
+        // the reset above until here is the pre-existing window, now shorter,
+        // and empty is the conservative answer anyway (see
+        // `decisions::deselects_video`).
+        //
+        // The audio scan follows on the same collection, both its halves in
+        // one pass (see `AudioAnchor`).
+        let anchor = match prepared.pending_collection.as_ref() {
+            Some(collection) => {
+                self.adopt_collection(collection);
+                audio_anchor(collection.iter().map(|s| (s.stream_type(), s.stream_id())))
             }
-        } else {
-            self.emit_held(held);
-        }
+            None => AudioAnchor::default(),
+        };
+
+        self.arm_or_emit_activation(
+            HeldActivation {
+                collection: prepared.pending_collection,
+            },
+            &anchor,
+            prepared.generation,
+        );
 
         // Input surgery (removing the drained previous inputs) must not run
         // on this streaming thread.
         self.queue_job(Job::FinishActivation);
+    }
+
+    /// The per-item track reset, THE list both boundaries roll: the load/stop
+    /// one ([`Inner::reset_item_state`], which passes `false`) and the gapless
+    /// one (`true`). The engine reset is the only difference, and it is the
+    /// difference the lists once drifted on: a plain `reset()` at a gapless
+    /// boundary discards the user's own track intent, and the boundary then
+    /// relinked the text branch the user had turned off
+    /// (`regression_gapless::subtitle_disable_survives_a_gapless_transition`).
+    /// See `SelectionEngine::reset_across_gapless`.
+    ///
+    /// The other three are per-item on both paths, and their field docs say
+    /// "reset wherever the engine resets" - a contract that now holds by
+    /// construction. One lock at a time, in the crate's order.
+    pub(crate) fn reset_track_state(&self, across_gapless: bool) {
+        {
+            let mut selection = self.selection.lock();
+            if across_gapless {
+                selection.reset_across_gapless();
+            } else {
+                selection.reset();
+            }
+        }
+        *self.last_applied_subtitle.lock() = None;
+        *self.upstream_selection.lock() = None;
+        self.last_upstream_ids.lock().clear();
+    }
+
+    /// Seed the selection engine from a stream collection. THE write, made by
+    /// the load path (`Inner::translate_message`'s collection arm) and by the
+    /// gapless boundary, so the two cannot seed a per-item divergence. It is
+    /// also where the collection's video ids come from
+    /// (`SelectionEngine::video_ids`).
+    pub(crate) fn adopt_collection(&self, collection: &gst::StreamCollection) {
+        // Converted off the lock: the engine holds it for the reconcile.
+        let streams = collection_streams(collection);
+        self.selection.lock().collection_changed(streams);
+    }
+
+    /// The user-facing half of an activation: hold it for the sink boundary
+    /// when the item has audio to anchor the release on, else emit it now (an
+    /// audio-less item never crosses the audio queue, so there is nothing to
+    /// wait for). See [`Inner::held_activation`].
+    fn arm_or_emit_activation(&self, held: HeldActivation, anchor: &AudioAnchor, generation: u64) {
+        if !anchor.has_audio {
+            self.emit_held(held);
+            return;
+        }
+        // The release edge may ALREADY have passed. The activation can run
+        // on a bus posting thread (the selection trigger) with no ordering
+        // against the audio data plane, and on a reused slot the new item's
+        // STREAM_START can cross a near-empty fpb-aqueue before the arm
+        // below. Exactly one STREAM_START crosses per item, so arming after
+        // the edge would hold forever, which was the rare queue_autoplay
+        // boundary wedge (tracks never advertised).
+        //
+        // The aqueue src sticky answers "did it cross" race-free. gstpad
+        // stores a serialized sticky BEFORE the probes run
+        // (gst_pad_push_event, store_sticky_event ahead of check_sticky),
+        // so under this lock either the sticky still names the old item
+        // and the release probe has not fired (arming is safe, the probe
+        // must wait for this lock), or it names the new item and the edge
+        // is spent (emit now). Two queue items with identical stream ids
+        // read as already-crossed and emit a queue-depth early, the
+        // pre-hold seam behavior, degraded but never wedged.
+        let mut slot = self.held_activation.lock();
+        let crossed = self
+            .audio_entry
+            .static_pad("src")
+            .and_then(|src| src.sticky_event::<gst::event::StreamStart>(0))
+            .is_some_and(|event| {
+                let sid = event.stream_id();
+                anchor.sids.iter().any(|known| known.as_str() == sid)
+            });
+        if !crossed {
+            *slot = Some(held);
+            return;
+        }
+        drop(slot);
+        // Counted PER INSTANCE so a test can pin this branch without
+        // scanning a process-global log buffer every other test in the
+        // binary writes into (see `Stats::arm_time_activation_releases`).
+        self.counters
+            .arm_time_releases
+            .fetch_add(1, Ordering::Relaxed);
+        info!(
+            generation,
+            "gapless activation released at arm, the audio boundary had already crossed"
+        );
+        self.emit_held(held);
     }
 
     /// Emit a gapless activation's user-facing events in the canonical
@@ -905,99 +1096,40 @@ impl Inner {
             (prepared_element, old_pairs, routed_ids, routed_kinds)
         };
 
-        // A live A/V output slot whose kind has NO successor stream cannot
-        // switch gaplessly. Its sink outlives the stream: the hold drops
-        // the old item's EOS, nothing removes an audio sink mid-item, and
-        // the bin can then never aggregate the NEW item's end-of-stream
-        // (a silent autoplay wedge); a dying video slot can conversely EOS
-        // every remaining sink between items. Fail the swap BEFORE touching
-        // any link: the caller reports PreparedFailed and the ordinary
-        // end-of-stream advance owns the transition.
+        // The whole decision, taken before a single link is touched: a
+        // refused plan must leave the live graph exactly as it is (the
+        // caller reports PreparedFailed and the ordinary end-of-stream
+        // advance owns the transition). See `plan_pad_reuse` for the
+        // coverage rule, the type matching and the sid rank.
         let new_pads = prepared_element.src_pads();
-        for (kind, want) in [
-            (StreamKind::Video, gst::StreamType::VIDEO),
-            (StreamKind::Audio, gst::StreamType::AUDIO),
-        ] {
-            if !routed_kinds.contains(&kind) {
-                continue;
-            }
-            let covered = new_pads
+        let plan = plan_pad_reuse(
+            &new_pads.iter().map(pad_facts).collect::<Vec<_>>(),
+            &old_pairs
                 .iter()
-                .any(|pad| pad.stream().is_some_and(|s| s.stream_type().contains(want)));
-            if !covered {
-                return Err(anyhow!(
-                    "the prepared item has no {kind:?} stream to continue the live one"
-                ));
-            }
-        }
+                .map(|(old_src, _)| pad_facts(old_src))
+                .collect::<Vec<_>>(),
+            &routed_ids,
+            &routed_kinds,
+        )
+        .map_err(|NoSuccessor(kind)| {
+            anyhow!("the prepared item has no {kind:?} stream to continue the live one")
+        })?;
 
-        // Match new pads to old decodebin3 sink pads by stream type, the
-        // uridecodebin3 criterion: a reused sink pad keeps the decodebin3
-        // slot (and its output pad) alive across the switch. Prefer the old
-        // pad whose stream is ROUTED (selected): a multi-track item also
-        // has unselected sibling pads of the same type, and handing the
-        // successor to one of those would let the playing slot die instead
-        // (the exact wedge the coverage check above exists for). Plan
-        // first, mutate after: a failed plan must leave the links alone.
-        //
-        // The NEW side needs the mirror preference. src_pads() order comes
-        // from urisourcebin's parallel parse chains and is racy, and the
-        // first same-type pad claims the reused slot. When a multi-track
-        // item's UNSELECTED sibling won that race, the stream decodebin3
-        // will actually select landed on a fresh slot whose output decision
-        // ran before the new collection was current, was refused, and was
-        // never revisited (the R1 boundary wedge, half of it). decodebin3's
-        // default selection takes the first stream of each type in
-        // collection order, collection order is container track order, and
-        // the parsed stream ids embed the track number, so sorting the pads
-        // by stream id hands the reused slot to the stream that will play.
-        // The collection itself cannot be the rank: the prepared input often
-        // posts it only AFTER the swap. Pads without a sticky stream-start
-        // sort last.
-        let mut new_pads = new_pads;
-        new_pads.sort_by_key(|pad| {
-            let sid = pad.stream_id().map(|s| s.to_string());
-            (sid.is_none(), sid)
-        });
-        let mut taken = vec![false; old_pairs.len()];
-        let mut links: Vec<(gst::Pad, gst::Pad)> = Vec::new();
-        let mut fresh: Vec<gst::Pad> = Vec::new();
-        for new_pad in &new_pads {
-            let want = new_pad.stream().map(|s| s.stream_type());
-            let type_matches = |idx: usize, taken: &[bool]| {
-                !taken[idx]
-                    && match want {
-                        None => true,
-                        Some(want) => {
-                            old_pairs[idx].0.stream().map(|s| s.stream_type()) == Some(want)
-                        }
-                    }
-            };
-            let selected = |idx: usize| {
-                old_pairs[idx]
-                    .0
-                    .stream_id()
-                    .is_some_and(|sid| routed_ids.iter().any(|r| *r == sid))
-            };
-            let matched = (0..old_pairs.len())
-                .find(|&idx| type_matches(idx, &taken) && selected(idx))
-                .or_else(|| (0..old_pairs.len()).find(|&idx| type_matches(idx, &taken)));
-            match matched {
-                Some(idx) => {
-                    taken[idx] = true;
-                    debug!(
-                        new = %new_pad.name(),
-                        sink = %old_pairs[idx].1.name(),
-                        "gapless: reusing the decodebin3 sink pad"
-                    );
-                    links.push((new_pad.clone(), old_pairs[idx].1.clone()));
-                }
-                None => fresh.push(new_pad.clone()),
-            }
-        }
+        let mut links: Vec<(gst::Pad, gst::Pad)> = plan
+            .links
+            .iter()
+            .map(|&(new_idx, old_idx)| {
+                debug!(
+                    new = %new_pads[new_idx].name(),
+                    sink = %old_pairs[old_idx].1.name(),
+                    "gapless: reusing the decodebin3 sink pad"
+                );
+                (new_pads[new_idx].clone(), old_pairs[old_idx].1.clone())
+            })
+            .collect();
         for (idx, (old_src, db3_sink)) in old_pairs.iter().enumerate() {
             let _ = old_src.unlink(db3_sink);
-            if !taken[idx] {
+            if plan.release.contains(&idx) {
                 // An old stream with no successor: its slot ends here.
                 debug!(sink = %db3_sink.name(), "gapless: releasing an unmatched old sink pad");
                 db3.release_request_pad(db3_sink);
@@ -1008,7 +1140,7 @@ impl Inner {
                 .link(db3_sink)
                 .with_context(|| format!("relinking {} into decodebin3", new_pad.name()))?;
         }
-        for new_pad in fresh {
+        for new_pad in plan.fresh.iter().map(|&idx| new_pads[idx].clone()) {
             let db3_sink = {
                 // Serialized: see `Inner::db3_pad_request`.
                 let _serial = inner.db3_pad_request.lock();
@@ -1057,31 +1189,6 @@ impl Inner {
 }
 
 impl FcastPlaybin {
-    /// TEST FAULT INJECTION: delay the next gapless activation by `delay`,
-    /// staging the window between the boundary's data flow and the
-    /// activation's arm of `held_activation` (see
-    /// [`Inner::stage_activation_delay_ms`]). Per instance so it is safe
-    /// under a test binary's thread pool. Not part of the public API.
-    #[doc(hidden)]
-    pub fn stage_activation_delay(&self, delay: std::time::Duration) {
-        self.inner
-            .stage_activation_delay_ms
-            .store(delay.as_millis() as u64, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    /// How many gapless activations found the audio boundary already crossed
-    /// at arm time and released the held events right there (see the sticky
-    /// check in `Inner::activate_prepared_now`). PER INSTANCE, which is the
-    /// point: the crate's tracing goes to one process-global subscriber, so a
-    /// test binary running several pipelines at once cannot tell whose line
-    /// it is reading. Not part of the public API.
-    #[doc(hidden)]
-    pub fn arm_time_activation_releases(&self) -> u64 {
-        self.inner
-            .arm_time_releases
-            .load(std::sync::atomic::Ordering::SeqCst)
-    }
-
     /// Drop a still-pending prepared next input: take it out of the
     /// prepared slot and remove its element from the pipeline. A no-op
     /// when nothing is prepared (or it already activated, which empties the
@@ -1097,20 +1204,14 @@ impl FcastPlaybin {
     /// only thing that can decide the consumed-end synthesis at the bottom
     /// (see [`AfterCancel`]).
     pub(crate) fn cancel_prepared(&self, after: AfterCancel) -> CancelOutcome {
-        // Atomic against the block probe's surgery: past the swap the
-        // relink is live and activation is imminent, cancelling would rip
-        // the now-active input out mid-stream. `pending` distinguishes the
-        // in-flight window from a long-completed activation (which leaves
-        // `swapped` set but clears `pending`).
-        let dropped_eos = {
-            let mut state = self.inner.swap_gate.state.lock();
-            if let Some(generation) = state.activation_pending() {
+        // The refusal and the abort are one critical section, see
+        // `SwapGate::abort_unless_activating`.
+        let dropped_eos = match self.inner.swap_gate.abort_unless_activating() {
+            Err(generation) => {
                 debug!("swap already performed, leaving the activation to finish");
                 return CancelOutcome::Declined { generation };
             }
-            let aborted = std::mem::take(&mut *state);
-            self.inner.swap_gate.cond.notify_all();
-            aborted.pending.is_some() && aborted.dropped_eos
+            Ok(aborted) => aborted.pending.is_some() && aborted.dropped_eos,
         };
         let mut cancelled = None;
         if let Some(prepared) = self.inner.prepared.lock().take() {
@@ -1168,14 +1269,267 @@ impl FcastPlaybin {
 #[cfg(test)]
 mod tests {
     use super::{
-        PreparedNext, SwapState, activation_decision, cancel_synthesizes_eos,
-        collection_matches_prepared, gapless_eos_decision,
+        NoSuccessor, PadFacts, PadPlan, PreparedNext, SwapState, activation_decision, audio_anchor,
+        cancel_synthesizes_eos, collection_matches_prepared, plan_pad_reuse,
     };
-    use crate::api::AfterCancel;
+    use crate::{api::AfterCancel, routing::StreamKind};
     use gst::prelude::*;
 
     fn ids(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
+    }
+
+    const V: gst::StreamType = gst::StreamType::VIDEO;
+    const A: gst::StreamType = gst::StreamType::AUDIO;
+    const T: gst::StreamType = gst::StreamType::TEXT;
+
+    /// Pad projections, in the caller's own pad order.
+    fn facts(rows: &[(Option<&str>, Option<gst::StreamType>)]) -> Vec<PadFacts> {
+        rows.iter()
+            .map(|(sid, stream_type)| PadFacts {
+                sid: sid.map(|s| s.to_string()),
+                stream_type: *stream_type,
+            })
+            .collect()
+    }
+
+    fn plan(
+        new: &[(Option<&str>, Option<gst::StreamType>)],
+        old: &[(Option<&str>, Option<gst::StreamType>)],
+        routed_ids: &[&str],
+        routed_kinds: &[StreamKind],
+    ) -> Result<PadPlan, NoSuccessor> {
+        plan_pad_reuse(&facts(new), &facts(old), &ids(routed_ids), routed_kinds)
+    }
+
+    /// The activation's audio anchor: both halves off ONE pass, and
+    /// `has_audio` is an `any` over that pass rather than a read of `sids`.
+    /// An id-less audio stream still crosses the audio queue, so it must
+    /// still hold the activation (invariant 5); it just cannot be matched by
+    /// the arm-time sticky check.
+    #[test]
+    fn the_audio_anchor_holds_for_an_id_less_audio_stream() {
+        let anchor = audio_anchor([(A, None)]);
+        assert!(anchor.has_audio, "an id-less audio stream still anchors");
+        assert!(anchor.sids.is_empty());
+
+        let anchor = audio_anchor([
+            (V, Some("v-1".into())),
+            (A, Some("a-1".into())),
+            (T, Some("t-1".into())),
+            (A, Some("a-2".into())),
+        ]);
+        assert!(anchor.has_audio);
+        assert_eq!(anchor.sids, ids(&["a-1", "a-2"]));
+
+        // No audio at all: the activation emits instead of arming.
+        let anchor = audio_anchor([(V, Some("v-1".into())), (T, Some("t-1".into()))]);
+        assert!(!anchor.has_audio);
+        assert!(anchor.sids.is_empty());
+
+        // Muxed flags count as audio, the same `contains` the sink boundary
+        // uses.
+        let anchor = audio_anchor([(V | A, Some("av-1".into()))]);
+        assert!(anchor.has_audio);
+        assert_eq!(anchor.sids, ids(&["av-1"]));
+
+        let anchor = audio_anchor([]);
+        assert!(!anchor.has_audio);
+    }
+
+    /// The pad-reuse plan, one row per documented hazard. Indices are into
+    /// the `new` and `old` slices as given; the plan sorts internally and
+    /// reports the caller's own positions back.
+    #[test]
+    fn the_pad_reuse_plan_table() {
+        // The ordinary A/V continuation: same types, reused slots.
+        let got = plan(
+            &[(Some("b-v"), Some(V)), (Some("b-a"), Some(A))],
+            &[(Some("a-v"), Some(V)), (Some("a-a"), Some(A))],
+            &["a-v", "a-a"],
+            &[StreamKind::Video, StreamKind::Audio],
+        )
+        .expect("both kinds covered");
+        assert_eq!(
+            got,
+            PadPlan {
+                links: vec![(1, 1), (0, 0)],
+                fresh: vec![],
+                release: vec![],
+            },
+            "sid order is b-a then b-v, and each takes its own type's slot"
+        );
+
+        // INVARIANT 7, the coverage check: a live video slot with no video
+        // successor cannot switch gaplessly, and the refusal comes before
+        // any link decision.
+        assert_eq!(
+            plan(
+                &[(Some("b-a"), Some(A))],
+                &[(Some("a-v"), Some(V)), (Some("a-a"), Some(A))],
+                &["a-v", "a-a"],
+                &[StreamKind::Video, StreamKind::Audio],
+            ),
+            Err(NoSuccessor(StreamKind::Video))
+        );
+        assert_eq!(
+            plan(
+                &[(Some("b-v"), Some(V))],
+                &[(Some("a-v"), Some(V)), (Some("a-a"), Some(A))],
+                &["a-v", "a-a"],
+                &[StreamKind::Video, StreamKind::Audio],
+            ),
+            Err(NoSuccessor(StreamKind::Audio))
+        );
+        // Only A/V slots are covered. A live TEXT slot with no successor is
+        // allowed to die at the boundary.
+        assert!(
+            plan(
+                &[(Some("b-v"), Some(V)), (Some("b-a"), Some(A))],
+                &[
+                    (Some("a-v"), Some(V)),
+                    (Some("a-a"), Some(A)),
+                    (Some("a-t"), Some(T)),
+                ],
+                &["a-v", "a-a", "a-t"],
+                &[StreamKind::Video, StreamKind::Audio, StreamKind::Text],
+            )
+            .is_ok()
+        );
+        // A kind that is not routed is not required either: nothing lives on
+        // that slot to strand.
+        assert!(
+            plan(
+                &[(Some("b-a"), Some(A))],
+                &[(Some("a-a"), Some(A))],
+                &["a-a"],
+                &[StreamKind::Audio],
+            )
+            .is_ok()
+        );
+
+        // PREFER THE ROUTED OLD PAD. The multi-track item's unselected video
+        // sibling comes first in `old`, but handing the successor to it
+        // would let the PLAYING slot die.
+        let got = plan(
+            &[(Some("b-v"), Some(V))],
+            &[(Some("a-v2"), Some(V)), (Some("a-v1"), Some(V))],
+            &["a-v1"],
+            &[StreamKind::Video],
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            PadPlan {
+                links: vec![(0, 1)],
+                fresh: vec![],
+                release: vec![0],
+            },
+            "the routed old pad wins, the unselected sibling's slot is released"
+        );
+
+        // THE R1 BOUNDARY WEDGE, the new side. src_pads() order is racy, so
+        // the UNSELECTED sibling can arrive first; the sid rank hands the
+        // reused slot to the stream decodebin3 will actually select (the
+        // first of its type in container track order).
+        let got = plan(
+            &[(Some("b-v2"), Some(V)), (Some("b-v1"), Some(V))],
+            &[(Some("a-v"), Some(V))],
+            &["a-v"],
+            &[StreamKind::Video],
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            PadPlan {
+                links: vec![(1, 0)],
+                fresh: vec![0],
+                release: vec![],
+            },
+            "b-v1 takes the reused slot despite arriving second"
+        );
+
+        // Pads without a sticky stream-start sort LAST, so a half-parsed pad
+        // never steals the slot from a named one.
+        let got = plan(
+            &[(None, Some(V)), (Some("b-v"), Some(V))],
+            &[(Some("a-v"), Some(V))],
+            &["a-v"],
+            &[StreamKind::Video],
+        )
+        .unwrap();
+        assert_eq!(got.links, vec![(1, 0)]);
+        assert_eq!(got.fresh, vec![0]);
+
+        // A new pad with no GstStream matches any untaken old pair (the
+        // type is unknowable, and refusing would strand the slot).
+        let got = plan(
+            &[(Some("b-x"), None)],
+            &[(Some("a-t"), Some(T))],
+            &["a-t"],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(got.links, vec![(0, 0)]);
+        assert!(got.release.is_empty());
+
+        // An old pair is claimed once: the second same-type new stream gets
+        // a fresh request pad, and the surviving old slot is not released.
+        let got = plan(
+            &[(Some("b-a1"), Some(A)), (Some("b-a2"), Some(A))],
+            &[(Some("a-a"), Some(A))],
+            &["a-a"],
+            &[StreamKind::Audio],
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            PadPlan {
+                links: vec![(0, 0)],
+                fresh: vec![1],
+                release: vec![],
+            }
+        );
+
+        // An old stream with no successor of its type: its slot ends here.
+        // Text only, so the coverage check does not fire.
+        let got = plan(
+            &[(Some("b-a"), Some(A))],
+            &[(Some("a-a"), Some(A)), (Some("a-t"), Some(T))],
+            &["a-a", "a-t"],
+            &[StreamKind::Audio],
+        )
+        .unwrap();
+        assert_eq!(
+            got,
+            PadPlan {
+                links: vec![(0, 0)],
+                fresh: vec![],
+                release: vec![1],
+            }
+        );
+
+        // An old pad with no routed id at all (nothing selected yet) still
+        // matches by type: the preference is a tie-break, not a filter.
+        let got = plan(
+            &[(Some("b-v"), Some(V))],
+            &[(Some("a-v"), Some(V))],
+            &[],
+            &[StreamKind::Video],
+        )
+        .unwrap();
+        assert_eq!(got.links, vec![(0, 0)]);
+
+        // Nothing old to inherit: every new pad is fresh.
+        let got = plan(
+            &[(Some("b-v"), Some(V)), (Some("b-a"), Some(A))],
+            &[],
+            &[],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(got.fresh, vec![1, 0], "fresh pads keep the sid rank");
+        assert!(got.links.is_empty());
     }
 
     fn sids(names: &[&str]) -> Vec<Option<gst::glib::GString>> {
@@ -1258,7 +1612,7 @@ mod tests {
             ),
             // Still unambiguous before the relink: only the prepared item
             // carries these ids, so nothing else could be reporting them.
-            // Keeps the FCAST_NO_ADAPTIVE_PREPARE_HOLD reading working.
+            // Keeps the adaptive prepare hold's reading working.
             (
                 "distinct ids, not relinked",
                 &["b-v", "b-a"][..],
@@ -1350,12 +1704,26 @@ mod tests {
     fn a_cancel_synthesizes_the_consumed_end_only_when_nothing_replays_it() {
         let cases = [
             ("nothing consumed", false, AfterCancel::Nothing, false),
-            ("nothing consumed, seek", false, AfterCancel::FlushingSeek, false),
+            (
+                "nothing consumed, seek",
+                false,
+                AfterCancel::FlushingSeek,
+                false,
+            ),
             ("consumed, plain cancel", true, AfterCancel::Nothing, true),
-            ("consumed, seek follows", true, AfterCancel::FlushingSeek, false),
+            (
+                "consumed, seek follows",
+                true,
+                AfterCancel::FlushingSeek,
+                false,
+            ),
         ];
         for (name, dropped_eos, after, expected) in cases {
-            assert_eq!(cancel_synthesizes_eos(dropped_eos, after), expected, "{name}");
+            assert_eq!(
+                cancel_synthesizes_eos(dropped_eos, after),
+                expected,
+                "{name}"
+            );
         }
     }
 
@@ -1378,7 +1746,10 @@ mod tests {
 
         // The lost edge: it fires between the worker's sample and its write.
         let mut state = SwapState::default();
-        assert!(!edge(&mut state), "no swap armed yet, the edge is discarded");
+        assert!(
+            !edge(&mut state),
+            "no swap armed yet, the edge is discarded"
+        );
         // The arm, with `drained` no longer sampled ahead of the lock.
         state = SwapState {
             pending: Some(7),

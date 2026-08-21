@@ -1,5 +1,5 @@
 //! Regression for the state-change FAILURE a consumed error latches onto the
-//! pipeline. Lever: `FCAST_NO_ERROR_STATE_UNLATCH=1`.
+//! pipeline.
 //!
 //! The bin sets its state return to FAILURE for any child error, then refuses
 //! every commit until a fresh `set_state` clears it. The crate consumes some
@@ -245,14 +245,12 @@ impl Harness {
                 PlaybinEvent::Buffering(percent) => {
                     let result = self.sm.borrow_mut().buffering(percent);
                     match result {
-                        BufferingStateResult::Started(state) => self.apply(state),
+                        BufferingStateResult::Started => self.apply(gst::State::Paused),
                         BufferingStateResult::FinishedWithSeek(seek) => {
                             self.playbin.seek_async(seek)
                         }
                         BufferingStateResult::Finished(Some(state)) => self.apply(state),
-                        BufferingStateResult::Buffering
-                        | BufferingStateResult::FinishedButWaitingSeek
-                        | BufferingStateResult::Finished(None) => {}
+                        BufferingStateResult::Buffering | BufferingStateResult::Finished(None) => {}
                     }
                     self.pump_selection();
                 }
@@ -458,13 +456,10 @@ fn drive_into_the_lost_state_window(
     // the seek so a first-pass arrival cannot be mistaken for the restart's.
     let holds_before = main.sync_point(MAIN_HOLD).arrivals();
     harness.playbin.cancel_selection_refresh();
-    let dispatched = harness.sm.borrow_mut().seek_internal(
-        Seek {
-            position: Some(SEEK_TARGET),
-            rate: None,
-        },
-        None,
-    );
+    let dispatched = harness.sm.borrow_mut().seek_internal(Seek {
+        position: Some(SEEK_TARGET),
+        rate: None,
+    });
     if let Some(seek) = dispatched {
         harness.playbin.seek_async(seek);
     }
@@ -483,8 +478,7 @@ fn drive_into_the_lost_state_window(
 /// An error the crate consumes must not cost the caller its seek settle. The
 /// error is released inside the lost-state window, latching FAILURE there.
 /// Then the window reopens, sinks preroll and post ASYNC_DONE, the commit is
-/// refused, and the receiver never leaves the seek. Lever:
-/// `FCAST_NO_ERROR_STATE_UNLATCH=1`.
+/// refused, and the receiver never leaves the seek.
 #[test]
 fn a_consumed_error_still_lets_a_seek_settle() {
     init();
@@ -524,8 +518,7 @@ fn a_consumed_error_still_lets_a_seek_settle() {
 }
 
 /// A consumed error caught while the pipeline is committed to a different
-/// state than it holds must re-commit THAT state, not the current one. Lever:
-/// `FCAST_UNLATCH_RECOMMIT_CURRENT=1`.
+/// state than it holds must re-commit THAT state, not the current one.
 ///
 /// The first error's re-commit frees the seek, the machine re-asserts
 /// PLAYING, and with the main video still parked that climb is async, so the
@@ -600,8 +593,8 @@ fn a_consumed_error_on_a_pending_climb_keeps_the_climb() {
 /// first as "dispatch the parked scrub" and the second as that seek's
 /// completion (it never ran), re-asserts PLAYING, and the real seek is
 /// refused and re-parked while the settled-Paused edge it waits for is never
-/// posted. Levers: `FCAST_NO_PARKED_SEEK_RESCUE` (the fix this test
-/// discriminates) and `FCAST_NO_SEEK_REFUSAL_EDGE`.
+/// posted. The parked-seek rescue is the fix this test discriminates; the
+/// seek-refusal edge is what carries it.
 #[test]
 fn scrubbing_inside_the_lost_state_window_keeps_the_seek() {
     init();
@@ -621,13 +614,10 @@ fn scrubbing_inside_the_lost_state_window_keeps_the_seek() {
     for pct in [0.34_f64, 0.50, 0.66, 0.17] {
         let target = gst::ClockTime::from_seconds((60.0 * pct) as u64);
         harness.playbin.cancel_selection_refresh();
-        let dispatched = harness.sm.borrow_mut().seek_internal(
-            Seek {
-                position: Some(target),
-                rate: None,
-            },
-            None,
-        );
+        let dispatched = harness.sm.borrow_mut().seek_internal(Seek {
+            position: Some(target),
+            rate: None,
+        });
         if let Some(seek) = dispatched {
             harness.playbin.seek_async(seek);
         }

@@ -6,8 +6,6 @@
 //! readable text, that the structure arrived beside it, and that the meta
 //! survived the whole transport rather than being dropped by a buffer copy.
 //!
-//! `tests/cue_ir_lever.rs` owns the `FCAST_NO_CUE_IR=1` half.
-//!
 //! Serialized because there is one subtitle consumer per pipeline and the
 //! crate's cue feed is the probe point.
 

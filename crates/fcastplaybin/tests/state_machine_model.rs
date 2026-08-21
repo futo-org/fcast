@@ -23,9 +23,8 @@
 //! * A `set_state` to the state the pipeline is ALREADY in posts NO
 //!   `state-changed` (`gst_element_continue_state`'s "don't post silly messages
 //!   with the same state"), and the crate synthesises the edge itself
-//!   (`Job::SetState`, lever `FCAST_NO_SYNTHETIC_STATE_EDGE`). The rig
-//!   synthesises it too, or every no-op dispatch would read as a wedge that
-//!   production does not have.
+//!   (`Job::SetState`). The rig synthesises it too, or every no-op dispatch
+//!   would read as a wedge that production does not have.
 //! * A seek is REFUSED anywhere but a settled PAUSED: `Job::Seek` hands it back
 //!   as `PlaybinEvent::QueueSeek` and drives to PAUSED itself. The rig calls
 //!   `queue_seek` for exactly that hand-back.
@@ -238,12 +237,10 @@ impl Rig {
 
     fn apply_buffering_result(&mut self, result: BufferingStateResult) {
         match result {
-            BufferingStateResult::Started(state) => self.set_state(state),
+            BufferingStateResult::Started => self.set_state(gst::State::Paused),
             BufferingStateResult::Finished(Some(state)) => self.set_state(state),
             BufferingStateResult::FinishedWithSeek(seek) => self.do_seek(seek),
-            BufferingStateResult::Finished(None)
-            | BufferingStateResult::FinishedButWaitingSeek
-            | BufferingStateResult::Buffering => {}
+            BufferingStateResult::Finished(None) | BufferingStateResult::Buffering => {}
         }
     }
 
@@ -284,7 +281,7 @@ impl Rig {
             }
             Op::Seek(position) => {
                 let seek = Seek::new(Some(gst::ClockTime::from_seconds(position)), None);
-                if let Some(seek) = self.sm.seek_internal(seek, None) {
+                if let Some(seek) = self.sm.seek_internal(seek) {
                     self.do_seek(seek);
                 }
             }

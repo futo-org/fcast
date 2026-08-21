@@ -299,7 +299,7 @@ impl Harness {
     /// takes precedence over the phase and the target correction waits for the
     /// seek's own settle.
     ///
-    /// Lever: `FCAST_TEST_NO_TRANSPORT_REDRIVE`.
+    /// Harness knob: `FCAST_TEST_NO_TRANSPORT_REDRIVE` turns the redrive off.
     fn redrive_transport(&self, event: &PlaybinEvent) {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *OFF.get_or_init(|| std::env::var_os("FCAST_TEST_NO_TRANSPORT_REDRIVE").is_some()) {
@@ -751,11 +751,11 @@ impl Harness {
         }
     }
 
-    /// A graph-dump round-trip proves the worker is not wedged inside a
+    /// A barrier round-trip proves the worker is not wedged inside a
     /// previous job.
     fn assert_worker_alive(&self, what: &str) {
         let (tx, rx) = mpsc::channel();
-        self.playbin.debug_graph_async(Box::new(move |_| {
+        self.playbin.barrier_async(Box::new(move || {
             let _ = tx.send(());
         }));
         let deadline = Instant::now() + Duration::from_secs(15);
@@ -1039,8 +1039,8 @@ fn a_second_external_renders_after_the_selected_one_was_detached() {
 /// So it is the same shape as the switch deadlock
 /// `tests/regression_paused_switch.rs` pins, reached through a different
 /// door: that fix POSTPONES the eager flush inside `pump_selection`
-/// (`Inner::run_deferred_text_work`, lever `FCAST_NO_TEXT_WORK_DEFERRAL`),
-/// while `Inner::remove_input` flushes its decodebin3 sink pads
+/// (`Inner::run_deferred_text_work`), while `Inner::remove_input` flushes its
+/// decodebin3 sink pads
 /// unconditionally and has no such deferral.
 ///
 /// The same detach mid-PLAY returns fine, which
@@ -1294,7 +1294,7 @@ fn attaching_the_same_uri_twice_is_refused_and_the_first_keeps_rendering() {
 /// item while the selection reported success:
 ///
 /// * the engine dispatches nothing for a desire that equals the applied
-///   selection, and the data hold (`hold_until_selected`) was only ever lifted
+///   selection, and the data hold (`Hold::UntilSelected`) was only ever lifted
 ///   by a SELECT_STREAMS confirmation, so the re-attached input's buffers
 ///   stayed blocked at its source pads forever, and
 /// * when decodebin3 exposes a fresh output pad for the re-attached stream
@@ -2078,7 +2078,7 @@ fn detaching_during_a_seek_completes_both() {
 /// crate's cue-loss injection swallows the initial burst, the park replay
 /// and the first replay redelivery (~140 cues); only a verification that
 /// demands DELIVERY evidence keeps replaying until the budget drains and a
-/// cue actually crosses. Red under `FCAST_NO_REPLAY_DELIVERY_EVIDENCE`.
+/// cue actually crosses. Red on an alignment-only verdict.
 #[test]
 fn a_destroyed_burst_is_redelivered_until_a_cue_arrives() {
     init();

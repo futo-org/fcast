@@ -39,9 +39,9 @@
 //!
 //! The fix is `Inner::lift_deselected_video_sink`: take the PLAYING exit rather
 //! than the flush one (a flush returns FLUSHING into the multiqueue and latches
-//! it, which is precisely what the reverted READY descent did). Lever
-//! `FCAST_NO_PAUSED_DESELECT_SINK_LIFT` restores the stall. With the fix the
-//! video slot reassigns 28 ms after the SELECT_STREAMS instead of never.
+//! it, which is precisely what the reverted READY descent did). Without that
+//! lift the stall is back. With the fix the video slot reassigns 28 ms after
+//! the SELECT_STREAMS instead of never.
 //!
 //! # Reproduction rate
 //!

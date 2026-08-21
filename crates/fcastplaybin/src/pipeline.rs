@@ -13,20 +13,17 @@ use parking_lot::Mutex;
 use tracing::{debug, info, warn};
 
 use crate::{
-    Core, FcastPlaybin, Inner,
+    Core, Counters, FcastPlaybin, Inner,
     api::{
         AudioSink, MediaInput, PlaybinEvent, Sinks, SourceDbg, StartOutcome, StartPoint,
         StreamIoStats,
     },
     decisions,
-    dispatch::{REFRESH_DEADLINE, SELECT_DEFER_BUDGET, SELECTION_DEADLINE},
-    external::EXTERNAL_SUB_TIMEOUT,
     flush::FlowStage,
     gapless::SwapGate,
     hands::{Hands, Lane},
     jobs::Job,
-    levers::{BitmapSubsEnabled, force_system_clock},
-    routing::{RoutingState, StreamKind},
+    routing::StreamKind,
     selection,
 };
 
@@ -58,33 +55,6 @@ pub(crate) fn make(factory: &str, name: &str) -> Result<gst::Element> {
         .with_context(|| format!("creating {factory} ({name})"))
 }
 
-/// Seek flags for a `rate`. TRICKMODE lets decoders drop frames to keep up:
-/// right for fast-scrub, wrong for pitch-corrected speed playback where
-/// scaletempo wants every frame. Only high forward rates and reverse (which
-/// can't be decoded frame-complete anyway) enable it, so a 1.25x/1.5x/2x
-/// "watch faster" stays full quality.
-fn seek_flags_for(rate: f64) -> gst::SeekFlags {
-    let mut flags = gst::SeekFlags::FLUSH;
-    if rate < 0.0 || rate > 2.0 {
-        flags |= gst::SeekFlags::TRICKMODE;
-    }
-    flags
-}
-
-/// A load's start rate, made safe for `gst_event_new_seek`, which asserts
-/// `rate != 0.0` and returns NULL (the binding then panics on it and the
-/// panic kills the worker thread for good). Field: a sender's Load carried
-/// `speed: 0.0`. Coerced to 1.0 rather than refused so the start position is
-/// still honoured; a sender that means "paused" pauses the transport instead.
-pub(crate) fn sanitize_start_rate(rate: f64) -> f64 {
-    if rate.is_finite() && rate != 0.0 {
-        rate
-    } else {
-        warn!(rate, "invalid start rate, playing at 1.0x instead");
-        1.0
-    }
-}
-
 /// The flushing seek event [`send_rate_seek`] sends (keyframe-landing, no
 /// ACCURATE), so every other issuer of "the same seek" (the refresh flush,
 /// the external-input forwarding) lands on exactly the same timeline instead
@@ -95,7 +65,7 @@ pub(crate) fn rate_seek_event(
     position: gst::ClockTime,
     seqnum: Option<gst::Seqnum>,
 ) -> gst::Event {
-    let flags = seek_flags_for(rate);
+    let flags = decisions::seek_flags_for(rate);
     let builder = if rate >= 0.0 {
         gst::event::Seek::builder(
             rate,
@@ -128,25 +98,12 @@ pub(crate) fn send_rate_seek(
     rate: f64,
     position: gst::ClockTime,
 ) -> std::result::Result<(), gst::glib::error::BoolError> {
-    let flags = seek_flags_for(rate);
-    if rate >= 0.0 {
-        pipeline.seek(
-            rate,
-            flags,
-            gst::SeekType::Set,
-            position,
-            gst::SeekType::None,
-            gst::ClockTime::NONE,
-        )
+    // `Element::seek` is new_seek + send_event, so send the shared builder's
+    // event rather than re-deriving the same seek here.
+    if pipeline.send_event(rate_seek_event(rate, position, None)) {
+        Ok(())
     } else {
-        pipeline.seek(
-            rate,
-            flags,
-            gst::SeekType::Set,
-            gst::ClockTime::ZERO,
-            gst::SeekType::End,
-            position,
-        )
+        Err(gst::glib::bool_error!("Failed to seek"))
     }
 }
 
@@ -439,41 +396,24 @@ impl Inner {
         // probe comes off first (above; its pad is about to be released) and
         // the audio queue re-shallows unconditionally.
         //
-        // Lever: `FCAST_READY_BEFORE_UNLINK_VIDEO` restores the old order.
-        let ready_first = std::env::var_os("FCAST_READY_BEFORE_UNLINK_VIDEO").is_some();
-        // Unlink from upstream (the streamsynchronizer src, when a stream
-        // is still routed into the sink). Read before either half, so the
-        // flow census below can still name the peer the unlink removed.
-        //
-        // Captured BEFORE either half, which matters in the levered arm too:
-        // with `FCAST_READY_BEFORE_UNLINK_VIDEO` the READY step runs first and
-        // can drop the link itself, so a peer read after it would be `None`
-        // and the census below would silently survey nothing.
+        // The peer is read BEFORE the unlink, so the flow census below can
+        // still name the pad the unlink removed.
         let entry = self.video_entry.static_pad("sink");
         let peer = entry.as_ref().and_then(|pad| pad.peer());
-        let unlink = || {
-            if let (Some(pad), Some(peer)) = (entry.as_ref(), peer.as_ref()) {
-                let _ = peer.unlink(pad);
-            }
-        };
-        // READY: aborts any clock/preroll wait, unwinding a blocked
+        // Unlink from upstream (the streamsynchronizer src, when a stream
+        // is still routed into the sink).
+        if let (Some(pad), Some(peer)) = (entry.as_ref(), peer.as_ref()) {
+            let _ = peer.unlink(pad);
+        }
+        // Then READY: aborts any clock/preroll wait, unwinding a blocked
         // streaming thread out of the branch. Sink before queue: the sink's
         // READY returns the queue task's in-flight push as FLUSHING, so the
         // queue's pad deactivation is not left waiting on a thread parked
         // inside the sink's preroll.
-        let ready = || {
-            self.video_sink.set_locked_state(false);
-            let _ = self.video_sink.set_state(gst::State::Ready);
-            self.video_entry.set_locked_state(false);
-            let _ = self.video_entry.set_state(gst::State::Ready);
-        };
-        if ready_first {
-            ready();
-            unlink();
-        } else {
-            unlink();
-            ready();
-        }
+        self.video_sink.set_locked_state(false);
+        let _ = self.video_sink.set_state(gst::State::Ready);
+        self.video_entry.set_locked_state(false);
+        let _ = self.video_entry.set_state(gst::State::Ready);
         // Cluster (d) of the four surgery sites. The chain's own pads
         // leave the pipeline just below, but their PEER (a streamsynchronizer
         // src pad) stays, and a FLUSHING latched there is what the next
@@ -521,7 +461,8 @@ impl Inner {
     ///   (push probes run before the peer lookup), so the slot drains, the
     ///   clock keeps advancing and the thread leaves on its own, cutting the
     ///   backpressure cycle at its source. Buffers only, so ssync grouping and
-    ///   the sink's EOS still work. Lever: `FCAST_READY_PARK_DESELECTED_VIDEO`.
+    ///   the sink's EOS still work. The READY descent survives only as the
+    ///   fallback for a chain with no feeding peer to probe.
     /// - The state LOCK holds until decodebin3 removes the pad, or a state
     ///   change walking its children would lift the dataless chain back up and
     ///   its sink would hold the pipeline async forever. `unroute_db3_pad` then
@@ -539,9 +480,7 @@ impl Inner {
             .video_entry
             .static_pad("sink")
             .and_then(|pad| pad.peer());
-        if let Some(feeding) = feeding
-            && std::env::var_os("FCAST_READY_PARK_DESELECTED_VIDEO").is_none()
-        {
+        if let Some(feeding) = feeding {
             info!(
                 pad = %feeding.name(),
                 "selection drops video, dropping the data feeding the video chain"
@@ -591,12 +530,8 @@ impl Inner {
     /// deselects wedge here.
     ///
     /// Cost: the frames already past the probe (the parked one) render onto
-    /// the paused frame just before video goes away. Lever:
-    /// `FCAST_NO_PAUSED_DESELECT_SINK_LIFT`.
+    /// the paused frame just before video goes away.
     fn lift_deselected_video_sink(&self) {
-        if std::env::var_os("FCAST_NO_PAUSED_DESELECT_SINK_LIFT").is_some() {
-            return;
-        }
         let (_, current, _) = self.pipeline.state(gst::ClockTime::ZERO);
         if current != gst::State::Paused {
             return;
@@ -729,12 +664,6 @@ impl FcastPlaybin {
     pub fn new(sinks: Sinks) -> Result<Self> {
         let pipeline = gst::Pipeline::builder().name("fcastplaybin").build();
 
-        // Opt-in until the native PipeWire sink is everywhere (see
-        // `force_system_clock`).
-        if force_system_clock() {
-            pipeline.use_clock(Some(&gst::SystemClock::obtain()));
-        }
-
         // The fake sink is a test/spike convenience, not a headless mode:
         // video still fully decodes into it. Callers that want to skip video
         // work deselect the video stream instead.
@@ -762,13 +691,8 @@ impl FcastPlaybin {
         // `scaletempo` (SOLA), which buzzed on speech at non-1.0 rates and
         // needed `scaletempo-s16-overlap-overflow.patch` for a click on the
         // first buffer after engaging. Both consume the segment rate
-        // identically, so this is a drop-in swap; FCAST_SCALETEMPO=1 restores
-        // the old element for an A/B without a rebuild.
-        let scaletempo = if std::env::var_os("FCAST_SCALETEMPO").is_some() {
-            make("scaletempo", "fpb-scaletempo")?
-        } else {
-            make("fcastaudiostretch", "fpb-audiostretch")?
-        };
+        // identically, so the swap was a drop-in.
+        let stretch = make("fcastaudiostretch", "fpb-audiostretch")?;
         let volume = make("volume", "fpb-volume")?;
         // Decoupling queue at the head of the audio branch. Without it, a
         // paused audio sink (parked in wait_preroll during a mid-load
@@ -829,7 +753,7 @@ impl FcastPlaybin {
             &aqueue,
             &aconv,
             &aresample,
-            &scaletempo,
+            &stretch,
             &volume,
             &token_src,
             &token_sink,
@@ -842,126 +766,107 @@ impl FcastPlaybin {
         // videoconvert would reject, and accepts plain raw video too.
         // Callers with a pickier sink wrap it in a bin with a converter.
         // The audio sink is built and linked per load (`ensure_audio_sink`).
-        gst::Element::link_many([&aqueue, &aconv, &aresample, &scaletempo, &volume])?;
+        gst::Element::link_many([&aqueue, &aconv, &aresample, &stretch, &volume])?;
 
         let (work_tx, work_rx) = mpsc::channel();
-        // One channel per hands lane, carrying `Envelope`s whichever executor
-        // runs: the lever picks the LOOP BODY at spawn time below, not the
-        // transport, so the two arms differ in exactly one place.
+        // One channel per hands lane, carrying `Envelope`s to `lane_loop`.
         let (select_tx, select_rx) = mpsc::channel();
         let (replay_tx, replay_rx) = mpsc::channel();
         let (join_tx, join_rx) = mpsc::channel();
-        let hands_live = std::env::var_os("FCAST_NO_HANDS").is_none();
         // `fpb-tick`'s channel carries no work at all: it exists only so that
         // dropping the sender with `Inner` hangs the thread up (the
-        // `fpb-tdrescue` pattern, minus the join). Not built at all under the
-        // master lever, which is also how every arming site learns the tick is
-        // not there to serve it (`Inner::tick_live`).
-        let tick = std::env::var_os("FCAST_NO_TICK")
-            .is_none()
-            .then(mpsc::channel::<()>);
-        let (tick_tx, tick_rx) = match tick {
-            Some((tx, rx)) => (Some(tx), Some(rx)),
-            None => (None, None),
-        };
+        // `fpb-tdrescue` pattern, minus the join).
+        let (tick_tx, tick_rx) = mpsc::channel::<()>();
 
         let inner = Arc::new(Inner {
             video_sink,
             audio: sinks.audio,
-            audio_sink: Mutex::new(None),
+            audio_sink: Mutex::default(),
             pipeline,
-            core: Mutex::new(None),
+            core: Mutex::default(),
             token_src,
-            route_gate: Mutex::new(()),
-            join_gate: Mutex::new(()),
-            deferred_pads: Mutex::new(Vec::new()),
-            deferred_text_disposal: Mutex::new(Vec::new()),
-            deferred_input_removal: Mutex::new(Vec::new()),
-            replay_checks_armed: Mutex::new(std::collections::HashSet::new()),
-            replay_inflight: Mutex::new(std::collections::HashSet::new()),
-            external_cues_fed: Mutex::new(std::collections::HashMap::new()),
-            deferred_replays: Mutex::new(Vec::new()),
-            deferred_verifications: Mutex::new(Vec::new()),
-            pending_timers: Mutex::new(Vec::new()),
-            drain_poke_parked: AtomicBool::new(false),
-            drain_jobs_seen: AtomicU64::new(0),
-            video_deselected: AtomicBool::new(false),
-            video_unrouted_once: AtomicBool::new(false),
-            teardown_poisoned: AtomicBool::new(false),
-            generation: AtomicU64::new(0),
-            next_generation: AtomicU64::new(0),
+            route_gate: Mutex::default(),
+            join_gate: Mutex::default(),
+            deferred_pads: Mutex::default(),
+            deferred_text_disposal: Mutex::default(),
+            deferred_input_removal: Mutex::default(),
+            replaying_externals: Mutex::default(),
+            external_cues_fed: Mutex::default(),
+            pending_timers: Mutex::default(),
+            drain_poke_parked: AtomicBool::default(),
+            video_deselected: AtomicBool::default(),
+            video_unrouted_once: AtomicBool::default(),
+            teardown_poisoned: AtomicBool::default(),
+            generation: AtomicU64::default(),
+            next_generation: AtomicU64::default(),
             // The audio branch's head is the decoupling queue. ssync links here.
             audio_entry: aqueue,
             volume,
             // The video branch's head. ssync links here (see `Inner::video_entry`).
             video_entry: vqueue,
-            events: Mutex::new(None),
-            subtitle_consumer: Mutex::new(None),
-            unsupported_text_reported: Mutex::new(std::collections::HashSet::new()),
-            unwirable_text_streams: Mutex::new(std::collections::HashSet::new()),
-            outputless_text_slots_reported: Mutex::new(std::collections::HashMap::new()),
-            capsless_text_since: Mutex::new(std::collections::HashMap::new()),
-            parked_text_cues: Mutex::new(std::collections::HashMap::new()),
-            suppress_text_clear: Mutex::new(std::collections::HashSet::new()),
-            bitmap_subs: BitmapSubsEnabled::from_env(),
-            stage_join_hold_ms: AtomicU64::new(0),
-            stage_activation_delay_ms: AtomicU64::new(0),
-            arm_time_releases: AtomicU64::new(0),
-            stage_text_caps_loss: std::sync::atomic::AtomicBool::new(false),
-            stage_cue_loss: std::sync::atomic::AtomicU32::new(0),
-            staged_joins: Mutex::new(Vec::new()),
+            events: Mutex::default(),
+            subtitle_consumer: Mutex::default(),
+            text_degradations: Mutex::default(),
+            parked_text_cues: Mutex::default(),
+            suppress_text_clear: Mutex::default(),
+            // TEST FAULT INJECTION, left empty. Nothing allocates it until a
+            // `stage_*` setter runs (see `TestStaging`).
+            staging: std::sync::OnceLock::new(),
+            counters: Counters::default(),
             work_tx,
-            queue_epoch: AtomicU64::new(0),
-            stale_jobs_dropped: AtomicU64::new(0),
-            text_flow_ticket: AtomicU64::new(0),
-            deadline_fires: AtomicU64::new(0),
-            deadline_confirms: AtomicU64::new(0),
-            deadline_giveups: AtomicU64::new(0),
-            deadline_deferrals: AtomicU64::new(0),
-            select_defer_budget: Mutex::new(SELECT_DEFER_BUDGET),
-            poll_queued: AtomicBool::new(false),
-            poll_policy_coalesced: AtomicU64::new(0),
-            poll_jobs_seen: AtomicU64::new(0),
-            dispatch_guard_skips: AtomicU64::new(0),
-            dispatch_queue_age_us: AtomicU64::new(0),
-            inline_replay_outcome: std::env::var_os("FCAST_INLINE_REPLAY_OUTCOME").is_some(),
-            inline_route_text_poll: std::env::var_os("FCAST_INLINE_ROUTE_TEXT_POLL").is_some(),
-            inline_dispatch: std::env::var_os("FCAST_INLINE_DISPATCH").is_some(),
+            queue_epoch: AtomicU64::default(),
+            text_flow_ticket: AtomicU64::default(),
+            poll_queued: AtomicBool::default(),
             decider: OnceLock::new(),
-            text_ownership_levered: [
-                "FCAST_INLINE_TEXT_POLL",
-                "FCAST_INLINE_ROUTE_TEXT_POLL",
-                "FCAST_INLINE_DISPATCH",
-                "FCAST_INLINE_REPLAY_OUTCOME",
-                "FCAST_INLINE_VIDEO_CHAIN_TEARDOWN",
-                "FCAST_NO_HANDS",
-            ]
-            .iter()
-            .any(|lever| std::env::var_os(lever).is_some()),
-            text_surgery_off_decider: AtomicU64::new(0),
-            hands: Hands::new(hands_live, select_tx, replay_tx, join_tx),
+            hands: Hands::new(select_tx, replay_tx, join_tx),
             tick_tx,
-            tick_count: AtomicU64::new(0),
-            routing: Mutex::new(RoutingState::default()),
+            tick_count: AtomicU64::default(),
+            routing: Mutex::default(),
             selection: Mutex::new(selection::SelectionEngine::new()),
-            last_applied_subtitle: Mutex::new(None),
-            upstream_selection: Mutex::new(None),
-            last_upstream_ids: Mutex::new(Vec::new()),
+            last_applied_subtitle: Mutex::default(),
+            upstream_selection: Mutex::default(),
+            last_upstream_ids: Mutex::default(),
             intended_timeline: Mutex::new((1.0, gst::ClockTime::ZERO)),
-            db3_pad_request: Mutex::new(()),
-            sub_timeout: Mutex::new(EXTERNAL_SUB_TIMEOUT),
-            selection_deadline_dur: Mutex::new(SELECTION_DEADLINE),
-            refresh_deadline_dur: Mutex::new(REFRESH_DEADLINE),
-            prepared: Mutex::new(None),
+            db3_pad_request: Mutex::default(),
+            deadlines: Mutex::default(),
+            prepared: Mutex::default(),
             swap_gate: SwapGate::default(),
-            active_group: Mutex::new(None),
-            retired_group: Mutex::new(None),
-            passing_eos_group: Mutex::new(None),
-            input_eos_sids: Mutex::new(std::collections::HashSet::new()),
-            held_activation: Mutex::new(None),
-            video_park_probe: Mutex::new(None),
-            video_chain_membership: Mutex::new(()),
+            active_group: Mutex::default(),
+            retired_group: Mutex::default(),
+            passing_eos_group: Mutex::default(),
+            input_eos_sids: Mutex::default(),
+            held_activation: Mutex::default(),
+            video_park_probe: Mutex::default(),
+            video_chain_membership: Mutex::default(),
+            level_probes: Mutex::default(),
+            // Nothing walked yet, so the first `buffered_ahead` walks.
+            level_probes_dirty: AtomicBool::new(true),
         });
+
+        // The graph edges that retire `buffered_ahead`'s probe list (see
+        // `LevelProbes`). DEEP, because the elements that hold the levels are
+        // urisourcebin's and decodebin3's, added and removed inside their own
+        // bins all load long. Both handlers run on whatever thread changed the
+        // graph, streaming threads included, so each one only stores a bit; the
+        // walk belongs to the polling caller.
+        {
+            let weak = Arc::downgrade(&inner);
+            inner
+                .pipeline
+                .connect_deep_element_added(move |_bin, _sub_bin, _element| {
+                    if let Some(inner) = weak.upgrade() {
+                        inner.invalidate_level_probes();
+                    }
+                });
+            let weak = Arc::downgrade(&inner);
+            inner
+                .pipeline
+                .connect_deep_element_removed(move |_bin, _sub_bin, _element| {
+                    if let Some(inner) = weak.upgrade() {
+                        inner.invalidate_level_probes();
+                    }
+                });
+        }
 
         Inner::install_core(&inner)?;
 
@@ -1037,59 +942,33 @@ impl FcastPlaybin {
 
         // The three hands lanes (see the `hands` module): the SELECT_STREAMS
         // sender (`FcastPlaybin::select_streams`), the replay-seek sender
-        // (`ReplayJob`) and the chain joiner (`ChainJoinJob`). Same
-        // Weak/channel lifetime as the worker, and the SAME thread names the
-        // three bespoke loops had - log continuity, and two tests read them.
-        //
-        // The lever's arm is chosen HERE and only here: `FCAST_NO_HANDS`
-        // spawns the v1 loop bodies on the same three channels, which is why
-        // they are still compiled.
-        let weak = Arc::downgrade(&inner);
-        std::thread::Builder::new()
-            .name(Lane::Select.thread_name().to_owned())
-            .spawn(move || {
-                if hands_live {
-                    Inner::lane_loop(weak, Lane::Select, select_rx)
-                } else {
-                    Inner::select_sender_loop(weak, select_rx)
-                }
-            })
-            .context("spawning the fcastplaybin select sender")?;
-
-        let weak = Arc::downgrade(&inner);
-        std::thread::Builder::new()
-            .name(Lane::Replay.thread_name().to_owned())
-            .spawn(move || {
-                if hands_live {
-                    Inner::lane_loop(weak, Lane::Replay, replay_rx)
-                } else {
-                    Inner::replay_sender_loop(weak, replay_rx)
-                }
-            })
-            .context("spawning the fcastplaybin replay sender")?;
-
-        let weak = Arc::downgrade(&inner);
-        std::thread::Builder::new()
-            .name(Lane::Join.thread_name().to_owned())
-            .spawn(move || {
-                if hands_live {
-                    Inner::lane_loop(weak, Lane::Join, join_rx)
-                } else {
-                    Inner::chain_join_loop(weak, join_rx)
-                }
-            })
-            .context("spawning the fcastplaybin chain joiner")?;
+        // (`ReplayJob`) and the chain joiner (`ChainJoinJob`). One body for all
+        // three, so the lane is data. Same Weak/channel lifetime as the worker,
+        // and the thread names come from `Lane::thread_name`: they are
+        // load-bearing strings (`Inner::drop` gates its inline descent on
+        // `thread::current().name()`, and the teardown and two tests read them).
+        for (lane, rx) in [
+            (Lane::Select, select_rx),
+            (Lane::Replay, replay_rx),
+            (Lane::Join, join_rx),
+        ] {
+            let weak = Arc::downgrade(&inner);
+            std::thread::Builder::new()
+                .name(lane.thread_name().to_owned())
+                .spawn(move || Inner::lane_loop(weak, lane, rx))
+                .with_context(|| {
+                    format!("spawning the fcastplaybin {} lane", lane.thread_name())
+                })?;
+        }
 
         // The periodic tick (see `Inner::run_tick`). One permanent thread that
         // replaces a one-shot sleeper thread per armed timer, so in steady
         // churn the crate spawns strictly fewer.
-        if let Some(tick_rx) = tick_rx {
-            let weak = Arc::downgrade(&inner);
-            std::thread::Builder::new()
-                .name("fpb-tick".to_owned())
-                .spawn(move || Inner::tick_loop(weak, tick_rx))
-                .context("spawning the fcastplaybin tick")?;
-        }
+        let weak = Arc::downgrade(&inner);
+        std::thread::Builder::new()
+            .name("fpb-tick".to_owned())
+            .spawn(move || Inner::tick_loop(weak, tick_rx))
+            .context("spawning the fcastplaybin tick")?;
 
         Ok(Self { inner })
     }
@@ -1133,7 +1012,7 @@ impl FcastPlaybin {
         let start = match start {
             StartPoint::Seek { position, rate } => StartPoint::Seek {
                 position,
-                rate: sanitize_start_rate(rate),
+                rate: decisions::sanitize_start_rate(rate),
             },
             live => live,
         };
@@ -1170,45 +1049,10 @@ impl FcastPlaybin {
         // Everything after this point belongs to the new load: events emitted
         // earlier (teardown stragglers) still carry the previous generation.
         inner.generation.store(generation, Ordering::SeqCst);
-        // The previous item's collection is gone with its core.
-        inner.routing.lock().collection_video_ids.clear();
-        // A fresh core outputs a fresh group; the first STREAM_START
-        // records it (see `Inner::active_group`).
-        *inner.active_group.lock() = None;
-        *inner.retired_group.lock() = None;
-        *inner.passing_eos_group.lock() = None;
-        inner.input_eos_sids.lock().clear();
-        // A fresh load supersedes any gapless activation still held for the
-        // sink boundary; its events belong to a play item this load replaces.
-        *inner.held_activation.lock() = None;
-        // Track desires are per-item: the new load starts on the pipeline's
-        // own defaults.
-        inner.selection.lock().reset();
-        *inner.last_applied_subtitle.lock() = None;
-        *inner.upstream_selection.lock() = None;
-        inner.last_upstream_ids.lock().clear();
-        // The dedupe keys already carry the generation, so nothing here could
-        // suppress a report for the NEW item. Cleared anyway, because a set
-        // that only ever grows is a slow leak in a receiver that plays for
-        // days (see [`Inner::unsupported_text_reported`]).
-        inner.unsupported_text_reported.lock().clear();
-        inner.unwirable_text_streams.lock().clear();
-        inner.outputless_text_slots_reported.lock().clear();
-        inner.capsless_text_since.lock().clear();
-        // The two text-park memos. Unlike the four above these are not
-        // generation-keyed, they key on the decodebin3 output pad NAME, which
-        // is per-ELEMENT, so the fresh core installed above hands out `text_0`
-        // again. A straggler (`Inner::teardown_core`'s case, where pad-removed
-        // never came so `forget_parked_text_cues` never ran) would then be
-        // addressed by the NEW item's first text pad, replaying the previous
-        // item's cues into it and eating its opening `Clear`.
-        inner.parked_text_cues.lock().clear();
-        inner.suppress_text_clear.lock().clear();
-        // Every armed timer was armed for an input this load has just removed.
-        inner.clear_pending_timers();
-        *inner.intended_timeline.lock() = (1.0, gst::ClockTime::ZERO);
-        inner.video_deselected.store(false, Ordering::SeqCst);
-        inner.video_unrouted_once.store(false, Ordering::SeqCst);
+        // The previous item ends here. THE list of what that clears is
+        // `Inner::reset_item_state`, shared with the stop so the two cannot
+        // drift apart; the generation store above stays ahead of it.
+        inner.reset_item_state();
 
         let element = match input {
             MediaInput::Uri(uri) => Inner::make_urisourcebin(&uri, true)?,
@@ -1520,31 +1364,43 @@ impl FcastPlaybin {
         (current, pending)
     }
 
-    /// Diagnostic: every pipeline element's `name (current -> pending)`, to
-    /// spot which element is stuck below the pipeline's target at a stall.
-    pub fn element_states(&self) -> Vec<String> {
+    /// The recursive element walk the state diagnostics share. `line` formats
+    /// the elements it wants and answers None for the ones to skip.
+    fn walk_element_states(
+        &self,
+        line: impl Fn(
+            &gst::Element,
+            Result<gst::StateChangeSuccess, gst::StateChangeError>,
+            gst::State,
+            gst::State,
+        ) -> Option<String>,
+    ) -> Vec<String> {
         let mut out = Vec::new();
         let mut iter = self.inner.pipeline.iterate_recurse();
         while let Ok(Some(elem)) = iter.next() {
             let (ret, cur, pend) = elem.state(gst::ClockTime::ZERO);
-            out.push(format!("{}({:?}->{:?} {:?})", elem.name(), cur, pend, ret));
+            if let Some(text) = line(&elem, ret, cur, pend) {
+                out.push(text);
+            }
         }
         out
+    }
+
+    /// Diagnostic: every pipeline element's `name (current -> pending)`, to
+    /// spot which element is stuck below the pipeline's target at a stall.
+    pub fn element_states(&self) -> Vec<String> {
+        self.walk_element_states(|elem, ret, cur, pend| {
+            Some(format!("{}({:?}->{:?} {:?})", elem.name(), cur, pend, ret))
+        })
     }
 
     /// Diagnostic: elements with an unfinished state transition (`pending !=
     /// VoidPending`). Normally empty, the interesting subset of
     /// [`element_states`](Self::element_states) at inspector poll rates.
     pub fn unsettled_elements(&self) -> Vec<String> {
-        let mut out = Vec::new();
-        let mut iter = self.inner.pipeline.iterate_recurse();
-        while let Ok(Some(elem)) = iter.next() {
-            let (_, cur, pend) = elem.state(gst::ClockTime::ZERO);
-            if pend != gst::State::VoidPending {
-                out.push(format!("{}({cur:?}->{pend:?})", elem.name()));
-            }
-        }
-        out
+        self.walk_element_states(|elem, _, cur, pend| {
+            (pend != gst::State::VoidPending).then(|| format!("{}({cur:?}->{pend:?})", elem.name()))
+        })
     }
 
     /// The caller video sink's base-sink `stats` structure (rendered/dropped
@@ -1608,31 +1464,6 @@ mod tests {
     fn init() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| gst::init().unwrap());
-    }
-
-    /// TRICKMODE exactly for reverse or above 2.0x. The 2.0 boundary is
-    /// INCLUSIVE on the full-quality side: a 2x "watch faster" keeps every
-    /// frame, and only just above it starts dropping.
-    #[test]
-    fn trickmode_is_reverse_or_strictly_above_two_x() {
-        let full_quality = [0.5, 1.0, 1.25, 1.5, 2.0];
-        for rate in full_quality {
-            let flags = seek_flags_for(rate);
-            assert!(
-                !flags.contains(gst::SeekFlags::TRICKMODE),
-                "rate {rate} must stay full quality"
-            );
-            assert!(flags.contains(gst::SeekFlags::FLUSH));
-        }
-        let trick = [2.0000001, 2.5, 4.0, -0.5, -1.0, -2.0];
-        for rate in trick {
-            let flags = seek_flags_for(rate);
-            assert!(
-                flags.contains(gst::SeekFlags::TRICKMODE),
-                "rate {rate} must enable trickmode"
-            );
-            assert!(flags.contains(gst::SeekFlags::FLUSH));
-        }
     }
 
     fn seek_fields(

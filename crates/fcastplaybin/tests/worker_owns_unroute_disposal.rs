@@ -9,8 +9,8 @@
 //! reaches `detach_text_parts` detaches the branch before decodebin3 removes
 //! the pad, so this shape is the one that exercises the hazard.
 //!
-//! `FCAST_INLINE_UNROUTE_DISPOSAL=1` restores the inline dispatch, which
-//! makes this test fail and names the streaming thread in the panic.
+//! Verification: it fails, naming the streaming thread in the panic, whenever
+//! the disposal is dispatched inline from the unroute instead of deferred.
 
 use std::{
     sync::{Arc, Mutex, mpsc},

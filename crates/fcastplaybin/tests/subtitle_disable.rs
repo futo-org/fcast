@@ -227,7 +227,7 @@ impl Harness {
     /// own preroll settle (which never carries a non-void pending) cannot start
     /// playback behind a test's back.
     ///
-    /// Lever: `FCAST_TEST_NO_TRANSPORT_REDRIVE`.
+    /// Harness knob: `FCAST_TEST_NO_TRANSPORT_REDRIVE` turns the redrive off.
     fn redrive_transport(&self, event: &PlaybinEvent) {
         static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         if *OFF.get_or_init(|| std::env::var_os("FCAST_TEST_NO_TRANSPORT_REDRIVE").is_some()) {
@@ -1414,12 +1414,12 @@ fn write_big_srt(name: &str) -> std::path::PathBuf {
     path
 }
 
-/// The worker must answer a queued job within a bound: a graph-dump
+/// The worker must answer a queued job within a bound: a barrier
 /// round-trip proves it is not wedged inside a previous job (the field
 /// failure mode: every later attach, selection and state change frozen).
 fn assert_worker_alive(harness: &Harness, what: &str) {
     let (tx, rx) = mpsc::channel();
-    harness.playbin.debug_graph_async(Box::new(move |_| {
+    harness.playbin.barrier_async(Box::new(move || {
         let _ = tx.send(());
     }));
     let deadline = Instant::now() + Duration::from_secs(10);

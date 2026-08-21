@@ -884,8 +884,7 @@ fn cancel_for_a_flushing_seek_leaves_the_end_to_the_seek() {
          pending, so the hold never consumed it; seen: {before_cancel:#?}"
     );
 
-    h.playbin
-        .cancel_prepared_async(AfterCancel::FlushingSeek);
+    h.playbin.cancel_prepared_async(AfterCancel::FlushingSeek);
 
     let seen = h.wait_for("PreparedCancelled", |event, _| {
         matches!(event, PlaybinEvent::PreparedCancelled { .. })

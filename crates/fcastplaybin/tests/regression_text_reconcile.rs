@@ -21,14 +21,11 @@
 //!
 //! # Verification
 //!
-//! * Green: no env vars.
 //! * Effectively serial by construction. Every test reads process-global
 //!   counters, so `init()` hands each one the suite's single lock. Any
 //!   `--test-threads` value is safe.
-//! * `FCAST_NO_TEXT_RECONCILE=1`: the pass is off and the v1 slots are back.
-//!   The fixpoint test then proves only that the v1 drains emit nothing.
-//! * `FCAST_NO_TICK_RECONCILE_POKE=1`: removes the periodic trigger. Both tests
-//!   still pass because they poll explicitly.
+//! * The tick's periodic trigger is not load-bearing here: both tests poll
+//!   explicitly.
 
 use std::{
     sync::{Arc, Mutex, mpsc},
@@ -155,7 +152,7 @@ impl Harness {
                  reconcile emits {}",
                 self.playbin.observed_seat_occupant(),
                 self.playbin.mirrored_seat_occupant(),
-                FcastPlaybin::reconcile_emits(),
+                FcastPlaybin::global_stats().reconcile_emits,
             );
             self.pump();
             thread::sleep(Duration::from_millis(5));
@@ -286,6 +283,22 @@ fn attached(
     fcasttest::scenario::ScenarioHandle,
     fcastplaybin::ExternalSubId,
 ) {
+    attached_staged(tag, |_| {})
+}
+
+/// [`attached`] with a hook that runs on the fresh playbin, before anything is
+/// loaded or attached. A staged fault that has to be armed for the attach
+/// itself (a refused slot seeding, say) has nowhere else to go: the knobs are
+/// per instance, so there is no pipeline to set them on until this one exists.
+fn attached_staged(
+    tag: &str,
+    stage: impl FnOnce(&FcastPlaybin),
+) -> (
+    Harness,
+    fcasttest::scenario::ScenarioHandle,
+    fcasttest::scenario::ScenarioHandle,
+    fcastplaybin::ExternalSubId,
+) {
     let media = ScenarioBuilder::new(&format!("{tag}main"))
         .video("video_0")
         .audio("audio_0")
@@ -299,6 +312,7 @@ fn attached(
         .register();
 
     let harness = Harness::new();
+    stage(&harness.playbin);
     harness.playbin.load_async(
         MediaInput::Uri(media.uri()),
         StartPoint::Seek {
@@ -411,8 +425,8 @@ fn converged_for(
 ///
 /// This is what makes the tick's unconditional trigger safe. The reconcile
 /// pass runs whether or not anything is pending, so it must not create work.
-/// Guard 1 is `aligned` (desired == observed) and guard 2 is
-/// `replay_inflight` / `replay_checks_armed`.
+/// Guard 1 is `aligned` (desired == observed) and guard 2 is the resource's
+/// `replay_inflight` / `verification_armed`.
 #[test]
 fn a_converged_pipeline_is_a_reconcile_fixpoint() {
     let _serial = init();
@@ -428,7 +442,7 @@ fn a_converged_pipeline_is_a_reconcile_fixpoint() {
         harness.cues_seen("R") > seen
     });
 
-    let emits_before = FcastPlaybin::reconcile_emits();
+    let emits_before = FcastPlaybin::global_stats().reconcile_emits;
     for _ in 0..FIXPOINT_ROUNDS {
         // Every one of these queues a coalesced drain, whose tail IS the pass.
         harness.playbin.poll_text_policy();
@@ -444,7 +458,7 @@ fn a_converged_pipeline_is_a_reconcile_fixpoint() {
         thread::sleep(Duration::from_millis(10));
     }
 
-    let emits_after = FcastPlaybin::reconcile_emits();
+    let emits_after = FcastPlaybin::global_stats().reconcile_emits;
     assert_eq!(
         emits_after,
         emits_before,
@@ -513,7 +527,7 @@ fn a_misaligned_external_converges_without_any_caller_poll() {
             "the external never delivered again after the seek, with no caller poll to \
              carry it: seat observed {:?}, reconcile emits {}, replay in flight {}",
             harness.playbin.observed_seat_occupant(),
-            FcastPlaybin::reconcile_emits(),
+            FcastPlaybin::global_stats().reconcile_emits,
             harness.playbin.replay_inflight(id, 0),
         );
         harness.pump_events_only();
@@ -556,8 +570,8 @@ fn a_parked_replay_suppresses_every_further_emit_for_that_input() {
         park.parked() > 0
     });
 
-    let emits_before = FcastPlaybin::reconcile_emits();
-    let seeks_before = FcastPlaybin::replay_seeks_sent();
+    let emits_before = FcastPlaybin::global_stats().reconcile_emits;
+    let seeks_before = FcastPlaybin::global_stats().replay_seeks_sent;
     assert!(
         harness.playbin.replay_inflight(id, 0),
         "a replay is parked mid-send but the in-flight bit is clear; every reconcile pass \
@@ -576,8 +590,8 @@ fn a_parked_replay_suppresses_every_further_emit_for_that_input() {
         thread::sleep(Duration::from_millis(10));
     }
 
-    let emits_after = FcastPlaybin::reconcile_emits();
-    let seeks_after = FcastPlaybin::replay_seeks_sent();
+    let emits_after = FcastPlaybin::global_stats().reconcile_emits;
+    let seeks_after = FcastPlaybin::global_stats().replay_seeks_sent;
     assert!(
         harness.playbin.replay_inflight(id, 0),
         "the in-flight bit cleared while the replay was still parked in the send; nothing \
@@ -644,7 +658,7 @@ fn a_second_replay_trigger_while_one_is_outstanding_sends_no_second_seek() {
         "the parked replay should hold the in-flight bit"
     );
 
-    let seeks_before = FcastPlaybin::replay_seeks_sent();
+    let seeks_before = FcastPlaybin::global_stats().replay_seeks_sent;
     // The rival, queued exactly as an emitter queues it (bit first, then the
     // job), so it passes every guard before the choke point.
     assert!(
@@ -657,7 +671,7 @@ fn a_second_replay_trigger_while_one_is_outstanding_sends_no_second_seek() {
     }
 
     assert_eq!(
-        FcastPlaybin::replay_seeks_sent(),
+        FcastPlaybin::global_stats().replay_seeks_sent,
         seeks_before,
         "a second replay seek was handed off for an input whose first seek is still \
          travelling; the field saw both of them land and the file delivered twice"
@@ -713,7 +727,7 @@ fn a_join_queues_no_second_replay_while_one_is_outstanding() {
         "the parked replay should hold the in-flight bit"
     );
 
-    let queued_before = FcastPlaybin::replay_jobs_queued();
+    let queued_before = FcastPlaybin::global_stats().replay_jobs_queued;
     // The rival: a real selection, whose join reaches the emitter at the
     // tail of `poll_text_policy`.
     harness
@@ -728,7 +742,7 @@ fn a_join_queues_no_second_replay_while_one_is_outstanding() {
     }
 
     assert_eq!(
-        FcastPlaybin::replay_jobs_queued(),
+        FcastPlaybin::global_stats().replay_jobs_queued,
         queued_before,
         "a second replay job was queued for an input whose replay is still outstanding; \
          in the field the first outcome landed before that job ran and the branch was \
@@ -758,8 +772,8 @@ fn a_join_queues_no_second_replay_while_one_is_outstanding() {
 /// frames the sink already has. PAUSED is not incidental. The start time is
 /// NONE for the whole of PLAYING, so the reset writes nothing there.
 ///
-/// `FCAST_NO_START_TIME_GUARD=1` fails both assertions. The position comes
-/// back at about 0 and the restore counter never moves.
+/// Without `StartTimeGuard` both assertions fail: the position comes back at
+/// about 0 and the restore counter never moves.
 #[test]
 fn a_replay_while_paused_does_not_restart_the_pipeline_timeline() {
     let _serial = init();
@@ -789,7 +803,7 @@ fn a_replay_while_paused_does_not_restart_the_pipeline_timeline() {
         .position()
         .expect("a paused pipeline answers a position");
 
-    let restores_before = FcastPlaybin::start_time_restores();
+    let restores_before = FcastPlaybin::global_stats().start_time_restores;
     assert!(
         harness.playbin.queue_replay_sub(id, 0),
         "queueing the re-enable's replay the way an emitter does"
@@ -820,7 +834,7 @@ fn a_replay_while_paused_does_not_restart_the_pipeline_timeline() {
     // assertion above would hold vacuously. A run where the flush never
     // reached a sink proves nothing.
     assert!(
-        FcastPlaybin::start_time_restores() > restores_before,
+        FcastPlaybin::global_stats().start_time_restores > restores_before,
         "the replay's FLUSH_STOP never reset the pipeline's start time, so this test \
          did not exercise the defect it exists for (position {before} -> {after})"
     );
@@ -845,9 +859,9 @@ fn a_replay_while_paused_does_not_restart_the_pipeline_timeline() {
 /// and hands the input to the replay machinery, the only path that realigns
 /// an external.
 ///
-/// The lever is the test's only way in. A real refusal comes from a source's
-/// own seek handling underneath a parser chain and cannot be arranged from
-/// outside the pipeline.
+/// The staging knob is the test's only way in. A real refusal comes from a
+/// source's own seek handling underneath a parser chain and cannot be arranged
+/// from outside the pipeline.
 ///
 /// With the recovery removed, `replay_jobs_queued` does not move here.
 #[test]
@@ -866,26 +880,24 @@ fn a_refused_forwarded_seek_is_counted_and_replayed() {
         !harness.playbin.replay_inflight(id, 0)
     });
 
-    let refusals_before = FcastPlaybin::forward_seek_refusals();
-    let queued_before = FcastPlaybin::replay_jobs_queued();
+    let refusals_before = FcastPlaybin::global_stats().forward_seek_refusals;
+    let queued_before = FcastPlaybin::global_stats().replay_jobs_queued;
     // The forward, run directly. A transport seek would park behind this
     // harness's `seekable: false` gate and never reach `Job::Seek`.
     //
-    // The lever is set around this call only and removed immediately. The
-    // binary shares one process, and a lever left set would make every later
-    // forwarded seek read as refused.
-    // SAFETY: this binary is serial, so no other thread reads the
-    // environment across these two statements.
-    unsafe { std::env::set_var("FCAST_FORCE_FORWARD_SEEK_REFUSAL", "1") };
+    // Armed around this call only and cleared immediately, since the knob is
+    // persistent and would make every later forwarded seek on this pipeline
+    // read as refused.
+    harness.playbin.stage_forward_seek_refusal(true);
     harness
         .playbin
         .forward_seek_to_externals(1.0, gst::ClockTime::from_seconds(3));
-    unsafe { std::env::remove_var("FCAST_FORCE_FORWARD_SEEK_REFUSAL") };
+    harness.playbin.stage_forward_seek_refusal(false);
     harness.wait_for("the refused forward to be counted", || {
-        FcastPlaybin::forward_seek_refusals() > refusals_before
+        FcastPlaybin::global_stats().forward_seek_refusals > refusals_before
     });
     harness.wait_for("the refusal to hand the input to a replay", || {
-        FcastPlaybin::replay_jobs_queued() > queued_before
+        FcastPlaybin::global_stats().replay_jobs_queued > queued_before
     });
 
     media.release_all();
@@ -912,28 +924,28 @@ fn a_refused_forwarded_seek_is_counted_and_replayed() {
 ///
 /// # What this test does and does not pin
 ///
-/// It pins that a refusal is counted and not fatal: once the lever is lifted
+/// It pins that a refusal is counted and not fatal: once the knob is cleared
 /// the input still selects, joins and renders. It deliberately does not
-/// assert the retry. Under the lever the first buffer is still parked in the
+/// assert the retry. Under the knob the first buffer is still parked in the
 /// hold probe, so no flush ever crosses the pad and no second push can be
 /// observed from here.
 #[test]
 fn a_refused_slot_seeding_gap_is_counted_and_not_fatal() {
     let _serial = init();
-    let refusals_before = FcastPlaybin::slot_seed_refusals();
-    // The lever is the test's only way in. A real refusal needs FLUSH_START
-    // to land while the GAP push is in flight, which no test can arrange
-    // from outside the pipeline.
-    // SAFETY: this binary is serial, so no other thread reads the
-    // environment here.
-    unsafe { std::env::set_var("FCAST_FORCE_SLOT_SEED_REFUSAL", "1") };
-    let (harness, media, subs, id) = attached("slotseedrefused");
-    harness.wait_for("the refused seeding to be counted", || {
-        FcastPlaybin::slot_seed_refusals() > refusals_before
+    let refusals_before = FcastPlaybin::global_stats().slot_seed_refusals;
+    // The staging knob is the test's only way in. A real refusal needs
+    // FLUSH_START to land while the GAP push is in flight, which no test can
+    // arrange from outside the pipeline. Armed on the fresh playbin, because
+    // the seeding it has to refuse happens during the attach.
+    let (harness, media, subs, id) = attached_staged("slotseedrefused", |playbin| {
+        playbin.stage_slot_seed_refusal(true);
     });
-    // Lifted the moment the refusal is on the board. The point is that the
-    // input survives one, and a lever left set would refuse every retry too.
-    unsafe { std::env::remove_var("FCAST_FORCE_SLOT_SEED_REFUSAL") };
+    harness.wait_for("the refused seeding to be counted", || {
+        FcastPlaybin::global_stats().slot_seed_refusals > refusals_before
+    });
+    // Cleared the moment the refusal is on the board. The point is that the
+    // input survives one, and a knob left set would refuse every retry too.
+    harness.playbin.stage_slot_seed_refusal(false);
     // Not fatal: the stream must still render after a refusal.
     harness
         .playbin
@@ -951,7 +963,7 @@ fn a_refused_slot_seeding_gap_is_counted_and_not_fatal() {
 
 /// The caps-gate escalation must not fire on a healthy item.
 ///
-/// `Inner::capsless_text_since` turns the link loop's silent caps refusal
+/// `TextDegradation::CapslessStall` turns the link loop's silent caps refusal
 /// into one loud warn once the absence outlasts `CAPSLESS_TEXT_GRACE`. The
 /// value of that line is that it is believed when it fires, so the thing
 /// worth pinning is the negative: an ordinary attach-select-render, held
@@ -961,7 +973,7 @@ fn a_refused_slot_seeding_gap_is_counted_and_not_fatal() {
 #[test]
 fn the_capsless_text_escalation_stays_quiet_on_a_healthy_item() {
     let _serial = init();
-    let stalls_before = FcastPlaybin::capsless_text_stalls();
+    let stalls_before = FcastPlaybin::global_stats().capsless_text_stalls;
     let (harness, media, subs, id) = attached("capslessquiet");
     harness
         .playbin
@@ -976,7 +988,7 @@ fn the_capsless_text_escalation_stays_quiet_on_a_healthy_item() {
         std::thread::sleep(Duration::from_millis(20));
     }
     assert_eq!(
-        FcastPlaybin::capsless_text_stalls(),
+        FcastPlaybin::global_stats().capsless_text_stalls,
         stalls_before,
         "the caps-gate escalation fired on an item whose text branch joined \
          and rendered"
@@ -1003,8 +1015,8 @@ fn the_capsless_text_escalation_stays_quiet_on_a_healthy_item() {
 /// `external_subtitle_lifecycle`.
 #[test]
 fn the_seat_stalemate_break_stays_quiet_on_an_item_that_never_stalemates() {
-    init();
-    let breaks_before = FcastPlaybin::text_seat_stalemates();
+    let _serial = init();
+    let breaks_before = FcastPlaybin::global_stats().text_seat_stalemates;
     let (harness, media, subs, id) = attached("seatstalematequiet");
     harness
         .playbin
@@ -1018,7 +1030,7 @@ fn the_seat_stalemate_break_stays_quiet_on_an_item_that_never_stalemates() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(
-        FcastPlaybin::text_seat_stalemates(),
+        FcastPlaybin::global_stats().text_seat_stalemates,
         breaks_before,
         "the seat stalemate break cleared the contention latches on an item \
          whose text branch was seated and rendering"
@@ -1053,12 +1065,12 @@ fn the_seat_stalemate_break_stays_quiet_on_an_item_that_never_stalemates() {
 /// ghost and the slot's src pad, left on the slot's sink pad) and what is
 /// measured is the recovery, the part that ships.
 ///
-/// Red with `FCAST_NO_TEXT_CAPS_RESCUE=1`: the caps never come back and the
-/// wait for the branch to join times out.
+/// Without the caps rescue the caps never come back and the wait for the
+/// branch to join times out.
 #[test]
 fn a_text_stream_whose_caps_the_multiqueue_lost_still_joins_and_renders() {
     let _serial = init();
-    let rescues_before = FcastPlaybin::text_caps_rescues();
+    let rescues_before = FcastPlaybin::global_stats().text_caps_rescues;
     let (harness, media, subs, id) = attached("capsrescue");
     // Armed before the selection, where the window is: the stream is routed
     // and parked with its caps, and the very next poll would have joined it.
@@ -1083,14 +1095,14 @@ fn a_text_stream_whose_caps_the_multiqueue_lost_still_joins_and_renders() {
     // Without this, a staging that quietly missed its window would read as a
     // green rendering test.
     assert!(
-        FcastPlaybin::text_caps_rescues() > rescues_before,
+        FcastPlaybin::global_stats().text_caps_rescues > rescues_before,
         "no caps rescue ran, so the staged loss never landed and this run says \
          nothing about the caps loss"
     );
     // The repair either gets the caps back onto the slot or the track is dead,
     // so the failure counter is the invariant rather than a diagnostic.
     assert_eq!(
-        FcastPlaybin::text_caps_rescue_failures(),
+        FcastPlaybin::global_stats().text_caps_rescue_failures,
         0,
         "a caps rescue ran and the slot still had no caps afterwards"
     );
@@ -1114,7 +1126,7 @@ fn a_text_stream_whose_caps_the_multiqueue_lost_still_joins_and_renders() {
 #[test]
 fn the_caps_rescue_stays_quiet_on_a_healthy_item() {
     let _serial = init();
-    let rescues_before = FcastPlaybin::text_caps_rescues();
+    let rescues_before = FcastPlaybin::global_stats().text_caps_rescues;
     let (harness, media, subs, id) = attached("capsrescuequiet");
     harness
         .playbin
@@ -1128,7 +1140,7 @@ fn the_caps_rescue_stays_quiet_on_a_healthy_item() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(
-        FcastPlaybin::text_caps_rescues(),
+        FcastPlaybin::global_stats().text_caps_rescues,
         rescues_before,
         "the caps rescue rewrote a multiqueue slot's sticky events on an item \
          whose text branch joined and rendered on its own"
@@ -1141,70 +1153,17 @@ fn the_caps_rescue_stays_quiet_on_a_healthy_item() {
     subs.unregister();
 }
 
-/// The leak invariant for the per-resource in-flight bit: no entry may
-/// outlive the input it names.
-///
-/// `replay_inflight` suppresses the reconcile pass for an `(id, epoch)`
-/// while a replay is outstanding. An entry never discharged does not fail
-/// loudly. It silently switches the reconciler off for that resource forever
-/// and grows the set without bound. Every path that ends a replay without an
-/// outcome has to clear it. This asserts the consequence rather than the
-/// paths: after each way an epoch can die, nothing in the set names an input
-/// that is not attached.
-///
-/// The case that bit: a slotless hand-off to `RetrySub` returns without a
-/// seek, and the retry's leave-it-be arm returns without bumping the epoch,
-/// so a bit left behind there is permanent, on a live external.
-#[test]
-fn no_in_flight_replay_bit_outlives_its_input() {
-    let _serial = init();
-    // A detach while a replay is in flight. Detaching an idle external
-    // proves nothing since its bit is already clear, so the join-time replay
-    // is parked mid-send and the input pulled out from under it. No outcome
-    // will ever be reported for an input that no longer exists, so
-    // `remove_input` has to be the discharge.
-    let (harness, media, subs, id) = attached("reconcileorphan");
-    let park = park_replay_seeks(&harness, &subs.uri());
-    harness
-        .playbin
-        .request_track(TrackSlot::Subtitle, TrackTarget::ExternalSubtitle(id));
-    harness.wait_for("the join-time replay to reach the park", || {
-        park.parked() > 0
-    });
-    assert!(
-        harness.playbin.replay_inflight(id, 0),
-        "the staging did not hold: no replay is in flight to be orphaned"
-    );
-
-    harness
-        .playbin
-        .detach_subtitle(id)
-        .expect("detaching the external");
-    harness.wait_for("the external to leave routing", || {
-        !harness.playbin.has_external_subtitles()
-    });
-    assert_eq!(
-        harness.playbin.replay_inflight_orphans(),
-        0,
-        "a detached external left its in-flight replay bit behind; the reconcile pass is \
-         now permanently suppressed for that (id, epoch)"
-    );
-    park.release();
-
-    media.release_all();
-    subs.release_all();
-    harness.shutdown();
-    media.unregister();
-    subs.unregister();
-}
-
-// The gapless-reap case is deliberately not staged here. It is covered by
-// construction: the clear lives in `Inner::remove_input`, the single
-// function every removal path funnels through, and the cases above exercise
-// that exact line. Staging the reap needs a gapless boundary with an
-// external attached, which no suite in this crate reliably produces. A test
-// whose failure mode is "the staging did not happen" is worse than an honest
-// note. `replay_inflight_orphans()` exists for whoever stages it.
+// THE LEAK INVARIANT for the per-resource in-flight bit used to be asserted
+// here, by detaching an external with a parked replay in flight and counting
+// bits that named no attached input (`replay_inflight_orphans`). The bit lived
+// in an `Inner`-side set keyed `(id, epoch)`, so every path that ended a replay
+// without an outcome had to remember to clear it, and a missed one silently
+// switched the reconciler off for that resource forever.
+//
+// The bit now lives ON the resource (`ExternalInput::replay_inflight`): a
+// detach drops it and an epoch bump builds a new one. There is no orphan to
+// count, and no set to grow. The assertion is gone because the state it
+// asserted against is unrepresentable, not because it stopped mattering.
 
 /// The seat's occupant is read, not remembered.
 ///
@@ -1314,11 +1273,9 @@ fn a_verdict_held_below_playing_keeps_its_own_chain() {
     harness.wait_for("the re-armed check to conclude", || {
         !harness.playbin.replay_check_armed(id, 0)
     });
-    assert_eq!(
-        harness.playbin.replay_inflight_orphans(),
-        0,
-        "the re-armed chain left an in-flight replay bit behind"
-    );
+    // The tail here used to count orphaned in-flight bits. The bit lives on the
+    // resource now, so a chain cannot leave one behind an input that is still
+    // attached and still asserted on above (see the note further up).
 
     media.release_all();
     subs.release_all();
@@ -1404,7 +1361,7 @@ fn an_owed_hold_whose_replay_already_settled_is_released() {
 
     // The rival replay, run to completion BEFORE the owing exists. Its
     // outcome released nothing, because nothing was owed yet.
-    let seeks_before = FcastPlaybin::replay_seeks_sent();
+    let seeks_before = FcastPlaybin::global_stats().replay_seeks_sent;
     assert!(
         harness.playbin.queue_replay_sub(id, 0),
         "queueing the rival replay the way an emitter does"
@@ -1413,7 +1370,7 @@ fn an_owed_hold_whose_replay_already_settled_is_released() {
         !harness.playbin.replay_inflight(id, 0)
     });
     assert!(
-        FcastPlaybin::replay_seeks_sent() > seeks_before,
+        FcastPlaybin::global_stats().replay_seeks_sent > seeks_before,
         "no replay seek was handed off, so this input was re-attached rather than replayed \
          and the epoch below is not the one that is held"
     );

@@ -259,7 +259,7 @@ pub enum SubtitleFeedItem {
 
 /// The consumer callback installed by
 /// [`FcastPlaybin::set_subtitle_consumer`](crate::FcastPlaybin::set_subtitle_consumer).
-pub type SubtitleConsumer = Arc<dyn Fn(SubtitleFeedItem) + Send + Sync>;
+pub(crate) type SubtitleConsumer = Arc<dyn Fn(SubtitleFeedItem) + Send + Sync>;
 
 /// A typed pipeline event, delivered through the callback installed by
 /// [`FcastPlaybin::set_event_handler`](crate::FcastPlaybin::set_event_handler).
@@ -366,10 +366,9 @@ pub enum PlaybinEvent {
     ///
     /// The transport carries `text/x-raw` in utf8 or pango-markup and the
     /// bitmap formats in [`BitmapSubFormat`]. What reaches here is the rest,
-    /// e.g. raw ASS/SSA, `subpicture/x-xsub`, and any bitmap format when
-    /// `FCAST_NO_BITMAP_SUBS=1` is set. Emitted at most once per (stream id,
-    /// load generation), so a repeating poll cannot turn one unrenderable
-    /// track into an event storm.
+    /// e.g. raw ASS/SSA and `subpicture/x-xsub`. Emitted at most once per
+    /// (stream id, load generation), so a repeating poll cannot turn one
+    /// unrenderable track into an event storm.
     SubtitleTrackUnsupported {
         sid: String,
         caps: gst::Caps,
@@ -468,7 +467,7 @@ pub type MessageHook = Box<dyn Fn(&gst::Message) -> bool + Send + Sync>;
 pub(crate) type EventCallback = Arc<dyn Fn(PlaybinEvent, u64) + Send + Sync>;
 
 /// Builds a fresh audio sink. See [`AudioSink::Factory`].
-pub type AudioSinkFactory = Box<dyn Fn() -> Result<gst::Element> + Send + Sync>;
+pub(crate) type AudioSinkFactory = Box<dyn Fn() -> Result<gst::Element> + Send + Sync>;
 
 /// How the audio sink is built. Whatever the choice, the sink is built FRESH
 /// for every load and dropped at the next load's reset (see `Inner::audio`

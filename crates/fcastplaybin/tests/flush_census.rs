@@ -12,18 +12,18 @@
 //! * [`a_mid_play_subtitle_schedule_fires_the_reasons_the_removals_touch`]
 //!   drives attach / select / replace / off / detach at PLAYING and at PAUSED.
 //!   The direct REPLACE PARKS, and the flush it used to be able to choose --
-//!   with its `eager_text_flushes()` counter, its `eager_branch` reason and its
-//!   `FCAST_EAGER_REPLACE_FLUSH` lever -- is gone. The `remove_input` pair is
-//!   still SENT: the quiescence skip was measured to break the same-URL
-//!   re-attach, so its de-PLAY survives and is RECORDED here rather than
-//!   removed. The mid-play `disposal_queue` pair is gone, the branch being
-//!   proved quiescent instead. The disposal pair moved: `disposal_seat` was
-//!   subtitleoverlay's shared `subtitle_sink` and died with it, and
-//!   `disposal_consumer` is the same pair on the branch's OWN appsink, asserted
-//!   positive here. The teardown boundary's pairs are counted under their OWN
-//!   reasons (`teardown_consumer`, `teardown_queue`) so the mid-play zeros are
-//!   absolute rather than deltas, which is what makes them safe to assert while
-//!   another test in this binary tears down.
+//!   with its `eager_text_flushes()` counter, its `eager_branch` reason and the
+//!   lever that kept it reachable -- is gone. The `remove_input` pair is still
+//!   SENT: the quiescence skip was measured to break the same-URL re-attach, so
+//!   its de-PLAY survives and is RECORDED here rather than removed. The
+//!   mid-play `disposal_queue` pair is gone, the branch being proved quiescent
+//!   instead. The disposal pair moved: `disposal_seat` was subtitleoverlay's
+//!   shared `subtitle_sink` and died with it, and `disposal_consumer` is the
+//!   same pair on the branch's OWN appsink, asserted positive here. The
+//!   teardown boundary's pairs are counted under their OWN reasons
+//!   (`teardown_consumer`, `teardown_queue`) so the mid-play zeros are absolute
+//!   rather than deltas, which is what makes them safe to assert while another
+//!   test in this binary tears down.
 //! * [`a_teardown_fires_the_teardown_reasons_and_splits_no_pair`] covers the
 //!   boundary that STAYS, and the invariant that holds everywhere: no pair may
 //!   straddle a pad deactivation, because gstpad.c discards a FLUSH_STOP on an
@@ -37,22 +37,6 @@
 //! CUMULATIVE across a binary's tests, which is why every assertion here is
 //! "this reason fired" or "this reason never fires anywhere" and never "fired
 //! exactly N times".
-//!
-//! # Verification
-//!
-//! * Green: no env vars.
-//! * `FCAST_REMOVE_INPUT_FLUSH_SKIP=1`: the `remove_input` assertions invert
-//!   (the gate skips the pair). THIS ARM IS EXPECTED TO BREAK
-//!   `external_subtitle_lifecycle`'s two re-attach tests - that failure is the
-//!   measurement the skip is off for.
-//! * `FCAST_NO_REMOVE_INPUT_FLUSH_SKIP=1`: restores v1's `remove_input`
-//!   wholesale (old order, unconditional pair); the assertions are unchanged
-//!   because the shipped half is behaviour-neutral.
-//! * `FCAST_DISPOSAL_QUEUE_FLUSH=1`: the b2 assertion inverts (mid-play
-//!   disposals flush their queue again).
-//! * `FCAST_FLUSH_TAP=1`: adds one `info!` line per pair (pad, parent, reason)
-//!   with `FCASTPLAYBIN_TEST_LOG=info`; the counts are unchanged.
-
 use std::{
     sync::{Arc, Mutex, mpsc},
     thread,
@@ -341,7 +325,7 @@ fn play_with_external(
 /// vacuous test. The flag is the part that is decidable, and the cost of
 /// getting it wrong is proven elsewhere.
 ///
-/// A/B: `FCAST_FLUSH_STOP_RESETS_TIME=1` restores the v1 flag and fails here.
+/// A/B: restoring the v1 `reset_time = TRUE` flag fails here.
 #[test]
 fn every_crate_origin_flush_stop_leaves_the_running_time_alone() {
     init();
@@ -467,9 +451,9 @@ fn a_mid_play_subtitle_schedule_fires_the_reasons_the_removals_touch() {
     // THE EAGER FLUSH REMOVAL, completed. The direct replace was the one
     // dispatch shape whose eager text work could be a FLUSH, and that flush was
     // the trigger of the captured decider-versus-overlay deadlock. It became a
-    // PARK with the flush kept reachable behind `FCAST_EAGER_REPLACE_FLUSH`,
-    // and deleting subtitleoverlay took the flush, its intent counter, its
-    // lever and its `eager_branch` census reason. Nothing is asserted here any more
+    // PARK with the flush kept reachable behind a lever, and deleting
+    // subtitleoverlay took the flush, its intent counter, that lever and its
+    // `eager_branch` census reason. Nothing is asserted here any more
     // because there is nothing left to assert AGAINST: an asserted zero on a
     // deleted reason would panic in `crate_flush_pairs_for`, and one on a
     // deleted counter cannot be written at all. What the removal is worth is
@@ -517,7 +501,6 @@ fn a_mid_play_subtitle_schedule_fires_the_reasons_the_removals_touch() {
     // (5) detach both externals, at a settled PLAYING. Their branches are
     // already detached and their sources drained, so both removals are
     // quiescent: this is the common case.
-    let skipped_before = FcastPlaybin::remove_input_pairs_skipped();
     harness
         .playbin
         .detach_subtitle(first_id)
@@ -530,35 +513,17 @@ fn a_mid_play_subtitle_schedule_fires_the_reasons_the_removals_touch() {
         !harness.playbin.has_external_subtitles()
     });
 
-    // RECORDED rather than removed. The quiescence skip was measured to break
-    // the same-URL re-attach (see `Inner::remove_input`), so the pair still
-    // goes out on every removal and the de-PLAY it causes is still there. What
-    // did ship is the unlink ABOVE the pair,
-    // which is behaviour-neutral here by design - so the pair count is
-    // deliberately asserted to be UNCHANGED from v1.
-    let skipped_after = FcastPlaybin::remove_input_pairs_skipped();
-    if std::env::var_os("FCAST_REMOVE_INPUT_FLUSH_SKIP").is_some() {
-        assert!(
-            skipped_after > skipped_before,
-            "FCAST_REMOVE_INPUT_FLUSH_SKIP turns the quiescence gate on, so two quiescent \
-             detaches must skip a pair ({skipped_before} -> {skipped_after}); the gate is \
-             wired to nothing. (This arm is expected to FAIL \
-             external_subtitle_lifecycle's re-attach tests - that is the measurement the \
-             skip is off for.)"
-        );
-    } else {
-        assert!(
-            FcastPlaybin::remove_input_pairs_sent() > 0,
-            "a detach sent no `remove_input` pair, but the quiescence skip is off; the \
-             pair is load-bearing for decodebin3 retiring the leaving input's src pads. \
-             Breakdown: {}",
-            breakdown()
-        );
-        assert_eq!(
-            skipped_after, skipped_before,
-            "a `remove_input` pair was skipped with FCAST_REMOVE_INPUT_FLUSH_SKIP unset"
-        );
-    }
+    // RECORDED rather than removed. Skipping the pair on a quiescent pad was
+    // measured to break the same-URL re-attach (see `Inner::remove_input`), so
+    // the pair goes out on every removal and the de-PLAY it causes is still
+    // there. What did ship is the unlink ABOVE the pair, which is
+    // behaviour-neutral here by design.
+    assert!(
+        FcastPlaybin::global_stats().remove_input_pairs_sent > 0,
+        "a detach sent no `remove_input` pair; the pair is load-bearing for decodebin3 \
+         retiring the leaving input's src pads. Breakdown: {}",
+        breakdown()
+    );
 
     // THE b2 assertion. A mid-play disposal proves its branch is quiescent and
     // takes the queue to NULL without a pair; only the counted
@@ -567,36 +532,26 @@ fn a_mid_play_subtitle_schedule_fires_the_reasons_the_removals_touch() {
     // an absolute zero rather than a delta - a delta is not safe to assert
     // when another test in this binary may be tearing down beside us.
     let queue_after = FcastPlaybin::crate_flush_pairs_for(DISPOSAL_QUEUE);
-    if std::env::var_os("FCAST_DISPOSAL_QUEUE_FLUSH").is_some() {
-        assert!(
-            queue_after > queue_before,
-            "FCAST_DISPOSAL_QUEUE_FLUSH restores the unconditional v1 queue pair, so four \
-             mid-play disposals must send one ({queue_before} -> {queue_after}); the lever \
-             is wired to nothing. Breakdown: {}",
-            breakdown()
-        );
-    } else {
-        assert_eq!(
-            queue_after,
-            0,
-            "{queue_after} mid-play `{DISPOSAL_QUEUE}` pair(s) were sent anywhere in this \
-             binary, with {} quiesce timeout(s) recorded; the pair latches the slot \
-             decodebin3 is about to reuse. Breakdown: {}",
-            FcastPlaybin::disposal_quiesce_timeouts(),
-            breakdown()
-        );
-        assert_eq!(
-            FcastPlaybin::disposal_quiesce_timeouts(),
-            0,
-            "a mid-play branch would not quiesce inside its budget and fell back to the v1 \
-             pair. Not a failure by itself - worst case equals v1 - but on this schedule, \
-             where the detach-time time-uncap should have released every parked push, it \
-             means the uncap is not doing its job"
-        );
-    }
+    assert_eq!(
+        queue_after,
+        0,
+        "{queue_after} mid-play `{DISPOSAL_QUEUE}` pair(s) were sent anywhere in this \
+         binary, with {} quiesce timeout(s) recorded; the pair latches the slot \
+         decodebin3 is about to reuse. Breakdown: {}",
+        FcastPlaybin::global_stats().disposal_quiesce_timeouts,
+        breakdown()
+    );
+    assert_eq!(
+        FcastPlaybin::global_stats().disposal_quiesce_timeouts,
+        0,
+        "a mid-play branch would not quiesce inside its budget and fell back to the v1 \
+         pair. Not a failure by itself - worst case equals v1 - but on this schedule, \
+         where the detach-time time-uncap should have released every parked push, it \
+         means the uncap is not doing its job"
+    );
     println!(
         "b2: disposal_queue {queue_before} -> {queue_after}, quiesce timeouts {}",
-        FcastPlaybin::disposal_quiesce_timeouts()
+        FcastPlaybin::global_stats().disposal_quiesce_timeouts
     );
     // PAIR D.
     //
@@ -621,7 +576,7 @@ fn a_mid_play_subtitle_schedule_fires_the_reasons_the_removals_touch() {
 
     // The invariants that hold everywhere.
     assert_eq!(
-        FcastPlaybin::flush_pair_activity_transitions(),
+        FcastPlaybin::global_stats().flush_pair_activity_transitions,
         0,
         "a flush pair straddled a pad deactivation, so its FLUSH_STOP was discarded \
          and the pad is flushing for good"
@@ -646,7 +601,7 @@ fn a_mid_play_subtitle_schedule_fires_the_reasons_the_removals_touch() {
     }
     println!("flow census: {:?}", FcastPlaybin::flow_census_breakdown());
     assert_eq!(
-        FcastPlaybin::teardown_descent_stuck(),
+        FcastPlaybin::global_stats().teardown_descent_stuck,
         0,
         "a teardown descent blew its budget and was leaked"
     );
@@ -707,13 +662,13 @@ fn a_teardown_fires_the_teardown_reasons_and_splits_no_pair() {
 
     // The descent bound must not have fired anywhere, and no pair may have split.
     assert_eq!(
-        FcastPlaybin::teardown_descent_stuck(),
+        FcastPlaybin::global_stats().teardown_descent_stuck,
         0,
         "a teardown descent blew its {:?} budget and was leaked",
         Duration::from_secs(15)
     );
     assert_eq!(
-        FcastPlaybin::flush_pair_activity_transitions(),
+        FcastPlaybin::global_stats().flush_pair_activity_transitions,
         0,
         "a flush pair straddled a pad deactivation; at a teardown that is a \
          descent racing the wake in front of it"

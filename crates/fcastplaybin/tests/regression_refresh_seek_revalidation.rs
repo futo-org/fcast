@@ -24,10 +24,9 @@
 //!
 //! # Verification
 //!
-//! * Green: no env vars. The stale refresh is dropped and reported.
-//! * RED with `FCAST_NO_REFRESH_SEEK_REVALIDATION=1`: the job performs the seek
-//!   regardless, so `RefreshSeekFailed` never arrives (the wait times out) and
-//!   the seek shows up in the sink's log.
+//! Green: the stale refresh is dropped and reported. Without the job's
+//! re-validation it performs the seek regardless, so `RefreshSeekFailed` never
+//! arrives (the wait times out) and the seek shows up in the sink's log.
 
 use std::{
     io::Write,

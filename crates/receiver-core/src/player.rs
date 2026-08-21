@@ -824,12 +824,7 @@ impl Player {
         // already use. It fires on `gst_bin_add`, before the child is brought
         // up to its parent's state, which is what the `mutable_ready` property
         // requires: the mode is latched when the src caps are chosen.
-        //
-        // Lever: `FCAST_NO_CUE_IR` (set = off) skips the hook entirely, so the
-        // parsers stay in their default mode and negotiation is bit-for-bit
-        // what it was before cue-IR existed. The driver reads the same single
-        // answer and then ignores the meta as well.
-        if fcastplaybin::cue_ir_enabled() {
+        {
             use gst::prelude::*;
             fcast
                 .pipeline()
@@ -1493,7 +1488,7 @@ impl Player {
             // A user seek is itself a flushing seek and re-emits the current
             // subtitle cue, a separately queued refresh flush is redundant.
             self.fcast.cancel_selection_refresh();
-            if let Some(seek) = self.state_machine.seek_internal(seek, None) {
+            if let Some(seek) = self.state_machine.seek_internal(seek) {
                 self.fcast.seek_async(seek);
             }
         } else {
@@ -1975,18 +1970,15 @@ impl Player {
     /// Returns `true` if buffering completed
     pub fn buffering(&mut self, percent: i32) -> bool {
         let res = match self.state_machine.buffering(percent) {
-            BufferingStateResult::Started(state) => {
-                self.set_state_async(state);
+            BufferingStateResult::Started => {
+                // Buffering holds the pipeline at PAUSED until it completes.
+                self.set_state_async(gst::State::Paused);
                 false
             }
             BufferingStateResult::Buffering => false,
             BufferingStateResult::FinishedWithSeek(seek) => {
                 debug!("Buffering finished, dispatching seek");
                 self.fcast.seek_async(seek);
-                true
-            }
-            BufferingStateResult::FinishedButWaitingSeek => {
-                debug!("Buffering finished with seek");
                 true
             }
             BufferingStateResult::Finished(state) => {

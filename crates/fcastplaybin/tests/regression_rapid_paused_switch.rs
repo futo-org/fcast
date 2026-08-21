@@ -63,11 +63,11 @@
 //! user switches tracks yet again. The field's fifteen paused switches
 //! between external subtitle files walk straight into this.
 //!
-//! Measured on one binary, interleaved, six rounds each.
-//! `FCAST_INLINE_TEXT_FLUSH` off failed 4 of 6, on failed 3 of 6. The
-//! defect is in the replay verification, which the dispatch rework did not
-//! touch, so the lever does not gate it. Note the lever also cannot restore
-//! the field's DRAIN behavior (the drain rearchitecture has no lever), so a
+//! Measured on one binary, interleaved, six rounds each. The inline
+//! text-flush lever of the time failed 4 of 6 off and 3 of 6 on. The defect
+//! is in the replay verification, which the dispatch rework did not touch, so
+//! that lever never gated it, and it is gone now. It could not restore the
+//! field's DRAIN behavior either (the drain rearchitecture has no lever), so a
 //! full old-drain A/B is not expressible on this binary.
 //!
 //! HONEST LIMIT. The knob's buffering percent is scripted. The one edge of
@@ -270,11 +270,9 @@ impl Receiver {
             PlaybinEvent::Buffering(percent) => {
                 self.saw_buffering.push(percent);
                 match self.sm.buffering(percent) {
-                    BufferingStateResult::Started(state) => self.apply(state),
+                    BufferingStateResult::Started => self.apply(gst::State::Paused),
                     BufferingStateResult::Finished(Some(state)) => self.apply(state),
-                    BufferingStateResult::Finished(None)
-                    | BufferingStateResult::Buffering
-                    | BufferingStateResult::FinishedButWaitingSeek => {}
+                    BufferingStateResult::Finished(None) | BufferingStateResult::Buffering => {}
                     BufferingStateResult::FinishedWithSeek(seek) => {
                         panic!("no seek was ever issued, the machine invented {seek:?}")
                     }

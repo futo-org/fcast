@@ -363,6 +363,121 @@ fn a_load_forgets_the_previous_items_text_park() {
     );
 }
 
+/// A STOP must leave no per-item state behind, even when no load ever follows.
+///
+/// The load reset and the stop reset were two hand-maintained lists, and they
+/// diverged: the stop's copy had drifted to 9 of the load's 17 clears, so a
+/// receiver that stops and idles kept the ended item's degradation memos and
+/// drained-stream ids for as long as it lived. Growth-shaped state emptied only
+/// by the NEXT load is a leak in a receiver that plays for days, which is the
+/// very thing the load's copy documents itself as preventing.
+///
+/// Both boundaries call [`Inner::reset_item_state`] now, and this pins the
+/// whole list at the boundary that used to be the short one: it fails on the
+/// first entry that gets cleared at a load and forgotten at a stop.
+///
+/// The residue is staged directly (the trick the load-side twin above uses),
+/// because what is under test is the RESET, not the paths that fill these in.
+/// `held_activation` is the one entry not staged here: it is constructed only
+/// inside `gapless.rs`, and its None is asserted as it stands.
+#[test]
+fn a_stop_leaves_no_per_item_state_behind() {
+    use crate::text_policy::{DegradationMemo, TextDegradation};
+
+    test_init();
+    let playbin = FcastPlaybin::new(fake_audio_sinks()).unwrap();
+    let path = temp_mp3("stop-reset");
+    make_mp3_file(&path, 1.0);
+    playbin
+        .load(MediaInput::Element(uri_source(&path)), StartPoint::Live)
+        .unwrap();
+
+    // What an item has accumulated by the time it ends.
+    let inner = &playbin.inner;
+    let group = gst::GroupId::next();
+    *inner.active_group.lock() = Some(group);
+    *inner.retired_group.lock() = Some(group);
+    *inner.passing_eos_group.lock() = Some(group);
+    inner.input_eos_sids.lock().insert("audio-0".to_string());
+    inner.last_upstream_ids.lock().push("audio-0".to_string());
+    inner.text_degradations.lock().insert(
+        (TextDegradation::Unsupported, "text-0".to_string(), 0),
+        DegradationMemo::Spoken,
+    );
+    inner
+        .parked_text_cues
+        .lock()
+        .entry("text_0".to_string())
+        .or_default()
+        .push_back((parked_sample(gst::ClockTime::ZERO), Instant::now()));
+    inner
+        .suppress_text_clear
+        .lock()
+        .insert("text_0".to_string());
+    *inner.intended_timeline.lock() = (2.0, gst::ClockTime::from_seconds(30));
+    inner.video_deselected.store(true, Ordering::SeqCst);
+    inner.video_unrouted_once.store(true, Ordering::SeqCst);
+
+    playbin.stop().expect("the stop itself must succeed");
+    let _ = std::fs::remove_file(&path);
+
+    // The unbounded ones first: they are the leak, and only a load ever
+    // emptied them.
+    assert!(
+        inner.text_degradations.lock().is_empty(),
+        "the stop kept the ended item's text degradation memos; they only ever grow"
+    );
+    assert!(
+        inner.input_eos_sids.lock().is_empty(),
+        "the stop kept the ended item's drained input stream ids"
+    );
+    assert!(
+        inner.parked_text_cues.lock().is_empty(),
+        "the stop kept a text park keyed by a pad name the next core reuses"
+    );
+    assert!(
+        inner.suppress_text_clear.lock().is_empty(),
+        "the stop kept a clear-suppression keyed by a pad name the next core reuses"
+    );
+    assert!(
+        inner.last_upstream_ids.lock().is_empty(),
+        "the stop kept the ended item's upstream-selection id mirror"
+    );
+    // And the per-item mirrors.
+    assert_eq!(
+        *inner.active_group.lock(),
+        None,
+        "active group survived a stop"
+    );
+    assert_eq!(
+        *inner.retired_group.lock(),
+        None,
+        "retired group survived a stop"
+    );
+    assert_eq!(
+        *inner.passing_eos_group.lock(),
+        None,
+        "passing-EOS group survived a stop"
+    );
+    assert!(
+        inner.held_activation.lock().is_none(),
+        "a held gapless activation survived a stop; its events name an ended item"
+    );
+    assert_eq!(
+        *inner.intended_timeline.lock(),
+        (1.0, gst::ClockTime::ZERO),
+        "the ended item's intended timeline survived a stop"
+    );
+    assert!(
+        !inner.video_deselected.load(Ordering::SeqCst),
+        "the ended item's video-deselect mirror survived a stop"
+    );
+    assert!(
+        !inner.video_unrouted_once.load(Ordering::SeqCst),
+        "the ended item's video-unroute mirror survived a stop"
+    );
+}
+
 /// The video chain must never cap the pipeline's max latency below a live
 /// audio sink's min. Field: live SABR, the pwaudiosink declares min 235ms
 /// while the queue-less video branch could absorb 33ms (one decoded frame),
@@ -444,6 +559,17 @@ fn video_chain_reports_unbounded_max_latency() {
 fn buffered_ahead_reads_appsrc_levels() {
     test_init();
     let playbin = FcastPlaybin::new(fake_audio_sinks()).unwrap();
+
+    // Polled BEFORE the appsrc joins, which is what makes the rest of this a
+    // test of the probe cache too: this call walks the graph as it is now and
+    // caches it, so the level below can only be found if adding an element
+    // re-dirtied that list (see `LevelProbes`). The construction graph has
+    // queues and the token appsrc in it, all at zero, hence None.
+    assert_eq!(
+        playbin.buffered_ahead(),
+        None,
+        "an idle graph buffers nothing"
+    );
 
     let src = gst::ElementFactory::make("appsrc")
         .property_from_str("format", "time")

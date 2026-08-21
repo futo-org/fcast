@@ -10,10 +10,6 @@
 //! process-global counters that only hold when nothing else in the process is
 //! playing, and this test has to sit still for seconds at a time. A separate
 //! binary is a separate process, so the globals cannot be shared.
-//!
-//! With `FCAST_NO_TICK_RECONCILE_POKE=1` the periodic trigger is off. The
-//! idle half still holds and the liveness half is skipped, since there is
-//! then no trigger to observe.
 
 use std::{
     sync::{Arc, Mutex, mpsc},
@@ -194,11 +190,11 @@ fn the_tick_queues_nothing_once_the_crate_is_idle() {
 
     // The measurement. Nothing is loaded, routed, or desired, so the bound
     // is zero new jobs, not "few".
-    let drains_before = harness.playbin.drain_text_job_count();
-    let polls_before = harness.playbin.poll_policy_job_count();
+    let drains_before = harness.playbin.stats().drain_text_job_count;
+    let polls_before = harness.playbin.stats().poll_policy_job_count;
     harness.quiet_for(IDLE_OBSERVE);
-    let drains = harness.playbin.drain_text_job_count() - drains_before;
-    let polls = harness.playbin.poll_policy_job_count() - polls_before;
+    let drains = harness.playbin.stats().drain_text_job_count - drains_before;
+    let polls = harness.playbin.stats().poll_policy_job_count - polls_before;
     assert_eq!(
         drains, 0,
         "{drains} drain job(s) reached the worker over {IDLE_OBSERVE:?} with nothing loaded \
@@ -213,19 +209,13 @@ fn the_tick_queues_nothing_once_the_crate_is_idle() {
 
     // And it comes back. A gate that simply switched the trigger off would
     // pass the assertions above and take the divergence liveness with it.
-    if std::env::var_os("FCAST_NO_TICK_RECONCILE_POKE").is_some() {
-        media.release_all();
-        harness.shutdown();
-        media.unregister();
-        return;
-    }
     load_and_play(&harness);
     // The `wait_for` above polls. Let its last drain land before sampling,
     // or the residue of the load would answer for the tick.
     harness.quiet_for(Duration::from_millis(700));
-    let before = harness.playbin.drain_text_job_count();
+    let before = harness.playbin.stats().drain_text_job_count;
     let deadline = Instant::now() + LIVE_POKE_BOUND;
-    while harness.playbin.drain_text_job_count() == before {
+    while harness.playbin.stats().drain_text_job_count == before {
         assert!(
             Instant::now() < deadline,
             "no drain job reached the worker in {LIVE_POKE_BOUND:?} at a settled PLAYING with \

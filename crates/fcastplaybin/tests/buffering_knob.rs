@@ -141,11 +141,9 @@ impl Receiver {
             PlaybinEvent::Buffering(percent) => {
                 self.saw_buffering.push(percent);
                 match self.sm.buffering(percent) {
-                    BufferingStateResult::Started(state) => self.apply(state),
+                    BufferingStateResult::Started => self.apply(gst::State::Paused),
                     BufferingStateResult::Finished(Some(state)) => self.apply(state),
-                    BufferingStateResult::Finished(None)
-                    | BufferingStateResult::Buffering
-                    | BufferingStateResult::FinishedButWaitingSeek => {}
+                    BufferingStateResult::Finished(None) | BufferingStateResult::Buffering => {}
                     BufferingStateResult::FinishedWithSeek(seek) => {
                         panic!("no seek was ever issued, the machine invented {seek:?}")
                     }
@@ -196,7 +194,7 @@ impl Receiver {
         }
     }
 
-    fn shutdown(mut self) {
+    fn shutdown(self) {
         let (done_tx, done_rx) = mpsc::channel();
         self.playbin.shutdown_async(Box::new(move || {
             let _ = done_tx.send(());

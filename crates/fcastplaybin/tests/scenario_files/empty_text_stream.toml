@@ -37,14 +37,13 @@
 # SELECT_STREAMS naming them returns TRUE and posts nothing. Full chain in
 # UPSTREAM-GSTREAMER-ISSUES.md C15.
 #
-# `FCAST_NO_EMPTY_STREAM_SLOT_SEED=1` restores that wedge exactly, which is the
-# A/B that keeps this file honest. Proven one variable at a time, text_1's
-# duration_ms from 0 to 800 emits one GAP and nothing else, and the same file goes
-# from a 12 s wedge to a 0.02 s pass.
+# Taking the slot seed out restores that wedge exactly, which is the A/B that
+# keeps this file honest. Proven one variable at a time, text_1's duration_ms
+# from 0 to 800 emits one GAP and nothing else, and the same file goes from a
+# 12 s wedge to a 0.02 s pass.
 #
 # Iterate with tests/empty_text_stream_probe.rs (FCAST_PROBE_SCENARIO takes a name
-# or a path) rather than the whole sweep. Red on both lever arms means the
-# workaround broke, red only without it means upstream changed the shape.
+# or a path) rather than the whole sweep.
 key = "emptytext"
 bytes_per_buffer = 64
 pacing = "as_fast_as_possible"

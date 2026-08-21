@@ -267,7 +267,7 @@ fn dropping_the_last_handle_inside_a_bus_hook_does_not_null_the_pipeline_there()
     // schedule would be a regression. The counter is process-global because
     // the descent runs after `Inner` is gone.
     assert_eq!(
-        FcastPlaybin::teardown_descent_stuck(),
+        FcastPlaybin::global_stats().teardown_descent_stuck,
         0,
         "the teardown descent blew its budget and was leaked"
     );

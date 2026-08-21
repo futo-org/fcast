@@ -17,9 +17,9 @@
 //! it sleeps, so a pipeline that pauses after the hold engages does not
 //! settle until the hold expires.
 //!
-//! Verification: green with no env vars, red with `FCAST_INLINE_DISPATCH=1`,
-//! which puts the dispatch (and the park's inline disposal) back on the
-//! calling thread.
+//! Verification: green with no env vars. It went red while the dispatch (and
+//! with it the park's inline disposal) still ran on the calling thread, which
+//! is what put it on the decider for good.
 
 use std::{
     sync::{

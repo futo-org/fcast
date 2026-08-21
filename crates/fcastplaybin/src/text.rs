@@ -1,7 +1,7 @@
 //! The subtitle consumer transport: the per-stream `appsink` tail, the
 //! sample-to-item conversion and the feed to the caller's consumer.
 
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use gst::prelude::*;
 use tracing::{debug, error, warn};
@@ -11,8 +11,8 @@ use crate::{
     api::{PlaybinEvent, SubtitleFeedItem, SubtitleTextFormat},
     decisions,
     flush::FlushReason,
-    levers::{BitmapSubsEnabled, cue_ir_enabled},
     routing::{RoutedStream, StreamKind},
+    text_policy::{DegradationEdge, TextDegradation},
 };
 
 /// The consumer tail's queue depth. Bounded WITH `drop=true`: a consumer that
@@ -63,7 +63,9 @@ impl Inner {
             let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| consumer(item)));
             if caught.is_err() {
                 error!(
-                    "the subtitle consumer panicked; the cue is dropped and delivery continues.                      A consumer must not panic (see FcastPlaybin::set_subtitle_consumer)"
+                    "the subtitle consumer panicked, so the cue is dropped and delivery \
+                     continues. A consumer must not panic (see \
+                     FcastPlaybin::set_subtitle_consumer)"
                 );
             }
         }
@@ -95,13 +97,15 @@ impl Inner {
     /// Report a selected subtitle stream whose caps the consumer arm cannot
     /// carry, at most once per (sid, generation). See
     /// [`PlaybinEvent::SubtitleTrackUnsupported`].
+    ///
+    /// THE gate on that event, for both of its producers (the caps gate and the
+    /// link failure): every path emits through here, so the dedupe lives in one
+    /// place and a producer with a retry memo of its own does not double as a
+    /// second gate on the event.
     pub(crate) fn report_unsupported_subtitle(&self, sid: &str, caps: &gst::Caps) {
-        let generation = self.current_generation();
-        let first = self
-            .unsupported_text_reported
-            .lock()
-            .insert((sid.to_string(), generation));
-        if !first {
+        if self.note_degradation(TextDegradation::Unsupported, sid, Duration::ZERO)
+            != DegradationEdge::Escalate
+        {
             return;
         }
         warn!(
@@ -116,25 +120,6 @@ impl Inner {
         });
     }
 
-    /// Wake every parked text push before a downward state change. Two
-    /// kinds of thread sit parked HOLDING pad locks the state change
-    /// needs to deactivate pads, wedging `set_state` forever: a live
-    /// text branch parked inside its own tail, and a mid-push input
-    /// inside its byte-limited decodebin3 slot. The flush pairs wake
-    /// both.
-    /// Wake the blocked push on every LIVE text branch, and drop what it has
-    /// queued. Needed before a subtitle REPLACE is dispatched: the outgoing
-    /// text slot's multiqueue src pad sits inside `gst_pad_push` into
-    /// [`RoutedStream::tqueue`], which is a plain `queue` whose default
-    /// `max-size-time` of 1s counts the DEAD AIR between sparse cues
-    /// (`gst_queue_apply_gap` advances the time level off GAP events), so it
-    /// reports itself full while holding ZERO buffers and ZERO bytes.
-    /// decodebin3's stream switch cannot deactivate a slot whose pad is
-    /// mid-push, so the switch waits out the outgoing track's cue cadence:
-    /// measured 1.6s at a 2s cue period and 4.6s at 4s, with essentially the
-    /// whole latency in that one push. The flush also discards the outgoing
-    /// backlog, so the new track's first cue renders instead of queueing behind
-    /// seconds of the old one.
     /// Put every routed text branch back on the A/V branches' RUNNING-TIME
     /// timeline.
     ///
@@ -234,13 +219,7 @@ impl Inner {
         // clip negative and are dropped for good. The reset in
         // `FcastPlaybin::replay_subtitle` closes the same window from the other
         // end, this closes the poll that would re-open it.
-        // Lever: `FCAST_NO_REPLAY_OFFSET_RESET` (the same one, so the pair is
-        // one A/B).
-        let awaiting: Vec<String> = if std::env::var_os("FCAST_NO_REPLAY_OFFSET_RESET").is_none() {
-            Self::sids_awaiting_replay(&routing)
-        } else {
-            Vec::new()
-        };
+        let awaiting: Vec<String> = Self::sids_awaiting_replay(&routing);
         for routed in routing.routed.iter().filter(|r| r.kind == StreamKind::Text) {
             let replaying = !awaiting.is_empty()
                 && routed
@@ -321,21 +300,6 @@ impl Inner {
             .collect()
     }
 
-    /// WHICH STREAM IS LIVE, observed: the stream id of the text branch
-    /// currently feeding the consumer, or `None` if none is.
-    ///
-    /// The observed twin of the `last_applied_subtitle` mirror. That field is
-    /// a remembered write, and a remembered write is wrong exactly when it
-    /// matters: after a gapless activation clears it, after a re-attach reuses
-    /// a stream id, after any path that linked a branch without going through
-    /// a confirmation. This asks the graph the same question the mirror was
-    /// standing in for.
-    ///
-    /// Thread discipline, verbatim from `probe_routed_selection`: read-only
-    /// and decider-only, takes ROUTING ALONE, and does nothing but sticky
-    /// reads. It follows the same chain `verify_replay` walks - the routed
-    /// Text entry whose queue feeds the seat - and reads that entry's
-    /// decodebin3 pad StreamStart.
     /// Whether this routed Text entry's consumer branch is LIVE, asked of the
     /// graph rather than of the crate's bookkeeping.
     ///
@@ -360,6 +324,22 @@ impl Inner {
                 .is_some_and(|pad| pad.is_linked())
     }
 
+    /// WHICH STREAM IS LIVE, observed: the stream id of the text branch
+    /// currently feeding the consumer, or `None` if none is.
+    ///
+    /// The observed twin of the `last_applied_subtitle` mirror. That field is
+    /// a remembered write, and a remembered write is wrong exactly when it
+    /// matters: after a gapless activation clears it, after a re-attach reuses
+    /// a stream id, after any path that linked a branch without going through
+    /// a confirmation. This asks the graph the same question the mirror was
+    /// standing in for.
+    ///
+    /// Thread discipline, verbatim from `probe_routed_selection`: read-only
+    /// and decider-only, takes ROUTING ALONE, and does nothing but sticky
+    /// reads. It follows the same chain `verify_replay` walks - the routed
+    /// Text entry whose queue feeds the seat - and reads that entry's
+    /// decodebin3 pad StreamStart.
+    ///
     /// # What the answer means
     ///
     /// There is no seat: every live text branch ends in its own appsink, and
@@ -389,15 +369,6 @@ impl Inner {
                     .sticky_event::<gst::event::StreamStart>(0)
                     .map(|event| event.stream_id().to_string())
             })
-    }
-
-    /// TEST FAULT INJECTION: swallow one cue if a staged loss is armed (see
-    /// [`Inner::stage_cue_loss`]). True means the caller drops the cue.
-    pub(crate) fn stage_consume_cue_loss(&self) -> bool {
-        use std::sync::atomic::Ordering;
-        self.stage_cue_loss
-            .try_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
-            .is_ok()
     }
 
     /// The sticky SEGMENT the live text branch's TAIL carries: the consumer
@@ -435,13 +406,6 @@ impl Inner {
         text_origin == Some(video_origin)
     }
 
-    /// `FCAST_NO_MISALIGNED_CUE_GATE` restores delivery of cues whose segment
-    /// origin disagrees with the video's, at the consumer feed and at the
-    /// park replay both (one rule, moved together).
-    pub(crate) fn misaligned_cue_gate_off() -> bool {
-        std::env::var_os("FCAST_NO_MISALIGNED_CUE_GATE").is_some()
-    }
-
     /// The running-time ORIGIN of a segment: the stream position whose running
     /// time is zero, `start - base*|rate| - offset`.
     ///
@@ -464,6 +428,12 @@ impl Inner {
         gst::ClockTime::from_nseconds(start.nseconds().saturating_sub(base).saturating_sub(offset))
     }
 
+    /// Wake every parked text push before a downward state change. Two kinds
+    /// of thread sit parked HOLDING pad locks the state change needs to
+    /// deactivate pads, wedging `set_state` forever: a live text branch parked
+    /// inside its own tail, and a mid-push input inside its byte-limited
+    /// decodebin3 slot. The flush pairs wake both.
+    ///
     /// # A FLUSH_START-only variant here is WRONG, and was measured to be
     ///
     /// The teardown deadlock this flush sits in the middle of (see
@@ -592,7 +562,7 @@ impl Inner {
                 return;
             }
             if let Some(inner) = weak.upgrade()
-                && let Some(item) = Inner::item_from_sample(&sample, inner.bitmap_subs)
+                && let Some(item) = Inner::item_from_sample(&sample)
             {
                 // An EXTERNAL's cue on a FOREIGN timeline must not reach the
                 // renderer WHILE THIS INPUT'S OWN REPLAY IS IN FLIGHT to
@@ -604,16 +574,20 @@ impl Inner {
                 // origin skews in steady state with no machinery to redeliver
                 // a dropped cue (an unconditional gate blanked 4 suites), and
                 // a replay in flight for a DIFFERENT external re-delivers
-                // nothing here. Same rule as `take_parked_text_cues`' filter,
-                // one lever for both.
+                // nothing here. Same rule as `take_parked_text_cues`' filter.
+                //
+                // THE SECOND HOME of the in-flight bit, and the reason there
+                // are two. The bit itself lives on the resource
+                // (`ExternalInput::replay_inflight`), behind the routing lock,
+                // which this thread must not take: this runs per cue on the
+                // appsink's STREAMING thread. So it reads the id-only
+                // projection instead, which is also the only question it has
+                // (a cue names an input, not an incarnation). See
+                // [`Inner::replaying_externals`], kept in step by
+                // `Inner::sync_cue_gate`.
                 if let Some(id) = external
                     && let SubtitleFeedItem::Cue { origin, text, .. } = &item
-                    && !Self::misaligned_cue_gate_off()
-                    && inner
-                        .replay_inflight
-                        .lock()
-                        .iter()
-                        .any(|(rid, _)| *rid == id)
+                    && inner.replaying_externals.lock().contains(&id)
                 {
                     let (_, video_origin) = inner.video_timeline();
                     if *origin != video_origin {
@@ -627,7 +601,7 @@ impl Inner {
                     }
                 }
                 if let (Some(id), SubtitleFeedItem::Cue { .. }) = (external, &item) {
-                    // TEST FAULT INJECTION (see `Inner::stage_cue_loss`).
+                    // TEST FAULT INJECTION (see `TestStaging::cue_loss`).
                     if inner.stage_consume_cue_loss() {
                         return;
                     }
@@ -837,15 +811,11 @@ impl Inner {
             let _ = inner.pipeline.remove(&element);
             return None;
         }
-        // TEST FAULT INJECTION (see [`Inner::stage_join_hold_ms`]): leave the
+        // TEST FAULT INJECTION (see [`TestStaging::join_hold_ms`]): leave the
         // branch at NULL so the caller's upstream link lands on inactive pads,
         // which is the field's join window. The caller brings it up after the
         // hold.
-        if inner
-            .stage_join_hold_ms
-            .load(std::sync::atomic::Ordering::SeqCst)
-            > 0
-        {
+        if inner.stage_join_hold_ms() > 0 {
             return Some(element);
         }
         // Downstream first, so the queue never syncs into a tail that is still
@@ -998,12 +968,9 @@ impl Inner {
     /// `None` for anything the consumer could not use: no buffer, no PTS, a
     /// segment that does not map, non-UTF-8 bytes in a TEXT stream, or caps
     /// that changed under the branch to something the gate refuses.
-    pub(crate) fn item_from_sample(
-        sample: &gst::Sample,
-        enabled: BitmapSubsEnabled,
-    ) -> Option<SubtitleFeedItem> {
+    pub(crate) fn item_from_sample(sample: &gst::Sample) -> Option<SubtitleFeedItem> {
         let buffer = sample.buffer()?;
-        match decisions::consumer_stream_format(sample.caps()?, enabled)? {
+        match decisions::consumer_stream_format(sample.caps()?)? {
             decisions::ConsumerStreamFormat::Text(format) => {
                 let segment = sample.segment()?.downcast_ref::<gst::ClockTime>()?;
                 let pts = buffer.pts()?;
@@ -1021,10 +988,7 @@ impl Inner {
                 // `text-format=cue-ir`: the styling rode along as a buffer meta, under
                 // caps that are indistinguishable from plain utf8. Reading it is a
                 // downcast on a meta this process registered, not a parse.
-                let format = match cue_ir_enabled()
-                    .then(|| buffer.meta::<gstrssubparse::cueir::CueIrMeta>())
-                    .flatten()
-                {
+                let format = match buffer.meta::<gstrssubparse::cueir::CueIrMeta>() {
                     Some(meta) => SubtitleTextFormat::CueIr {
                         ir: Arc::new(meta.ir().clone()),
                         pts_start: Some(pts),
@@ -1237,7 +1201,7 @@ mod tests {
     fn a_non_utf8_text_payload_is_refused() {
         init();
         let sample = text_sample(&[0xc3, 0x28, 0xff], Some(secs(1)), Some(secs(1)), true);
-        assert!(Inner::item_from_sample(&sample, BitmapSubsEnabled::all()).is_none());
+        assert!(Inner::item_from_sample(&sample).is_none());
     }
 
     /// No PTS means no place on the running-time line, so no cue.
@@ -1245,7 +1209,7 @@ mod tests {
     fn a_sample_without_a_pts_is_refused() {
         init();
         let sample = text_sample(b"NOPTS", None, Some(secs(1)), true);
-        assert!(Inner::item_from_sample(&sample, BitmapSubsEnabled::all()).is_none());
+        assert!(Inner::item_from_sample(&sample).is_none());
     }
 
     /// No caps means the gate cannot classify the stream, so no cue.
@@ -1253,7 +1217,7 @@ mod tests {
     fn a_sample_without_caps_is_refused() {
         init();
         let sample = text_sample(b"NOCAPS", Some(secs(1)), Some(secs(1)), false);
-        assert!(Inner::item_from_sample(&sample, BitmapSubsEnabled::all()).is_none());
+        assert!(Inner::item_from_sample(&sample).is_none());
     }
 
     /// A pts + duration that overflows is a corrupt timestamp. The unit is
@@ -1263,7 +1227,7 @@ mod tests {
     fn an_overflowing_pts_plus_duration_is_open_ended_not_a_panic() {
         init();
         let sample = text_sample(b"HUGE", Some(gst::ClockTime::MAX), Some(secs(2)), true);
-        match Inner::item_from_sample(&sample, BitmapSubsEnabled::all()) {
+        match Inner::item_from_sample(&sample) {
             Some(SubtitleFeedItem::Cue { end_rt, .. }) => {
                 assert_eq!(end_rt, None, "the overflowed end must read open-ended");
             }
@@ -1277,10 +1241,6 @@ mod tests {
     #[test]
     fn a_cue_ir_meta_yields_the_cue_ir_format_with_the_pts_anchor() {
         init();
-        assert!(
-            cue_ir_enabled(),
-            "the lib test process must not set FCAST_NO_CUE_IR"
-        );
         use gstrssubparse::subparse_formats::ir::{CueIr, Line, Span};
         let ir = CueIr {
             lines: vec![Line {
@@ -1310,7 +1270,7 @@ mod tests {
             .caps(&caps)
             .segment(&segment)
             .build();
-        match Inner::item_from_sample(&sample, BitmapSubsEnabled::all()) {
+        match Inner::item_from_sample(&sample) {
             Some(SubtitleFeedItem::Cue { format, text, .. }) => {
                 assert_eq!(text, "styled");
                 match format {

@@ -33,8 +33,7 @@
 //! depends on all of it being visible the moment `send_event(SELECT_STREAMS)`
 //! returns. Only the ACTIVATION goes to `fpb-join`, and the stream is held at
 //! the streamsynchronizer src pad by a blocking probe until it is done, so
-//! nothing is pushed into a chain that is not up yet. Lever:
-//! `FCAST_INLINE_CHAIN_JOIN` restores the inline activation.
+//! nothing is pushed into a chain that is not up yet.
 //!
 //! # The manufactured obstacle
 //!

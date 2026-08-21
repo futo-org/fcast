@@ -10,8 +10,9 @@ use gst::prelude::*;
 use tracing::{debug, debug_span, error, trace, warn};
 
 use crate::{
-    FcastPlaybin, Inner,
+    Counters, FcastPlaybin, Inner,
     api::{AfterCancel, ErrorOrigin, ExternalSubId, MediaInput, PlaybinEvent, StartPoint},
+    decisions,
     external::REPLAY_JOBS_QUEUED,
     gapless::{CancelOutcome, PreparedNext, SwapState},
     graph, hands,
@@ -33,10 +34,60 @@ pub(crate) const TICK_INTERVAL: Duration = Duration::from_millis(200);
 /// See [`Inner::run_tick`].
 pub(crate) const DRAIN_REPOKE_TICKS: u64 = 5;
 
+/// A worker-thread callback carried by a [`Job`], wrapped so the enum can
+/// derive `Debug`. A closure has no debug shape worth printing, so it prints
+/// as its own name and the derive keeps the variant's other fields.
+///
+/// Not generic over the argument: the barrier's `FnOnce()` and the snapshot's
+/// `FnOnce(T)` are different traits, and a generic `Callback<()>` would need
+/// an adapter closure (and a second box) at every barrier site.
+pub(crate) struct Callback(pub(crate) Box<dyn FnOnce() + Send>);
+
+impl Callback {
+    /// Run it, consuming the callback.
+    pub(crate) fn call(self) {
+        (self.0)()
+    }
+}
+
+impl std::fmt::Debug for Callback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Callback")
+    }
+}
+
+/// [`Callback`] for the one job whose callback takes an argument.
+pub(crate) struct SnapshotCallback(pub(crate) Box<dyn FnOnce(graph::GraphSnapshot) + Send>);
+
+impl SnapshotCallback {
+    pub(crate) fn call(self, snapshot: graph::GraphSnapshot) {
+        (self.0)(snapshot)
+    }
+}
+
+impl std::fmt::Debug for SnapshotCallback {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("Callback")
+    }
+}
+
+/// A queue-time stamp carried for a diagnostic counter, wrapped so the
+/// derived `Debug` stays as short as the hand-written one was: the raw
+/// `Instant` prints its clock internals into every "Got job" line and no
+/// reader of that line has ever wanted them.
+pub(crate) struct QueuedAt(pub(crate) Instant);
+
+impl std::fmt::Debug for QueuedAt {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("QueuedAt")
+    }
+}
+
 /// Work executed on the crate's worker thread (the `_async` methods). A
 /// dedicated thread because these calls can block (a state change waits on
 /// streaming threads, an attach's `start()` may perform I/O) and must not
 /// run on the caller's event loop. A single queue keeps them ordered.
+#[derive(Debug)]
 pub(crate) enum Job {
     SetState {
         target: gst::State,
@@ -44,7 +95,7 @@ pub(crate) enum Job {
     /// Full teardown to `target` (see [`FcastPlaybin::stop_async`]).
     Stop {
         target: gst::State,
-        done: Option<Box<dyn FnOnce() + Send>>,
+        done: Option<Callback>,
     },
     Load {
         input: MediaInput,
@@ -123,7 +174,18 @@ pub(crate) enum Job {
     /// Snapshot the pipeline graph for the inspector. On the worker so the
     /// element walk cannot race a load's sink teardown.
     DumpGraph {
-        done: Box<dyn FnOnce(graph::GraphSnapshot) + Send>,
+        done: SnapshotCallback,
+    },
+    /// Call `done` on the worker and nothing else (see
+    /// [`FcastPlaybin::barrier_async`]). FIFO makes it a "every job queued
+    /// before me has finished" signal for the caller waiting on it.
+    ///
+    /// Its own variant rather than a [`Job::DumpGraph`] whose snapshot is
+    /// thrown away: the walk serializes every readable property of every
+    /// element in a LIVE pipeline, which the barrier does not need and the
+    /// fuzz harnesses paid for once per iteration.
+    Barrier {
+        done: Callback,
     },
     /// Pre-arm the next item on the live core (gapless transition). See
     /// [`FcastPlaybin::prepare_next_async`].
@@ -191,9 +253,6 @@ pub(crate) enum Job {
     /// Re-commit `GST_STATE_PENDING`, the transition actually refused, not
     /// `current`. On a pipeline caught mid-climb the two differ and
     /// re-committing `current` cancels the climb.
-    ///
-    /// Levers: `FCAST_NO_ERROR_STATE_UNLATCH`,
-    /// `FCAST_UNLATCH_RECOMMIT_CURRENT`.
     ClearStateFailure,
     /// A dispatched `SELECT_STREAMS` has waited [`SELECTION_DEADLINE`] for a
     /// `STREAMS_SELECTED` that never came (fired by [`Inner::run_tick`]).
@@ -273,7 +332,7 @@ pub(crate) enum Job {
         generation: u64,
         /// When the pump enqueued this job, for the queue-delay counter (see
         /// [`FcastPlaybin::dispatch_queue_age`]). Diagnostic only.
-        queued: Instant,
+        queued: QueuedAt,
     },
     /// A hands lane has finished with an effect (see the [`hands`] module).
     /// Exactly one of these follows every enqueue, and it is the ONLY way a
@@ -348,8 +407,7 @@ pub(crate) enum StalePolicy {
     /// log is the evidence base for ever promoting one of these to `Drop`.
     LogAndRun,
     /// Dropped. Running it would apply an intent formed for one item to the
-    /// item that replaced it. Lever `FCAST_NO_JOB_GENERATION_GATE` restores
-    /// the run-anyway behavior wholesale.
+    /// item that replaced it.
     Drop,
 }
 
@@ -439,6 +497,10 @@ pub(crate) fn stale_policy(job: &Job) -> StalePolicy {
         | Job::ReplaySub { .. } => StalePolicy::Run,
         // Read-only element walk whose `done` blocks the inspector.
         Job::DumpGraph { .. } => StalePolicy::Run,
+        // Touches nothing at all, and a caller is parked on `done`. A drop
+        // would strand that caller for the length of its own bound, which is
+        // the one thing a barrier must never do.
+        Job::Barrier { .. } => StalePolicy::Run,
         // Outcome-driven and idempotent. `notify: true` callers await exactly
         // one outcome event, so a drop strands the cancel matrix.
         Job::CancelPrepared { .. } => StalePolicy::Run,
@@ -490,11 +552,11 @@ pub(crate) enum Refusal {
     /// hygiene, or work that re-derives everything at execution.
     Nothing,
     /// A blocking barrier the caller is parked on.
-    Barrier(Box<dyn FnOnce() + Send>),
+    Barrier(Callback),
     /// An EMPTY graph snapshot rather than a walked one: the walk reads live
     /// element state on a pipeline mid-descent on another thread, the one
     /// thing this gate exists not to do.
-    Snapshot(Box<dyn FnOnce(graph::GraphSnapshot) + Send>),
+    Snapshot(SnapshotCallback),
     /// The caller-visible event that reports the refusal. `generation`
     /// overrides the current stamp, for a load that never adopted its own.
     Event {
@@ -524,6 +586,9 @@ pub(crate) fn poison_refusal(job: Job) -> Refusal {
             None => Refusal::Nothing,
         },
         Job::DumpGraph { done } => Refusal::Snapshot(done),
+        // A parked caller, exactly like the shutdown barrier above. Nothing
+        // else would ever release it.
+        Job::Barrier { done } => Refusal::Barrier(done),
         // An async load's caller waits for `Loaded` or the loud load-failure
         // `Error` and has nothing else to learn from (the pipeline this
         // would have errored on is the wedged one). Stamped with THIS job's
@@ -636,9 +701,10 @@ fn failed_uri_of(input: &MediaInput) -> Option<String> {
 ///
 /// The table replaces one one-shot sleeper THREAD per arm. Those could fail
 /// to spawn, and a failed spawn is not merely a lost check. The replay
-/// verification's dedupe key stays in `replay_checks_armed` for good, so no
-/// later verification for that input incarnation can ever be armed either. A
-/// push into a `Vec` cannot fail that way.
+/// verification's dedupe flag stays set on the input for good (see
+/// [`crate::external::ExternalInput::verification_armed`]), so no later
+/// verification for that incarnation can ever be armed either. A push into a
+/// `Vec` cannot fail that way.
 pub(crate) struct TimerEntry {
     due: Instant,
     job: TimerJob,
@@ -668,117 +734,6 @@ impl TimerJob {
                 Job::VerifyReplay { id, epoch, attempt }
             }
             TimerJob::CheckSub { id, epoch } => Job::CheckSub { id, epoch },
-        }
-    }
-}
-
-impl std::fmt::Debug for Job {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Job::SetState { target } => f.debug_struct("SetState").field("target", target).finish(),
-            Job::Stop { target, done } => f
-                .debug_struct("Stop")
-                .field("target", target)
-                .field("feedback", &done.is_some())
-                .finish(),
-            Job::Load {
-                input,
-                start,
-                generation,
-            } => f
-                .debug_struct("Load")
-                .field("input", input)
-                .field("start", start)
-                .field("generation", generation)
-                .finish(),
-            Job::Seek(seek) => f.debug_tuple("Seek").field(seek).finish(),
-            Job::RefreshSeek { seqnum } => f
-                .debug_struct("RefreshSeek")
-                .field("seqnum", seqnum)
-                .finish(),
-            Job::RecoverClock => write!(f, "RecoverClock"),
-            Job::RecalculateLatency => write!(f, "RecalculateLatency"),
-            Job::AttachSub { id, url } => f
-                .debug_struct("AttachSub")
-                .field("id", id)
-                .field("url", url)
-                .finish(),
-            Job::DetachSub { id } => f.debug_struct("DetachSub").field("id", id).finish(),
-            Job::FailSub { id, epoch } => f
-                .debug_struct("FailSub")
-                .field("id", id)
-                .field("epoch", epoch)
-                .finish(),
-            Job::CheckSub { id, epoch } => f
-                .debug_struct("CheckSub")
-                .field("id", id)
-                .field("epoch", epoch)
-                .finish(),
-            Job::RetrySub { id, epoch } => f
-                .debug_struct("RetrySub")
-                .field("id", id)
-                .field("epoch", epoch)
-                .finish(),
-            Job::AdoptSubState { id, epoch } => f
-                .debug_struct("AdoptSubState")
-                .field("id", id)
-                .field("epoch", epoch)
-                .finish(),
-            Job::ReplaySub { id, epoch, attempt } => f
-                .debug_struct("ReplaySub")
-                .field("id", id)
-                .field("epoch", epoch)
-                .field("attempt", attempt)
-                .finish(),
-            Job::VerifyReplay { id, epoch, attempt } => f
-                .debug_struct("VerifyReplay")
-                .field("id", id)
-                .field("epoch", epoch)
-                .field("attempt", attempt)
-                .finish(),
-            Job::DumpGraph { .. } => write!(f, "DumpGraph"),
-            Job::PrepareNext { input, generation } => f
-                .debug_struct("PrepareNext")
-                .field("input", input)
-                .field("generation", generation)
-                .finish(),
-            Job::CancelPrepared { notify, after } => f
-                .debug_struct("CancelPrepared")
-                .field("notify", notify)
-                .field("after", after)
-                .finish(),
-            Job::FinishActivation => write!(f, "FinishActivation"),
-            Job::SyncTextRunningTime => write!(f, "SyncTextRunningTime"),
-            Job::DrainTextWork => write!(f, "DrainTextWork"),
-            Job::VideoChainGone => write!(f, "VideoChainGone"),
-            Job::ClearStateFailure => write!(f, "ClearStateFailure"),
-            Job::SelectionDeadline { seqnum } => f
-                .debug_struct("SelectionDeadline")
-                .field("seqnum", seqnum)
-                .finish(),
-            Job::RefreshDeadline { seqnum } => f
-                .debug_struct("RefreshDeadline")
-                .field("seqnum", seqnum)
-                .finish(),
-            Job::PollTextPolicy => write!(f, "PollTextPolicy"),
-            Job::DispatchSelection {
-                target,
-                seqnum,
-                replacing,
-                generation,
-                ..
-            } => f
-                .debug_struct("DispatchSelection")
-                .field("target", target)
-                .field("seqnum", seqnum)
-                .field("replacing", replacing)
-                .field("generation", generation)
-                .finish(),
-            Job::EffectDone { id, outcome } => f
-                .debug_struct("EffectDone")
-                .field("id", id)
-                .field("outcome", outcome)
-                .finish(),
         }
     }
 }
@@ -872,13 +827,14 @@ impl Inner {
     }
 
     /// Keep the longest dispatch queue delay seen (see
-    /// [`Inner::dispatch_queue_age_us`]). Monotone maximum rather than a
+    /// [`Counters::dispatch_queue_age_us`]). Monotone maximum rather than a
     /// last-value, so a single bad hop cannot be averaged away by the
     /// instant ones that follow it.
     pub(crate) fn record_dispatch_queue_age(&self, age: Duration) {
         let micros = age.as_micros().min(u128::from(u64::MAX)) as u64;
-        self.dispatch_queue_age_us
-            .fetch_max(micros, Ordering::SeqCst);
+        self.counters
+            .dispatch_queue_age_us
+            .fetch_max(micros, Ordering::Relaxed);
     }
 
     /// Mark everything currently queued as belonging to a superseded item
@@ -899,11 +855,10 @@ impl Inner {
 
     /// Stamp a job with the current [`queue_epoch`](Inner::queue_epoch) and
     /// hand it to the worker. THE single enqueue point: a job that reached
-    /// the worker unstamped could not be judged at all. The two bounded
-    /// sleepers ([`FcastPlaybin::arm_sub_watchdog`] and
-    /// [`Inner::arm_replay_verification`]) hold only a `Sender` clone and so
-    /// stamp at ARM time instead, which is anyway when their decision is
-    /// taken.
+    /// the worker unstamped could not be judged at all. The bounded timers
+    /// ([`FcastPlaybin::arm_sub_watchdog`] and
+    /// [`Inner::arm_replay_verification`]) come through here too, stamped when
+    /// the tick finds them due (see [`TimerEntry`]).
     ///
     /// Returns whether the job is on its way. Only the callers that hand a
     /// duty (an owed hold release) to the job they just queued care.
@@ -912,7 +867,7 @@ impl Inner {
         // Counted HERE rather than at the emitters, so no emitter can be
         // added later that the count misses (see [`REPLAY_JOBS_QUEUED`]).
         if matches!(job, Job::ReplaySub { .. }) {
-            REPLAY_JOBS_QUEUED.fetch_add(1, Ordering::SeqCst);
+            REPLAY_JOBS_QUEUED.fetch_add(1, Ordering::Relaxed);
         }
         // Send can only fail if the worker died (it holds the receiver for
         // as long as it runs), and the pipeline is unusable then anyway.
@@ -965,10 +920,9 @@ impl Inner {
     ///   now, whoever asked), and its blocking half is already handed to the
     ///   decider through `deferred_text_disposal`.
     ///
-    /// Under the levers of [`Inner::text_ownership_levered`] the v1 threading
-    /// is back BY REQUEST, so a violation is counted and logged instead of
-    /// asserted. A levered arm moving the counter is the proof that a
-    /// default-arm zero means something.
+    /// Worker-thread ownership is unconditional, so a violation is a defect
+    /// with no arm that excuses it: a debug build panics, a release build
+    /// leaves the WARN as the field signal.
     #[track_caller]
     pub(crate) fn decider_only(&self, what: &'static str) {
         // Before the worker has named itself nothing has been decided either,
@@ -979,17 +933,12 @@ impl Inner {
         if std::thread::current().id() == *decider {
             return;
         }
-        self.text_surgery_off_decider.fetch_add(1, Ordering::SeqCst);
         warn!(
             what,
             thread = std::thread::current().name().unwrap_or("<unnamed>"),
-            levered = self.text_ownership_levered,
             "text-branch surgery ran off the deciding thread"
         );
-        debug_assert!(
-            self.text_ownership_levered,
-            "{what} ran off the deciding thread"
-        );
+        debug_assert!(false, "{what} ran off the deciding thread");
     }
 
     /// THE DECIDER (see [`Job`]).
@@ -1099,30 +1048,19 @@ impl Inner {
         //     deadlines, so neither family is looked at less often than it
         //     asked to be.
         //
-        //     The durations are read one at a time and combined afterwards,
-        //     not as one `min(a.lock(), b.lock())`, which would hold both
-        //     guards at once against this function's one-mutex discipline.
-        let selection_dur = *inner.selection_deadline_dur.lock();
-        let refresh_dur = *inner.refresh_deadline_dur.lock();
-        let rearm = selection_dur.min(refresh_dur);
+        //     Both come out of ONE `Deadlines` guard and are combined after
+        //     it is dropped, which is one mutex held once, as this function's
+        //     discipline requires.
+        let deadlines = *inner.deadlines.lock();
+        let rearm = deadlines.selection.min(deadlines.refresh);
         let fires = inner.selection.lock().due_deadlines(now, rearm);
         for fire in fires {
             let job = match fire {
-                selection::DeadlineFire::Selection(seqnum) => {
-                    if std::env::var_os("FCAST_NO_SELECTION_DEADLINE").is_some() {
-                        continue;
-                    }
-                    Job::SelectionDeadline { seqnum }
-                }
-                selection::DeadlineFire::Refresh(seqnum) => {
-                    if std::env::var_os("FCAST_NO_REFRESH_DEADLINE").is_some() {
-                        continue;
-                    }
-                    Job::RefreshDeadline { seqnum }
-                }
+                selection::DeadlineFire::Selection(seqnum) => Job::SelectionDeadline { seqnum },
+                selection::DeadlineFire::Refresh(seqnum) => Job::RefreshDeadline { seqnum },
             };
             debug!(?job, "a selection wait ran out of time");
-            inner.deadline_fires.fetch_add(1, Ordering::SeqCst);
+            Counters::bump(&inner.counters.deadline_fires);
             inner.queue_job(job);
         }
 
@@ -1149,11 +1087,13 @@ impl Inner {
         }
 
         // (3/3b) The 1 Hz text pokes, gated on LIVENESS so an idle crate
-        //     queues nothing. Liveness is the union of the three things the
-        //     two pokes can act on (postponed work remembered, an item held,
-        //     the selection engine still owing an answer). It is the union
-        //     rather than a per-poke condition because (3b)'s subject is NOT
-        //     remembered anywhere.
+        //     queues nothing (see `decisions::replay::tick_pokes`, which is
+        //     the whole interlock).
+        //
+        //     The READS STAY HERE, one mutex at a time, because this thread's
+        //     clock must survive a wedged decider. Each is skipped once an
+        //     earlier one has decided the answer, and skipped entirely off a
+        //     poke tick.
         //
         //     Every divergence the reconcile pass can act on needs an input
         //     carrying the selected sid, and every input the crate owns is in
@@ -1163,47 +1103,26 @@ impl Inner {
         //     `has_deferred_text_work` is read ONCE and reused. It is both an
         //     arm of the liveness union and the discriminator between the two
         //     pokes, and reading it twice could see it change and fire both.
-        let repoke_due = tick % DRAIN_REPOKE_TICKS == 0;
-        let deferred_work = repoke_due && inner.has_deferred_text_work();
-        let live = repoke_due
-            && (deferred_work || inner.holds_an_item() || inner.selection.lock().unconverged());
-
-        // (3) Liveness re-poke for the postponed-work drain, once a second.
-        //     Every other poke is EDGE-triggered, and all of them can miss at
-        //     once (a parked verdict on a pipeline that never crosses another
-        //     edge). `drain_poke_parked` is deliberately NOT consulted; that
-        //     parked verdict with no following edge IS the hole this closes.
-        //     The drain's own gate makes each poke a cheap no-op below a
-        //     settled PLAYING. Lever: `FCAST_NO_TICK_DRAIN_POKE`.
-        let deferred_work_poked =
-            deferred_work && std::env::var_os("FCAST_NO_TICK_DRAIN_POKE").is_none();
-        if deferred_work_poked {
-            debug!("re-poking the postponed-work drain from the tick");
-            inner.queue_job(Job::DrainTextWork);
+        let mut facts = decisions::replay::TickFacts::default();
+        if decisions::replay::repoke_due(tick) {
+            facts.deferred_work = inner.has_deferred_text_work();
+            facts.holds_an_item = !facts.deferred_work && inner.holds_an_item();
+            facts.unconverged = !facts.deferred_work
+                && !facts.holds_an_item
+                && inner.selection.lock().unconverged();
         }
-
-        // (3b) The reconcile trigger, once a second while the crate is live.
-        //
-        //      The reconcile pass exists for divergences no edge is coming
-        //      for (a selected external delivering unaligned on a settled
-        //      pipeline). The poke above cannot serve it, because its
-        //      condition is "something is remembered" and the pass's whole
-        //      point is that nothing is. Gated on `live` because liveness is
-        //      the weakest condition that still admits a divergence nobody
-        //      wrote down.
-        //
-        //      DELIBERATELY `Job::DrainTextWork` and not
-        //      `request_text_policy_poll`. The pass lives at the drain's
-        //      tail, and a text-policy poll would not run it. The condition
-        //      below keeps the two pokes mutually exclusive, so the worker
-        //      sees exactly one drain per second while an item is live and
-        //      none at rest. Lever: `FCAST_NO_TICK_RECONCILE_POKE`.
-        if live
-            && !deferred_work_poked
-            && !Inner::text_reconcile_levered()
-            && std::env::var_os("FCAST_NO_TICK_RECONCILE_POKE").is_none()
-        {
-            inner.queue_job(Job::DrainTextWork);
+        match decisions::replay::tick_pokes(tick, facts) {
+            decisions::replay::Pokes::None => {}
+            decisions::replay::Pokes::DrainDeferred => {
+                debug!("re-poking the postponed-work drain from the tick");
+                inner.queue_job(Job::DrainTextWork);
+            }
+            // DELIBERATELY `Job::DrainTextWork` and not
+            // `request_text_policy_poll`. The reconcile pass lives at the
+            // drain's tail, and a text-policy poll would not run it.
+            decisions::replay::Pokes::DrainReconcile => {
+                inner.queue_job(Job::DrainTextWork);
+            }
         }
 
         // (4) Wedged effects (see the `hands` module). SUPERVISION, not
@@ -1222,13 +1141,6 @@ impl Inner {
         }
     }
 
-    /// Whether `fpb-tick` is running for this instance. Arming sites ask
-    /// before choosing the timer table over a sleeper thread, because under
-    /// `FCAST_NO_TICK` there is nothing to drain the table.
-    pub(crate) fn tick_live(&self) -> bool {
-        self.tick_tx.is_some()
-    }
-
     /// Arm a bounded timer (see [`TimerEntry`]). Infallible, which is the
     /// whole point of the table.
     pub(crate) fn arm_timer(&self, due: Instant, job: TimerJob) {
@@ -1239,28 +1151,36 @@ impl Inner {
     /// Drop every armed timer, where the other per-item deferral slots are
     /// cleared.
     ///
-    /// Releasing the replay verification's dedupe key is NOT optional
-    /// bookkeeping: a dropped `VerifyReplay` that left its key behind poisons
-    /// that input incarnation exactly the way a failed sleeper spawn used to
-    /// (see [`Inner::arm_replay_verification`]).
+    /// Releasing the replay bookkeeping is NOT optional hygiene. A dropped
+    /// `VerifyReplay` that left its arming flag behind poisons that input
+    /// incarnation exactly the way a failed sleeper spawn used to (see
+    /// [`TimerEntry`]), and a dropped `ReplaySub` that left its in-flight bit
+    /// behind suppresses every future reconcile pass for that resource.
+    ///
+    /// Both are per-resource flags now, and this drops EVERY timer and every
+    /// queued job, so the release is one walk of the attached externals rather
+    /// than a per-entry undo. The pending-timer guard is released before the
+    /// routing lock is taken, because `arm_replay_verification` takes them the
+    /// other way round.
     pub(crate) fn clear_pending_timers(&self) {
-        let dropped = std::mem::take(&mut *self.pending_timers.lock());
-        for entry in dropped {
-            if let TimerJob::VerifyReplay { id, epoch, .. } = entry.job {
-                self.replay_checks_armed.lock().remove(&(id, epoch));
-            }
+        self.pending_timers.lock().clear();
+        let mut routing = self.routing.lock();
+        for external in routing
+            .inputs
+            .iter_mut()
+            .filter_map(|input| input.external.as_mut())
+        {
+            external.replay_inflight = false;
+            external.verification_armed = false;
         }
-        // Same argument for the reconcile pass's in-flight bit: a load reset
-        // drops the queued jobs, so a bit left set would suppress every future
-        // pass for that resource (see [`Inner::replay_inflight`]).
-        self.replay_inflight.lock().clear();
+        self.replaying_externals.lock().clear();
     }
 
     /// One hands lane (see the [`hands`] module): receive an envelope,
     /// revalidate it, run the effect, report exactly one outcome. Same
-    /// lifetime discipline as `worker_loop` - only a `Weak` between effects,
-    /// exits when the channel closes - which is what lets the v1 loops below
-    /// stand in for this one wholesale under `FCAST_NO_HANDS`.
+    /// lifetime discipline as `worker_loop`: only a `Weak` between effects,
+    /// exits when the channel closes. One body for all three lanes, so which
+    /// lane a thread is running is data (see `FcastPlaybin::new`).
     ///
     /// BLOCKING IS ALLOWED here, and that is the point of the thread. What is
     /// NOT allowed is waiting for the decider: nothing in an effect body may
@@ -1335,9 +1255,9 @@ impl Inner {
                 // runs. Same argument as the owed hold below it: an abandoned
                 // effect still has to settle everything it was carrying, and a
                 // bit left set would silence the reconcile pass for this
-                // resource for good (see [`Inner::replay_inflight`]).
-                inner.replay_inflight.lock().remove(&(sub_id, epoch));
-                Inner::settle_replay_seek(inner, sub_id, epoch);
+                // resource for good (see
+                // [`crate::external::ExternalInput::replay_inflight`]).
+                Inner::settle_replay(inner, sub_id, epoch);
                 inner.release_owed_hold(sub_id, epoch);
                 retire(id);
             }
@@ -1354,19 +1274,10 @@ impl Inner {
     pub(crate) fn run_effect(inner: &Arc<Inner>, effect: Effect) -> Outcome {
         match effect {
             Effect::SelectStreams(job) => Inner::send_select_streams(inner, job),
-            // The lane sends; the outcome is decided from `Job::EffectDone`
-            // (see `FcastPlaybin::replay_outcome`). Which side runs the tail
-            // is read from `Inner` rather than from the environment on each
-            // side, so the two can never disagree. The disagreement that
-            // matters is the tail running NOWHERE.
-            // Lever: `FCAST_INLINE_REPLAY_OUTCOME`.
-            Effect::ReplaySeek(job) => {
-                if inner.inline_replay_outcome {
-                    FcastPlaybin::run_replay_seek(inner, job)
-                } else {
-                    FcastPlaybin::send_replay_seek(job)
-                }
-            }
+            // The lane only SENDS; what the outcome means is decided on the
+            // decider, from `Job::EffectDone` (see
+            // `FcastPlaybin::replay_outcome`).
+            Effect::ReplaySeek(job) => FcastPlaybin::send_replay_seek(job),
             Effect::ChainJoin(job) => {
                 let kind = job.kind;
                 Inner::run_chain_join(inner, job);
@@ -1396,87 +1307,6 @@ impl Inner {
             |owed| Inner::run_lane_fallback(inner, None, owed),
         );
     }
-
-    /// The replay-seek sender thread (see [`ReplayJob`] for why the send is
-    /// not on the worker). Same lifetime discipline as `worker_loop`: holds
-    /// only a `Weak` between jobs, exits when the channel closes.
-    ///
-    /// The v1 body, kept compiled as `FCAST_NO_HANDS`'s arm (see
-    /// [`Inner::lane_loop`]). It ignores the envelope's identity and epoch:
-    /// nothing reports, so nothing is registered in flight either.
-    pub(crate) fn replay_sender_loop(
-        weak: Weak<Inner>,
-        replay_rx: mpsc::Receiver<hands::Envelope>,
-    ) {
-        let span = debug_span!("fcastplaybin");
-        let _entered = span.enter();
-
-        while let Ok(envelope) = replay_rx.recv() {
-            let Some(inner) = weak.upgrade() else { break };
-            let Effect::ReplaySeek(job) = envelope.effect else {
-                hands::wrong_lane(Lane::Replay);
-                continue;
-            };
-            FcastPlaybin::run_replay_seek(&inner, job);
-        }
-
-        debug!("fcastplaybin replay sender finished");
-    }
-
-    /// The chain-join thread (see [`ChainJoinJob`]). Same lifetime discipline
-    /// as `worker_loop`: holds only a `Weak` between jobs, exits when the
-    /// channel closes. The v1 body, kept compiled as `FCAST_NO_HANDS`'s arm.
-    pub(crate) fn chain_join_loop(weak: Weak<Inner>, join_rx: mpsc::Receiver<hands::Envelope>) {
-        let span = debug_span!("fcastplaybin");
-        let _entered = span.enter();
-
-        while let Ok(envelope) = join_rx.recv() {
-            let Some(inner) = weak.upgrade() else { break };
-            let Effect::ChainJoin(job) = envelope.effect else {
-                hands::wrong_lane(Lane::Join);
-                continue;
-            };
-            Inner::run_chain_join(&inner, job);
-        }
-
-        debug!("fcastplaybin chain joiner finished");
-    }
-
-    /// The SELECT_STREAMS sender thread (see [`SelectJob`] and
-    /// [`FcastPlaybin::select_streams`] for why the send is not inline).
-    /// Same lifetime discipline as `worker_loop`: holds only a `Weak`
-    /// between jobs, exits when the channel closes.
-    ///
-    /// The v1 body, kept compiled as `FCAST_NO_HANDS`'s arm. The send itself
-    /// is [`Inner::send_select_streams`], shared with the lane. This loop
-    /// keeps v1's handling of its outcome: the refusal feedback taken on
-    /// this thread, and a superseded core dropped in silence.
-    pub(crate) fn select_sender_loop(
-        weak: Weak<Inner>,
-        select_rx: mpsc::Receiver<hands::Envelope>,
-    ) {
-        let span = debug_span!("fcastplaybin");
-        let _entered = span.enter();
-
-        while let Ok(envelope) = select_rx.recv() {
-            let Some(inner) = weak.upgrade() else { break };
-            let Effect::SelectStreams(job) = envelope.effect else {
-                hands::wrong_lane(Lane::Select);
-                continue;
-            };
-            if let Outcome::SelectRefused { seqnum } = Inner::send_select_streams(&inner, job) {
-                // A refused dispatch never confirms. Leaving it in flight
-                // starves every later change (`pump` refuses to dispatch over
-                // an unconfirmed selection while playing).
-                // Lever: `FCAST_NO_SELECT_REFUSAL_FEEDBACK`.
-                if std::env::var_os("FCAST_NO_SELECT_REFUSAL_FEEDBACK").is_none() {
-                    inner.selection.lock().dispatch_failed(seqnum);
-                }
-            }
-        }
-
-        debug!("fcastplaybin select sender finished");
-    }
 }
 
 impl FcastPlaybin {
@@ -1488,21 +1318,14 @@ impl FcastPlaybin {
         self.inner.hands.in_flight()
     }
 
-    /// How many effects the tick has reported as wedged (one per effect, see
-    /// [`Inner::run_tick`]). A healthy run leaves this at zero, which is what
-    /// makes it worth reading in a soak. Not part of the public API.
-    #[doc(hidden)]
-    pub fn hands_wedge_warnings(&self) -> u64 {
-        self.inner.hands.wedge_warnings()
-    }
-
     /// The longest a [`Job::DispatchSelection`] has waited between being
     /// enqueued by the pump and running on the decider. Zero on a run where
     /// the decider was never busy. The queue delay a slow switch is made of.
     /// Not part of the public API.
     #[doc(hidden)]
     pub fn dispatch_queue_age(&self) -> Duration {
-        Duration::from_micros(self.inner.dispatch_queue_age_us.load(Ordering::SeqCst))
+        let counters = &self.inner.counters;
+        Duration::from_micros(counters.dispatch_queue_age_us.load(Ordering::Relaxed))
     }
 
     /// Queue a pipeline state change on the worker thread. Downward
@@ -1608,7 +1431,7 @@ impl FcastPlaybin {
         self.inner.supersede_queued_work();
         self.queue_job(Job::Stop {
             target: gst::State::Null,
-            done: Some(done),
+            done: Some(Callback(done)),
         });
     }
 
@@ -1616,7 +1439,26 @@ impl FcastPlaybin {
     /// ON THE WORKER THREAD (hand it off, do not block). Queued so the
     /// element walk cannot race a concurrent load or teardown.
     pub fn debug_graph_async(&self, done: Box<dyn FnOnce(graph::GraphSnapshot) + Send>) {
-        self.queue_job(Job::DumpGraph { done });
+        self.queue_job(Job::DumpGraph {
+            done: SnapshotCallback(done),
+        });
+    }
+
+    /// Queue a no-op whose only effect is calling `done` ON THE WORKER
+    /// THREAD. FIFO makes it a barrier: when `done` runs, every job queued
+    /// before it has finished.
+    ///
+    /// For test and diagnostic drivers that need "the worker got here" and
+    /// nothing else. [`debug_graph_async`](Self::debug_graph_async) answers
+    /// the same question but pays a full recursive element walk for it.
+    ///
+    /// A worker that is already gone drops the job and with it `done`,
+    /// UNCALLED, exactly as `debug_graph_async` does. A caller parked on a
+    /// channel therefore learns it as a disconnect rather than as a hang.
+    pub fn barrier_async(&self, done: Box<dyn FnOnce() + Send>) {
+        self.queue_job(Job::Barrier {
+            done: Callback(done),
+        });
     }
 
     /// Queue a position/rate seek. If the pipeline is not settled in PAUSED
@@ -1667,21 +1509,13 @@ impl FcastPlaybin {
         self.inner.queue_job(job);
     }
 
-    /// How many queued jobs the supersession gate has dropped (see
-    /// [`Inner::queue_epoch`]). A diagnostic counter for the regression tests
-    /// that pin the gate. Not part of the public API.
-    #[doc(hidden)]
-    pub fn stale_job_drops(&self) -> u64 {
-        self.inner.stale_jobs_dropped.load(Ordering::SeqCst)
-    }
-
     /// Carry out what a refused job owed its caller (see [`poison_refusal`]).
     fn settle_refusal(&self, refusal: Refusal) {
         let inner = &self.inner;
         match refusal {
             Refusal::Nothing => {}
-            Refusal::Barrier(done) => done(),
-            Refusal::Snapshot(done) => done(graph::GraphSnapshot::default()),
+            Refusal::Barrier(done) => done.call(),
+            Refusal::Snapshot(done) => done.call(graph::GraphSnapshot::default()),
             Refusal::Event { event, generation } => match generation {
                 Some(generation) => inner.emit_with_generation(event, generation),
                 None => inner.emit(event),
@@ -1707,7 +1541,7 @@ impl FcastPlaybin {
             warn!(
                 ?job,
                 "refusing a job: a teardown left this pipeline descending below the crate \
-                 (see FcastPlaybin::rescue_disarm_timeouts)"
+                 (see GlobalStats::rescue_disarm_timeouts)"
             );
             self.settle_refusal(poison_refusal(job));
             return;
@@ -1735,341 +1569,61 @@ impl FcastPlaybin {
                     );
                 }
                 StalePolicy::Drop => {
-                    // The log lives INSIDE the lever's block so that the two
-                    // arms of an A/B differ in behavior only where the drop
-                    // itself does.
-                    if std::env::var_os("FCAST_NO_JOB_GENERATION_GATE").is_none() {
-                        debug!(
-                            ?job,
-                            epoch, current, "dropping a job superseded by a later load or stop"
-                        );
-                        inner.stale_jobs_dropped.fetch_add(1, Ordering::SeqCst);
-                        if let Job::AttachSub { id, .. } = &job {
-                            // The one drop a caller can be waiting on, and an
-                            // event the caller already handles. It carries the
-                            // CURRENT generation, which is still the SUPERSEDED
-                            // item's: FIFO puts this drop ahead of the load
-                            // that bumped the epoch, and a stop leaves the
-                            // receiver expecting no generation at all. So the
-                            // receiver gates it away in practice, correctly -
-                            // its per-item subtitle bookkeeping resets on the
-                            // load anyway - and the emit serves the tests and
-                            // non-receiver embedders. Crate-side there is
-                            // nothing to clean: the attach never ran, so no
-                            // watchdog was armed.
-                            inner.emit(PlaybinEvent::ExternalSubtitleFailed { id: *id });
-                        }
-                        if let Job::DispatchSelection { seqnum, .. } = &job {
-                            // The engine recorded this wait when the CALLER
-                            // decided to dispatch (see `Job::DispatchSelection`),
-                            // so a dropped execution leaves a wait nothing can
-                            // answer: no event is sent, no confirmation comes,
-                            // and the deadline is the only thing left - a
-                            // selection that reports "never applied" seconds
-                            // later for a send that was deliberately not made.
-                            // Seqnum-guarded on the engine's side, so the
-                            // common case (a load or a stop RESET the engine,
-                            // which is what made this job stale) is a no-op
-                            // and only an engine still waiting re-decides.
-                            inner.selection.lock().dispatch_failed(*seqnum);
-                        }
-                        return;
+                    debug!(
+                        ?job,
+                        epoch, current, "dropping a job superseded by a later load or stop"
+                    );
+                    Counters::bump(&inner.counters.stale_jobs_dropped);
+                    // The two drops a caller can be waiting on settle exactly
+                    // the way the poison gate settles them, out of
+                    // [`poison_refusal`] rather than a third hand-rolled copy
+                    // of those arms. NOT every dropped variant: a superseded
+                    // `Job::Load` owes its caller nothing here (the ordinary
+                    // load path is still live and its next load reports for
+                    // itself), unlike under the poison gate, so this set stays
+                    // explicit.
+                    //
+                    // `AttachSub`'s event is one the caller already handles.
+                    // It carries the CURRENT generation, which is still the
+                    // SUPERSEDED item's: FIFO puts this drop ahead of the load
+                    // that bumped the epoch, and a stop leaves the receiver
+                    // expecting no generation at all. So the receiver gates it
+                    // away in practice, correctly - its per-item subtitle
+                    // bookkeeping resets on the load anyway - and the emit
+                    // serves the tests and non-receiver embedders. Crate-side
+                    // there is nothing to clean: the attach never ran, so no
+                    // watchdog was armed.
+                    //
+                    // `DispatchSelection`'s wait was recorded when the CALLER
+                    // decided to dispatch (see `Job::DispatchSelection`), so a
+                    // dropped execution leaves a wait nothing can answer: no
+                    // event is sent, no confirmation comes, and the deadline is
+                    // the only thing left - a selection that reports "never
+                    // applied" seconds later for a send that was deliberately
+                    // not made. Seqnum-guarded on the engine's side, so the
+                    // common case (a load or a stop RESET the engine, which is
+                    // what made this job stale) is a no-op and only an engine
+                    // still waiting re-decides.
+                    if matches!(job, Job::AttachSub { .. } | Job::DispatchSelection { .. }) {
+                        self.settle_refusal(poison_refusal(job));
                     }
+                    return;
                 }
             }
         }
 
         match job {
-            Job::SetState { target } => {
-                // Downward transitions take the route gate (a pad routed
-                // into the descending pipeline deadlocks it).
-                //
-                // A change to the state the pipeline is ALREADY in posts NO
-                // `state-changed`: `gst_element_continue_state` guards it with
-                // `old_state != old_next || old_ret == ASYNC` ("don't post silly
-                // messages with the same state"). The caller's machine advances
-                // only on that message, so a no-op dispatch parks it in
-                // `Phase::Changing` for good. Reached routinely, because
-                // `StateMachine::buffering` always redispatches a PLAYING target
-                // and `player.rs` `uri_loaded` has usually driven it there
-                // already (`dash-start-seek-text-join-race.md`).
-                //
-                // Read BEFORE the call: afterwards "already there" and "just
-                // arrived" are indistinguishable. `Ok(Async)` is excluded, that
-                // is the one case GStreamer does post.
-                // Lever: `FCAST_NO_SYNTHETIC_STATE_EDGE`.
-                let (before, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
-                let silent = current == target
-                    && pending == gst::State::VoidPending
-                    && !matches!(before, Ok(gst::StateChangeSuccess::Async))
-                    && std::env::var_os("FCAST_NO_SYNTHETIC_STATE_EDGE").is_none();
-                let _ = self.set_pipeline_state(target);
-                if silent {
-                    debug!(
-                        ?target,
-                        "the pipeline was already in the requested state; \
-                         reporting the state edge GStreamer suppresses"
-                    );
-                    inner.emit(PlaybinEvent::StateChanged {
-                        old: target,
-                        current: target,
-                        pending: gst::State::VoidPending,
-                    });
-                }
-            }
-            Job::Stop { target, done } => {
-                if let Err(err) = self.teardown(target) {
-                    warn!(?err, ?target, "fcastplaybin teardown failed");
-                }
-                if let Some(done) = done {
-                    done();
-                    debug!("Sent stop feedback signal");
-                }
-            }
+            Job::SetState { target } => self.run_set_state(target),
+            Job::Stop { target, done } => self.run_stop(target, done),
             Job::Load {
                 input,
                 start,
                 generation,
-            } => {
-                // Kept for the failure report below: the load consumes the
-                // input, and the URI is what makes the report actionable.
-                let failed_uri = failed_uri_of(&input);
-                match self.load_with_generation(input, start, generation) {
-                    Ok(outcome) => {
-                        if outcome.live {
-                            debug!("Pipeline is live");
-                        }
-                        inner.emit(PlaybinEvent::Loaded { live: outcome.live });
-                    }
-                    Err(err) => {
-                        error!(?err, "fcastplaybin load failed");
-                        // An ASYNC load that fails HERE fails before the
-                        // pipeline exists to error on, so the "any user-visible
-                        // failure arrives through the pipeline error path"
-                        // assumption does not hold for it: the caller was left
-                        // waiting for a `Loaded` that can never come, with
-                        // nothing on the bus and only a log line to show for
-                        // it. Reported as an ordinary main-input error, which
-                        // is the load-failure path the caller already has (a
-                        // typefind error takes it too).
-                        //
-                        // Stamped with THIS job's generation rather than the
-                        // pipeline's current one: most of what can fail here
-                        // fails before the load adopts its generation, so the
-                        // current one still names the item being replaced and
-                        // the caller's load-scope gate would drop the very
-                        // report it is waiting for (see
-                        // `Inner::emit_with_generation`).
-                        // Lever: `FCAST_NO_LOUD_LOAD_FAILURE`.
-                        if std::env::var_os("FCAST_NO_LOUD_LOAD_FAILURE").is_none() {
-                            inner.emit_with_generation(
-                                PlaybinEvent::Error {
-                                    origin: ErrorOrigin::Main,
-                                    error: gst::glib::Error::new(
-                                        gst::LibraryError::Failed,
-                                        &format!("loading the media failed: {err:#}"),
-                                    ),
-                                    failed_uri,
-                                },
-                                generation,
-                            );
-                        }
-                    }
-                }
-            }
-            Job::Seek(seek) => {
-                // Non-blocking query: a zero timeout returns the in-flight
-                // transition instead of waiting for it. An unbounded
-                // `state(None)` here wedged the whole worker when a seek
-                // arrived mid-preroll and the preroll stalled, queueing
-                // every later job behind it forever.
-                let (_, state, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
-
-                if state != gst::State::Paused || pending != gst::State::VoidPending {
-                    inner.emit(PlaybinEvent::QueueSeek(seek));
-                    let _ = inner.pipeline.set_state(gst::State::Paused);
-                    // An async transition read above can commit between the
-                    // query and the call. The call is then a same-state no-op
-                    // posting nothing, and the real settle edge was emitted
-                    // BEFORE the hand-back (sync bus handler), so the parked
-                    // seek would wait forever for an edge that already
-                    // passed. Report the settle GStreamer will not repeat.
-                    // Lever: `FCAST_NO_SEEK_REFUSAL_EDGE`.
-                    if pending != gst::State::VoidPending
-                        && std::env::var_os("FCAST_NO_SEEK_REFUSAL_EDGE").is_none()
-                    {
-                        let (_, now, now_pending) = inner.pipeline.state(gst::ClockTime::ZERO);
-                        if now == gst::State::Paused && now_pending == gst::State::VoidPending {
-                            debug!(
-                                "the refused seek's PAUSED request was a no-op on an \
-                                 already-settled pipeline; reporting the missed settle"
-                            );
-                            inner.emit(PlaybinEvent::StateChanged {
-                                old: gst::State::Paused,
-                                current: gst::State::Paused,
-                                pending: gst::State::VoidPending,
-                            });
-                        }
-                    }
-                    return;
-                }
-
-                let position = match seek.position {
-                    Some(pos) => pos,
-                    None => {
-                        // A rate-only seek (SetSpeed) has to ask where the
-                        // playhead is. Failing SILENTLY here left the caller's
-                        // seek slot in flight with nothing to settle it (it
-                        // owns the seek queue and waits for an outcome), so
-                        // every later seek parked behind a job that had already
-                        // given up. Report it like any other failed seek.
-                        let Some(pos) = inner.pipeline.query_position::<gst::ClockTime>() else {
-                            error!("Failed to query playback position");
-                            inner.emit(PlaybinEvent::SeekFailed);
-                            return;
-                        };
-                        pos
-                    }
-                };
-
-                // Backstop for `gst_event_new_seek`'s `rate != 0.0` assert
-                // (NULL event, binding panic, dead worker). Refused rather
-                // than coerced, and reported so the caller's seek slot
-                // settles instead of parking every later seek behind it.
-                let rate = seek.rate.unwrap_or(1.0);
-                if !Seek::rate_is_safe(rate) {
-                    error!(rate, "refusing a seek with an invalid rate");
-                    inner.emit(PlaybinEvent::SeekFailed);
-                    return;
-                }
-                let rate = rate as f64;
-                debug!(rate, ?position, "Performing seek");
-
-                if let Err(err) = send_rate_seek(&inner.pipeline, rate, position) {
-                    error!(?err, "Failed to seek");
-                    inner.emit(PlaybinEvent::SeekFailed);
-                } else {
-                    // The seek's flush restarted the LIVE branches, so for
-                    // them "this group's end has entered ssync" no longer
-                    // holds, and a stale mirror would wrongly park the next
-                    // video re-enable (see the drained-resurrect arm in
-                    // `route_db3_pad`, whose lever also gates this clear).
-                    // Only a seek that reached a live video branch clears
-                    // it. A stream DESELECTED at seek time is not restarted
-                    // by the seek (measured on seed 1600058, the source's
-                    // video task stays idle at EOS through the seek), so
-                    // its pre-seek drained state stands and the park must
-                    // still see it.
-                    inner.clear_passing_eos_after_flush();
-                    *inner.intended_timeline.lock() = (rate, position);
-                    inner.forward_seek_to_live_externals(rate, position);
-                    inner.emit(PlaybinEvent::RateChanged(rate));
-                }
-            }
-            Job::RefreshSeek { seqnum } => {
-                // RE-VALIDATED HERE, not only where it was scheduled.
-                // `SelectionEngine::pump` sampled its gates (the caller's
-                // quiet, seekable, no external subtitle attached) at dispatch
-                // and this job then queued behind SetState/Load/DrainTextWork
-                // and the branch disposals. By the time it runs the pipeline
-                // can be mid-load, mid-buffering, mid-seek or carrying an
-                // external input, and a flushing seek landing there is the
-                // FLUSHING-into-an-adaptive-output-loop hazard
-                // (FREEZE-DIAGN.md 8.2 #2: adaptivedemux2 serves every track
-                // from one task and pauses it for good). `Job::Seek` has such
-                // a guard; this one had none.
-                //
-                // A stale refresh is DROPPED, never re-parked: it is only ever
-                // a nicety (the freshly selected track re-emits at its next
-                // cue either way), and reporting the failure is what clears
-                // the engine's `refreshing` slot, which otherwise blocks every
-                // later dispatch. Lever:
-                // `FCAST_NO_REFRESH_SEEK_REVALIDATION`.
-                if std::env::var_os("FCAST_NO_REFRESH_SEEK_REVALIDATION").is_none() {
-                    let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
-                    let settled =
-                        pending == gst::State::VoidPending && current >= gst::State::Paused;
-                    let externals = {
-                        let routing = inner.routing.lock();
-                        routing.inputs.iter().any(|i| i.external.is_some())
-                    };
-                    let seekable = {
-                        let mut query = gst::query::Seeking::new(gst::Format::Time);
-                        inner.pipeline.query(&mut query) && query.result().0
-                    };
-                    let superseded = inner.selection.lock().refresh_superseded(seqnum);
-                    if !settled || externals || !seekable || superseded {
-                        debug!(
-                            ?current,
-                            ?pending,
-                            externals,
-                            seekable,
-                            superseded,
-                            ?seqnum,
-                            "dropping a refresh seek whose preconditions no longer hold"
-                        );
-                        inner.selection.lock().refresh_failed(seqnum);
-                        inner.emit(PlaybinEvent::RefreshSeekFailed { seqnum });
-                        return;
-                    }
-                }
-                let Some(position) = inner.pipeline.query_position::<gst::ClockTime>() else {
-                    debug!("Skipping the refresh seek: no position");
-                    inner.selection.lock().refresh_failed(seqnum);
-                    inner.emit(PlaybinEvent::RefreshSeekFailed { seqnum });
-                    return;
-                };
-
-                // The refresh is a RE-EMIT, not a transport change: it must
-                // land on the timeline the item already runs on. Hard-coding
-                // rate 1.0 here made every track switch at a non-1.0 speed
-                // silently drop the pipeline back to 1.0x, and since a refresh
-                // emits no `RateChanged` the caller (and the sender's UI) kept
-                // reporting the old speed over 1.0x audio.
-                let rate = inner.intended_timeline.lock().0;
-
-                // A flushing seek to the current position in the current
-                // state: re-emits the subtitle cue active NOW and flushes
-                // the stale one, without a normal seek's Paused round-trip.
-                debug!(
-                    ?position,
-                    rate,
-                    ?seqnum,
-                    "Refresh seek (flushing, current position)"
-                );
-                let event = rate_seek_event(rate, position, Some(seqnum));
-                if !inner.pipeline.send_event(event) {
-                    warn!("Refresh seek failed");
-                    inner.selection.lock().refresh_failed(seqnum);
-                    inner.emit(PlaybinEvent::RefreshSeekFailed { seqnum });
-                } else {
-                    // Same full-pipeline flush as Job::Seek above, same
-                    // conditional reset of the passing-EOS mirror.
-                    inner.clear_passing_eos_after_flush();
-                }
-            }
-            Job::RecoverClock => {
-                debug!("Recovering from clock loss");
-                if let Err(err) = inner.pipeline.set_state(gst::State::Paused) {
-                    warn!(?err, "Clock recovery: failed to reach Paused");
-                    return;
-                }
-                if let Err(err) = inner.pipeline.set_state(gst::State::Playing) {
-                    warn!(?err, "Clock recovery: failed to reach Playing");
-                }
-            }
-            Job::RecalculateLatency => {
-                if let Err(err) = inner.pipeline.recalculate_latency() {
-                    warn!(?err, "failed to recalculate pipeline latency");
-                }
-                // Every field freeze so far follows one of these within ~1s;
-                // the value the pipeline settled on is the missing datum.
-                let mut query = gst::query::Latency::new();
-                if inner.pipeline.query(&mut query) {
-                    let (live, min, max) = query.result();
-                    debug!(live, %min, ?max, "pipeline latency recalculated");
-                }
-            }
+            } => self.run_load(input, start, generation),
+            Job::Seek(seek) => self.run_seek(seek),
+            Job::RefreshSeek { seqnum } => self.run_refresh_seek(seqnum),
+            Job::RecoverClock => self.run_recover_clock(),
+            Job::RecalculateLatency => self.run_recalculate_latency(),
             Job::AttachSub { id, url } => {
                 if let Err(err) = self.attach_subtitle_with_id(id, &url) {
                     error!(?err, url, "fcastplaybin subtitle attach failed");
@@ -2083,351 +1637,24 @@ impl FcastPlaybin {
                     debug!(?err, ?id, "fcastplaybin subtitle detach failed");
                 }
             }
-            Job::FailSub { id, epoch } => {
-                self.fail_subtitle(id, epoch);
-            }
-            Job::CheckSub { id, epoch } => {
-                self.check_subtitle(id, epoch);
-            }
-            Job::RetrySub { id, epoch } => {
-                self.retry_subtitle(id, epoch);
-            }
-            Job::AdoptSubState { id, epoch } => {
-                let element = {
-                    let routing = self.inner.routing.lock();
-                    routing
-                        .inputs
-                        .iter()
-                        .find(|input| {
-                            input
-                                .external
-                                .as_ref()
-                                .is_some_and(|e| e.id == id && e.epoch == epoch)
-                        })
-                        .map(|input| input.element.clone())
-                };
-                let Some(element) = element else {
-                    debug!(?id, epoch, "stale state-adopt job; input already gone");
-                    return;
-                };
-                element.set_locked_state(false);
-                if let Err(err) = element.sync_state_with_parent() {
-                    warn!(
-                        ?err,
-                        ?id,
-                        "the materialized external refused the state join"
-                    );
-                }
-                debug!(
-                    ?id,
-                    "external input unlocked and joined to the pipeline state"
-                );
-            }
-            Job::ReplaySub { id, epoch, attempt } => {
-                self.replay_subtitle(id, epoch, attempt);
-            }
-            Job::VerifyReplay { id, epoch, attempt } => {
-                self.verify_replay(id, epoch, attempt);
-            }
-            Job::DumpGraph { done } => {
-                done(graph::snapshot(inner.pipeline.upcast_ref()));
-            }
-            Job::PrepareNext { input, generation } => {
-                // A newer load or prepare was requested after this one was
-                // queued; its reset would remove this input right away.
-                if generation != inner.next_generation.load(Ordering::SeqCst) {
-                    debug!(generation, "skipping a superseded prepare");
-                    return;
-                }
-                // External subtitle inputs are per-item side inputs on the
-                // live core. A swap would carry them across: decodebin3
-                // keeps their streams in the (combined) collections it
-                // posts for the NEXT item, which corrupts the held-back
-                // collection and the per-item selection state. Refuse; the
-                // caller's ordinary end-of-stream advance owns that
-                // transition.
-                if inner
-                    .routing
-                    .lock()
-                    .inputs
-                    .iter()
-                    .any(|i| i.external.is_some())
-                {
-                    debug!(
-                        generation,
-                        "external subtitles attached; refusing the gapless prepare"
-                    );
-                    inner.emit(PlaybinEvent::PreparedFailed { generation });
-                    return;
-                }
-                // Latest wins: replace a still-pending previous prepare. A
-                // swap already PERFORMED cannot unwind: its activation is
-                // imminent, and arming over it would hand the activation
-                // this prepare's record while the pipeline plays the other
-                // item. Refuse instead.
-                if matches!(
-                    self.cancel_prepared(AfterCancel::Nothing),
-                    CancelOutcome::Declined { .. }
-                ) {
-                    debug!(
-                        generation,
-                        "a performed swap is activating; refusing the prepare"
-                    );
-                    inner.emit(PlaybinEvent::PreparedFailed { generation });
-                    return;
-                }
-
-                // The current item is in steady playback, so every routed
-                // pad's sticky stream-start is present: snapshot the group
-                // state now. Activation detection (a group CHANGE at the
-                // output) and the old-item EOS drop both depend on the
-                // current group being positively known before the switch.
-                Inner::refresh_output_groups(inner);
-
-                // Arm the swap gate BEFORE the input exists: from here on
-                // any EOS at the decodebin3 outputs is held back, so a
-                // drain racing the prepare cannot leak to the sinks. The
-                // INPUT side commonly drained long ago (a small or resident
-                // file is swallowed whole by the multiqueue at load), which
-                // is fine: the swap proceeds immediately and the OUTPUT
-                // side still paces the actual switch. Only an output EOS
-                // that fully escaped before this point misses the handoff,
-                // and then the caller's ordinary end-of-stream advance owns
-                // the transition.
-                *inner.swap_gate.state.lock() = SwapState {
-                    pending: Some(generation),
-                    drained: false,
-                    swapped: false,
-                    dropped_eos: false,
-                };
-                // `drained` is derived AFTER the arm, never sampled into the
-                // literal above. Rust evaluates the assigned value before the
-                // place expression, so a sample there completes BEFORE the
-                // gate lock is taken, and the input's final EOS landing in
-                // that window is lost both ways: `note_input_pad_eos` no-ops
-                // against a gate with no pending swap, and EOS fires once per
-                // pad, so nothing sets it again. The prepared input's blocked
-                // threads then park on the condvar forever and the boundary
-                // silently hangs. This call re-reads the taps under the armed
-                // state, in the tap probe's own lock order (routing, then the
-                // gate).
-                Inner::note_input_pad_eos(inner);
-
-                let built = match input {
-                    MediaInput::Uri(uri) => Inner::make_urisourcebin(&uri, true),
-                    MediaInput::Element(element) => Ok(element),
-                };
-                let attached = built.and_then(|element| {
-                    Inner::add_prepared_input(inner, element.clone(), generation).map(|_| element)
-                });
-                match attached {
-                    Ok(element) => {
-                        debug!(generation, "prepared the next input (blocked, unlinked)");
-                        *inner.prepared.lock() = Some(PreparedNext {
-                            element,
-                            generation,
-                            pending_collection: None,
-                        });
-                    }
-                    Err(err) => {
-                        error!(?err, generation, "failed to prepare the next input");
-                        // Disarm what was armed above.
-                        let aborted = inner.swap_gate.abort();
-                        // A prepare failing WHILE the pipeline transitions
-                        // (its error message aborts a bin's in-flight
-                        // async commit) must not strand playback below the
-                        // caller's target: re-commit the transition.
-                        self.recommit_pipeline_state();
-                        inner.emit(PlaybinEvent::PreparedFailed { generation });
-                        // The hold may have consumed the current item's
-                        // end between the arm and this failure (see
-                        // `SwapState::dropped_eos` and `cancel_prepared`).
-                        if aborted.pending.is_some() && aborted.dropped_eos {
-                            debug!("the item's end was consumed while arming: synthesizing it");
-                            inner.emit(PlaybinEvent::EndOfStream);
-                        }
-                    }
-                }
-            }
-            Job::CancelPrepared { notify, after } => {
-                let outcome = self.cancel_prepared(after);
-                if notify {
-                    inner.emit(match outcome {
-                        CancelOutcome::Cancelled { generation } => {
-                            PlaybinEvent::PreparedCancelled { generation }
-                        }
-                        CancelOutcome::Declined { generation } => {
-                            PlaybinEvent::PreparedCancelDeclined { generation }
-                        }
-                    });
-                }
-            }
-            Job::FinishActivation => {
-                // The prepared item is live (its generation is current):
-                // every older input is drained history. This removes the
-                // previous item's main input and its external subtitles.
-                let current = inner.current_generation();
-                let old: Vec<Input> = {
-                    let mut routing = inner.routing.lock();
-                    let (old, keep) = routing
-                        .inputs
-                        .drain(..)
-                        .partition(|input| input.generation < current);
-                    routing.inputs = keep;
-                    old
-                };
-                for input in old {
-                    debug!(
-                        generation = input.generation,
-                        "removing a drained input after the gapless activation"
-                    );
-                    Inner::remove_input(inner, input);
-                }
-            }
+            Job::FailSub { id, epoch } => self.fail_subtitle(id, epoch),
+            Job::CheckSub { id, epoch } => self.check_subtitle(id, epoch),
+            Job::RetrySub { id, epoch } => self.retry_subtitle(id, epoch),
+            Job::AdoptSubState { id, epoch } => self.run_adopt_sub_state(id, epoch),
+            Job::ReplaySub { id, epoch, attempt } => self.replay_subtitle(id, epoch, attempt),
+            Job::VerifyReplay { id, epoch, attempt } => self.verify_replay(id, epoch, attempt),
+            Job::DumpGraph { done } => done.call(graph::snapshot(inner.pipeline.upcast_ref())),
+            Job::Barrier { done } => done.call(),
+            Job::PrepareNext { input, generation } => self.run_prepare_next(input, generation),
+            Job::CancelPrepared { notify, after } => self.run_cancel_prepared(notify, after),
+            Job::FinishActivation => self.run_finish_activation(),
             Job::SyncTextRunningTime => inner.sync_text_running_time(),
-            Job::DrainTextWork => {
-                // Diagnostic only. The busy-loop regression test counts the
-                // drains the worker actually received.
-                inner.drain_jobs_seen.fetch_add(1, Ordering::SeqCst);
-                // The stamp travels with the drain: the reconcile pass at its
-                // tail wants to know whether a stop or a load was requested
-                // AFTER this drain was queued (see there). The drain itself
-                // still runs - it is `StalePolicy::Run`, and postponed work
-                // outlives an item change on purpose.
-                Inner::run_deferred_text_work(inner, epoch)
-            }
-            Job::VideoChainGone => {
-                // Text is consumed synchronized against VIDEO buffers, so a
-                // text stream left linked after video stops can never
-                // drain and blocks decodebin3's reconfiguration until the next
-                // flush. Park it, and the policy brings it back once a video
-                // stream routes again.
-                Inner::park_text_streams(inner);
-                // The video pad is gone for good (a mid-item deselect, an
-                // input teardown), so take the chain out of the pipeline.
-                // Nothing can then aggregate over, or later lift, a sink that
-                // will never see data again. A re-select routes a fresh pad
-                // and rebuilds.
-                //
-                // Re-checked here rather than trusted from the posting side:
-                // between the pad-removed callback and this job a new video
-                // stream may already have routed, and tearing the chain down
-                // under it would strand the item with no video at all.
-                // LINKED video only. A parked video entry (the resurrected
-                // pad of a deselected stream) is not a reason to keep the
-                // chain, it is the very thing the deselect is waiting out.
-                // Inert before the resurrect park existed, since every
-                // routed video entry was linked by construction.
-                let video_routed = inner
-                    .routing
-                    .lock()
-                    .routed
-                    .iter()
-                    .any(|r| r.kind == StreamKind::Video && r.downstream.is_some());
-                if video_routed {
-                    debug!("a video stream routed again before the chain teardown ran; keeping it");
-                } else {
-                    inner.remove_video_chain();
-                }
-            }
-            Job::ClearStateFailure => {
-                // `Err(_)` here IS `GST_STATE_RETURN == FAILURE`, so a
-                // pipeline that can still commit is a no-op.
-                let (before, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
-                if before.is_ok() {
-                    return;
-                }
-                // Below PAUSED nothing can be stranded, and the next load or
-                // teardown clears the latch itself. Staying out keeps this off
-                // downward transitions.
-                if current < gst::State::Paused {
-                    debug!(?current, "leaving the latch to the next load or teardown");
-                    return;
-                }
-                // `pending == current` non-void is what `bin_handle_async_start`
-                // writes on a lost state. Re-committing it leaves
-                // `old_state == old_next`, so GStreamer posts nothing and the
-                // report below is the caller's only announcement.
-                let lost_state = pending != gst::State::VoidPending && pending == current;
-                // `bin_handle_async_done` owed PENDING, not current. Mid-climb
-                // the two differ (an error during a PAUSED->PLAYING commit reads
-                // `(Paused, Playing)`), and re-committing `current` there
-                // cancels the climb and announces nothing. A void pending means
-                // the bin had arrived, and then `current` is what it arrived at.
-                // Lever: `FCAST_UNLATCH_RECOMMIT_CURRENT`.
-                let owed = if pending == gst::State::VoidPending
-                    || std::env::var_os("FCAST_UNLATCH_RECOMMIT_CURRENT").is_some()
-                {
-                    current
-                } else {
-                    pending
-                };
-                warn!(
-                    ?current,
-                    ?pending,
-                    ?owed,
-                    lost_state,
-                    "the pipeline latched a state-change failure from an error the \
-                     crate consumed; re-committing so it can settle again"
-                );
-                // A pending BELOW paused is a teardown descending (a stop, a
-                // load's reset). It clears the latch with its own `set_state`
-                // and asserting anything here would fight it, which is this
-                // crate's most expensive kind of mistake.
-                if owed < gst::State::Paused {
-                    debug!(?owed, "leaving the latch to the descending transition");
-                    return;
-                }
-                // Re-commit the state the bin had already decided on and was
-                // refused. The TARGET is NOT read back (GStreamer does not
-                // expose it) and does not need to be: the caller's state
-                // machine owns the transport target and re-asserts it from the
-                // edge reported below, which is the same contract every other
-                // correction here uses.
-                let _ = inner.pipeline.set_state(owed);
-                if !lost_state {
-                    // A re-committed climb announces itself (`old_state !=
-                    // old_next`), so nothing to report.
-                    //
-                    // UNCOVERED, deliberately: a latch caught with
-                    // `pending == VoidPending`. Nothing is owed
-                    // (`bin_handle_async_done` takes `nothing_pending` either
-                    // way) and no reproducer was ever built. If one turns up,
-                    // the predicate is `Job::SetState`'s. It is not applied
-                    // here because this job has no target to compare against,
-                    // so it would report on every consumed error against a
-                    // settled pipeline.
-                    return;
-                }
-                // Unannounced settle: re-committing the pipeline's own state
-                // leaves `old_state == old_next`, which both of GStreamer's
-                // "don't post silly messages with the same state" guards refuse
-                // to post on, so this cannot duplicate a real edge. Not
-                // conditioned on reading settled afterwards (measured on 400009
-                // the re-commit returns with `pending` still set).
-                debug!(
-                    ?current,
-                    "reporting the settle the latched pipeline could not post"
-                );
-                inner.emit(PlaybinEvent::StateChanged {
-                    old: current,
-                    current,
-                    pending: gst::State::VoidPending,
-                });
-            }
+            Job::DrainTextWork => self.run_drain_text_work(epoch),
+            Job::VideoChainGone => self.run_video_chain_gone(),
+            Job::ClearStateFailure => self.run_clear_state_failure(),
             Job::SelectionDeadline { seqnum } => self.selection_deadline_fired(seqnum),
             Job::RefreshDeadline { seqnum } => self.refresh_deadline_fired(seqnum),
-            Job::PollTextPolicy => {
-                // Diagnostic only, the counterpart of the drain's counter.
-                inner.poll_jobs_seen.fetch_add(1, Ordering::SeqCst);
-                // Cleared FIRST, and unconditionally. A poke that lands while
-                // the policy below is running asks about a world this run has
-                // already read, so it must be able to queue a fresh job; and
-                // a flag left set by any path at all would swallow every poll
-                // for the rest of the instance.
-                inner.poll_queued.store(false, Ordering::SeqCst);
-                Inner::poll_text_policy(inner);
-            }
+            Job::PollTextPolicy => self.run_poll_text_policy(),
             Job::DispatchSelection {
                 target,
                 seqnum,
@@ -2438,10 +1665,650 @@ impl FcastPlaybin {
                 // The caller's loop breaks on a refusal; there is no loop
                 // here, and nothing to break out of - `dispatch_selection`
                 // has already told the engine.
-                let _sent = self.dispatch_selection(target, seqnum, replacing, generation, queued);
+                let _sent =
+                    self.dispatch_selection(target, seqnum, replacing, generation, queued.0);
             }
             Job::EffectDone { id, outcome } => self.effect_done(id, outcome),
         }
+    }
+
+    /// Worker side of [`Job::SetState`].
+    fn run_set_state(&self, target: gst::State) {
+        let inner = &self.inner;
+        // Downward transitions take the route gate (a pad routed
+        // into the descending pipeline deadlocks it).
+        //
+        // A change to the state the pipeline is ALREADY in posts NO
+        // `state-changed`: `gst_element_continue_state` guards it with
+        // `old_state != old_next || old_ret == ASYNC` ("don't post silly
+        // messages with the same state"). The caller's machine advances
+        // only on that message, so a no-op dispatch parks it in
+        // `Phase::Changing` for good. Reached routinely, because
+        // `StateMachine::buffering` always redispatches a PLAYING target
+        // and `player.rs` `uri_loaded` has usually driven it there
+        // already (`dash-start-seek-text-join-race.md`).
+        //
+        // Read BEFORE the call: afterwards "already there" and "just
+        // arrived" are indistinguishable. `Ok(Async)` is excluded, that
+        // is the one case GStreamer does post.
+        let (before, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+        let silent = current == target
+            && pending == gst::State::VoidPending
+            && !matches!(before, Ok(gst::StateChangeSuccess::Async));
+        let _ = self.set_pipeline_state(target);
+        if silent {
+            debug!(
+                ?target,
+                "the pipeline was already in the requested state; \
+                 reporting the state edge GStreamer suppresses"
+            );
+            inner.emit(PlaybinEvent::StateChanged {
+                old: target,
+                current: target,
+                pending: gst::State::VoidPending,
+            });
+        }
+    }
+
+    /// Worker side of [`Job::Stop`].
+    fn run_stop(&self, target: gst::State, done: Option<Callback>) {
+        if let Err(err) = self.teardown(target) {
+            warn!(?err, ?target, "fcastplaybin teardown failed");
+        }
+        if let Some(done) = done {
+            done.call();
+            debug!("Sent stop feedback signal");
+        }
+    }
+
+    /// Worker side of [`Job::Load`].
+    fn run_load(&self, input: MediaInput, start: StartPoint, generation: u64) {
+        let inner = &self.inner;
+        // Kept for the failure report below: the load consumes the
+        // input, and the URI is what makes the report actionable.
+        let failed_uri = failed_uri_of(&input);
+        match self.load_with_generation(input, start, generation) {
+            Ok(outcome) => {
+                if outcome.live {
+                    debug!("Pipeline is live");
+                }
+                inner.emit(PlaybinEvent::Loaded { live: outcome.live });
+            }
+            Err(err) => {
+                error!(?err, "fcastplaybin load failed");
+                // An ASYNC load that fails HERE fails before the
+                // pipeline exists to error on, so the "any user-visible
+                // failure arrives through the pipeline error path"
+                // assumption does not hold for it: the caller was left
+                // waiting for a `Loaded` that can never come, with
+                // nothing on the bus and only a log line to show for
+                // it. Reported as an ordinary main-input error, which
+                // is the load-failure path the caller already has (a
+                // typefind error takes it too).
+                //
+                // Stamped with THIS job's generation rather than the
+                // pipeline's current one: most of what can fail here
+                // fails before the load adopts its generation, so the
+                // current one still names the item being replaced and
+                // the caller's load-scope gate would drop the very
+                // report it is waiting for (see
+                // `Inner::emit_with_generation`).
+                inner.emit_with_generation(
+                    PlaybinEvent::Error {
+                        origin: ErrorOrigin::Main,
+                        error: gst::glib::Error::new(
+                            gst::LibraryError::Failed,
+                            &format!("loading the media failed: {err:#}"),
+                        ),
+                        failed_uri,
+                    },
+                    generation,
+                );
+            }
+        }
+    }
+
+    /// Worker side of [`Job::Seek`].
+    fn run_seek(&self, seek: Seek) {
+        let inner = &self.inner;
+        // Non-blocking query: a zero timeout returns the in-flight
+        // transition instead of waiting for it. An unbounded
+        // `state(None)` here wedged the whole worker when a seek
+        // arrived mid-preroll and the preroll stalled, queueing
+        // every later job behind it forever.
+        let (_, state, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+
+        if state != gst::State::Paused || pending != gst::State::VoidPending {
+            inner.emit(PlaybinEvent::QueueSeek(seek));
+            let _ = inner.pipeline.set_state(gst::State::Paused);
+            // An async transition read above can commit between the
+            // query and the call. The call is then a same-state no-op
+            // posting nothing, and the real settle edge was emitted
+            // BEFORE the hand-back (sync bus handler), so the parked
+            // seek would wait forever for an edge that already
+            // passed. Report the settle GStreamer will not repeat.
+            if pending != gst::State::VoidPending {
+                let (_, now, now_pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+                if now == gst::State::Paused && now_pending == gst::State::VoidPending {
+                    debug!(
+                        "the refused seek's PAUSED request was a no-op on an \
+                         already-settled pipeline; reporting the missed settle"
+                    );
+                    inner.emit(PlaybinEvent::StateChanged {
+                        old: gst::State::Paused,
+                        current: gst::State::Paused,
+                        pending: gst::State::VoidPending,
+                    });
+                }
+            }
+            return;
+        }
+
+        let position = match seek.position {
+            Some(pos) => pos,
+            None => {
+                // A rate-only seek (SetSpeed) has to ask where the
+                // playhead is. Failing SILENTLY here left the caller's
+                // seek slot in flight with nothing to settle it (it
+                // owns the seek queue and waits for an outcome), so
+                // every later seek parked behind a job that had already
+                // given up. Report it like any other failed seek.
+                let Some(pos) = inner.pipeline.query_position::<gst::ClockTime>() else {
+                    error!("Failed to query playback position");
+                    inner.emit(PlaybinEvent::SeekFailed);
+                    return;
+                };
+                pos
+            }
+        };
+
+        // Backstop for `gst_event_new_seek`'s `rate != 0.0` assert
+        // (NULL event, binding panic, dead worker). Refused rather
+        // than coerced, and reported so the caller's seek slot
+        // settles instead of parking every later seek behind it.
+        let rate = seek.rate.unwrap_or(1.0);
+        if !Seek::rate_is_safe(rate) {
+            error!(rate, "refusing a seek with an invalid rate");
+            inner.emit(PlaybinEvent::SeekFailed);
+            return;
+        }
+        let rate = rate as f64;
+        debug!(rate, ?position, "Performing seek");
+
+        if let Err(err) = send_rate_seek(&inner.pipeline, rate, position) {
+            error!(?err, "Failed to seek");
+            inner.emit(PlaybinEvent::SeekFailed);
+        } else {
+            // The seek's flush restarted the LIVE branches, so for
+            // them "this group's end has entered ssync" no longer
+            // holds, and a stale mirror would wrongly park the next
+            // video re-enable (see the drained-resurrect arm in
+            // `route_db3_pad`, whose lever also gates this clear).
+            // Only a seek that reached a live video branch clears
+            // it. A stream DESELECTED at seek time is not restarted
+            // by the seek (measured on seed 1600058, the source's
+            // video task stays idle at EOS through the seek), so
+            // its pre-seek drained state stands and the park must
+            // still see it.
+            inner.clear_passing_eos_after_flush();
+            *inner.intended_timeline.lock() = (rate, position);
+            inner.forward_seek_to_live_externals(rate, position);
+            inner.emit(PlaybinEvent::RateChanged(rate));
+        }
+    }
+
+    /// Worker side of [`Job::RefreshSeek`].
+    fn run_refresh_seek(&self, seqnum: gst::Seqnum) {
+        let inner = &self.inner;
+        // RE-VALIDATED HERE, not only where it was scheduled.
+        // `SelectionEngine::pump` sampled its gates (the caller's
+        // quiet, seekable, no external subtitle attached) at dispatch
+        // and this job then queued behind SetState/Load/DrainTextWork
+        // and the branch disposals. By the time it runs the pipeline
+        // can be mid-load, mid-buffering, mid-seek or carrying an
+        // external input, and a flushing seek landing there is the
+        // FLUSHING-into-an-adaptive-output-loop hazard
+        // (FREEZE-DIAGN.md 8.2 #2: adaptivedemux2 serves every track
+        // from one task and pauses it for good). `Job::Seek` has such
+        // a guard; this one had none.
+        //
+        // A stale refresh is DROPPED, never re-parked: it is only ever
+        // a nicety (the freshly selected track re-emits at its next
+        // cue either way), and reporting the failure is what clears
+        // the engine's `refreshing` slot, which otherwise blocks every
+        // later dispatch.
+        let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+        let settled = pending == gst::State::VoidPending && current >= gst::State::Paused;
+        let externals = {
+            let routing = inner.routing.lock();
+            routing.inputs.iter().any(|i| i.external.is_some())
+        };
+        let seekable = {
+            let mut query = gst::query::Seeking::new(gst::Format::Time);
+            inner.pipeline.query(&mut query) && query.result().0
+        };
+        let superseded = inner.selection.lock().refresh_superseded(seqnum);
+        if !settled || externals || !seekable || superseded {
+            debug!(
+                ?current,
+                ?pending,
+                externals,
+                seekable,
+                superseded,
+                ?seqnum,
+                "dropping a refresh seek whose preconditions no longer hold"
+            );
+            inner.selection.lock().refresh_failed(seqnum);
+            inner.emit(PlaybinEvent::RefreshSeekFailed { seqnum });
+            return;
+        }
+        let Some(position) = inner.pipeline.query_position::<gst::ClockTime>() else {
+            debug!("Skipping the refresh seek: no position");
+            inner.selection.lock().refresh_failed(seqnum);
+            inner.emit(PlaybinEvent::RefreshSeekFailed { seqnum });
+            return;
+        };
+
+        // The refresh is a RE-EMIT, not a transport change: it must
+        // land on the timeline the item already runs on. Hard-coding
+        // rate 1.0 here made every track switch at a non-1.0 speed
+        // silently drop the pipeline back to 1.0x, and since a refresh
+        // emits no `RateChanged` the caller (and the sender's UI) kept
+        // reporting the old speed over 1.0x audio.
+        let rate = inner.intended_timeline.lock().0;
+
+        // A flushing seek to the current position in the current
+        // state: re-emits the subtitle cue active NOW and flushes
+        // the stale one, without a normal seek's Paused round-trip.
+        debug!(
+            ?position,
+            rate,
+            ?seqnum,
+            "Refresh seek (flushing, current position)"
+        );
+        let event = rate_seek_event(rate, position, Some(seqnum));
+        if !inner.pipeline.send_event(event) {
+            warn!("Refresh seek failed");
+            inner.selection.lock().refresh_failed(seqnum);
+            inner.emit(PlaybinEvent::RefreshSeekFailed { seqnum });
+        } else {
+            // Same full-pipeline flush as Job::Seek above, same
+            // conditional reset of the passing-EOS mirror.
+            inner.clear_passing_eos_after_flush();
+        }
+    }
+
+    /// Worker side of [`Job::RecoverClock`].
+    fn run_recover_clock(&self) {
+        let inner = &self.inner;
+        debug!("Recovering from clock loss");
+        if let Err(err) = inner.pipeline.set_state(gst::State::Paused) {
+            warn!(?err, "Clock recovery: failed to reach Paused");
+            return;
+        }
+        if let Err(err) = inner.pipeline.set_state(gst::State::Playing) {
+            warn!(?err, "Clock recovery: failed to reach Playing");
+        }
+    }
+
+    /// Worker side of [`Job::RecalculateLatency`].
+    fn run_recalculate_latency(&self) {
+        let inner = &self.inner;
+        if let Err(err) = inner.pipeline.recalculate_latency() {
+            warn!(?err, "failed to recalculate pipeline latency");
+        }
+        // Every field freeze so far follows one of these within ~1s;
+        // the value the pipeline settled on is the missing datum.
+        let mut query = gst::query::Latency::new();
+        if inner.pipeline.query(&mut query) {
+            let (live, min, max) = query.result();
+            debug!(live, %min, ?max, "pipeline latency recalculated");
+        }
+    }
+
+    /// Worker side of [`Job::AdoptSubState`].
+    fn run_adopt_sub_state(&self, id: ExternalSubId, epoch: u32) {
+        let element = {
+            let routing = self.inner.routing.lock();
+            routing
+                .inputs
+                .iter()
+                .find(|input| {
+                    input
+                        .external
+                        .as_ref()
+                        .is_some_and(|e| e.id == id && e.epoch == epoch)
+                })
+                .map(|input| input.element.clone())
+        };
+        let Some(element) = element else {
+            debug!(?id, epoch, "stale state-adopt job; input already gone");
+            return;
+        };
+        element.set_locked_state(false);
+        if let Err(err) = element.sync_state_with_parent() {
+            warn!(
+                ?err,
+                ?id,
+                "the materialized external refused the state join"
+            );
+        }
+        debug!(
+            ?id,
+            "external input unlocked and joined to the pipeline state"
+        );
+    }
+
+    /// Worker side of [`Job::PrepareNext`].
+    fn run_prepare_next(&self, input: MediaInput, generation: u64) {
+        let inner = &self.inner;
+        // A newer load or prepare was requested after this one was
+        // queued; its reset would remove this input right away.
+        if generation != inner.next_generation.load(Ordering::SeqCst) {
+            debug!(generation, "skipping a superseded prepare");
+            return;
+        }
+        // External subtitle inputs are per-item side inputs on the
+        // live core. A swap would carry them across: decodebin3
+        // keeps their streams in the (combined) collections it
+        // posts for the NEXT item, which corrupts the held-back
+        // collection and the per-item selection state. Refuse; the
+        // caller's ordinary end-of-stream advance owns that
+        // transition.
+        if inner
+            .routing
+            .lock()
+            .inputs
+            .iter()
+            .any(|i| i.external.is_some())
+        {
+            debug!(
+                generation,
+                "external subtitles attached; refusing the gapless prepare"
+            );
+            inner.emit(PlaybinEvent::PreparedFailed { generation });
+            return;
+        }
+        // Latest wins: replace a still-pending previous prepare. A
+        // swap already PERFORMED cannot unwind: its activation is
+        // imminent, and arming over it would hand the activation
+        // this prepare's record while the pipeline plays the other
+        // item. Refuse instead.
+        if matches!(
+            self.cancel_prepared(AfterCancel::Nothing),
+            CancelOutcome::Declined { .. }
+        ) {
+            debug!(
+                generation,
+                "a performed swap is activating; refusing the prepare"
+            );
+            inner.emit(PlaybinEvent::PreparedFailed { generation });
+            return;
+        }
+
+        // The current item is in steady playback, so every routed
+        // pad's sticky stream-start is present: make sure the active
+        // group is known now. Activation detection (a group CHANGE at
+        // the output) and the old-item EOS drop both depend on the
+        // current group being positively known before the switch.
+        Inner::seed_active_group(inner);
+
+        // Arm the swap gate BEFORE the input exists: from here on
+        // any EOS at the decodebin3 outputs is held back, so a
+        // drain racing the prepare cannot leak to the sinks. The
+        // INPUT side commonly drained long ago (a small or resident
+        // file is swallowed whole by the multiqueue at load), which
+        // is fine: the swap proceeds immediately and the OUTPUT
+        // side still paces the actual switch. Only an output EOS
+        // that fully escaped before this point misses the handoff,
+        // and then the caller's ordinary end-of-stream advance owns
+        // the transition.
+        *inner.swap_gate.state.lock() = SwapState {
+            pending: Some(generation),
+            drained: false,
+            swapped: false,
+            dropped_eos: false,
+        };
+        // `drained` is derived AFTER the arm, never sampled into the
+        // literal above. Rust evaluates the assigned value before the
+        // place expression, so a sample there completes BEFORE the
+        // gate lock is taken, and the input's final EOS landing in
+        // that window is lost both ways: `note_input_pad_eos` no-ops
+        // against a gate with no pending swap, and EOS fires once per
+        // pad, so nothing sets it again. The prepared input's blocked
+        // threads then park on the condvar forever and the boundary
+        // silently hangs. This call re-reads the taps under the armed
+        // state, in the tap probe's own lock order (routing, then the
+        // gate).
+        Inner::note_input_pad_eos(inner);
+
+        let built = match input {
+            MediaInput::Uri(uri) => Inner::make_urisourcebin(&uri, true),
+            MediaInput::Element(element) => Ok(element),
+        };
+        let attached = built.and_then(|element| {
+            Inner::add_prepared_input(inner, element.clone(), generation).map(|_| element)
+        });
+        match attached {
+            Ok(element) => {
+                debug!(generation, "prepared the next input (blocked, unlinked)");
+                *inner.prepared.lock() = Some(PreparedNext {
+                    element,
+                    generation,
+                    pending_collection: None,
+                });
+            }
+            Err(err) => {
+                error!(?err, generation, "failed to prepare the next input");
+                // Disarm what was armed above.
+                let aborted = inner.swap_gate.abort();
+                // A prepare failing WHILE the pipeline transitions
+                // (its error message aborts a bin's in-flight
+                // async commit) must not strand playback below the
+                // caller's target: re-commit the transition.
+                self.recommit_pipeline_state();
+                inner.emit(PlaybinEvent::PreparedFailed { generation });
+                // The hold may have consumed the current item's
+                // end between the arm and this failure (see
+                // `SwapState::dropped_eos` and `cancel_prepared`).
+                if aborted.pending.is_some() && aborted.dropped_eos {
+                    debug!("the item's end was consumed while arming: synthesizing it");
+                    inner.emit(PlaybinEvent::EndOfStream);
+                }
+            }
+        }
+    }
+
+    /// Worker side of [`Job::CancelPrepared`].
+    fn run_cancel_prepared(&self, notify: bool, after: AfterCancel) {
+        let inner = &self.inner;
+        let outcome = self.cancel_prepared(after);
+        if notify {
+            inner.emit(match outcome {
+                CancelOutcome::Cancelled { generation } => {
+                    PlaybinEvent::PreparedCancelled { generation }
+                }
+                CancelOutcome::Declined { generation } => {
+                    PlaybinEvent::PreparedCancelDeclined { generation }
+                }
+            });
+        }
+    }
+
+    /// Worker side of [`Job::FinishActivation`].
+    fn run_finish_activation(&self) {
+        let inner = &self.inner;
+        // The prepared item is live (its generation is current):
+        // every older input is drained history. This removes the
+        // previous item's main input and its external subtitles.
+        let current = inner.current_generation();
+        let old: Vec<Input> = {
+            let mut routing = inner.routing.lock();
+            let (old, keep) = routing
+                .inputs
+                .drain(..)
+                .partition(|input| input.generation < current);
+            routing.inputs = keep;
+            old
+        };
+        for input in old {
+            debug!(
+                generation = input.generation,
+                "removing a drained input after the gapless activation"
+            );
+            Inner::remove_input(inner, input);
+        }
+    }
+
+    /// Worker side of [`Job::DrainTextWork`]. `epoch` is the queue stamp the
+    /// job was formed under, which the reconcile pass at the tail reads.
+    fn run_drain_text_work(&self, epoch: u64) {
+        let inner = &self.inner;
+        // Diagnostic only. The busy-loop regression test counts the
+        // drains the worker actually received.
+        Counters::bump(&inner.counters.drain_jobs_seen);
+        // The stamp travels with the drain: the reconcile pass at its
+        // tail wants to know whether a stop or a load was requested
+        // AFTER this drain was queued (see there). The drain itself
+        // still runs - it is `StalePolicy::Run`, and postponed work
+        // outlives an item change on purpose.
+        Inner::run_deferred_text_work(inner, epoch)
+    }
+
+    /// Worker side of [`Job::VideoChainGone`].
+    fn run_video_chain_gone(&self) {
+        let inner = &self.inner;
+        // Text is consumed synchronized against VIDEO buffers, so a
+        // text stream left linked after video stops can never
+        // drain and blocks decodebin3's reconfiguration until the next
+        // flush. Park it, and the policy brings it back once a video
+        // stream routes again.
+        Inner::park_text_streams(inner);
+        // The video pad is gone for good (a mid-item deselect, an
+        // input teardown), so take the chain out of the pipeline.
+        // Nothing can then aggregate over, or later lift, a sink that
+        // will never see data again. A re-select routes a fresh pad
+        // and rebuilds.
+        //
+        // Re-checked here rather than trusted from the posting side:
+        // between the pad-removed callback and this job a new video
+        // stream may already have routed, and tearing the chain down
+        // under it would strand the item with no video at all.
+        // LINKED video only. A parked video entry (the resurrected
+        // pad of a deselected stream) is not a reason to keep the
+        // chain, it is the very thing the deselect is waiting out.
+        // Inert before the resurrect park existed, since every
+        // routed video entry was linked by construction.
+        let video_routed = inner
+            .routing
+            .lock()
+            .routed
+            .iter()
+            .any(|r| r.kind == StreamKind::Video && r.downstream.is_some());
+        if video_routed {
+            debug!("a video stream routed again before the chain teardown ran; keeping it");
+        } else {
+            inner.remove_video_chain();
+        }
+    }
+
+    /// Worker side of [`Job::ClearStateFailure`].
+    fn run_clear_state_failure(&self) {
+        let inner = &self.inner;
+        // `Err(_)` here IS `GST_STATE_RETURN == FAILURE`, so a
+        // pipeline that can still commit is a no-op.
+        let (before, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
+        if before.is_ok() {
+            return;
+        }
+        // Below PAUSED nothing can be stranded, and the next load or
+        // teardown clears the latch itself. Staying out keeps this off
+        // downward transitions.
+        if current < gst::State::Paused {
+            debug!(?current, "leaving the latch to the next load or teardown");
+            return;
+        }
+        // `pending == current` non-void is what `bin_handle_async_start`
+        // writes on a lost state. Re-committing it leaves
+        // `old_state == old_next`, so GStreamer posts nothing and the
+        // report below is the caller's only announcement.
+        let lost_state = pending != gst::State::VoidPending && pending == current;
+        // `bin_handle_async_done` owed PENDING, not current. Mid-climb
+        // the two differ (an error during a PAUSED->PLAYING commit reads
+        // `(Paused, Playing)`), and re-committing `current` there
+        // cancels the climb and announces nothing. A void pending means
+        // the bin had arrived, and then `current` is what it arrived at.
+        let owed = if pending == gst::State::VoidPending {
+            current
+        } else {
+            pending
+        };
+        warn!(
+            ?current,
+            ?pending,
+            ?owed,
+            lost_state,
+            "the pipeline latched a state-change failure from an error the \
+             crate consumed; re-committing so it can settle again"
+        );
+        // A pending BELOW paused is a teardown descending (a stop, a
+        // load's reset). It clears the latch with its own `set_state`
+        // and asserting anything here would fight it, which is this
+        // crate's most expensive kind of mistake.
+        if owed < gst::State::Paused {
+            debug!(?owed, "leaving the latch to the descending transition");
+            return;
+        }
+        // Re-commit the state the bin had already decided on and was
+        // refused. The TARGET is NOT read back (GStreamer does not
+        // expose it) and does not need to be: the caller's state
+        // machine owns the transport target and re-asserts it from the
+        // edge reported below, which is the same contract every other
+        // correction here uses.
+        let _ = inner.pipeline.set_state(owed);
+        if !lost_state {
+            // A re-committed climb announces itself (`old_state !=
+            // old_next`), so nothing to report.
+            //
+            // UNCOVERED, deliberately: a latch caught with
+            // `pending == VoidPending`. Nothing is owed
+            // (`bin_handle_async_done` takes `nothing_pending` either
+            // way) and no reproducer was ever built. If one turns up,
+            // the predicate is `Job::SetState`'s. It is not applied
+            // here because this job has no target to compare against,
+            // so it would report on every consumed error against a
+            // settled pipeline.
+            return;
+        }
+        // Unannounced settle: re-committing the pipeline's own state
+        // leaves `old_state == old_next`, which both of GStreamer's
+        // "don't post silly messages with the same state" guards refuse
+        // to post on, so this cannot duplicate a real edge. Not
+        // conditioned on reading settled afterwards (measured on 400009
+        // the re-commit returns with `pending` still set).
+        debug!(
+            ?current,
+            "reporting the settle the latched pipeline could not post"
+        );
+        inner.emit(PlaybinEvent::StateChanged {
+            old: current,
+            current,
+            pending: gst::State::VoidPending,
+        });
+    }
+
+    /// Worker side of [`Job::PollTextPolicy`].
+    fn run_poll_text_policy(&self) {
+        let inner = &self.inner;
+        // Diagnostic only, the counterpart of the drain's counter.
+        Counters::bump(&inner.counters.poll_jobs_seen);
+        // Cleared FIRST, and unconditionally. A poke that lands while
+        // the policy below is running asks about a world this run has
+        // already read, so it must be able to queue a fresh job; and
+        // a flag left set by any path at all would swallow every poll
+        // for the rest of the instance.
+        inner.poll_queued.store(false, Ordering::SeqCst);
+        Inner::poll_text_policy(inner);
     }
 
     /// Worker side of [`Job::EffectDone`]: retire the in-flight entry and act
@@ -2496,27 +2363,18 @@ impl FcastPlaybin {
             // full: it returns untouched unless the failure names the wait
             // the engine is actually in, so a stale skip can neither clear a
             // newer dispatch nor cancel its re-emit flush.
-            // Lever: `FCAST_NO_SELECT_REFUSAL_FEEDBACK` (which covers both:
-            // its arm is "the lane's outcome tells the engine nothing", the
-            // v1 behaviour for a refusal and for a skip alike).
             Outcome::SelectRefused { seqnum } => {
                 warn!(id, ?seqnum, "a selection was refused");
-                if std::env::var_os("FCAST_NO_SELECT_REFUSAL_FEEDBACK").is_none() {
-                    inner.selection.lock().dispatch_failed(seqnum);
-                }
+                inner.selection.lock().dispatch_failed(seqnum);
             }
             Outcome::SelectSkipped { seqnum, reason } => {
                 debug!(id, ?seqnum, reason, "a selection was skipped");
-                if std::env::var_os("FCAST_NO_SELECT_REFUSAL_FEEDBACK").is_none() {
-                    inner.selection.lock().dispatch_failed(seqnum);
-                }
+                inner.selection.lock().dispatch_failed(seqnum);
             }
             // The lane only sent it. What it MEANS - the owed hold release,
             // the postponement of a refused seek, the verification, the
             // exhaustion escalation - is decided here, sequenced against
             // every other decision about this input.
-            // Lever: `FCAST_INLINE_REPLAY_OUTCOME` (the tail on the lane, as
-            // v1 ran it; the flag is read once, see `Inner`).
             Outcome::ReplaySent {
                 sub_id,
                 epoch,
@@ -2533,9 +2391,7 @@ impl FcastPlaybin {
                     total,
                     "a replay seek was sent"
                 );
-                if !inner.inline_replay_outcome {
-                    Self::replay_outcome(inner, sub_id, epoch, attempt, accepted, total);
-                }
+                Self::replay_outcome(inner, sub_id, epoch, attempt, accepted, total);
             }
             Outcome::JoinFinished { kind } => debug!(?kind, "a chain join finished"),
         }

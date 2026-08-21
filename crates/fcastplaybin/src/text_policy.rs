@@ -13,11 +13,13 @@ use gst::prelude::*;
 use tracing::{debug, info, warn};
 
 use crate::{
-    FcastPlaybin, Inner,
+    Counters, FcastPlaybin, Inner,
     api::SubtitleFeedItem,
     decisions,
+    decisions::text_seat::{self, ReclaimRule, Refusal, SeatContest, SeatVerdict},
+    external::Hold,
     jobs::Job,
-    routing::{RoutedStream, StreamKind},
+    routing::StreamKind,
 };
 
 /// Effects the subtitle-delivery reconcile pass has emitted
@@ -26,6 +28,121 @@ use crate::{
 /// The number that makes "converged is a fixpoint" checkable: at a settled,
 /// aligned PLAYING this must not move no matter how many passes run.
 pub(crate) static RECONCILE_EMITS: AtomicU64 = AtomicU64::new(0);
+
+/// The ways the text path degrades that are worth telling someone about once,
+/// and the kind half of [`Inner::text_degradations`]'s key.
+///
+/// Three shapes, one table, because all three are keyed the same way (this
+/// kind, a stream id, the load generation), live exactly as long as the load,
+/// and want the same grace/dedupe answer from [`Inner::note_degradation`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum TextDegradation {
+    /// The selected subtitle stream carries caps the cue renderer cannot
+    /// carry, or its branch could not be wired on those caps. Keyed by stream
+    /// id, no grace: caps are a verdict, not a race, so the first sight is the
+    /// report.
+    ///
+    /// THE one gate on [`crate::PlaybinEvent::SubtitleTrackUnsupported`], from
+    /// both of its producers. See [`Inner::report_unsupported_subtitle`].
+    Unsupported,
+    /// A consumer branch that could not be WIRED, as opposed to refused on its
+    /// caps. Keyed by [`Inner::unwirable_key`] (the stream id, or the pad for a
+    /// stream that has none yet), no grace.
+    ///
+    /// A RETRY gate, not a report gate. The poll that builds the branch runs on
+    /// every tick and a link GStreamer refuses will be refused again for the
+    /// same reason every time: without this the crate rebuilds and tears down a
+    /// queue once per tick for the rest of the item, logging a warning each
+    /// time and never telling the caller anything. The caller is told through
+    /// [`TextDegradation::Unsupported`] instead, which is the same user-visible
+    /// outcome (the branch stays parked, no cue is ever shown).
+    Unwirable,
+    /// The text link loop's caps gate has been refusing a routed stream for
+    /// want of a sticky CAPS (see [`CAPSLESS_TEXT_GRACE`]).
+    ///
+    /// The gate calls caps-absent "rare and transient" and refuses WITHOUT
+    /// reporting, which is right for the millisecond a pad spends between being
+    /// exposed and carrying its sticky. It is not right forever: a stream whose
+    /// decodebin3 input never gets a multiqueue slot never carries one, and the
+    /// gate then refuses the join for the life of the item, silently, about a
+    /// hundred times a second, while the selection reads as confirmed and the
+    /// caller sees a track that simply never appears. Measured at ~4025
+    /// refusals over 40 s. This is the memory that turns that into ONE line
+    /// naming the stream and the signature that says whether the break is
+    /// upstream of the gate or in selection.
+    CapslessStall,
+}
+
+/// One key's place in the grace/dedupe machine (see
+/// [`Inner::note_degradation`]).
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum DegradationMemo {
+    /// First seen at this instant, still inside its grace, nothing said yet.
+    Since(Instant),
+    /// Escalated once. This key says nothing more under this load.
+    Spoken,
+}
+
+/// What one [`Inner::note_degradation`] call means for its caller.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DegradationEdge {
+    /// First sight. The grace clock has started and there is nothing to say.
+    First,
+    /// The shape has outlasted its grace: report it, now, once. The only edge
+    /// any caller acts on.
+    Escalate,
+    /// Inside the grace, or already spoken for.
+    Silent,
+}
+
+/// One routed text stream the caps gate has been refusing for want of a sticky
+/// CAPS for longer than [`CAPSLESS_TEXT_GRACE`], i.e. the payload of a
+/// [`TextDegradation::CapslessStall`] escalation. Formed under the routing lock
+/// and logged after it, the `refusals` discipline.
+struct CapslessTextStall {
+    caps_path: String,
+    sid: String,
+    pad: String,
+    sticky_stream_start: bool,
+    sticky_segment: bool,
+    linked: bool,
+    parked_on: Option<String>,
+}
+
+/// One refused link candidate, formatted LAZILY (see [`Refusal`]).
+///
+/// The pad is held by reference count rather than by name, and the two
+/// pad-derived details are read back off it at format time. That is the whole
+/// point: a poll that refuses several candidates for a debug line nobody has
+/// enabled used to allocate one `String` per candidate per poll, measured at
+/// roughly 600 a second at receiver cadence. The re-read is a diagnostic only,
+/// so a sticky that changed since the decision prints its newer value and
+/// nothing acts on it.
+struct RefusedText<'a> {
+    pad: gst::Pad,
+    allowed: Option<&'a str>,
+    refusal: Refusal,
+}
+
+impl std::fmt::Debug for RefusedText<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let pad = self.pad.name();
+        match self.refusal {
+            Refusal::SidNotAllowed => write!(
+                f,
+                "{pad}: sid {:?} is not the allowed {:?}",
+                self.pad.stream_id().as_deref(),
+                self.allowed
+            ),
+            Refusal::CapsUnsupported => write!(
+                f,
+                "{pad}: caps {:?} are not subtitles the renderer can carry",
+                self.pad.current_caps().map(|caps| caps.to_string())
+            ),
+            other => write!(f, "{pad}: {other}"),
+        }
+    }
+}
 
 impl Inner {
     /// Whether ANY postponed text-branch work is pending. One predicate so
@@ -37,7 +154,7 @@ impl Inner {
     ///
     /// # One lock at a time, deliberately
     ///
-    /// Written as a chain of `||` this reads as four sequential probes and is
+    /// Written as a chain of `||` this reads as sequential probes and is
     /// not: every `lock()` in one expression is a temporary that lives to the
     /// end of the STATEMENT, so the chain held every crate mutex it touched at
     /// once. fpb-tick is a caller, and its discipline is "crate mutexes one at
@@ -48,19 +165,7 @@ impl Inner {
         if !self.deferred_text_disposal.lock().is_empty() {
             return true;
         }
-        if !self.deferred_input_removal.lock().is_empty() {
-            return true;
-        }
-        // Lever-only now: on the default arm both lists stay
-        // empty, and the reconcile pass is driven by the tick's periodic poll
-        // rather than by "is something remembered".
-        if !Self::text_reconcile_levered() {
-            return false;
-        }
-        if !self.deferred_replays.lock().is_empty() {
-            return true;
-        }
-        !self.deferred_verifications.lock().is_empty()
+        !self.deferred_input_removal.lock().is_empty()
     }
 
     /// Whether the crate is holding an ITEM at all: an input registered, or a
@@ -105,11 +210,8 @@ impl Inner {
         // about the deferred LISTS, and writing it for a drain that had
         // nothing to drain would change what the poll suppression means.
         let deferred = inner.has_deferred_text_work();
-        if !deferred && Inner::text_reconcile_levered() {
-            return;
-        }
         let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
-        if current != gst::State::Playing || pending != gst::State::VoidPending {
+        if !decisions::replay::settled_playing(current, pending) {
             // A no-op verdict. Until something changes it (a new postponed
             // item, or a state edge whose unconditional re-queue lands back
             // here), re-running this drain from the caller's poll can only
@@ -147,8 +249,7 @@ impl Inner {
         // came: the field showed a switched-to external whose branch never
         // joined at all while its replays burned out on a 400ms timer. The
         // thread that caused the skip retries it here instead.
-        // Lever: `FCAST_NO_DRAIN_TEXT_POLICY_POKE`.
-        if disposed && std::env::var_os("FCAST_NO_DRAIN_TEXT_POLICY_POKE").is_none() {
+        if disposed {
             Inner::poll_text_policy(inner);
         }
         // THE SECOND POKE, and the one an EMBEDDED track had no equivalent of.
@@ -168,8 +269,7 @@ impl Inner {
         // sid is carried by a JOINED entry and there is no unjoined text entry
         // holding it. It fires exactly while the graph is in the state the
         // reclaim and the link loop exist to leave.
-        // Lever: `FCAST_NO_DRAIN_TEXT_JOIN_POKE`.
-        if !disposed && std::env::var_os("FCAST_NO_DRAIN_TEXT_JOIN_POKE").is_none() {
+        if !disposed {
             let wanted = inner.selection.lock().subtitle_sid();
             // One routing read produces the predicate AND the capture-grade
             // detail: WHICH pads are waiting, with the verdicts a reclaim left
@@ -237,15 +337,6 @@ impl Inner {
                 Inner::poll_text_policy(inner);
             }
         }
-        // Replays that could not be delivered while paused.
-        let owed = std::mem::take(&mut *inner.deferred_replays.lock());
-        for (id, epoch, attempt) in owed {
-            debug!(
-                ?id,
-                epoch, attempt, "replaying an input postponed while paused"
-            );
-            inner.queue_job(Job::ReplaySub { id, epoch, attempt });
-        }
         // Inputs a detach took out of routing but could not tear down.
         let inputs = std::mem::take(&mut *inner.deferred_input_removal.lock());
         for input in inputs {
@@ -255,67 +346,24 @@ impl Inner {
             );
             Inner::remove_input(inner, input);
         }
-        // THE RECONCILE PASS RUNS FIRST, and is gated by its OWN lever only.
-        //
-        // It used to sit below the `FCAST_NO_REPLAY_VERDICT_DEFERRAL` return,
-        // which made that lever do two unrelated things: restore v1's
-        // conclude-anywhere verdict AND switch the reconciler off. Worse, the
-        // combination lost work outright - `replay_outcome`'s refusal path
-        // writes `deferred_replays` only when the RECONCILE lever is set, so
-        // with only the verdict lever set a refused replay was neither
-        // remembered nor re-derived. One lever, one behaviour.
-        if !Inner::text_reconcile_levered() {
-            Inner::reconcile_subtitle_delivery(inner, queued_epoch);
-        }
-        // The rest of the drain is the verdict-deferral change, gated whole
-        // by the same lever as its `verify_replay` half.
-        if std::env::var_os("FCAST_NO_REPLAY_VERDICT_DEFERRAL").is_some() {
-            return;
-        }
-        if Inner::text_reconcile_levered() {
-            // v1: drain the two remembered lists. Verdicts held while the
-            // pipeline could not produce evidence are re-armed rather than
-            // decided inline, so each check fires one verification interval
-            // AFTER the work above ran, against a branch whose delivery is
-            // real and not a leftover sticky.
-            let held = std::mem::take(&mut *inner.deferred_verifications.lock());
-            for (id, epoch, attempt) in held {
-                debug!(
-                    ?id,
-                    epoch, attempt, "re-arming a replay verification whose verdict was held"
-                );
-                inner.arm_replay_verification(id, epoch, attempt);
-            }
-            let selected = inner.selection.lock().subtitle_sid();
-            if let Some(sid) = selected {
-                let target = {
-                    let routing = inner.routing.lock();
-                    routing.inputs.iter().find_map(|input| {
-                        let external = input.external.as_ref()?;
-                        input
-                            .stream_ids()
-                            .contains(&sid)
-                            .then_some((external.id, external.epoch))
-                    })
-                };
-                if let Some((id, epoch)) = target {
-                    inner.arm_replay_verification(id, epoch, 0);
-                }
-            }
-            return;
-        }
+        // THE RECONCILE PASS, the tail of every drain and the whole of the
+        // postponed-replay story. It runs unconditionally, once: the pass is a
+        // fixpoint, so a converged graph costs two sticky reads and emits
+        // nothing.
         Inner::reconcile_subtitle_delivery(inner, queued_epoch);
     }
 
     /// THE reconcile pass for subtitle delivery: desired versus observed, at a
     /// settled PLAYING, with no memory of what was owed.
     ///
-    /// This replaces two compensation lists. `deferred_replays` remembered
-    /// "the pipeline refused a seek, do it later" and `deferred_verifications`
-    /// remembered "I could not decide, ask later"; both are RECONSTRUCTIONS of
-    /// a desired state that the graph can simply be asked about. The caller
-    /// already runs at exactly the moments delivery becomes provable, so the
-    /// pass re-derives instead of remembering:
+    /// This replaced two compensation lists, both now deleted. One remembered
+    /// "the pipeline refused a seek, do it later", the other "I could not
+    /// decide, ask later"; both were RECONSTRUCTIONS of a desired state that
+    /// the graph can simply be asked about, and a remembered intention can go
+    /// stale (wrong epoch, dead input, a seek that has since landed) in ways
+    /// the graph cannot. The caller already runs at exactly the moments
+    /// delivery becomes provable, so the pass re-derives instead of
+    /// remembering:
     ///
     /// * DESIRED - read fresh, never carried: the engine's selected subtitle
     ///   sid, and which attached external (with its epoch) carries it.
@@ -331,9 +379,10 @@ impl Inner {
     ///
     /// Guard 1 is desired != observed, which is the `if aligned { return }`
     /// below: a converged graph is a FIXPOINT and repeated passes emit
-    /// nothing. Guard 2 is "no effect for this resource is in flight", which
-    /// is `replay_inflight` (a replay emitted and not yet settled) and
-    /// `replay_checks_armed` (a bounded re-check already outstanding).
+    /// nothing. Guard 2 is "no effect for this resource is in flight", which is
+    /// the resource's own `replay_inflight` (a replay emitted and not yet
+    /// settled) and `verification_armed` (a bounded re-check already
+    /// outstanding), both read in the same acquisition that finds the resource.
     /// Together they are why a 1 Hz unconditional poll cannot oscillate.
     ///
     /// # Why alignment alone, when the verification also demands DELIVERY
@@ -347,7 +396,7 @@ impl Inner {
     /// evidence term belongs to the CHAIN, which spends a bounded number of
     /// attempts on it and then escalates. That asymmetry is why a check which
     /// cannot decide RE-ARMS itself rather than handing its question to this
-    /// pass (see `verify_replay`'s held-verdict arm): what this pass cannot
+    /// pass (see `verify_replay`'s below-PLAYING re-ask): what this pass cannot
     /// see, nothing else would ask about again.
     ///
     /// # The anti-fight rule with the deadline machinery
@@ -361,34 +410,43 @@ impl Inner {
     /// reconciler converges the GRAPH (seat, hold, replay); the engine
     /// converges the SELECTION. No shared field is written from both sides.
     ///
-    /// Lever: `FCAST_NO_TEXT_RECONCILE`.
+    /// # The evidence that the lists could go
+    ///
+    /// [`RECONCILE_EMITS`] counts what this pass has emitted, exported on the
+    /// stats snapshot as `reconcile_emits`. It is the instrument for the
+    /// fixpoint claim, and it is what made deleting remembered compensation
+    /// checkable rather than hopeful: at a settled, aligned PLAYING the
+    /// counter must not move however many passes run
+    /// (`tests/regression_text_reconcile.rs`). Keep it.
     pub(crate) fn reconcile_subtitle_delivery(inner: &Arc<Inner>, queued_epoch: u64) {
         inner.decider_only("the subtitle delivery reconcile pass");
         // DESIRED, read fresh at run time. A carried copy is how F1 happened.
         let Some(sid) = inner.selection.lock().subtitle_sid() else {
             return;
         };
+        // GUARD 2 rides along with the lookup, because both flags live on the
+        // resource this walk already has in hand.
         let target = {
             let routing = inner.routing.lock();
             routing.inputs.iter().find_map(|input| {
                 let external = input.external.as_ref()?;
-                input
-                    .stream_ids()
-                    .contains(&sid)
-                    .then_some((external.id, external.epoch))
+                input.stream_ids().contains(&sid).then_some((
+                    external.id,
+                    external.epoch,
+                    external.replay_inflight || external.verification_armed,
+                ))
             })
         };
         // Not an external: an embedded track needs no replay, and there is no
         // resource to reconcile.
-        let Some((id, epoch)) = target else {
+        let Some((id, epoch, effect_outstanding)) = target else {
             return;
         };
-        // GUARD 2 first, because it is the cheap one and because an emit while
-        // an effect is outstanding is the failure mode that actually hurts.
-        if inner.replay_inflight.lock().contains(&(id, epoch)) {
-            return;
-        }
-        if inner.replay_checks_armed.lock().contains(&(id, epoch)) {
+        // GUARD 2, checked first because it is the cheap one and because an
+        // emit while an effect is outstanding is the failure mode that actually
+        // hurts. Only advisory: the authority is `claim_replay`'s test-and-set
+        // below, which re-asks under the same lock at the moment of the emit.
+        if effect_outstanding {
             return;
         }
         // THE ANTI-FIGHT CONSULT, and it is a consult rather than a claim.
@@ -429,15 +487,7 @@ impl Inner {
                 return;
             };
             let sids = input.stream_ids();
-            let delivered = routing.routed.iter().any(|routed| {
-                routed.kind == StreamKind::Text
-                    && routed.downstream.is_some()
-                    && routed
-                        .db3_src_pad
-                        .sticky_event::<gst::event::StreamStart>(0)
-                        .is_some_and(|event| sids.iter().any(|sid| *sid == event.stream_id()))
-            });
-            (delivered, sids)
+            (Inner::text_stream_delivered(&routing, &sids), sids)
         };
         let aligned = delivered && inner.subtitle_origin_matches_video();
         // GUARD 1: converged. THE fixpoint.
@@ -466,11 +516,8 @@ impl Inner {
         // is `StalePolicy::Run` because postponed disposals, removals and
         // flushes outlive an item change; only the re-derived emit is
         // item-scoped.
-        // Lever: `FCAST_NO_RECONCILE_SUPERSESSION_GATE`.
         let current = inner.queue_epoch.load(Ordering::SeqCst);
-        if current != queued_epoch
-            && std::env::var_os("FCAST_NO_RECONCILE_SUPERSESSION_GATE").is_none()
-        {
+        if current != queued_epoch {
             debug!(
                 ?id,
                 queued_epoch,
@@ -487,19 +534,74 @@ impl Inner {
             ?sids,
             "reconcile: the selected external is not rendering aligned; replaying it"
         );
-        RECONCILE_EMITS.fetch_add(1, Ordering::SeqCst);
-        inner.replay_inflight.lock().insert((id, epoch));
-        if !inner.queue_job(Job::ReplaySub {
-            id,
-            epoch,
-            attempt: 0,
-        }) {
-            // A refused send discharges nothing, so the bit must not linger:
-            // it would suppress every future pass for this resource.
-            inner.replay_inflight.lock().remove(&(id, epoch));
+        RECONCILE_EMITS.fetch_add(1, Ordering::Relaxed);
+        // A refused send discharges nothing and must not leave the bit behind
+        // (it would suppress every future pass for this resource); a duplicate
+        // still puts a replay for this key on the way, so the chain is armed
+        // for it too. Both rules live in `Inner::claim_replay`.
+        if !inner.claim_replay(id, epoch, "the reconcile pass").owed() {
             return;
         }
         inner.arm_replay_verification(id, epoch, 0);
+    }
+
+    /// The GRACE and the DEDUPE every text degradation report shares: answer
+    /// [`DegradationEdge::Escalate`] exactly once per key, and only once the
+    /// shape has outlasted `grace`.
+    ///
+    /// Both halves are needed and for different reasons, stated per kind on
+    /// [`TextDegradation`]: the DEDUPE because the scans run on every poll for
+    /// as long as the shape lasts (measured in the thousands of hits per
+    /// second), the GRACE because the transient shapes are transient on the
+    /// healthy path and a first-sight report would fire on every fast subtitle
+    /// round trip and mean nothing.
+    ///
+    /// A ZERO grace escalates at first sight, which is what a verdict wants
+    /// (caps the renderer cannot carry will not become carryable by waiting).
+    ///
+    /// The returned edge is the only thing any caller acts on, and the table's
+    /// lock is released before it returns, so the expensive half (a pad walk, a
+    /// warn, an emit into foreign code) is paid outside it. The REPAIRS beside
+    /// these reports are gated by none of this and run on every poll, because a
+    /// slot that can be given its caps back should get them at the first
+    /// opportunity rather than after a grace.
+    pub(crate) fn note_degradation(
+        &self,
+        kind: TextDegradation,
+        key: &str,
+        grace: Duration,
+    ) -> DegradationEdge {
+        let key = (kind, key.to_string(), self.current_generation());
+        let mut table = self.text_degradations.lock();
+        match table.get(&key).copied() {
+            // Already escalated for this (kind, stream, load).
+            Some(DegradationMemo::Spoken) => DegradationEdge::Silent,
+            Some(DegradationMemo::Since(since)) if since.elapsed() >= grace => {
+                table.insert(key, DegradationMemo::Spoken);
+                DegradationEdge::Escalate
+            }
+            // Still inside the grace.
+            Some(DegradationMemo::Since(_)) => DegradationEdge::Silent,
+            // First sight starts the clock, and speaks at once where there is
+            // no grace to wait out.
+            None if grace.is_zero() => {
+                table.insert(key, DegradationMemo::Spoken);
+                DegradationEdge::Escalate
+            }
+            None => {
+                table.insert(key, DegradationMemo::Since(Instant::now()));
+                DegradationEdge::First
+            }
+        }
+    }
+
+    /// Whether [`Inner::note_degradation`] has already seen this key under the
+    /// current load. The read half, for a gate that must not start a clock of
+    /// its own: the link loop asks this once per candidate per poll and a
+    /// writing ask would memo every stream it merely considered.
+    pub(crate) fn noted_degradation(&self, kind: TextDegradation, key: &str) -> bool {
+        let key = (kind, key.to_string(), self.current_generation());
+        self.text_degradations.lock().contains_key(&key)
     }
 
     /// Whether the pipeline has come to rest at PAUSED, where a flush of the
@@ -507,6 +609,53 @@ impl Inner {
     pub(crate) fn resting_paused(pipeline: &gst::Pipeline) -> bool {
         let (_, current, pending) = pipeline.state(gst::ClockTime::ZERO);
         current == gst::State::Paused && pending == gst::State::VoidPending
+    }
+
+    /// Park a text pad that has just lost its branch and record the parking
+    /// sink on its routed entry, tearing the sink down if that entry vanished
+    /// while the lock was down.
+    ///
+    /// THE KEEPING PARK in both callers, never the discarding one. What the
+    /// park keeps is what the next join replays, and a discarding park here is
+    /// the field bug "subtitles start a few seconds in": on a whole-period text
+    /// Representation the item's opening seconds exist nowhere else.
+    ///
+    /// The park runs with the routing lock DOWN (it is bin surgery) and the
+    /// entry is re-found afterwards, which is the whole reason the orphan arm
+    /// exists: the stream can unroute in that window, leaving a parking sink
+    /// with nothing to belong to.
+    ///
+    /// `what` names the caller for its two log lines.
+    fn repark_or_orphan(inner: &Arc<Inner>, db3_src_pad: &gst::Pad, what: &str) {
+        let parked = inner.park_text_stream(db3_src_pad);
+        let orphaned = {
+            let mut routing = inner.routing.lock();
+            match routing
+                .routed
+                .iter_mut()
+                .find(|routed| routed.db3_src_pad == *db3_src_pad)
+            {
+                Some(routed) => {
+                    match parked {
+                        Ok((sink, park)) => {
+                            debug!(pad = %db3_src_pad.name(), what, "parked the text stream");
+                            routed.park_sink = Some(sink);
+                            routed.park_pad = Some(park);
+                        }
+                        Err(err) => warn!(?err, what, "failed to park the text stream"),
+                    }
+                    None
+                }
+                // The stream unrouted while the lock was down, so its parking
+                // sink has nothing left to belong to.
+                None => parked.ok(),
+            }
+        };
+        if let Some((sink, park)) = orphaned {
+            let _ = db3_src_pad.unlink(&park);
+            let _ = sink.set_state(gst::State::Null);
+            let _ = inner.pipeline.remove(&sink);
+        }
     }
 
     /// Move live text streams back to the parking sink (video
@@ -548,35 +697,7 @@ impl Inner {
             // any join can exist; a discarding park here is a whole-period
             // track's entire re-select burst lost. The 2 s replay window is
             // what keeps cues consumed mid-park from coming back stale.
-            let parked = inner.park_text_stream(&db3_src_pad);
-            let orphaned = {
-                let mut routing = inner.routing.lock();
-                match routing
-                    .routed
-                    .iter_mut()
-                    .find(|r| r.db3_src_pad == db3_src_pad)
-                {
-                    Some(routed) => {
-                        match parked {
-                            Ok((sink, park)) => {
-                                debug!(pad = %db3_src_pad.name(), "parked text stream");
-                                routed.park_sink = Some(sink);
-                                routed.park_pad = Some(park);
-                            }
-                            Err(err) => warn!(?err, "failed to park the text stream"),
-                        }
-                        None
-                    }
-                    // The stream unrouted while the lock was down, so its
-                    // parking sink has nothing left to belong to.
-                    None => parked.ok(),
-                }
-            };
-            if let Some((sink, park)) = orphaned {
-                let _ = db3_src_pad.unlink(&park);
-                let _ = sink.set_state(gst::State::Null);
-                let _ = inner.pipeline.remove(&sink);
-            }
+            Self::repark_or_orphan(inner, &db3_src_pad, "the eager park");
         }
     }
 
@@ -590,52 +711,40 @@ impl Inner {
     /// ownership closes. What each of those threads keeps is the right to
     /// SAY that something may have changed.
     ///
-    /// Coalesced, and the coalescing is the reason this is cheap enough to be
-    /// called from a receiver's 5ms poll loop: the swap admits one queued
-    /// poll at a time and folds the rest, and folding loses nothing because
-    /// the job re-reads the world it decides from. The bit is cleared by the
-    /// JOB before it runs, so the fold can only ever swallow a poke that the
-    /// pending run has not yet answered.
-    ///
-    /// Levers: `FCAST_INLINE_TEXT_POLL` restores the direct call on the
-    /// asking thread for every caller; `FCAST_INLINE_ROUTE_TEXT_POLL` does it
-    /// for the routing thread alone (`Inner::route_db3_pad`'s tail, the
-    /// instant-text path), which is the one site whose hop the switch-latency
-    /// probe gates and the one worth rolling back on its own.
+    /// Coalesced by [`Inner::queue_coalesced_text_poll`], which is the reason
+    /// this is cheap enough to be called from a receiver's 5ms poll loop.
     pub(crate) fn request_text_policy_poll(inner: &Arc<Inner>) {
-        if std::env::var_os("FCAST_INLINE_TEXT_POLL").is_some() {
-            Inner::poll_text_policy(inner);
-            return;
-        }
-        if inner.poll_queued.swap(true, Ordering::SeqCst) {
-            inner.poll_policy_coalesced.fetch_add(1, Ordering::SeqCst);
-            return;
-        }
-        if !inner.queue_job(Job::PollTextPolicy) {
-            // No decider to clear it, so clear it here: the crate is dying
-            // and this changes nothing, but a bit left set is the shape that
-            // silences every later poll and it must not be reachable at all.
-            inner.poll_queued.store(false, Ordering::SeqCst);
-        }
+        inner.queue_coalesced_text_poll(None);
     }
 
-    /// A waiting same-sid text pad the seat could actually move to. Scopes
-    /// the EOS seat reclaim and the link loop's EOS refusal (one rule, one
-    /// lever), so it must not count a pad that loop refuses itself: an
-    /// evicted, still-segmentless husk as the "live rival" left the seat
-    /// EMPTY forever (mid-play detach + same-URL re-attach, where the husk's
-    /// input is gone and the newcomer's slot EOSed before its first poll).
-    fn seat_ready_rival(routed: &RoutedStream, allowed: &str) -> bool {
-        routed.kind == StreamKind::Text
-            && routed.downstream.is_none()
-            && !routed.superseded
-            && !routed.saw_eos.load(Ordering::SeqCst)
-            && !(routed.evicted_dead
-                && routed
-                    .db3_src_pad
-                    .sticky_event::<gst::event::Segment>(0)
-                    .is_none())
-            && routed.db3_src_pad.stream_id().as_deref() == Some(allowed)
+    /// Queue ONE [`Job::PollTextPolicy`] behind the coalescing bit, the
+    /// protocol every asker shares.
+    ///
+    /// The swap admits one queued poll at a time and folds the rest, and
+    /// folding loses nothing because the job re-reads the world it decides
+    /// from. The bit is cleared by the JOB before it runs, so a fold can only
+    /// ever swallow a poke the pending run has not yet answered.
+    ///
+    /// THE SHARP EDGE, stated once here because it is what the two askers used
+    /// to guard separately: a bit left set silences every later poll, for good.
+    /// So a refused `queue_job` takes it straight back out. Nothing would clear
+    /// it in that case (there is no decider left, the crate is dying), which
+    /// changes nothing at the time, but the shape must not be reachable at all.
+    ///
+    /// `queued` is logged only when this call really queues, and only for the
+    /// asker that wants a line; the 5 ms poll loop passes `None` and stays
+    /// silent.
+    pub(crate) fn queue_coalesced_text_poll(&self, queued: Option<&str>) {
+        if self.poll_queued.swap(true, Ordering::SeqCst) {
+            Counters::bump(&self.counters.poll_policy_coalesced);
+            return;
+        }
+        if let Some(why) = queued {
+            debug!(why, "queueing a text policy poll");
+        }
+        if !self.queue_job(Job::PollTextPolicy) {
+            self.poll_queued.store(false, Ordering::SeqCst);
+        }
     }
 
     /// Link any routed-but-unlinked text stream into a consumer tail, once
@@ -662,8 +771,7 @@ impl Inner {
         // that wait wherever this ran. The decider is the only carrier left
         // (the routing thread's tail asks now, it does not call), but the
         // separation still holds the decider itself out of a flush that a
-        // link decision does not need, and the levers can put this function
-        // back on a foreign thread.
+        // link decision does not need.
         //
         // The poke is skipped while the last drain's no-op verdict stands
         // (see `Inner::drain_poke_parked`). Without that, a caller polling
@@ -673,14 +781,8 @@ impl Inner {
         // jobs over one 39-second Buffering park on the fuzz driver's seed
         // 400009). The pipeline state edges still queue the drain
         // unconditionally on the bus, so a settled PLAYING still drains
-        // promptly with no poll at all. The lever restores the
-        // poke-on-every-poll behavior for interleaved A/B measurement and
-        // gates this whole change, since the flag it ignores is written
-        // nowhere else that behavior can reach.
-        if inner.has_deferred_text_work()
-            && (!inner.drain_poke_parked.load(Ordering::SeqCst)
-                || std::env::var_os("FCAST_NO_DRAIN_POKE_SUPPRESS").is_some())
-        {
+        // promptly with no poll at all.
+        if inner.has_deferred_text_work() && !inner.drain_poke_parked.load(Ordering::SeqCst) {
             inner.queue_job(Job::DrainTextWork);
         }
         let (_, current, pending) = inner.pipeline.state(gst::ClockTime::ZERO);
@@ -692,35 +794,15 @@ impl Inner {
         // fresh one into it - and surgery is the decider's alone (see
         // `Inner::decider_only`). Asserted below the gate rather than at the
         // top: a poll that finds the pipeline unsettled decides nothing, and
-        // the levers are allowed to ask that question from anywhere.
+        // asking that question is allowed from anywhere.
         inner.decider_only("the text-policy surgery");
-        // TEST FAULT INJECTION (see [`Inner::staged_joins`]): bring up any
+        // TEST FAULT INJECTION (see [`TestStaging::joins`]): bring up any
         // branch whose staged join window has expired. Here rather than in the
         // join, and off the sleep it used to be, so the rest of the graph keeps
         // running through the window, which is the only condition under which
         // anything can cross the staged link and reproduce the latch.
-        if inner.stage_join_hold_ms.load(Ordering::SeqCst) > 0 {
-            let due: Vec<(gst::Element, gst::Element)> = {
-                let mut staged = inner.staged_joins.lock();
-                let now = Instant::now();
-                let (due, waiting) = std::mem::take(&mut *staged)
-                    .into_iter()
-                    .partition::<Vec<_>, _>(|(_, _, at)| *at <= now);
-                *staged = waiting;
-                due.into_iter()
-                    .map(|(tqueue, appsink, _)| (tqueue, appsink))
-                    .collect()
-            };
-            for (tqueue, appsink) in due {
-                warn!(
-                    tqueue = %tqueue.name(),
-                    "TEST STAGING: releasing a held text branch into its live link"
-                );
-                let _ = appsink.sync_state_with_parent();
-                let _ = tqueue.sync_state_with_parent();
-            }
-        }
-        // TEST FAULT INJECTION (see [`Inner::stage_text_caps_loss`]): take a
+        inner.stage_release_due_joins();
+        // TEST FAULT INJECTION (see [`TestStaging::text_caps_loss`]): take a
         // parked stream's sticky CAPS away here, ahead of the gate below, so
         // the poll that follows sees exactly what the caps loss leaves behind.
         Self::stage_text_caps_loss(inner);
@@ -782,14 +864,14 @@ impl Inner {
         // never fire for one. The engine's applied slot is the same authority
         // that gates the join below; it drives the hold too, adopted as the
         // confirmed slot, with the realigning replay the confirmation path
-        // would have queued. Lever: `FCAST_NO_UPSTREAM_SELECTION_SPLIT`.
+        // would have queued.
         if inner.upstream_owns_selection() {
             let applied = inner.selection.lock().subtitle_sid();
             let held = applied.and_then(|sid| {
                 let routing = inner.routing.lock();
                 routing.inputs.iter().find_map(|input| {
                     input.external.as_ref().and_then(|external| {
-                        (external.hold_until_selected && input.stream_ids().contains(&sid))
+                        (external.hold == Hold::UntilSelected && input.stream_ids().contains(&sid))
                             .then(|| (external.id, external.epoch, sid.clone()))
                     })
                 })
@@ -802,159 +884,61 @@ impl Inner {
                 );
                 *inner.last_applied_subtitle.lock() = Some(sid.clone());
                 // BEHIND the per-resource in-flight bit, like every other
-                // emitter (see [`Inner::replay_inflight`] and the join-time
-                // emitter's note on `subtitle-reenable-freeze.txt`). This site
-                // set the bit and then queued REGARDLESS, so a reconcile emit
-                // for the same applied sid one poll earlier left two
-                // `ReplaySub` jobs in the queue for one `(id, epoch)`; the
-                // choke point inside `replay_subtitle` can only collapse them
-                // while a seek is TRAVELLING, and the first outcome landing
-                // before the second job ran is the double flush the enqueue
-                // guard exists to close.
-                let key = (id, epoch);
-                let already = !inner.replay_inflight.lock().insert(key);
-                let sent = if already {
-                    debug!(
-                        ?id,
-                        epoch,
-                        "a replay for this input is already queued or in flight; the upstream \
-                         release does not add a second"
-                    );
-                    true
-                } else {
-                    let sent = inner.queue_job(Job::ReplaySub {
-                        id,
-                        epoch,
-                        attempt: 0,
-                    });
-                    if !sent {
-                        // Only a bit this call CREATED comes back out. Taking
-                        // a foreign emitter's would reopen the window the bit
-                        // exists to close, on a replay still pending.
-                        inner.replay_inflight.lock().remove(&key);
-                    }
-                    sent
-                };
-                // Owed either way. The hold is discharged by the outcome of a
-                // replay for this `(id, epoch)`, and a suppressed duplicate
-                // carries the same key (the selection-time emitter's rule, see
+                // emitter (see [`Inner::claim_replay`]). This site set the bit
+                // and then queued REGARDLESS, so a reconcile emit for the same
+                // applied sid one poll earlier left two `ReplaySub` jobs in the
+                // queue for one `(id, epoch)`; the choke point inside
+                // `replay_subtitle` can only collapse them while a seek is
+                // TRAVELLING, and the first outcome landing before the second
+                // job ran is the double flush the enqueue guard exists to
+                // close.
+                let claim = inner.claim_replay(id, epoch, "the upstream release");
+                // Owed on a collapsed duplicate too (`ReplayClaim::owed`): the
+                // hold is discharged by the outcome of a replay for this
+                // `(id, epoch)` and the pending one carries the same key (the
+                // selection-time emitter's rule, see
                 // [`Inner::release_owed_hold`]).
-                let owed = sent.then_some(key);
+                let owed = claim.owed().then_some((id, epoch));
                 inner.unblock_selected_externals(std::slice::from_ref(&sid), owed);
             }
         }
-        // Only the selected subtitle stream may relink. A disabled stream
-        // stays routed until decodebin3 removes its pad, and relinking it
-        // here would resurrect the cue the eager detach just cleared.
-        // Snapshot before taking the routing lock.
-        //
-        // A stream the applied selection names while the DESIRED state is an
-        // explicit subtitle-off is decodebin3's collection-default
-        // auto-select stomping that off (an attach makes it re-select over
-        // the applied state), the TEXT twin of the video resurrect
-        // `route_db3_pad` guards against. Splicing it into a fresh branch
-        // adds a reconfiguration to whatever transition is in flight, that
-        // transition never completes, and the receiver's pump gate
-        // (`quiet = running && !has_async_transition()`) then holds the
-        // engine's corrective re-assert back forever, so the only thing that
-        // would undo the stomp is postponed behind the stall the stomp
-        // caused. Leaving the stream parked keeps the pipeline settled, and
-        // the re-assert dispatches on the next pump and makes decodebin3 drop
-        // the pad. `fuzz_buffering` seed 400009, whose schedule ends
-        // `disable_subtitles` then `attach_external`. The lever restores the
-        // unconditional relink and gates this whole change.
+        // WHICH stream may relink at all, snapshotted before the routing lock
+        // (see [`text_seat::allowed_sid`], which carries the stomp guard's
+        // whole argument).
         let allowed_sid = {
             let selection = inner.selection.lock();
-            if selection.subtitle_explicitly_off()
-                && std::env::var_os("FCAST_LINK_STOMPED_SUBTITLE").is_none()
-            {
-                None
-            } else {
-                selection.subtitle_sid()
-            }
+            text_seat::allowed_sid(
+                selection.subtitle_explicitly_off(),
+                inner.stage_link_stomped_subtitle(),
+                selection.subtitle_sid(),
+            )
         };
-        // THE STALEMATE BREAK, and it runs before every reclaim below
-        // because all of them can only MOVE a seat that exists.
+        // THE STALEMATE BREAK, and it runs before every reclaim below because
+        // all of them can only MOVE a seat that exists (see
+        // [`text_seat::stalemate_broken`] for the 137-of-160 shape it answers).
         //
-        // `superseded` and `evicted_dead` are permanent latches that hold a
-        // pad out of contention, and both are only ever justified BY A
-        // COMPETITOR: they exist so two same-sid entries cannot trade the one
-        // consumer branch back and forth once per poll. With NOTHING holding
-        // the seat there is no competitor and nothing to protect, and the
-        // latches stop being a tie-break and become a lock-out.
-        //
-        // How both get set with no survivor, measured on
-        // `external_subtitle_lifecycle::reattaching_the_same_url_while_paused_
-        // renders_after_resume` (137 failures in 160 runs at 16-way load,
-        // 46.4 ms to 46.9 ms of one capture):
-        //
-        //   text_0 joins and holds the seat
-        //   the same URL is detached, then re-attached while PAUSED
-        //   decodebin3 exposes text_1 for the SAME sid
-        //   the superseded reclaim evicts text_0   -> text_0.superseded
-        //   text_1 joins and holds the seat
-        //   decodebin3 RECYCLES the pad name text_0 for the re-attached input
-        //     (the walk-back), so a FRESH routed entry for text_0 is
-        //     appended with clean flags, after text_1
-        //   the superseded reclaim now reads that fresh entry as the newest
-        //     and evicts text_1              -> text_1.superseded
-        //   the late detach disposes text_0's branch, text_0 rejoins
-        //     segmentless, and the segmentless-holder reclaim takes it out
-        //                                    -> text_0.evicted_dead
-        //
-        // End state: every same-sid entry latched out, `downstream: None` on
-        // all of them, and the link loop refusing both forever - `text_0:
-        // seat-evicted and still segmentless`, `text_1: decodebin3 replaced
-        // this pad for the same stream`, 4024 times over 40 s, with the
-        // selection CONFIRMED and the caller shown a track that never
-        // appears. No reclaim can heal it: each one needs a holder to move.
-        //
-        // So: no holder, and nothing admissible, means the latches have
-        // outlived their argument. Clear them and let the link loop re-run
-        // the contest; whichever pad is actually carrying data wins the seat
-        // back through the flow reclaim on the next poll, which is the
-        // self-stabilising predicate that already exists.
-        //
-        // Lever: `FCAST_NO_TEXT_SEAT_STALEMATE_BREAK`.
-        if let Some(allowed) = allowed_sid.as_deref()
-            && std::env::var_os("FCAST_NO_TEXT_SEAT_STALEMATE_BREAK").is_none()
-        {
+        // The lock is taken only when a stream is allowed, as before: with
+        // nothing allowed the projection is all-foreign and the rule cannot
+        // fire, so the acquisition would buy nothing.
+        if let Some(allowed) = allowed_sid.as_deref() {
             let mut routing = inner.routing.lock();
-            let same_sid = |routed: &RoutedStream| {
-                routed.kind == StreamKind::Text
-                    && routed.db3_src_pad.stream_id().as_deref() == Some(allowed)
-            };
-            let seated = routing
-                .routed
-                .iter()
-                .any(|r| same_sid(r) && r.downstream.is_some());
-            let candidates = routing.routed.iter().filter(|r| same_sid(r)).count();
-            let locked_out = routing
-                .routed
-                .iter()
-                .filter(|r| same_sid(r))
-                .all(|r| r.superseded || r.evicted_dead);
-            if !seated && candidates > 0 && locked_out {
-                TEXT_SEAT_STALEMATES.fetch_add(1, Ordering::SeqCst);
-                let pads: Vec<String> = routing
-                    .routed
-                    .iter_mut()
-                    .filter(|r| {
-                        r.kind == StreamKind::Text
-                            && r.db3_src_pad.stream_id().as_deref() == Some(allowed)
-                    })
-                    .map(|r| {
+            let view = routing.text_seat_view(Some(allowed));
+            if text_seat::stalemate_broken(&view) {
+                TEXT_SEAT_STALEMATES.fetch_add(1, Ordering::Relaxed);
+                let pads: Vec<String> = view
+                    .iter()
+                    .filter(|entry| entry.same_sid)
+                    .map(|entry| {
+                        let routed = &mut routing.routed[entry.index];
                         let name = format!(
                             "{}(superseded={} evicted_dead={} segment={})",
-                            r.db3_src_pad.name(),
-                            r.superseded,
-                            r.evicted_dead,
-                            r.db3_src_pad
-                                .sticky_event::<gst::event::Segment>(0)
-                                .is_some(),
+                            routed.db3_src_pad.name(),
+                            entry.superseded,
+                            entry.evicted_dead,
+                            entry.has_segment,
                         );
-                        r.superseded = false;
-                        r.evicted_dead = false;
+                        routed.superseded = false;
+                        routed.evicted_dead = false;
                         name
                     })
                     .collect();
@@ -967,308 +951,64 @@ impl Inner {
                 );
             }
         }
-        // The overlay's one subtitle seat may still be held by a DEAD
-        // branch. A detached input's decodebin3 output pad can linger
-        // linked to a live branch past `remove_input` (the id stays in the
-        // collection while a same-id stream re-materializes, so no
-        // pad-removed fires), its sticky segment wiped by the removal's
-        // flush with nothing upstream left to ever send another one. Left
-        // alone it holds the ONE live text slot forever and the
-        // `consumer_branch_live` check in the link loop below refuses every
-        // later text stream with no error surfaced anywhere. A branch that
-        // will render again always gets a segment re-sent by its own
-        // reconfigure, so a holder WITHOUT one, while a parked stream of the
-        // selected sid is waiting, is beyond recovery and gets evicted. The
-        // pads come out of the entry under the lock and the detach runs with
-        // the lock released, like every other text detach.
-        //
-        // KEPT when subtitleoverlay went. The rule was written against the
-        // overlay's geometry, where "holds the seat" meant "occupies
-        // `subtitle_sink`". The consumer transport
-        // states the same scarcity itself (`consumer_branch_live`), so a
-        // dead branch blocks its successor exactly as before and
-        // `external_subtitle_lifecycle::reattaching_the_same_url_after_a_
-        // detach_renders_again` still pins it.
-        // THE SECOND SHAPE OF A DEAD HOLDER, and the one
-        // `dash-reenable-freeze.txt` hit: decodebin3 EXPOSED A NEW PAD FOR THE
-        // SAME STREAM. `db_output_stream_new` names outputs off per-type
-        // counters that are never decremented (gstdecodebin3.c:4761-4784), and
-        // `find_free_compatible_output` refuses to re-use an existing output
-        // whose slot's stream is still REQUESTED (3169-3183). So a flushing
-        // seek that re-slots a subtitle stream which stays selected - a
-        // `Job::RefreshSeek` at a re-enable is exactly that - produces a
-        // SECOND text pad, `text_1`, beside a `text_0` that will never carry
-        // another buffer.
-        //
-        // The segment test below cannot see it: whether `text_0`'s pad kept
-        // its pre-seek sticky depends on whether the flush reached it, so the
-        // holder can be stone dead with a segment still on it. ROUTED ORDER
-        // can: `routing.routed` is append-only per route, so a waiting entry
-        // that comes AFTER the holder and carries the same stream id is
-        // decodebin3's replacement for it. Without this the field log's shape
-        // is permanent: `consumer_branch_live` refuses `text_1` on every
-        // later poll, the diagnostic below is suppressed because
-        // `already_joined` is true of the dead holder, and the track renders
-        // nothing for the rest of the item.
-        //
-        // # The two constraints that keep it from eating the graph
-        //
-        // Measured, not argued: without them `dash_testbed`'s
-        // `dash_embedded_text_track_plays` evicted `text_0` and then `text_1`
-        // 10 ms later and rendered nothing at all. The eviction FEEDS the
-        // predicate - an evicted holder becomes a waiting entry of the allowed
-        // sid - so
-        //
-        // * only a LATER entry may supersede an earlier one (`newest > held`), which is
-        //   the direction decodebin3 actually replaces in, and
-        // * an entry this reclaim already took out (`superseded`) or evicted
-        //   (`evicted_dead`) cannot be the one that justifies the next eviction.
-        //
-        // Lever: `FCAST_NO_SUPERSEDED_TEXT_PAD_RECLAIM`.
+        // THE SEAT RECLAIM: four rules whose ORDER is the rule, all four pure
+        // over the projection. Each one's measured argument lives on
+        // [`text_seat::select_victim`]; this side does the surgery only.
         let reclaim = {
             let mut routing = inner.routing.lock();
-            let waiting = allowed_sid.as_deref().is_some_and(|allowed| {
-                routing.routed.iter().any(|routed| {
-                    routed.kind == StreamKind::Text
-                        && routed.downstream.is_none()
-                        && routed.db3_src_pad.stream_id().as_deref() == Some(allowed)
-                })
-            });
-            // The segment-less holder, exactly as before.
-            let mut victim = waiting
-                .then(|| {
-                    routing.routed.iter().position(|routed| {
-                        routed.kind == StreamKind::Text
-                            && routed.downstream.is_some()
-                            && routed
-                                .db3_src_pad
-                                .sticky_event::<gst::event::Segment>(0)
-                                .is_none()
-                    })
-                })
-                .flatten();
-            let mut superseded = false;
-            // THE SEAT decodebin3 HAS ALREADY ENDED, and the shape none of the
-            // three rules below can see.
-            //
-            // On a re-select in upstream-selection mode decodebin3 builds a
-            // FRESH slot for the re-added input and CLEARS + EOSes the old one
-            // (`remove_input_stream` -> "Sending EOS to unused slot",
-            // gstdecodebin3.c:1232/1313), leaving the OUTPUT pad this entry
-            // holds ghosted onto a slot that is over. What the other rules can
-            // read about that pad:
-            //
-            // * its sticky SEGMENT survives the clear, so the segmentless-holder rule above
-            //   says it is healthy;
-            // * routed ORDER says nothing, because the replacement output can be built
-            //   either side of it (decodebin3 recycles outputs in both directions) and in
-            //   one capture there was no new entry at all for seconds;
-            // * its `last_buffer` ticket is whatever it was, and a rival that has not
-            //   carried a buffer YET stamps zero, so the flow reclaim cannot order a dead
-            //   pad against a live-but-idle one, which is precisely a sparse subtitle
-            //   track's normal condition.
-            //
-            // [`RoutedStream::saw_eos`] asks decodebin3 instead. A holder whose
-            // slot has ended can never deliver again, and the ONLY thing that
-            // was keeping it in the seat is that nothing said so.
-            //
-            // SCOPED TO A LIVE RIVAL, which is what keeps a legitimate
-            // end-of-item EOS from being a repair trigger: at the end of an item
-            // every same-sid pad is EOS and this finds no `live`, so it does
-            // nothing at all and the branch stays up to carry the EOS through.
-            // It fires only where there is somewhere better for the seat to go.
-            //
-            // `superseded` is deliberately NOT set on the victim: that is the
-            // verdict for a pad decodebin3 has REPLACED, and this one may yet be
-            // re-pointed at a live slot, at which point its STREAM_START
-            // clears the flag by itself. The link loop's own EOS refusal is what
-            // keeps the evicted pad out of contention meanwhile, and it is
-            // scoped identically, so the pair cannot trade the seat back and
-            // forth: the flag only clears on proof of life.
-            //
-            // Lever: `FCAST_NO_TEXT_EOS_SEAT_RECLAIM`.
-            if victim.is_none()
-                && std::env::var_os("FCAST_NO_TEXT_EOS_SEAT_RECLAIM").is_none()
-                && let Some(allowed) = allowed_sid.as_deref()
-            {
-                let same_sid = |routed: &RoutedStream| {
-                    routed.kind == StreamKind::Text
-                        && routed.db3_src_pad.stream_id().as_deref() == Some(allowed)
-                };
-                let held = routing
-                    .routed
-                    .iter()
-                    .position(|routed| same_sid(routed) && routed.downstream.is_some());
-                let live = routing
-                    .routed
-                    .iter()
-                    .any(|routed| Self::seat_ready_rival(routed, allowed));
-                if let Some(held) = held
-                    && routing.routed[held].saw_eos.load(Ordering::SeqCst)
-                    && live
-                {
-                    info!(
-                        held = %routing.routed[held].db3_src_pad.name(),
-                        "decodebin3 ended the slot this text branch is ghosting while another \
-                         pad for the same stream is still live; moving the seat off the dead one"
-                    );
-                    TEXT_EOS_SEAT_RECLAIMS.fetch_add(1, Ordering::SeqCst);
-                    victim = Some(held);
-                }
-            }
-            if victim.is_none()
-                && std::env::var_os("FCAST_NO_SUPERSEDED_TEXT_PAD_RECLAIM").is_none()
-                && let Some(allowed) = allowed_sid.as_deref()
-            {
-                let newest = routing.routed.iter().rposition(|routed| {
-                    routed.kind == StreamKind::Text
-                        && routed.downstream.is_none()
-                        && !routed.superseded
-                        && !routed.evicted_dead
-                        // ALIVE, or the verdict is wrong on its face: this rule
-                        // exists for "decodebin3 replaced the holder with THIS
-                        // pad", and a rival whose own slot has ended is not a
-                        // replacement for anything, just a second corpse.
-                        // Measured: a re-select found both same-sid pads
-                        // EOSed, this rule flipped the seat from one dead pad
-                        // to the other and LATCHED the first superseded,
-                        // 0.5 s before decodebin3 re-pointed that
-                        // very pad (the reuse shape), which then had to be
-                        // re-admitted through the flow reclaim. With no live
-                        // rival there is nothing to move the seat FOR.
-                        && !routed.saw_eos.load(Ordering::SeqCst)
-                        && routed.db3_src_pad.stream_id().as_deref() == Some(allowed)
-                });
-                let held = routing.routed.iter().position(|routed| {
-                    routed.kind == StreamKind::Text
-                        && routed.downstream.is_some()
-                        && routed.db3_src_pad.stream_id().as_deref() == Some(allowed)
-                });
-                if let (Some(newest), Some(held)) = (newest, held)
-                    && held < newest
-                {
-                    victim = Some(held);
-                    superseded = true;
-                }
-            }
-            // THE THIRD SHAPE, the walk-back: decodebin3 walked BACK onto
-            // a pad this reclaim had already condemned.
-            //
-            // Both rules above are ordered on `routing.routed`, which is
-            // append-only, so both can only ever move the seat FORWARD. That
-            // was believed to be the only direction decodebin3 replaces in.
-            // Measured against `manifest-text-seg.mpd`, it is not: at the
-            // SECOND off/on the old text input has drained and been released
-            // before the re-enable's new input is added, so slot 2 is free,
-            // `gst_decodebin_get_slot_for_input_stream_locked` takes it as the
-            // lowest-indexed unused compatible slot ("Re-using existing unused
-            // slot 2", gstdecodebin3.c:3886) and `db_output_stream_reconfigure`
-            // re-points the ORIGINAL pad `text_0` at it. At the first off/on
-            // the old input was still on slot 2, so decodebin3 built slot 3 and
-            // a new pad `text_1` instead. Forward then back, and the crate,
-            // holding `text_1` with `text_0` marked permanently superseded,
-            // refused the only pad still carrying cues for the rest of the
-            // item: 40 s of `queue_2` pushing one buffer per second into the
-            // parking fakesink while `fpb-tqueue-text_1` saw nothing and every
-            // adaptivedemux2 push returned `ok`.
-            //
-            // So the seat follows the DATA, which is the thing routed order was
-            // only ever a proxy for. A waiting same-sid pad that has carried a
-            // buffer MORE RECENTLY than the holder is the pad decodebin3 is
-            // feeding now, whichever side of the holder it sits on, and no
-            // sticky can argue otherwise (a superseded pad's segment is
-            // whatever it held before the flush; a buffer is not).
-            //
-            // Why this cannot thrash, which is what the ordering constraint was
-            // there to prevent: the predicate is self-stabilising. It seats the
-            // pad that is carrying data and leaves the loser carrying none, and
-            // a pad carrying none can never satisfy `>` against one that is. An
-            // eviction therefore cannot feed the next one, which is exactly the
-            // failure (`text_0` evicted, then `text_1` 10 ms later, nothing
-            // rendered) the `superseded`/`evicted_dead` guards were added for.
-            //
-            // Lever: `FCAST_NO_TEXT_PAD_FLOW_RECLAIM`.
-            if victim.is_none()
-                && std::env::var_os("FCAST_NO_TEXT_PAD_FLOW_RECLAIM").is_none()
-                && let Some(allowed) = allowed_sid.as_deref()
-            {
-                let same_sid = |routed: &RoutedStream| {
-                    routed.kind == StreamKind::Text
-                        && routed.db3_src_pad.stream_id().as_deref() == Some(allowed)
-                };
-                let held = routing
-                    .routed
-                    .iter()
-                    .position(|routed| same_sid(routed) && routed.downstream.is_some());
-                if let Some(held) = held {
-                    let held_flow = routing.routed[held].last_buffer.load(Ordering::Relaxed);
-                    // The freshest waiting pad, so a third pad cannot leave the
-                    // seat on a stale one.
-                    let fresher = routing
-                        .routed
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, routed)| same_sid(routed) && routed.downstream.is_none())
-                        // SEAT-READY, not merely alive. The freshness test
-                        // above can be satisfied by a ticket stamped BEFORE
-                        // the re-enable's flushing seek, so on its own it will
-                        // seat the winner inside the window where that flush
-                        // has stripped the pad's stickies and the new segment
-                        // has not arrived yet. The branch is built and linked
-                        // there, and the first buffer out of the slot then
-                        // crosses it with no segment to compute a running time
-                        // from: measured as one `fpb-tqueue-text_0` "Got data
-                        // flow before segment event" per re-seat, and a cue
-                        // timed off a missing segment is exactly the silent
-                        // corruption this whole path exists to prevent.
-                        //
-                        // Waiting for the segment costs one poll (10 ms) and
-                        // is the same proof of life the `evicted_dead` rule
-                        // already clears on.
-                        .filter(|(_, routed)| {
-                            routed
-                                .db3_src_pad
-                                .sticky_event::<gst::event::Segment>(0)
-                                .is_some()
-                        })
-                        .map(|(index, routed)| (index, routed.last_buffer.load(Ordering::Relaxed)))
-                        .filter(|(_, flow)| *flow > held_flow)
-                        .max_by_key(|(_, flow)| *flow);
-                    if let Some((winner, flow)) = fresher {
+            let view = routing.text_seat_view(allowed_sid.as_deref());
+            text_seat::select_victim(&view).map(|plan| {
+                // The two rules that repair a silently wrong seat say so,
+                // before anything moves.
+                match plan.rule {
+                    ReclaimRule::EndedSlot => {
                         info!(
-                            held = %routing.routed[held].db3_src_pad.name(),
-                            held_flow,
+                            held = %routing.routed[plan.held].db3_src_pad.name(),
+                            "decodebin3 ended the slot this text branch is ghosting while another \
+                             pad for the same stream is still live; moving the seat off the dead one"
+                        );
+                        TEXT_EOS_SEAT_RECLAIMS.fetch_add(1, Ordering::Relaxed);
+                    }
+                    ReclaimRule::FlowTicket => {
+                        let winner = plan.revive.expect("the flow rule names its winner");
+                        info!(
+                            held = %routing.routed[plan.held].db3_src_pad.name(),
+                            held_flow = plan.held_flow,
                             winner = %routing.routed[winner].db3_src_pad.name(),
-                            winner_flow = flow,
+                            winner_flow = plan.winner_flow,
                             "decodebin3 moved this text stream back to another pad, following the data"
                         );
-                        // The winner is the pad decodebin3 feeds, so whatever
-                        // verdict an earlier reclaim recorded against it is
-                        // out of date and must not survive into the link loop
-                        // (which refuses `superseded` outright, and
-                        // `evicted_dead` while the pad is segmentless).
-                        let winner = &mut routing.routed[winner];
-                        winner.superseded = false;
-                        winner.evicted_dead = false;
-                        victim = Some(held);
-                        superseded = true;
                     }
+                    ReclaimRule::SegmentlessHolder | ReclaimRule::SupersededOrder => {}
                 }
-            }
-            victim.map(|index| {
-                let routed = &mut routing.routed[index];
+                // The winner is the pad decodebin3 feeds, so whatever verdict
+                // an earlier reclaim recorded against it is out of date and
+                // must not survive into the link loop (which refuses
+                // `superseded` outright, and `evicted_dead` while the pad is
+                // segmentless). Only the flow rule names one.
+                if let Some(winner) = plan.revive {
+                    let winner = &mut routing.routed[winner];
+                    winner.superseded = false;
+                    winner.evicted_dead = false;
+                }
+                // THE TWO STORED FLAGS STAY TWO, and this is where the verdict
+                // decides them. A holder that merely lost its segment may yet
+                // revive, and `evicted_dead` alone is the right, clearable
+                // verdict for it; a holder decodebin3 has REPLACED never will
+                // (see [`RoutedStream::superseded`]).
+                let superseded = plan.verdict == SeatVerdict::Replaced;
+                let routed = &mut routing.routed[plan.held];
                 // THE PAIR INVARIANT, asserted where it is relied on.
-                // The search above filters on `downstream` alone, while
-                // the slot rule this eviction exists to unblock is the
-                // PAIR (`consumer_branch_live`: `appsink.is_some() &&
-                // downstream.is_some()`). The two are written and
-                // cleared together (the link loop sets both on a
-                // successful join, every detach takes both) so a text
-                // entry cannot hold one without the other. If it ever
-                // could, this eviction would be aimed at a branch that
-                // was not occupying the slot, and the stream it is
-                // clearing the way for would stay refused with nothing
-                // in the log to say why.
+                // The rules filter on `downstream` alone, while the slot rule
+                // this eviction exists to unblock is the PAIR
+                // (`consumer_branch_live`: `appsink.is_some() &&
+                // downstream.is_some()`). The two are written and cleared
+                // together (the link loop sets both on a successful join,
+                // every detach takes both) so a text entry cannot hold one
+                // without the other. If it ever could, this eviction would be
+                // aimed at a branch that was not occupying the slot, and the
+                // stream it is clearing the way for would stay refused with
+                // nothing in the log to say why.
                 debug_assert!(
                     routed.appsink.is_some(),
                     "a routed text entry has a downstream but no appsink, so the \
@@ -1276,14 +1016,10 @@ impl Inner {
                      branch holds the one live text slot"
                 );
                 routed.evicted_dead = true;
-                // WHICH of the two verdicts this is. A holder that merely
-                // lost its segment may yet revive, and `evicted_dead` alone
-                // is the right, clearable verdict for it; a holder decodebin3
-                // has REPLACED never will (see [`RoutedStream::superseded`]).
                 routed.superseded = superseded;
                 (
                     routed.db3_src_pad.clone(),
-                    routed.downstream.take().expect("filtered on Some above"),
+                    routed.downstream.take().expect("the rules filtered on Some"),
                     routed.tqueue.take(),
                     routed.appsink.take(),
                     superseded,
@@ -1305,34 +1041,7 @@ impl Inner {
             // and the re-select's burst then lands here before the flow
             // reclaim can re-admit the pad. What the park keeps is what that
             // join replays.
-            let parked = inner.park_text_stream(&db3_src_pad);
-            let orphaned = {
-                let mut routing = inner.routing.lock();
-                match routing
-                    .routed
-                    .iter_mut()
-                    .find(|routed| routed.db3_src_pad == db3_src_pad)
-                {
-                    Some(routed) => {
-                        match parked {
-                            Ok((sink, park)) => {
-                                routed.park_sink = Some(sink);
-                                routed.park_pad = Some(park);
-                            }
-                            Err(err) => warn!(?err, "failed to park the evicted text branch"),
-                        }
-                        None
-                    }
-                    // The stream unrouted while the lock was down, so its
-                    // parking sink has nothing left to belong to.
-                    None => parked.ok(),
-                }
-            };
-            if let Some((sink, park)) = orphaned {
-                let _ = db3_src_pad.unlink(&park);
-                let _ = sink.set_state(gst::State::Null);
-                let _ = inner.pipeline.remove(&sink);
-            }
+            Self::repark_or_orphan(inner, &db3_src_pad, "the slot reclaim");
         }
         let mut routing = inner.routing.lock();
         if !routing
@@ -1348,7 +1057,9 @@ impl Inner {
         // [`Inner::external_cues_fed`]).
         let mut joined_external: Option<crate::ExternalSubId> = None;
         // Why each candidate was refused, reported below when nothing joined.
-        let mut refusals: Vec<String> = Vec::new();
+        // A discriminant and a pad reference, rendered only if that line is
+        // actually enabled (see [`RefusedText`]).
+        let mut refusals: Vec<RefusedText<'_>> = Vec::new();
         // Degradation reports formed under the routing lock and emitted after it, the
         // `refusals` discipline applied to an event rather than a log line.
         let mut unsupported: Vec<(String, gst::Caps)> = Vec::new();
@@ -1367,25 +1078,23 @@ impl Inner {
         // poller, never `pump_selection`, whose first read is `routing`
         // (`caller_bounded_switch` pins exactly that).
         let mut replay_cues: Vec<SubtitleFeedItem> = Vec::new();
-        // Whether a consumer branch is already feeding (see the arm split
-        // below). Snapshotted before the loop starts mutating entries, and
-        // updated when this call links one.
-        let mut consumer_branch_live = routing
-            .routed
-            .iter()
-            .any(|r| r.kind == StreamKind::Text && r.appsink.is_some() && r.downstream.is_some());
-        // THE OTHER HALF of the EOS reclaim above, snapshotted before the loop
-        // starts mutating entries: whether a SEAT-READY candidate for the
-        // allowed sid exists (see `seat_ready_rival`). Read once rather than
-        // per candidate, and blind to pads this loop refuses itself, so the
-        // loop cannot refuse every pad on the strength of a rival it is about
-        // to refuse as well.
-        let live_rival_waiting = allowed_sid.as_deref().is_some_and(|allowed| {
-            routing
-                .routed
-                .iter()
-                .any(|r| Self::seat_ready_rival(r, allowed))
-        });
+        // What the rest of the contest says, snapshotted before the loop starts
+        // mutating entries (see [`SeatContest`]).
+        //
+        // `consumer_branch_live` reads the PAIR, which is the slot rule the
+        // one-live-branch arm enforces, and is updated when this call links a
+        // branch. `live_rival_waiting` is THE OTHER HALF of the EOS reclaim
+        // above: read once rather than per candidate, and blind to pads this
+        // loop refuses itself, so the loop cannot refuse every pad on the
+        // strength of a rival it is about to refuse as well.
+        let mut contest = SeatContest {
+            live_rival_waiting: routing
+                .text_seat_entries(allowed_sid.as_deref())
+                .any(|entry| entry.seat_ready_rival()),
+            consumer_branch_live: routing.routed.iter().any(|r| {
+                r.kind == StreamKind::Text && r.appsink.is_some() && r.downstream.is_some()
+            }),
+        };
         // Which text sids an EXTERNAL input serves (and whose), snapshotted
         // before the loop takes `routed` mutably: the misaligned-cue gates
         // apply only to streams the replay machinery can re-deliver, and the
@@ -1402,118 +1111,41 @@ impl Inner {
                     .map(move |sid| (sid, id))
             })
             .collect();
-        for routed in routing
-            .routed
-            .iter_mut()
-            .filter(|r| r.kind == StreamKind::Text && r.downstream.is_none())
-        {
-            // No stream id yet means wait for a later poll.
+        for (index, routed) in routing.routed.iter_mut().enumerate() {
+            if routed.kind != StreamKind::Text || routed.downstream.is_some() {
+                continue;
+            }
+            // ONE read of the pad's stream id, shared by the projection below
+            // and by every report this loop forms: two reads can straddle a
+            // STREAM_START and disagree about which stream this entry carries.
             let sid = routed.db3_src_pad.stream_id();
-            if sid.is_none() || sid.as_deref() != allowed_sid.as_deref() {
-                // Silent until a field log needed it: a switched-to external
-                // whose branch never joined left no trace of WHY, and every
-                // refusal in this loop is a `continue`.
-                refusals.push(format!(
-                    "{}: sid {:?} is not the allowed {:?}",
-                    routed.db3_src_pad.name(),
-                    sid.as_deref(),
-                    allowed_sid.as_deref()
-                ));
-                continue;
-            }
-            // A pad decodebin3 has REPLACED never competes again, and no
-            // sticky can argue otherwise (see [`RoutedStream::superseded`]).
-            // Without this the reclaim below and this loop trade the consumer
-            // back and forth once per poll, which is a busier version of the
-            // wedge the reclaim exists to break.
-            if routed.superseded {
-                refusals.push(format!(
-                    "{}: decodebin3 replaced this pad for the same stream",
-                    routed.db3_src_pad.name()
-                ));
-                continue;
-            }
-            // A pad whose decodebin3 slot has ENDED cannot deliver another
-            // buffer, so seating it is the silent wrong seat this whole
-            // defect is: the branch joins, reports success, and the
-            // refuses every live rival for the life of the item.
+            // THE ADMISSION CASCADE: six arms whose order is itself the rule,
+            // pure over the projection (see [`text_seat::admit`], which carries
+            // each arm's argument, the EOS-before-evicted ordering included).
             //
-            // BEFORE the `evicted_dead` arm on purpose. That arm CLEARS its
-            // verdict for any pad carrying a segment, and a pad decodebin3
-            // EOSed keeps the segment it had, so letting it run first would
-            // hand the seat straight back to the pad the reclaim above just
-            // took it from.
-            //
-            // Scoped exactly as that reclaim is: only while a rival with a
-            // LIVE slot is waiting. With no rival this refuses nothing, so a
-            // track whose only pad has EOSed keeps its branch (and its
-            // end-of-item EOS reaches the consumer) instead of the caller
-            // being told the stream is unrenderable.
-            // Lever: `FCAST_NO_TEXT_EOS_SEAT_RECLAIM`, with the reclaim it
-            // pairs with, since the two are one rule and move together.
-            if live_rival_waiting
-                && routed.saw_eos.load(Ordering::SeqCst)
-                && std::env::var_os("FCAST_NO_TEXT_EOS_SEAT_RECLAIM").is_none()
-            {
-                refusals.push(format!(
-                    "{}: its decodebin3 slot ended",
-                    routed.db3_src_pad.name()
-                ));
-                continue;
-            }
-            // An entry the seat reclaim evicted stays out of contention
-            // while its pad remains segmentless. Relinked, it would only
-            // win the seat back from the same-sid stream that can render
-            // (routed order is stable, and the evicted pad comes first). A
-            // segment on the pad means the branch revived and may compete
-            // again.
-            if routed.evicted_dead {
-                if routed
-                    .db3_src_pad
-                    .sticky_event::<gst::event::Segment>(0)
-                    .is_none()
-                {
-                    refusals.push(format!(
-                        "{}: seat-evicted and still segmentless",
-                        routed.db3_src_pad.name()
-                    ));
-                    continue;
-                }
+            // The unwirable question goes in as a CLOSURE because answering it
+            // costs a lock and a key allocation, and the five arms above it
+            // filter almost every candidate.
+            let entry = routed.text_view(index, sid.as_deref(), allowed_sid.as_deref());
+            let admission = text_seat::admit(&entry, &contest, || {
+                inner.noted_degradation(
+                    TextDegradation::Unwirable,
+                    &Self::unwirable_key(sid.as_deref(), &routed.db3_src_pad),
+                )
+            });
+            // PROOF OF LIFE, applied even when a later arm refuses: a segment
+            // on the pad means the branch revived, and clearing the latch here
+            // is what lets it compete on the next poll, when the branch ahead
+            // of it may be gone.
+            if admission.revived {
                 routed.evicted_dead = false;
             }
-            // THE ADMISSION GATE. What a branch must satisfy before it may be
-            // built; everything above this point (routing, sids, the
-            // evicted-branch rule) is about WHICH stream, and everything from
-            // the queue down is construction.
-            //
-            // ONE live consumer branch, by construction. This used to come
-            // free from subtitleoverlay's single `subtitle_sink` being
-            // physically occupied. A per-stream appsink has no such natural
-            // limit, so the rule is stated. Without it a
-            // poll that runs before an outgoing branch's disposal has landed
-            // can link a SECOND branch, and both then feed the one consumer:
-            // two tracks interleaved on screen, and a `Clear` from either
-            // wiping the other.
-            if consumer_branch_live {
-                refusals.push(format!(
-                    "{}: another text branch already feeds the consumer",
-                    routed.db3_src_pad.name()
-                ));
-                continue;
-            }
-            // A stream whose branch could not be WIRED under this load is
-            // not tried again: the link is decided on caps GStreamer has
-            // already refused once, and the poll runs every tick. See
-            // [`Inner::unwirable_text_streams`]; the caller was told at
-            // the first refusal.
-            if inner.unwirable_text_streams.lock().contains(&(
-                Self::unwirable_key(sid.as_deref(), &routed.db3_src_pad),
-                inner.current_generation(),
-            )) {
-                refusals.push(format!(
-                    "{}: its branch could not be wired under this load",
-                    routed.db3_src_pad.name()
-                ));
+            if let Some(refusal) = admission.refusal {
+                refusals.push(RefusedText {
+                    pad: routed.db3_src_pad.clone(),
+                    allowed: allowed_sid.as_deref(),
+                    refusal,
+                });
                 continue;
             }
             // The caps gate, and its loud degradation. Caps absent means
@@ -1524,14 +1156,14 @@ impl Inner {
             let caps = routed.db3_src_pad.current_caps();
             if caps
                 .as_ref()
-                .and_then(|c| decisions::consumer_stream_format(c, inner.bitmap_subs))
+                .and_then(|c| decisions::consumer_stream_format(c))
                 .is_none()
             {
-                refusals.push(format!(
-                    "{}: caps {:?} are not subtitles the renderer can carry",
-                    routed.db3_src_pad.name(),
-                    caps.as_ref().map(|c| c.to_string())
-                ));
+                refusals.push(RefusedText {
+                    pad: routed.db3_src_pad.clone(),
+                    allowed: allowed_sid.as_deref(),
+                    refusal: Refusal::CapsUnsupported,
+                });
                 // Only a stream that HAS caps has been refused on its
                 // merits; a pad still waiting for its sticky is not a
                 // capability failure and must not be reported as one.
@@ -1552,39 +1184,27 @@ impl Inner {
                 // loop.
                 if caps.is_none()
                     && let Some(sid) = sid.as_deref()
+                    && inner.note_degradation(
+                        TextDegradation::CapslessStall,
+                        sid,
+                        CAPSLESS_TEXT_GRACE,
+                    ) == DegradationEdge::Escalate
                 {
-                    let key = (sid.to_string(), inner.current_generation());
-                    let mut watch = inner.capsless_text_since.lock();
-                    match watch.get(&key) {
-                        // Already escalated: say nothing more for this
-                        // (stream, load).
-                        Some(None) => {}
-                        Some(Some(since)) if since.elapsed() >= CAPSLESS_TEXT_GRACE => {
-                            watch.insert(key, None);
-                            drop(watch);
-                            let pad = &routed.db3_src_pad;
-                            stalled.push(CapslessTextStall {
-                                caps_path: Inner::caps_path_dump(pad),
-                                sid: sid.to_string(),
-                                pad: pad.name().to_string(),
-                                sticky_stream_start: pad
-                                    .sticky_event::<gst::event::StreamStart>(0)
-                                    .is_some(),
-                                sticky_segment: pad
-                                    .sticky_event::<gst::event::Segment>(0)
-                                    .is_some(),
-                                linked: pad.is_linked(),
-                                parked_on: pad
-                                    .peer()
-                                    .and_then(|peer| peer.parent_element())
-                                    .map(|element| element.name().to_string()),
-                            });
-                        }
-                        Some(Some(_)) => {}
-                        None => {
-                            watch.insert(key, Some(Instant::now()));
-                        }
-                    }
+                    let pad = &routed.db3_src_pad;
+                    stalled.push(CapslessTextStall {
+                        caps_path: Inner::caps_path_dump(pad),
+                        sid: sid.to_string(),
+                        pad: pad.name().to_string(),
+                        sticky_stream_start: pad
+                            .sticky_event::<gst::event::StreamStart>(0)
+                            .is_some(),
+                        sticky_segment: pad.sticky_event::<gst::event::Segment>(0).is_some(),
+                        linked: pad.is_linked(),
+                        parked_on: pad
+                            .peer()
+                            .and_then(|peer| peer.parent_element())
+                            .map(|element| element.name().to_string()),
+                    });
                 }
                 continue;
             }
@@ -1657,7 +1277,7 @@ impl Inner {
                     .static_pad("sink")
                     .is_some_and(|pad| pad.is_active());
             if !branch_active {
-                JOINS_INTO_AN_INACTIVE_BRANCH.fetch_add(1, Ordering::SeqCst);
+                JOINS_INTO_AN_INACTIVE_BRANCH.fetch_add(1, Ordering::Relaxed);
                 linked_before_active.push(routed.db3_src_pad.name().to_string());
             }
             // Out of the park, into the renderer (through its queue). Text
@@ -1688,25 +1308,20 @@ impl Inner {
                             .is_some(),
                         "text stream joined its consumer tail"
                     );
-                    // TEST FAULT INJECTION (see `Inner::stage_join_hold_ms`).
+                    // TEST FAULT INJECTION (see `TestStaging::join_hold_ms`).
                     // The branch was deliberately left at NULL so THIS link
                     // landed on inactive pads; hold it there long enough for
                     // the demuxer to put something across the new link (a
                     // sparse text track's GAP tick is once a second) and only
                     // then bring it up, exactly as a `sync_state_with_parent`
                     // that lost the race would have.
-                    let hold = inner.stage_join_hold_ms.load(Ordering::SeqCst);
+                    let hold = inner.stage_hold_join(&tqueue, &appsink);
                     if hold > 0 {
                         warn!(
                             pad = %routed.db3_src_pad.name(),
                             hold_ms = hold,
                             "TEST STAGING: holding a joined text branch at NULL"
                         );
-                        inner.staged_joins.lock().push((
-                            tqueue.clone(),
-                            appsink.clone(),
-                            Instant::now() + Duration::from_millis(hold),
-                        ));
                     }
                     // WHAT THE PARK HELD, now that there is somewhere to put
                     // it. The branch is linked but no cue has crossed it yet:
@@ -1731,7 +1346,7 @@ impl Inner {
                     routed.ever_joined = true;
                     routed.downstream = Some(queue_entry);
                     routed.tqueue = Some(tqueue);
-                    consumer_branch_live = true;
+                    contest.consumer_branch_live = true;
                     routed.appsink = Some(appsink);
                     joined = sid.map(|s| s.to_string());
                     joined_external = external;
@@ -1844,57 +1459,67 @@ impl Inner {
         // the replay is idempotent. Queued only AFTER the link, so the
         // replayed data lands in the live branch and not in the parking sink.
         //
-        // BEHIND THE IN-FLIGHT BIT, like every other emitter, and this was the
-        // one that was not. `subtitle-reenable-freeze.txt` caught the cost:
-        // the selection-time emitter (see `Inner::external_stream_slotless`'s
-        // caller) set the bit and queued a `ReplaySub`; 1.5 ms later THIS site
-        // queued a second one for the same `(id, epoch)` while the first was
-        // still being carried; the first outcome (effect 12) cleared both this
-        // bit and `ExternalInput::replay_seek_outstanding` BEFORE the second
-        // job ran, so the choke point inside `replay_subtitle` let it through
-        // and effect 13 flushed the branch a second time. That choke point can
-        // only collapse triggers while a seek is TRAVELLING; a queue that
-        // already holds one is a strictly earlier question, and this is where
-        // it gets asked.
+        // BEHIND THE IN-FLIGHT BIT (see [`Inner::claim_replay`], which carries
+        // the protocol), and this was the emitter that was not.
+        // `subtitle-reenable-freeze.txt` caught the cost: the selection-time
+        // emitter (see `Inner::external_stream_slotless`'s caller) set the bit
+        // and queued a `ReplaySub`; 1.5 ms later THIS site queued a second one
+        // for the same `(id, epoch)` while the first was still being carried;
+        // the first outcome (effect 12) cleared both this bit and
+        // `ExternalInput::replay_seek_outstanding` BEFORE the second job ran,
+        // so the choke point inside `replay_subtitle` let it through and effect
+        // 13 flushed the branch a second time.
         //
-        // The bit is a HashSet keyed on `(id, epoch)`, so "already queued" and
-        // "already in flight" are the same read, and both are discharged by
-        // the single tail in `FcastPlaybin::replay_outcome`. A refused
-        // `queue_job` takes the bit straight back out - leaving it set would
-        // silence the reconcile pass for this resource permanently.
-        // Read before the `joined` sid is consumed below; see the follow-up
-        // poll at the tail of this function for what it is for.
+        // `seated` is read before the `joined` sid is consumed below; see the
+        // follow-up poll at the tail of this function for what it is for.
         let seated = joined.is_some();
-        if let Some(sid) = joined {
-            for input in routing.inputs.iter() {
-                let Some(external) = input.external.as_ref() else {
-                    continue;
-                };
-                if !external.hold_until_selected && input.stream_ids().contains(&sid) {
-                    let key = (external.id, external.epoch);
-                    if !inner.replay_inflight.lock().insert(key) {
-                        debug!(
-                            id = ?key.0,
-                            epoch = key.1,
-                            "a replay for this input is already queued or in flight; the join \
-                             does not add a second"
-                        );
-                        continue;
+        // COLLECTED under the lock, CLAIMED past it. The in-flight bit lives on
+        // the resource, so `Inner::claim_replay` takes the routing lock this
+        // scope is holding. Still strictly after the link either way, which is
+        // the ordering that matters: the replayed data has to land in the live
+        // branch and not in the parking sink.
+        let join_replays: Vec<(crate::ExternalSubId, u32)> = match joined.as_ref() {
+            Some(sid) => routing
+                .inputs
+                .iter()
+                .filter_map(|input| {
+                    let external = input.external.as_ref()?;
+                    // TWO ARMS, ONE BODY, and the coincidence is deliberate.
+                    // This asks "is the selection gate discharged", NOT "can
+                    // buffers flow": `OwedToReplay` still has its probes in.
+                    // The claim below collapses onto the outstanding replay in
+                    // the common case (`ReplayClaim::Duplicate`, a log line and
+                    // nothing else), and in the window where an owing has no
+                    // replay left travelling it is a discharge path that
+                    // matters: `FcastPlaybin::replay_subtitle`'s slotless early
+                    // return clears the in-flight bit WITHOUT releasing the
+                    // owed hold, and `Job::RetrySub`'s "reached decodebin3
+                    // after all" arm returns without bumping the epoch, so the
+                    // input can sit owed with nothing out. Skipping the join
+                    // replay there leaves the probes installed on an input
+                    // whose selection reads as confirmed.
+                    match external.hold {
+                        Hold::None => {}
+                        Hold::OwedToReplay => {}
+                        // Still gated on the selection, and the selection that
+                        // lifts the gate carries the replay itself.
+                        Hold::UntilSelected => return None,
                     }
-                    if !inner.queue_job(Job::ReplaySub {
-                        id: external.id,
-                        epoch: external.epoch,
-                        attempt: 0,
-                    }) {
-                        inner.replay_inflight.lock().remove(&key);
-                    }
-                }
-            }
-        }
+                    input
+                        .stream_ids()
+                        .contains(sid)
+                        .then_some((external.id, external.epoch))
+                })
+                .collect(),
+            None => Vec::new(),
+        };
         // PAST THE LOCK. `report_unsupported_subtitle` emits to the caller's
         // event handler, which is foreign code; nothing in this crate calls
         // into one while holding `routing`.
         drop(routing);
+        for (id, epoch) in join_replays {
+            inner.claim_replay(id, epoch, "the join");
+        }
         // The consumer is foreign code too, and the FIRST of these calls out:
         // a join's replayed opening cues, taken (and their clear-suppression
         // armed) under the lock at the link, handed over now so a consumer
@@ -1903,7 +1528,7 @@ impl Inner {
         // already ran).
         for item in replay_cues {
             if let (Some(id), SubtitleFeedItem::Cue { .. }) = (joined_external, &item) {
-                // TEST FAULT INJECTION (see `Inner::stage_cue_loss`).
+                // TEST FAULT INJECTION (see `TestStaging::cue_loss`).
                 if inner.stage_consume_cue_loss() {
                     continue;
                 }
@@ -1919,11 +1544,10 @@ impl Inner {
             // Remembered BEFORE the report, so the two cannot disagree about
             // whether this stream has been given up on -- and remembered even
             // when there is no sid to report, because the retry has to stop
-            // either way.
-            inner
-                .unwirable_text_streams
-                .lock()
-                .insert((key, inner.current_generation()));
+            // either way. The RETRY memo only: the event below is deduped in
+            // exactly one place, `report_unsupported_subtitle`, and this must
+            // not become a second gate on it.
+            inner.note_degradation(TextDegradation::Unwirable, &key, Duration::ZERO);
             if let Some(sid) = sid {
                 inner.report_unsupported_subtitle(&sid, &caps);
             }
@@ -1931,7 +1555,7 @@ impl Inner {
         // ONE LINE PER (stream, load), and it carries the whole discriminator
         // so a field capture answers upstream-vs-selection without a rebuild.
         for stall in stalled {
-            CAPSLESS_TEXT_STALLS.fetch_add(1, Ordering::SeqCst);
+            CAPSLESS_TEXT_STALLS.fetch_add(1, Ordering::Relaxed);
             warn!(
                 sid = %stall.sid,
                 pad = %stall.pad,
@@ -1972,34 +1596,14 @@ impl Inner {
         // Deliberately after the diagnostics above: a branch this repairs was
         // about to become a silent dead track, and the loudest thing in the log
         // should be the repair.
-        Self::heal_latched_text_slots(inner);
-        // The same shape one layer over: the slot is reachable but its
-        // sticky CAPS was destroyed in flight by a flush, so the gate above can
-        // never admit the stream. Runs AFTER the gate on purpose, since a rescue is
-        // only ever needed for a stream the gate has just refused, and putting
-        // it here means the very next poll is the one that joins.
-        Self::rescue_lost_text_slot_caps(inner);
-        // THE SHAPE WITH NO PAD TO WALK IN FROM, one layer over again: the
-        // selected stream is in a decodebin3 multiqueue slot that has no OUTPUT
-        // at all, so it is invisible to every rule above, all of which reason
-        // about routed entries, and there is no routed entry for a slot
-        // decodebin3 never ghosted. Both repairs above start at a routed pad
-        // and so cannot reach it; see [`Inner::adopt_outputless_text_slot`].
-        //
-        // The trigger is "no LIVE pad carries the selection": either nothing
-        // routed carries the sid, or everything that does has EOSed. On a
-        // healthy item that is false and this costs one routing-lock read.
-        let stranded = allowed_sid.as_deref().filter(|allowed| {
-            let routing = inner.routing.lock();
-            !routing.routed.iter().any(|routed| {
-                routed.kind == StreamKind::Text
-                    && !routed.saw_eos.load(Ordering::SeqCst)
-                    && routed.db3_src_pad.stream_id().as_deref() == Some(*allowed)
-            })
-        });
-        if let Some(allowed) = stranded {
-            Self::adopt_outputless_text_slot(inner, allowed);
-        }
+        // Together with the same shape one layer over: the slot is reachable
+        // but its sticky CAPS was destroyed in flight by a flush, so the gate
+        // above can never admit the stream. That one runs AFTER the gate on
+        // purpose, since a rescue is only ever needed for a stream the gate has
+        // just refused, and putting it here means the very next poll is the one
+        // that joins. Both walk the routing table's text entries, so they share
+        // one survey and one lock acquisition; see `TextPadSurvey` in flush.rs.
+        Self::heal_and_rescue_text_slots(inner);
         // A SEAT IS A REASON TO ASK AGAIN, and nothing used to say so.
         //
         // Every reclaim in this function lives in this function, and this
@@ -2021,25 +1625,11 @@ impl Inner {
         // now has a `downstream`, and the loop only considers entries without
         // one. The follow-up poll re-runs the reclaims and links nothing, so it
         // asks for no further poll.
-        // Lever: `FCAST_NO_TEXT_SEAT_FOLLOWUP_POLL`.
-        if seated && std::env::var_os("FCAST_NO_TEXT_SEAT_FOLLOWUP_POLL").is_none() {
-            TEXT_SEAT_FOLLOWUP_POLLS.fetch_add(1, Ordering::SeqCst);
+        if seated {
+            TEXT_SEAT_FOLLOWUP_POLLS.fetch_add(1, Ordering::Relaxed);
             Inner::request_text_policy_poll(inner);
         }
     }
-}
-
-/// One routed text stream the caps gate has been refusing for want of a sticky
-/// CAPS for longer than [`CAPSLESS_TEXT_GRACE`]. Formed under the routing lock
-/// and logged after it, the `refusals` discipline.
-struct CapslessTextStall {
-    caps_path: String,
-    sid: String,
-    pad: String,
-    sticky_stream_start: bool,
-    sticky_segment: bool,
-    linked: bool,
-    parked_on: Option<String>,
 }
 
 /// Text-branch joins whose own pads were still INACTIVE when the upstream
@@ -2051,10 +1641,10 @@ struct CapslessTextStall {
 /// branch's pads being active. It is the discriminator a capture needs to
 /// tell "the join raced the activation" apart from any other way a slot can
 /// latch, and it is read by `dash_testbed`'s slot-latch test.
-static JOINS_INTO_AN_INACTIVE_BRANCH: AtomicU64 = AtomicU64::new(0);
+pub(crate) static JOINS_INTO_AN_INACTIVE_BRANCH: AtomicU64 = AtomicU64::new(0);
 
 /// How long the caps gate may refuse a routed text stream for want of a sticky
-/// CAPS before it says so (see [`Inner::capsless_text_since`]).
+/// CAPS before it says so (see [`TextDegradation::CapslessStall`]).
 ///
 /// Generous on purpose. The gate's transient really is sub-millisecond, but a
 /// loaded machine can stretch a pad's first sticky by a lot, and this line is
@@ -2064,7 +1654,7 @@ const CAPSLESS_TEXT_GRACE: Duration = Duration::from_secs(5);
 
 /// Routed text streams the caps gate gave up on for want of a sticky CAPS (see
 /// [`CAPSLESS_TEXT_GRACE`]). One per (stream id, load generation).
-static CAPSLESS_TEXT_STALLS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static CAPSLESS_TEXT_STALLS: AtomicU64 = AtomicU64::new(0);
 
 /// Times the seat stalemate break had to clear the contention latches because
 /// every routed pad for the selected text stream was locked out with no branch
@@ -2073,7 +1663,7 @@ static CAPSLESS_TEXT_STALLS: AtomicU64 = AtomicU64::new(0);
 /// Zero on a healthy item. Positive means the crate walked into a state no
 /// reclaim could heal - every reclaim moves an EXISTING seat - and had to undo
 /// its own bookkeeping to get out.
-static TEXT_SEAT_STALEMATES: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TEXT_SEAT_STALEMATES: AtomicU64 = AtomicU64::new(0);
 
 /// Times the seat was taken off a text branch whose decodebin3 slot had ENDED
 /// while another pad for the same stream was still live (see
@@ -2082,130 +1672,15 @@ static TEXT_SEAT_STALEMATES: AtomicU64 = AtomicU64::new(0);
 /// A REPAIR count. Every one is a re-selected subtitle track that would
 /// otherwise have rendered nothing for the rest of the item with the crate
 /// reporting the selection as applied.
-static TEXT_EOS_SEAT_RECLAIMS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TEXT_EOS_SEAT_RECLAIMS: AtomicU64 = AtomicU64::new(0);
 
 /// Follow-up polls the link loop asked for after seating a branch (see the tail
 /// of [`Inner::poll_text_policy`]). One per join, and the number a caller that
 /// polls on EVENTS ONLY depends on: in the field capture it is the only poll
 /// that would have run in the 6.5 s after the bad seat.
-static TEXT_SEAT_FOLLOWUP_POLLS: AtomicU64 = AtomicU64::new(0);
+pub(crate) static TEXT_SEAT_FOLLOWUP_POLLS: AtomicU64 = AtomicU64::new(0);
 
 impl FcastPlaybin {
-    /// How many text-branch surgeries ran off the deciding thread (see
-    /// [`Inner::decider_only`]). Zero on a default-arm run - a debug build
-    /// panics rather than counting - and positive under the inline levers,
-    /// which is how a test proves the assertion is wired to anything at all.
-    #[doc(hidden)]
-    pub fn text_surgery_off_decider(&self) -> u64 {
-        self.inner.text_surgery_off_decider.load(Ordering::SeqCst)
-    }
-
-    /// Routed text streams the caps gate gave up on for want of a sticky CAPS
-    /// (see [`CAPSLESS_TEXT_STALLS`]). Process-global, so read it as a delta.
-    /// Not part of the public API.
-    #[doc(hidden)]
-    pub fn capsless_text_stalls() -> u64 {
-        CAPSLESS_TEXT_STALLS.load(Ordering::SeqCst)
-    }
-
-    /// Times the text seat stalemate break fired (see
-    /// [`TEXT_SEAT_STALEMATES`]). Process-global, so read it as a delta. Not
-    /// part of the public API.
-    #[doc(hidden)]
-    pub fn text_seat_stalemates() -> u64 {
-        TEXT_SEAT_STALEMATES.load(Ordering::SeqCst)
-    }
-
-    /// Times the seat moved off a text branch whose decodebin3 slot had ended
-    /// (see [`TEXT_EOS_SEAT_RECLAIMS`]). Process-global, so read it as a delta.
-    /// Not part of the public API.
-    #[doc(hidden)]
-    pub fn text_eos_seat_reclaims() -> u64 {
-        TEXT_EOS_SEAT_RECLAIMS.load(Ordering::SeqCst)
-    }
-
-    /// Follow-up polls asked for after a seat (see
-    /// [`TEXT_SEAT_FOLLOWUP_POLLS`]). Process-global, so read it as a delta.
-    /// Not part of the public API.
-    #[doc(hidden)]
-    pub fn text_seat_followup_polls() -> u64 {
-        TEXT_SEAT_FOLLOWUP_POLLS.load(Ordering::SeqCst)
-    }
-
-    /// TEST FAULT INJECTION: hold every text branch this instance joins at
-    /// NULL for `hold` after its upstream link, staging the field's join window
-    /// (see [`Inner::stage_join_hold_ms`]). Per instance, so it is safe under a
-    /// test binary's thread pool. Not part of the public API.
-    #[doc(hidden)]
-    pub fn stage_join_before_active(&self, hold: Duration) {
-        self.inner
-            .stage_join_hold_ms
-            .store(hold.as_millis() as u64, Ordering::SeqCst);
-    }
-
-    /// TEST FAULT INJECTION: destroy the next parked text stream's sticky CAPS
-    /// on its decodebin3 ghost and on the multiqueue slot behind it, staging
-    /// The staged caps loss (see [`Inner::stage_text_caps_loss`]). One shot,
-    /// and per instance so it is safe under a test binary's thread pool.
-    /// Not part of the public API.
-    #[doc(hidden)]
-    pub fn stage_text_caps_loss(&self) {
-        self.inner
-            .stage_text_caps_loss
-            .store(true, Ordering::SeqCst);
-    }
-
-    /// TEST FAULT INJECTION: swallow the next `count` external cues at the
-    /// feed sites instead of delivering them, staging the multiqueue's
-    /// in-flight destruction (buffers lost, events kept; see
-    /// [`Inner::stage_cue_loss`]). Per instance so it is safe under a test
-    /// binary's thread pool. Not part of the public API.
-    #[doc(hidden)]
-    pub fn stage_text_cue_loss(&self, count: u32) {
-        self.inner.stage_cue_loss.store(count, Ordering::SeqCst);
-    }
-
-    /// Text-branch joins that linked into a still-INACTIVE branch (see
-    /// [`JOINS_INTO_AN_INACTIVE_BRANCH`]). Process-global, so read it as a
-    /// delta. Not part of the public API.
-    #[doc(hidden)]
-    pub fn joins_into_an_inactive_branch() -> u64 {
-        JOINS_INTO_AN_INACTIVE_BRANCH.load(Ordering::SeqCst)
-    }
-
-    /// Cues the text park held through bring-up and the join handed back (see
-    /// [`Inner::take_parked_text_cues`]). Process-global, so read it as a
-    /// delta. Not part of the public API.
-    #[doc(hidden)]
-    pub fn parked_text_cues_replayed() -> u64 {
-        crate::routing::parked_text_cues_replayed()
-    }
-
-    /// How many text-policy polls were folded into an already-queued one
-    /// (see [`Inner::request_text_policy_poll`]). Not part of the public API.
-    #[doc(hidden)]
-    pub fn poll_policy_coalesced(&self) -> u64 {
-        self.inner.poll_policy_coalesced.load(Ordering::SeqCst)
-    }
-
-    /// How many [`Job::PollTextPolicy`] jobs the worker has received. With
-    /// the counter above this is the whole accounting a polling caller can
-    /// be held to: every poll is either a job or a fold, and the jobs must
-    /// never outnumber the polls. Not part of the public API.
-    #[doc(hidden)]
-    pub fn poll_policy_job_count(&self) -> u64 {
-        self.inner.poll_jobs_seen.load(Ordering::SeqCst)
-    }
-
-    /// How many effects the subtitle-delivery reconcile pass has emitted (see
-    /// [`Inner::reconcile_subtitle_delivery`]). A converged, aligned pipeline
-    /// is a fixpoint: this must not move however often the pass runs. Not part
-    /// of the public API.
-    #[doc(hidden)]
-    pub fn reconcile_emits() -> u64 {
-        RECONCILE_EMITS.load(Ordering::SeqCst)
-    }
-
     /// Re-drive the text link policy (link routed text into a consumer tail
     /// when a video stream is present). The crate re-checks on its own
     /// events, so this is a belt-and-suspenders hook for a caller's
@@ -2222,14 +1697,5 @@ impl FcastPlaybin {
     /// worker queue, so a poll issued before a pump is decided before it.
     pub fn poll_text_policy(&self) {
         Inner::request_text_policy_poll(&self.inner);
-    }
-
-    /// How many [`Job::DrainTextWork`] jobs the worker has received so far.
-    /// A diagnostic counter for the busy-loop regression test, which pins
-    /// that a caller polling at a pipeline parked below PLAYING does not
-    /// re-queue the drain on every poll. Not part of the public API.
-    #[doc(hidden)]
-    pub fn drain_text_job_count(&self) -> u64 {
-        self.inner.drain_jobs_seen.load(Ordering::SeqCst)
     }
 }

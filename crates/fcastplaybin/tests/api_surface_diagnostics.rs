@@ -233,7 +233,10 @@ impl Harness {
             self.drain_events();
             {
                 let log = self.log.borrow();
-                if log.iter().any(|(event, generation)| pred(event, *generation)) {
+                if log
+                    .iter()
+                    .any(|(event, generation)| pred(event, *generation))
+                {
                     return;
                 }
                 if let Some((PlaybinEvent::Error { error, .. }, _)) = log
@@ -369,10 +372,10 @@ impl Harness {
     }
 }
 
-/// A graph-dump round-trip proves the worker is not wedged.
+/// A barrier round-trip proves the worker is not wedged.
 fn assert_worker_alive(harness: &Harness, what: &str) {
     let (tx, rx) = mpsc::channel();
-    harness.playbin.debug_graph_async(Box::new(move |_| {
+    harness.playbin.barrier_async(Box::new(move || {
         let _ = tx.send(());
     }));
     let deadline = Instant::now() + Duration::from_secs(10);
@@ -415,9 +418,7 @@ fn stream_io_stats_tags_externals() {
     let deadline = Instant::now() + EVENT_TIMEOUT;
     let first = loop {
         let stats = harness.playbin.stream_io_stats();
-        if stats
-            .iter()
-            .any(|s| s.external == Some(id) && s.bytes > 0)
+        if stats.iter().any(|s| s.external == Some(id) && s.bytes > 0)
             && stats.iter().any(|s| s.external.is_none() && s.bytes > 0)
         {
             break stats;
@@ -469,9 +470,7 @@ fn stream_io_stats_tags_externals() {
         let later = second
             .iter()
             .find(|s| s.stream_id.as_ref() == Some(stream_id))
-            .unwrap_or_else(|| {
-                panic!("stream {stream_id} vanished between samples: {second:#?}")
-            });
+            .unwrap_or_else(|| panic!("stream {stream_id} vanished between samples: {second:#?}"));
         assert!(
             later.bytes >= entry.bytes,
             "bytes for {stream_id} went backwards: {} -> {}",
@@ -540,7 +539,11 @@ fn source_summaries_tracks_attach_and_detach() {
     // summary must not show it again.
     harness.playbin.detach_subtitle(id_a).expect("detaching a");
     let summaries = harness.playbin.source_summaries();
-    assert_eq!(summaries.len(), 2, "the detached entry lingers: {summaries:#?}");
+    assert_eq!(
+        summaries.len(),
+        2,
+        "the detached entry lingers: {summaries:#?}"
+    );
     assert!(
         !summaries.iter().any(|s| s.external == Some(id_a)),
         "the inspector still lists detached {id_a:?}: {summaries:#?}"
@@ -703,12 +706,8 @@ fn buffering_queries() {
         (0..=100).contains(&info.percent),
         "fill percent out of range: {info:#?}"
     );
-    for range in &info.ranges {
-        assert!(
-            0.0 <= range.start && range.start < range.stop && range.stop <= 1.0,
-            "malformed buffered range: {info:#?}"
-        );
-    }
+    // The ranges live on `buffered_ranges`, which the scrubber polls on its
+    // own cadence; `buffering_info` carries the fill state only.
     for range in harness.playbin.buffered_ranges() {
         assert!(
             0.0 <= range.start && range.start < range.stop && range.stop <= 1.0,
@@ -869,10 +868,7 @@ fn streams_selected_carries_the_request_seqnum() {
         let confirmed = log.iter().any(|(event, _)| {
             matches!(event, PlaybinEvent::StreamsSelected { seqnum: got, .. } if *got == unknown_seq)
         });
-        assert!(
-            !confirmed,
-            "a refused selection must not confirm: {log:#?}"
-        );
+        assert!(!confirmed, "a refused selection must not confirm: {log:#?}");
         let errored = log
             .iter()
             .any(|(event, _)| matches!(event, PlaybinEvent::Error { .. }));
@@ -950,7 +946,9 @@ fn replacing_the_subtitle_consumer_mid_stream() {
     };
 
     let seen_a: Arc<Mutex<Vec<Item>>> = Default::default();
-    harness.playbin.set_subtitle_consumer(feed_of(seen_a.clone()));
+    harness
+        .playbin
+        .set_subtitle_consumer(feed_of(seen_a.clone()));
 
     harness.load_and_play(&main.uri());
     let (id, sid) = harness.attach_and_materialize(&subs.uri());
@@ -969,7 +967,9 @@ fn replacing_the_subtitle_consumer_mid_stream() {
 
     // The replacement under test.
     let seen_b: Arc<Mutex<Vec<Item>>> = Default::default();
-    harness.playbin.set_subtitle_consumer(feed_of(seen_b.clone()));
+    harness
+        .playbin
+        .set_subtitle_consumer(feed_of(seen_b.clone()));
 
     // A delivery already in flight at the swap still holds A's Arc, so the
     // baseline for "A receives nothing further" is taken once B provably
