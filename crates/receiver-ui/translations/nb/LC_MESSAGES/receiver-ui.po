@@ -145,3 +145,93 @@ msgstr "Avspillingshastighet"
 msgctxt "MainWindow"
 msgid "FCast Receiver"
 msgstr "FCast Mottaker"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "The media could not be found"
+msgstr "Fant ikke mediet"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "Access to the media was denied"
+msgstr "Fikk ikke tilgang til mediet"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "Network error while streaming"
+msgstr "Nettverksfeil under strømming"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "Network error while streaming from {}"
+msgstr "Nettverksfeil under strømming fra {}"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "The media format is not supported"
+msgstr "Medieformatet støttes ikke"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "A codec needed by the media is missing"
+msgstr "Mangler en kodek mediet trenger"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "The media is damaged and could not be decoded"
+msgstr "Mediet er skadet og kunne ikke dekodes"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "The media is DRM protected and cannot be played"
+msgstr "Mediet er DRM-beskyttet og kan ikke spilles av"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "Audio or video output failed"
+msgstr "Lyd- eller videoutgangen feilet"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "The image could not be downloaded"
+msgstr "Kunne ikke laste ned bildet"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "A track was disabled, its codec is missing"
+msgstr "Et spor ble skrudd av, kodeken mangler"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "No decoder for {}, the track was disabled"
+msgstr "Ingen dekoder for {}, sporet ble skrudd av"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "A stream stopped and will not resume by itself"
+msgstr "En strøm stoppet og fortsetter ikke av seg selv"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "The subtitle format is not supported"
+msgstr "Undertekstformatet støttes ikke"
+
+#: crates/receiver-ui/ui/toast-overlay.slint
+msgctxt "ToastOverlay"
+msgid "A playback problem was detected"
+msgstr "Det oppstod et avspillingsproblem"
+
+#: crates/receiver-ui/ui/report-bug.slint
+msgctxt "ReportBugPopup"
+msgid "Playback failed unexpectedly"
+msgstr "Avspillingen feilet uventet"
+
+#: crates/receiver-ui/ui/report-bug.slint
+msgctxt "ReportBugPopup"
+msgid "This looks like a bug in the receiver. Please report it by scanning the code, and include the details below."
+msgstr "Dette ser ut som en feil i mottakeren. Rapporter den gjerne ved å skanne koden, og ta med detaljene under."
+
+#: crates/receiver-ui/ui/report-bug.slint
+msgctxt "ReportBugPopup"
+msgid "Dismiss"
+msgstr "Lukk"

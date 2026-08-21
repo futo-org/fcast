@@ -1484,10 +1484,17 @@ impl FcastPlaybin {
                     subtitle: actual.subtitle.clone(),
                     seqnum,
                 });
-                inner.emit(PlaybinEvent::Warning(format!(
-                    "stream selection was never applied after {SELECTION_DEADLINE_RETRIES} \
-                     re-assertions; playing {actual:?}"
-                )));
+                inner.emit(PlaybinEvent::Warning {
+                    error: gst::glib::Error::new(
+                        gst::CoreError::Failed,
+                        &format!(
+                            "stream selection was never applied after \
+                             {SELECTION_DEADLINE_RETRIES} re-assertions; playing {actual:?}"
+                        ),
+                    ),
+                    src: None,
+                    debug: None,
+                });
                 inner.deadline_giveups.fetch_add(1, Ordering::SeqCst);
             }
         }

@@ -58,6 +58,24 @@ export enum UiUpdaterState {
     InstallSuccessful,
 }
 
+// Mirrored in receiver-core's ui_types. The toast wording lives in
+// toast-overlay.slint so it localizes through @tr.
+export enum UiToastKind {
+    MediaNotFound,
+    AccessDenied,
+    NetworkFailure,
+    UnsupportedFormat,
+    MissingCodec,
+    DecodeFailed,
+    DrmProtected,
+    OutputFailure,
+    ImageDownloadFailed,
+    MissingCodecForTrack,
+    StuckStream,
+    SubtitleFormatUnsupported,
+    GenericWarning,
+}
+
 export struct UiVideoDbgInfo {
     format: string,
     resolution: string,
@@ -95,8 +113,18 @@ export global Bridge {
     in property <int> current-video-track;
     in property <int> current-audio-track;
     in property <int> current-subtitle-track;
-    in property <string> error-message;
-    in property <string> warning-message;
+    in property <UiToastKind> error-toast-kind;
+    in property <string> error-toast-detail;
+    in property <string> error-toast-code;
+    in property <UiToastKind> warning-toast-kind;
+    in property <string> warning-toast-detail;
+    in property <string> warning-toast-code;
+    // Report-bug popup for unexpected failures. The diagnostic block is raw
+    // technical text (never localized), the QR encodes the issue tracker URL.
+    in-out property <bool> bug-report-visible: false;
+    in property <string> bug-report-diagnostic;
+    in property <string> bug-report-code;
+    in property <image> bug-report-qr;
     in property <int> playlist-idx;
     in property <int> playlist-length;
     in property <UiMode> ui-mode: UiMode.Full;
@@ -189,6 +217,7 @@ export global Bridge {
         || controls-overlay-visible
         || source-backoff-remaining-ms > 0
         || should-show-toast-overlay()
+        || bug-report-visible
         || show-inspector
         || starting-up
         || volume-set-at > 0

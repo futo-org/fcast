@@ -425,7 +425,14 @@ pub enum PlaybinEvent {
     PreparedCancelDeclined {
         generation: u64,
     },
-    Warning(String),
+    /// A non-fatal bus warning, with enough of the original message kept for
+    /// the caller to classify it (domain/code in `error`, the message's debug
+    /// string, and the posting element's name).
+    Warning {
+        error: gst::glib::Error,
+        src: Option<String>,
+        debug: Option<String>,
+    },
 }
 
 /// What the caller does to the pipeline right after a cancel

@@ -54,6 +54,26 @@ pub struct UiMediaTrack {
     pub name: String,
 }
 
+/// Mirrors the generated `UiToastKind`. The wording lives in slint (`@tr`,
+/// so it localizes), severity (error vs warning styling) derives from the
+/// kind there too.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiToastKind {
+    MediaNotFound,
+    AccessDenied,
+    NetworkFailure,
+    UnsupportedFormat,
+    MissingCodec,
+    DecodeFailed,
+    DrmProtected,
+    OutputFailure,
+    ImageDownloadFailed,
+    MissingCodecForTrack,
+    StuckStream,
+    SubtitleFormatUnsupported,
+    GenericWarning,
+}
+
 /// A rendered QR code as a module grid, `size * size`, row-major; `true` is a
 /// dark module. The UI turns this into a pixel buffer. Building one here would
 /// need slint's image types.

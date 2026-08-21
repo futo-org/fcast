@@ -37,14 +37,14 @@ use crate::{
     fcompsrc,
     freeze_watchdog::{self, FreezeAction, FreezeSample},
     fwebrtcsrc, gcast,
-    gui::{self, GuiController, ToastType},
+    gui::{self, GuiController},
     image,
     media_formats::SupportedFormats,
     media_source,
     message::{Mdns, Message, Raop, ReceiverToFCastSender},
     player::{self, PlayerState},
     queue_cache, raop,
-    ui_types::{AppState, GuiPlaybackState, UiMediaTrack, UiPlayerVariant},
+    ui_types::{AppState, GuiPlaybackState, UiMediaTrack, UiPlayerVariant, UiToastKind},
     utils::{current_time_millis, map_to_header_map},
 };
 #[cfg(not(target_os = "android"))]
@@ -399,13 +399,116 @@ fn image_download_error_kind(err: &image::DownloadImageError) -> ErrorKind {
 }
 
 fn media_error_kind_to_error(kind: player::MediaErrorKind) -> ErrorKind {
+    use player::MediaErrorKind as K;
     match kind {
-        player::MediaErrorKind::NotFound | player::MediaErrorKind::NotAuthorized => {
-            ErrorKind::ResourceNotFound
+        K::NotFound | K::AccessDenied => ErrorKind::ResourceNotFound,
+        K::UnsupportedFormat | K::MissingCodec | K::DecodeFailed | K::DrmProtected => {
+            ErrorKind::UnsupportedFormat
         }
-        player::MediaErrorKind::UnsupportedFormat => ErrorKind::UnsupportedFormat,
-        player::MediaErrorKind::Other => ErrorKind::Internal,
+        K::NetworkFailure
+        | K::OutputFailure
+        | K::ImageDownloadFailed
+        | K::Frozen
+        | K::Unexpected => ErrorKind::Internal,
     }
+}
+
+/// Which UI surface a fatal error takes. `None` means the report-bug popup
+/// (see `Application::show_bug_report`), otherwise the localized toast.
+fn media_error_toast_kind(kind: player::MediaErrorKind) -> Option<UiToastKind> {
+    use player::MediaErrorKind as K;
+    match kind {
+        K::NotFound => Some(UiToastKind::MediaNotFound),
+        K::AccessDenied => Some(UiToastKind::AccessDenied),
+        K::NetworkFailure => Some(UiToastKind::NetworkFailure),
+        K::UnsupportedFormat => Some(UiToastKind::UnsupportedFormat),
+        K::DecodeFailed => Some(UiToastKind::DecodeFailed),
+        K::DrmProtected => Some(UiToastKind::DrmProtected),
+        K::OutputFailure => Some(UiToastKind::OutputFailure),
+        K::ImageDownloadFailed => Some(UiToastKind::ImageDownloadFailed),
+        // A codec the receiver does not ship is a packaging gap worth a
+        // report, not a user mistake.
+        K::MissingCodec | K::Frozen | K::Unexpected => None,
+    }
+}
+
+fn media_warning_toast_kind(kind: player::MediaWarningKind) -> UiToastKind {
+    use player::MediaWarningKind as K;
+    match kind {
+        K::MissingCodecForTrack => UiToastKind::MissingCodecForTrack,
+        K::StuckStream => UiToastKind::StuckStream,
+        K::SubtitleFormatUnsupported => UiToastKind::SubtitleFormatUnsupported,
+        K::Unknown => UiToastKind::GenericWarning,
+    }
+}
+
+/// Query and fragment stripped, so tokens and signatures in media URLs
+/// cannot end up in a bug-report screenshot.
+fn strip_uri_query(uri: &str) -> &str {
+    let end = uri.find(['?', '#']).unwrap_or(uri.len());
+    &uri[..end]
+}
+
+/// Host of a URI, for toast detail. Userinfo and port dropped.
+fn uri_host(uri: &str) -> Option<&str> {
+    let rest = uri.split_once("://")?.1;
+    let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..end];
+    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = host.split_once(':').map_or(host, |(host, _)| host);
+    (!host.is_empty()).then_some(host)
+}
+
+const ISSUE_TRACKER_URL: &str = "https://github.com/futo-org/fcast/issues";
+
+/// Ring depth for the bug-report context and per-entry message cap, so one
+/// debug dump cannot flood the diagnostic block.
+const RECENT_WARNINGS_CAP: usize = 10;
+const RECENT_WARNING_MSG_MAX: usize = 200;
+
+type RecentWarnings = VecDeque<(Instant, &'static str, String)>;
+
+fn push_recent_warning(ring: &mut RecentWarnings, at: Instant, code: &'static str, message: &str) {
+    let mut message = message.to_owned();
+    if message.len() > RECENT_WARNING_MSG_MAX {
+        let cut = (0..=RECENT_WARNING_MSG_MAX)
+            .rev()
+            .find(|i| message.is_char_boundary(*i))
+            .unwrap_or(0);
+        message.truncate(cut);
+        message.push_str("...");
+    }
+    if ring.len() == RECENT_WARNINGS_CAP {
+        ring.pop_front();
+    }
+    ring.push_back((at, code, message));
+}
+
+/// The warnings preceding a fatal error are usually the actual story (a
+/// stuck stream, a discard streak), so the bug-report block carries them.
+fn format_recent_warnings(ring: &RecentWarnings, now: Instant) -> String {
+    if ring.is_empty() {
+        return "no recent warnings".to_owned();
+    }
+    let mut out = String::from("recent warnings");
+    for (at, code, message) in ring {
+        let secs = now.saturating_duration_since(*at).as_secs();
+        out.push_str(&format!("\n{secs}s ago {code} {message}"));
+    }
+    out
+}
+
+fn issue_tracker_qr() -> Option<crate::ui_types::QrCode> {
+    let qrcode = fast_qr::QRBuilder::new(ISSUE_TRACKER_URL.as_bytes())
+        .build()
+        .ok()?;
+    let dims = qrcode.size as u32;
+    let module_count = (dims * dims) as usize;
+    let dark = qrcode.data[0..module_count]
+        .iter()
+        .map(|module| *module != fast_qr::Module::LIGHT)
+        .collect();
+    Some(crate::ui_types::QrCode { size: dims, dark })
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -597,6 +700,10 @@ pub struct Application {
     pending_fwebrtc_channel: Option<fwebrtcsrc::SignallingChannel>,
     device_name: Option<String>,
     current_media_item_id: MediaItemId,
+    /// Which item already showed the report-bug popup, one per item max.
+    bug_report_shown_for: Option<MediaItemId>,
+    /// Last few classified warnings of the current item, bug-report context.
+    recent_warnings: RecentWarnings,
     is_loading_media: bool,
     raop_server: Option<RaopServer>,
     #[cfg(feature = "airplay")]
@@ -890,6 +997,8 @@ impl Application {
             pending_fwebrtc_channel: None,
             device_name: None,
             current_media_item_id: 0,
+            bug_report_shown_for: None,
+            recent_warnings: RecentWarnings::new(),
             is_loading_media: false,
             raop_server: None,
             #[cfg(feature = "airplay")]
@@ -1407,12 +1516,20 @@ impl Application {
         }
     }
 
-    fn media_error(&mut self, message: String) -> Result<()> {
+    /// `diagnostic` is the raw technical text. It goes to senders and the
+    /// log verbatim; the user sees only the kind's localized wording (or the
+    /// report-bug popup, where the diagnostic block IS the point).
+    fn media_error(
+        &mut self,
+        kind: player::MediaErrorKind,
+        detail: Option<String>,
+        diagnostic: String,
+    ) -> Result<()> {
         if !self.is_playing() {
             return Ok(());
         }
 
-        error!(msg = message, "Media error");
+        error!(?kind, msg = diagnostic, "Media error");
 
         self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
         self.current_media = None;
@@ -1432,24 +1549,69 @@ impl Application {
                 msg: TranslatableMessage::PlaybackUpdate(update),
             });
             self.broadcast_update(ReceiverToSenderMessage::Error(PlaybackErrorMessage {
-                message: message.clone(),
+                message: diagnostic.clone(),
             }))
         }
 
-        self.gui.show_toast(ToastType::Error, message);
+        match media_error_toast_kind(kind) {
+            Some(toast) => self.gui.show_toast(toast, detail, kind.code()),
+            None => self.show_bug_report(kind, detail.as_deref(), &diagnostic),
+        }
 
         Ok(())
     }
 
-    fn media_warning(&mut self, message: String) -> Result<()> {
+    /// At most one popup per loaded item (the id bumps on every load), so an
+    /// error storm cannot stack dialogs. `detail` is the kind's interpolable
+    /// scrap (the codec description for MissingCodec), shown on the first
+    /// line of the block.
+    fn show_bug_report(
+        &mut self,
+        kind: player::MediaErrorKind,
+        detail: Option<&str>,
+        diagnostic: &str,
+    ) {
+        if self.bug_report_shown_for == Some(self.current_media_item_id) {
+            return;
+        }
+        self.bug_report_shown_for = Some(self.current_media_item_id);
+        let head = match detail {
+            Some(detail) => format!("{} {:?} ({detail})", kind.code(), kind),
+            None => format!("{} {:?}", kind.code(), kind),
+        };
+        let block = format!(
+            "{}\nreceiver {}\n{}\n{}\n{}",
+            head,
+            env!("CARGO_PKG_VERSION"),
+            gst::version_string(),
+            diagnostic,
+            format_recent_warnings(&self.recent_warnings, Instant::now()),
+        );
+        self.gui
+            .show_bug_report(block, kind.code(), issue_tracker_qr());
+    }
+
+    fn media_warning(
+        &mut self,
+        kind: player::MediaWarningKind,
+        detail: Option<String>,
+        message: String,
+    ) -> Result<()> {
         // Ignore false positives from the video sink before its GL contexts are set.
         if !self.is_playing() {
             return Ok(());
         }
 
-        warn!(msg = message, "Media warning");
+        warn!(?kind, msg = message, "Media warning");
 
-        self.gui.show_toast(ToastType::Warning, message);
+        push_recent_warning(
+            &mut self.recent_warnings,
+            Instant::now(),
+            kind.code(),
+            &message,
+        );
+        self.gui
+            .show_toast(media_warning_toast_kind(kind), detail, kind.code());
 
         Ok(())
     }
@@ -1486,6 +1648,8 @@ impl Application {
     }
 
     fn load_media(&mut self) {
+        // The popup belongs to the failed item, a new cast replaces it.
+        self.gui.hide_bug_report();
         self.inspector_container = None;
         self.inspector_image = String::new();
         if let Err(err) = self.load_current_media_item() {
@@ -1780,6 +1944,7 @@ impl Application {
         }
 
         self.current_media_item_id += 1;
+        self.recent_warnings.clear();
 
         if is_image {
             tokio::spawn({
@@ -2151,7 +2316,11 @@ impl Application {
                     .note_recovery_reload(self.current_media_item_id);
             }
             FreezeAction::GiveUp { .. } => {
-                self.media_error("Playback froze and could not be recovered".to_owned())?;
+                self.media_error(
+                    player::MediaErrorKind::Frozen,
+                    None,
+                    "Playback froze and could not be recovered".to_owned(),
+                )?;
             }
         }
 
@@ -2508,6 +2677,7 @@ impl Application {
         // follows and re-runs media_loaded_successfully through the
         // have_media_info gate.
         self.current_media_item_id += 1;
+        self.recent_warnings.clear();
         self.have_media_info = false;
         self.current_duration = None;
         self.inspector_container = None;
@@ -3959,6 +4129,7 @@ impl Application {
             player::PlayerEvent::Error {
                 origin: err_origin,
                 kind,
+                detail: codec_detail,
                 message,
                 failed_uri,
             } => {
@@ -3973,7 +4144,19 @@ impl Application {
                         if let Some(origin) = self.current_media.as_ref().map(|m| m.origin) {
                             self.send_error(origin, media_error_kind_to_error(kind));
                         }
-                        self.media_error(message)?;
+                        let detail = match kind {
+                            player::MediaErrorKind::NetworkFailure => failed_uri
+                                .as_deref()
+                                .and_then(uri_host)
+                                .map(str::to_owned),
+                            player::MediaErrorKind::MissingCodec => codec_detail,
+                            _ => None,
+                        };
+                        let mut diagnostic = message;
+                        if let Some(uri) = &failed_uri {
+                            diagnostic.push_str(&format!(" (uri {})", strip_uri_query(uri)));
+                        }
+                        self.media_error(kind, detail, diagnostic)?;
                     }
                 }
             }
@@ -3996,10 +4179,19 @@ impl Application {
                     caps, "The selected subtitle track cannot be rendered; showing nothing"
                 );
                 // Best effort: `media_warning` suppresses itself while not playing.
-                self.media_warning(format!("Unsupported subtitle format: {caps}"))?;
+                let message = format!("Unsupported subtitle format: {caps}");
+                self.media_warning(
+                    player::MediaWarningKind::SubtitleFormatUnsupported,
+                    Some(caps),
+                    message,
+                )?;
             }
-            player::PlayerEvent::Warning(msg) => {
-                self.media_warning(msg)?;
+            player::PlayerEvent::Warning {
+                kind,
+                detail,
+                message,
+            } => {
+                self.media_warning(kind, detail, message)?;
             }
             player::PlayerEvent::StreamTagsUpdated => {
                 self.update_tracks(false);
@@ -4615,7 +4807,11 @@ impl Application {
                         if let Some(origin) = self.current_media.as_ref().map(|m| m.origin) {
                             self.send_error(origin, image_download_error_kind(&err));
                         }
-                        self.media_error(format!("Image download failed: {err:?}"))?;
+                        self.media_error(
+                            player::MediaErrorKind::ImageDownloadFailed,
+                            None,
+                            format!("Image download failed: {err:?}"),
+                        )?;
                     }
                 }
             }
@@ -5778,5 +5974,91 @@ mod tests {
         assert_eq!(show_duration_delay(f64::INFINITY), None);
         assert_eq!(show_duration_delay(f64::NEG_INFINITY), None);
         assert_eq!(show_duration_delay(f64::MAX), None);
+    }
+
+    #[test]
+    fn bug_report_uri_keeps_no_secrets() {
+        // DASH/HLS URLs carry tokens and signatures in the query; the
+        // diagnostic block must not.
+        assert_eq!(
+            strip_uri_query("https://cdn.example.com/v/main.mpd?token=SECRET&sig=x"),
+            "https://cdn.example.com/v/main.mpd"
+        );
+        assert_eq!(
+            strip_uri_query("https://cdn.example.com/v/main.mpd#t=10"),
+            "https://cdn.example.com/v/main.mpd"
+        );
+        assert_eq!(strip_uri_query("file:///a/b.mkv"), "file:///a/b.mkv");
+    }
+
+    #[test]
+    fn toast_detail_host_extraction() {
+        assert_eq!(
+            uri_host("https://user:pw@cdn.example.com:8443/v/x.mpd?sig=1"),
+            Some("cdn.example.com")
+        );
+        assert_eq!(uri_host("http://10.0.0.4/x.mkv"), Some("10.0.0.4"));
+        assert_eq!(uri_host("not a uri"), None);
+        assert_eq!(uri_host("file:///a/b.mkv"), None);
+    }
+
+    #[test]
+    fn every_error_kind_has_exactly_one_surface() {
+        use player::MediaErrorKind as K;
+        for kind in [
+            K::NotFound,
+            K::AccessDenied,
+            K::NetworkFailure,
+            K::UnsupportedFormat,
+            K::MissingCodec,
+            K::DecodeFailed,
+            K::DrmProtected,
+            K::OutputFailure,
+            K::ImageDownloadFailed,
+            K::Frozen,
+            K::Unexpected,
+        ] {
+            let popup = matches!(kind, K::Frozen | K::Unexpected | K::MissingCodec);
+            assert_eq!(
+                media_error_toast_kind(kind).is_none(),
+                popup,
+                "{kind:?} must {} the report-bug popup",
+                if popup { "take" } else { "not take" }
+            );
+        }
+    }
+
+    #[test]
+    fn warning_ring_caps_and_truncates() {
+        let mut ring = RecentWarnings::new();
+        let t0 = Instant::now();
+        // One long message must not flood the block, and the cut must land
+        // on a char boundary (the ø straddles the 200-byte mark).
+        let long = "ø".repeat(150);
+        push_recent_warning(&mut ring, t0, "FC-W99", &long);
+        let stored = &ring[0].2;
+        assert!(stored.len() <= RECENT_WARNING_MSG_MAX + 3);
+        assert!(stored.ends_with("..."));
+        // The ring holds the LAST cap entries.
+        for i in 0..RECENT_WARNINGS_CAP + 5 {
+            push_recent_warning(&mut ring, t0, "FC-W02", &format!("m{i}"));
+        }
+        assert_eq!(ring.len(), RECENT_WARNINGS_CAP);
+        assert_eq!(ring.back().unwrap().2, format!("m{}", RECENT_WARNINGS_CAP + 4));
+
+        let formatted = format_recent_warnings(&ring, t0 + Duration::from_secs(7));
+        assert!(formatted.starts_with("recent warnings"));
+        assert!(formatted.contains("7s ago FC-W02"));
+        assert_eq!(
+            format_recent_warnings(&RecentWarnings::new(), t0),
+            "no recent warnings"
+        );
+    }
+
+    #[test]
+    fn issue_tracker_qr_builds() {
+        let qr = issue_tracker_qr().expect("static URL must encode");
+        assert!(qr.size > 0);
+        assert_eq!(qr.dark.len(), (qr.size * qr.size) as usize);
     }
 }

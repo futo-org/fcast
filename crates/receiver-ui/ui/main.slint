@@ -24,6 +24,7 @@ import { ImageView } from "views/image.slint";
 import { AudioPlayerView } from "views/audio-player.slint";
 import { RaopView } from "views/raop.slint";
 import { ToastOverlay } from "toast-overlay.slint";
+import { ReportBugPopup } from "report-bug.slint";
 import { StartupView } from "startup.slint";
 import { Inspector, InspectorState } from "inspector.slint";
 import { SettingsDrawer } from "settings-drawer.slint";
@@ -120,6 +121,14 @@ export component MainWindow inherits Window {
     property <UiUpdaterState> updater-state: Bridge.updater-state;
     changed updater-state => fs.focus();
 
+    // The popup's own FocusScope grabs focus on show; reclaim it on dismiss.
+    property <bool> bug-report-visible: Bridge.bug-report-visible;
+    changed bug-report-visible => {
+        if (!self.bug-report-visible) {
+            fs.focus();
+        }
+    }
+
     forward-focus: fs;
 
     fs := FocusScope {
@@ -175,6 +184,8 @@ export component MainWindow inherits Window {
         }
 
         if Bridge.should-show-toast-overlay(): ToastOverlay { }
+
+        if Bridge.bug-report-visible: ReportBugPopup { }
 
         if Bridge.show-inspector: Inspector { }
 

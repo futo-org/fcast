@@ -37,6 +37,10 @@ struct MissingPluginTracker {
     saw_real: AtomicBool,
     /// Only a non-media metadata stream had no "decoder".
     saw_ignorable: AtomicBool,
+    /// Codec description of the last real miss, consumed by the warning
+    /// classification (element message and follow-up warning post on the
+    /// same thread, so this cannot race).
+    desc: parking_lot::Mutex<Option<String>>,
 }
 
 /// Whether a missing-plugin element message is for a non-media metadata stream
@@ -354,36 +358,151 @@ pub enum TrackKind {
 /// protocol/GUI edge.
 pub use fcastplaybin::TrackSelection;
 
+/// User-meaningful buckets for fatal playback errors. Classified from the
+/// gst error domain/code plus which side failed (`from_source` is
+/// `failed_uri.is_some()`, i.e. the failing element was an input). `Frozen`
+/// and `ImageDownloadFailed` are app-level, never produced here. `Frozen`,
+/// `Unexpected` and `MissingCodec` surface as the report-bug popup,
+/// everything else as a localized toast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaErrorKind {
     NotFound,
-    NotAuthorized,
+    AccessDenied,
+    NetworkFailure,
     UnsupportedFormat,
-    Other,
+    MissingCodec,
+    DecodeFailed,
+    DrmProtected,
+    OutputFailure,
+    ImageDownloadFailed,
+    Frozen,
+    Unexpected,
 }
 
 impl MediaErrorKind {
-    fn from_glib_error(err: &gst::glib::Error) -> Self {
-        if let Some(err) = err.kind::<gst::ResourceError>() {
-            match err {
-                gst::ResourceError::NotFound => Self::NotFound,
-                gst::ResourceError::NotAuthorized => Self::NotAuthorized,
-                _ => Self::Other,
-            }
-        } else if let Some(err) = err.kind::<gst::StreamError>() {
-            match err {
-                gst::StreamError::TypeNotFound
-                | gst::StreamError::WrongType
-                | gst::StreamError::CodecNotFound
-                | gst::StreamError::Decode
-                | gst::StreamError::Demux
-                | gst::StreamError::Format => Self::UnsupportedFormat,
-                _ => Self::Other,
-            }
-        } else {
-            Self::Other
+    /// Short stable code, shown on screen next to the localized text so a
+    /// photographed report is matchable to a class. APPEND-ONLY, never
+    /// renumber (see the golden test).
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::NotFound => "FC-E01",
+            Self::AccessDenied => "FC-E02",
+            Self::NetworkFailure => "FC-E03",
+            Self::UnsupportedFormat => "FC-E04",
+            Self::MissingCodec => "FC-E05",
+            Self::DecodeFailed => "FC-E06",
+            Self::DrmProtected => "FC-E07",
+            Self::OutputFailure => "FC-E08",
+            Self::ImageDownloadFailed => "FC-E09",
+            Self::Frozen => "FC-E10",
+            Self::Unexpected => "FC-E99",
         }
     }
+
+    fn from_glib_error(err: &gst::glib::Error, from_source: bool) -> Self {
+        use gst::{CoreError, ResourceError, StreamError};
+        if let Some(err) = err.kind::<ResourceError>() {
+            return match err {
+                ResourceError::NotFound => Self::NotFound,
+                ResourceError::NotAuthorized => Self::AccessDenied,
+                ResourceError::OpenRead
+                | ResourceError::OpenReadWrite
+                | ResourceError::Read
+                | ResourceError::Seek
+                | ResourceError::Sync
+                | ResourceError::Busy
+                    if from_source =>
+                {
+                    Self::NetworkFailure
+                }
+                _ if !from_source => Self::OutputFailure,
+                _ => Self::Unexpected,
+            };
+        }
+        if let Some(err) = err.kind::<StreamError>() {
+            return match err {
+                StreamError::TypeNotFound
+                | StreamError::WrongType
+                | StreamError::Format
+                | StreamError::Demux => Self::UnsupportedFormat,
+                StreamError::CodecNotFound => Self::MissingCodec,
+                StreamError::Decode => Self::DecodeFailed,
+                StreamError::Decrypt | StreamError::DecryptNokey => Self::DrmProtected,
+                _ => Self::Unexpected,
+            };
+        }
+        if err.matches(CoreError::MissingPlugin) {
+            return Self::MissingCodec;
+        }
+        Self::Unexpected
+    }
+}
+
+/// Buckets for the non-fatal warnings that survive the raw-message hook's
+/// filters. `detail` (see [`PlayerEvent::Warning`]) carries the one
+/// interpolable scrap each kind needs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MediaWarningKind {
+    /// A real media track has no decoder and stays disabled. Detail is the
+    /// codec description from the missing-plugin element message.
+    MissingCodecForTrack,
+    /// The escalated flushing-discard verdict (see the raw-message hook): a
+    /// stream latched FLUSHING and will not resume by itself. Detail is the
+    /// stuck stream's name.
+    StuckStream,
+    /// The selected subtitle track's caps cannot be rendered. Never produced
+    /// by classification, the application raises it from
+    /// [`PlayerEvent::SubtitleTrackUnsupported`]. Detail is the caps string.
+    SubtitleFormatUnsupported,
+    /// Anything else. The raw text goes to the log only, the toast is a
+    /// generic localized line.
+    Unknown,
+}
+
+impl MediaWarningKind {
+    /// Same contract as [`MediaErrorKind::code`], append-only.
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::MissingCodecForTrack => "FC-W01",
+            Self::StuckStream => "FC-W02",
+            Self::SubtitleFormatUnsupported => "FC-W03",
+            Self::Unknown => "FC-W99",
+        }
+    }
+}
+
+/// The raw gst domain and code of a bus error/warning, for the diagnostic
+/// text. `{:?}` names the code within a known domain (`__Unknown(n)` for
+/// codes newer than the bindings), the quark covers foreign domains.
+fn gst_error_domain_code(err: &gst::glib::Error) -> String {
+    if let Some(code) = err.kind::<gst::ResourceError>() {
+        return format!("resource {code:?}");
+    }
+    if let Some(code) = err.kind::<gst::StreamError>() {
+        return format!("stream {code:?}");
+    }
+    if let Some(code) = err.kind::<gst::CoreError>() {
+        return format!("core {code:?}");
+    }
+    if let Some(code) = err.kind::<gst::LibraryError>() {
+        return format!("library {code:?}");
+    }
+    format!("domain {}", err.domain().as_str())
+}
+
+fn classify_warning(
+    error: &gst::glib::Error,
+    debug: Option<&str>,
+    missing_desc: Option<String>,
+) -> (MediaWarningKind, Option<String>) {
+    if error.matches(gst::CoreError::MissingPlugin) {
+        return (MediaWarningKind::MissingCodecForTrack, missing_desc);
+    }
+    if warning_is_transient_flushing_discard(debug) {
+        let stream = debug.and_then(discarded_stream_name).map(str::to_owned);
+        return (MediaWarningKind::StuckStream, stream);
+    }
+    (MediaWarningKind::Unknown, None)
 }
 
 /// Receiver-facing playback events, forwarded into the application loop.
@@ -451,6 +570,9 @@ pub enum PlayerEvent {
         /// `ExternalSubtitleFailed`).
         origin: fcastplaybin::ErrorOrigin,
         kind: MediaErrorKind,
+        /// The one interpolable scrap the kind needs. For `MissingCodec` the
+        /// codec description from the missing-plugin element message.
+        detail: Option<String>,
         message: String,
         /// Diagnostic only (the failing source's URI, when it has one).
         failed_uri: Option<String>,
@@ -471,7 +593,13 @@ pub enum PlayerEvent {
         /// The caps as a string, for the log and the toast.
         caps: String,
     },
-    Warning(String),
+    Warning {
+        kind: MediaWarningKind,
+        /// The kind's interpolable scrap (codec description, stream name).
+        detail: Option<String>,
+        /// Raw text for the log only, never shown to the user.
+        message: String,
+    },
     StreamTagsUpdated,
     /// fimagedec announced what the current load decodes to: the load is an
     /// image (still or animation) rendered through the video pipeline.
@@ -794,7 +922,8 @@ impl Player {
         // Raw-message hook: bus traffic only the receiver understands
         // (context requests from its custom source elements, missing-plugin
         // reports). Runs on the posting (streaming) thread.
-        let missing_plugins = MissingPluginTracker::default();
+        let missing_plugins = std::sync::Arc::new(MissingPluginTracker::default());
+        let missing_plugins_relay = missing_plugins.clone();
         let discards = FlushingDiscards::default();
         let teardown_flag = TeardownFlag::default();
         let teardown = teardown_flag.clone();
@@ -853,6 +982,7 @@ impl Player {
                     } else {
                         error!(detail = %mp.installer_detail(), desc = %mp.description(), "GStreamer missing plugin");
                         missing_plugins.saw_real.store(true, Ordering::SeqCst);
+                        *missing_plugins.desc.lock() = Some(mp.description().to_string());
                     }
                     true
                 }
@@ -947,7 +1077,7 @@ impl Player {
         // `PlayerEvent` and forwarded into the application loop.
         let event_tx = msg_tx.clone();
         fcast.set_event_handler(Some(hook), move |event, generation| {
-            Self::relay_event(&event_tx, event, generation);
+            Self::relay_event(&event_tx, event, generation, &missing_plugins_relay);
         });
 
         fcast.set_state_async(gst::State::Ready);
@@ -976,7 +1106,12 @@ impl Player {
     /// forward it into the application loop with the load generation it
     /// belongs to. Runs on whatever thread emitted the event (a streaming
     /// thread or the playbin worker). It only sends.
-    fn relay_event(msg_tx: &MessageSender, event: fcastplaybin::PlaybinEvent, generation: u64) {
+    fn relay_event(
+        msg_tx: &MessageSender,
+        event: fcastplaybin::PlaybinEvent,
+        generation: u64,
+        missing_plugins: &MissingPluginTracker,
+    ) {
         use fcastplaybin::PlaybinEvent as E;
         let event = match event {
             E::EndOfStream => PlayerEvent::EndOfStream,
@@ -1022,12 +1157,27 @@ impl Player {
                 origin,
                 error,
                 failed_uri,
-            } => PlayerEvent::Error {
-                origin,
-                kind: MediaErrorKind::from_glib_error(&error),
-                message: error.message().to_string(),
-                failed_uri,
-            },
+            } => {
+                let kind = MediaErrorKind::from_glib_error(&error, failed_uri.is_some());
+                // Consume the pending codec description only for its own
+                // error, same rule as the warning arm below.
+                let detail = if kind == MediaErrorKind::MissingCodec {
+                    missing_plugins.desc.lock().take()
+                } else {
+                    None
+                };
+                PlayerEvent::Error {
+                    origin,
+                    kind,
+                    detail,
+                    message: format!(
+                        "{} [{}]",
+                        error.message(),
+                        gst_error_domain_code(&error)
+                    ),
+                    failed_uri,
+                }
+            }
             E::ExternalSubtitleFailed { id } => PlayerEvent::ExternalSubtitleFailed { id },
             E::SubtitleTrackUnsupported { sid, caps } => PlayerEvent::SubtitleTrackUnsupported {
                 sid,
@@ -1046,7 +1196,30 @@ impl Player {
             E::PreparedCancelDeclined { generation } => {
                 PlayerEvent::GaplessCancelDeclined { generation }
             }
-            E::Warning(message) => PlayerEvent::Warning(message),
+            E::Warning { error, src, debug } => {
+                // Consume the pending codec description only for the warning
+                // it belongs to, an interleaved unrelated warning must not
+                // eat it.
+                let missing_desc = if error.matches(gst::CoreError::MissingPlugin) {
+                    missing_plugins.desc.lock().take()
+                } else {
+                    None
+                };
+                let (kind, detail) = classify_warning(&error, debug.as_deref(), missing_desc);
+                let mut message =
+                    format!("{} [{}]", error.message(), gst_error_domain_code(&error));
+                if let Some(src) = src {
+                    message.push_str(&format!(" (from {src})"));
+                }
+                if let Some(debug) = debug {
+                    message.push_str(&format!(" ({debug})"));
+                }
+                PlayerEvent::Warning {
+                    kind,
+                    detail,
+                    message,
+                }
+            }
         };
         msg_tx.player(event, Some(generation));
     }
@@ -2966,5 +3139,134 @@ mod tests {
         // keep their positions.
         let third = merge_streams_stable(second, &collection(&[video, audio]));
         assert_eq!(sids(&third), ["a0", "v0"]);
+    }
+
+    fn kind_of<T: gst::glib::error::ErrorDomain>(code: T, from_source: bool) -> MediaErrorKind {
+        MediaErrorKind::from_glib_error(&gst::glib::Error::new(code, "x"), from_source)
+    }
+
+    #[test]
+    fn error_kind_resource_domain() {
+        use gst::ResourceError as R;
+        // Side-independent identities.
+        assert_eq!(kind_of(R::NotFound, true), MediaErrorKind::NotFound);
+        assert_eq!(kind_of(R::NotFound, false), MediaErrorKind::NotFound);
+        assert_eq!(kind_of(R::NotAuthorized, true), MediaErrorKind::AccessDenied);
+        // Source side reads/seeks are network trouble.
+        for code in [R::OpenRead, R::OpenReadWrite, R::Read, R::Seek, R::Sync, R::Busy] {
+            assert_eq!(kind_of(code, true), MediaErrorKind::NetworkFailure);
+        }
+        // The same codes on a sink are an output failure, as is anything
+        // else resource-flavored there.
+        assert_eq!(kind_of(R::Read, false), MediaErrorKind::OutputFailure);
+        assert_eq!(kind_of(R::Busy, false), MediaErrorKind::OutputFailure);
+        assert_eq!(kind_of(R::Failed, false), MediaErrorKind::OutputFailure);
+        // A source failing with a non-transfer resource code is not a story
+        // we can tell the user, it goes to the popup.
+        assert_eq!(kind_of(R::Failed, true), MediaErrorKind::Unexpected);
+        assert_eq!(kind_of(R::NoSpaceLeft, true), MediaErrorKind::Unexpected);
+    }
+
+    #[test]
+    fn error_kind_stream_domain() {
+        use gst::StreamError as S;
+        for code in [S::TypeNotFound, S::WrongType, S::Format, S::Demux] {
+            assert_eq!(kind_of(code, true), MediaErrorKind::UnsupportedFormat);
+        }
+        assert_eq!(kind_of(S::CodecNotFound, true), MediaErrorKind::MissingCodec);
+        assert_eq!(kind_of(S::Decode, false), MediaErrorKind::DecodeFailed);
+        assert_eq!(kind_of(S::Decrypt, true), MediaErrorKind::DrmProtected);
+        assert_eq!(kind_of(S::DecryptNokey, true), MediaErrorKind::DrmProtected);
+        assert_eq!(kind_of(S::Failed, true), MediaErrorKind::Unexpected);
+    }
+
+    #[test]
+    fn error_kind_core_and_unknown_domains() {
+        assert_eq!(
+            kind_of(gst::CoreError::MissingPlugin, false),
+            MediaErrorKind::MissingCodec
+        );
+        assert_eq!(
+            kind_of(gst::CoreError::StateChange, false),
+            MediaErrorKind::Unexpected
+        );
+        assert_eq!(
+            kind_of(gst::LibraryError::Init, true),
+            MediaErrorKind::Unexpected
+        );
+    }
+
+    #[test]
+    fn error_codes_are_stable() {
+        // Golden. These are printed on screen and land in bug reports, so a
+        // renumber breaks the field history. Append new ones instead.
+        let codes = [
+            (MediaErrorKind::NotFound, "FC-E01"),
+            (MediaErrorKind::AccessDenied, "FC-E02"),
+            (MediaErrorKind::NetworkFailure, "FC-E03"),
+            (MediaErrorKind::UnsupportedFormat, "FC-E04"),
+            (MediaErrorKind::MissingCodec, "FC-E05"),
+            (MediaErrorKind::DecodeFailed, "FC-E06"),
+            (MediaErrorKind::DrmProtected, "FC-E07"),
+            (MediaErrorKind::OutputFailure, "FC-E08"),
+            (MediaErrorKind::ImageDownloadFailed, "FC-E09"),
+            (MediaErrorKind::Frozen, "FC-E10"),
+            (MediaErrorKind::Unexpected, "FC-E99"),
+        ];
+        for (kind, code) in codes {
+            assert_eq!(kind.code(), code);
+        }
+        let warning_codes = [
+            (MediaWarningKind::MissingCodecForTrack, "FC-W01"),
+            (MediaWarningKind::StuckStream, "FC-W02"),
+            (MediaWarningKind::SubtitleFormatUnsupported, "FC-W03"),
+            (MediaWarningKind::Unknown, "FC-W99"),
+        ];
+        for (kind, code) in warning_codes {
+            assert_eq!(kind.code(), code);
+        }
+        let mut all: Vec<&str> = codes
+            .iter()
+            .map(|(_, c)| *c)
+            .chain(warning_codes.iter().map(|(_, c)| *c))
+            .collect();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), codes.len() + warning_codes.len(), "duplicate code");
+    }
+
+    #[test]
+    fn diagnostic_names_domain_and_code() {
+        let err = gst::glib::Error::new(gst::ResourceError::NotFound, "x");
+        assert_eq!(gst_error_domain_code(&err), "resource NotFound");
+        let err = gst::glib::Error::new(gst::StreamError::Decode, "x");
+        assert_eq!(gst_error_domain_code(&err), "stream Decode");
+        let err = gst::glib::Error::new(gst::CoreError::MissingPlugin, "x");
+        assert_eq!(gst_error_domain_code(&err), "core MissingPlugin");
+        let err = gst::glib::Error::new(gst::LibraryError::Init, "x");
+        assert_eq!(gst_error_domain_code(&err), "library Init");
+    }
+
+    #[test]
+    fn warning_classification() {
+        let missing = gst::glib::Error::new(gst::CoreError::MissingPlugin, "no decoder");
+        let (kind, detail) = classify_warning(&missing, None, Some("H.265 (Main)".into()));
+        assert_eq!(kind, MediaWarningKind::MissingCodecForTrack);
+        assert_eq!(detail.as_deref(), Some("H.265 (Main)"));
+
+        // The escalated discard: generic STREAM/FAILED text, the carry-patch
+        // marker plus stream name only in the debug string.
+        let discard = gst::glib::Error::new(gst::StreamError::Failed, "general stream error");
+        let debug = format!("Discarding data on subtitle_00: {TRANSIENT_FLUSHING_DISCARD}");
+        let (kind, detail) = classify_warning(&discard, Some(&debug), None);
+        assert_eq!(kind, MediaWarningKind::StuckStream);
+        assert_eq!(detail.as_deref(), Some("subtitle_00"));
+
+        // Anything else is Unknown and carries no detail, even with a stale
+        // missing-plugin description pending.
+        let other = gst::glib::Error::new(gst::StreamError::Failed, "clock problem");
+        let (kind, detail) = classify_warning(&other, Some("no marker"), Some("stale".into()));
+        assert_eq!(kind, MediaWarningKind::Unknown);
+        assert_eq!(detail, None);
     }
 }

@@ -255,9 +255,11 @@ impl Inner {
                     failed_uri,
                 }
             }
-            MessageView::Warning(warning) => {
-                PlaybinEvent::Warning(warning.error().message().to_string())
-            }
+            MessageView::Warning(warning) => PlaybinEvent::Warning {
+                error: warning.error(),
+                src: msg.src().map(|src| src.name().to_string()),
+                debug: warning.debug().map(|debug| debug.to_string()),
+            },
             MessageView::Tag(tag) => PlaybinEvent::Tags(tag.tags()),
             MessageView::Buffering(buffering) => {
                 // The prepared next input buffers ahead while the CURRENT

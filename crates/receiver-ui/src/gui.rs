@@ -29,7 +29,7 @@ pub use receiver_core::gui::*;
 use crate::UiUpdaterState;
 use crate::{
     AppState, Bridge, CompoundImage, GuiPlaybackState, MainWindow, UiMediaTrack, UiMediaTrackType,
-    UiPlayerVariant,
+    UiPlayerVariant, UiToastKind,
 };
 
 /// A QR code as slint wants it.
@@ -93,6 +93,36 @@ fn track_kind(variant: UiMediaTrackType) -> receiver_core::player::TrackKind {
         UiMediaTrackType::Audio => TrackKind::Audio,
         UiMediaTrackType::Subtitle => TrackKind::Subtitle,
     }
+}
+
+impl From<ui_types::UiToastKind> for UiToastKind {
+    fn from(kind: ui_types::UiToastKind) -> Self {
+        use ui_types::UiToastKind as K;
+        match kind {
+            K::MediaNotFound => UiToastKind::MediaNotFound,
+            K::AccessDenied => UiToastKind::AccessDenied,
+            K::NetworkFailure => UiToastKind::NetworkFailure,
+            K::UnsupportedFormat => UiToastKind::UnsupportedFormat,
+            K::MissingCodec => UiToastKind::MissingCodec,
+            K::DecodeFailed => UiToastKind::DecodeFailed,
+            K::DrmProtected => UiToastKind::DrmProtected,
+            K::OutputFailure => UiToastKind::OutputFailure,
+            K::ImageDownloadFailed => UiToastKind::ImageDownloadFailed,
+            K::MissingCodecForTrack => UiToastKind::MissingCodecForTrack,
+            K::StuckStream => UiToastKind::StuckStream,
+            K::SubtitleFormatUnsupported => UiToastKind::SubtitleFormatUnsupported,
+            K::GenericWarning => UiToastKind::GenericWarning,
+        }
+    }
+}
+
+/// Which toast slot (styling) a kind takes. The wording lives in slint.
+fn toast_kind_is_warning(kind: ui_types::UiToastKind) -> bool {
+    use ui_types::UiToastKind as K;
+    matches!(
+        kind,
+        K::MissingCodecForTrack | K::StuckStream | K::SubtitleFormatUnsupported | K::GenericWarning
+    )
 }
 
 fn slint_color(c: ui_types::Color) -> slint::Color {
@@ -474,16 +504,34 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             bridge.set_volume_set_at(1.0);
         }
         UpdateGuiCommand::SetPlaylistIndex(idx) => bridge.set_playlist_idx(idx),
-        UpdateGuiCommand::ShowToastMessage { msg, typ } => match typ {
-            ToastType::Warning => {
-                bridge.set_warning_message(msg.to_shared_string());
+        UpdateGuiCommand::ShowToastMessage { kind, detail, code } => {
+            let detail = detail.unwrap_or_default().to_shared_string();
+            if toast_kind_is_warning(kind) {
+                bridge.set_warning_toast_kind(kind.into());
+                bridge.set_warning_toast_detail(detail);
+                bridge.set_warning_toast_code(code.into());
                 bridge.set_is_showing_warning_message(true);
-            }
-            ToastType::Error => {
-                bridge.set_error_message(msg.to_shared_string());
+            } else {
+                bridge.set_error_toast_kind(kind.into());
+                bridge.set_error_toast_detail(detail);
+                bridge.set_error_toast_code(code.into());
                 bridge.set_is_showing_error_message(true);
             }
-        },
+        }
+        UpdateGuiCommand::ShowBugReport {
+            diagnostic,
+            code,
+            qr,
+        } => {
+            bridge.set_bug_report_diagnostic(diagnostic.to_shared_string());
+            bridge.set_bug_report_code(code.into());
+            bridge.set_bug_report_qr(match qr {
+                Some(qr) => slint::Image::from_rgb8(qr_pixbuf(&qr.0)),
+                None => slint::Image::default(),
+            });
+            bridge.set_bug_report_visible(true);
+        }
+        UpdateGuiCommand::HideBugReport => bridge.set_bug_report_visible(false),
         UpdateGuiCommand::SetPlaybackState(state) => bridge.set_playback_state(state.into()),
         UpdateGuiCommand::ClearImageState => {
             bridge.set_image_preview(CompoundImage::default());

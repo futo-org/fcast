@@ -1,0 +1,170 @@
+import {
+    FText,
+    Button,
+    ScrollView,
+    Icons,
+} from "../../../ui-components/std-widgets.slint";
+import { FCastPalette } from "../../../ui-components/styling.slint";
+import { Bridge } from "globals.slint";
+
+// Popup for errors that warrant a report (Frozen/Unexpected/MissingCodec). The
+// diagnostic block is raw technical text, deliberately not localized, it is
+// what goes into the bug report. Shown at most once per loaded item (the
+// receiver latches it).
+export component ReportBugPopup inherits Rectangle {
+    background: #000000B0;
+
+    // Clicking the scrim dismisses (desktop nicety); the card swallows its
+    // own clicks below so only true outside-clicks land here.
+    TouchArea {
+        clicked => {
+            Bridge.bug-report-visible = false;
+        }
+    }
+
+    FocusScope {
+        init => {
+            self.focus();
+        }
+
+        key-pressed(event) => {
+            if (event.text == Key.Escape
+                || event.text == Key.Return
+                || event.text == Key.Space
+                || event.text == Key.Backspace) {
+                Bridge.bug-report-visible = false;
+                return accept;
+            }
+            reject
+        }
+
+        card := Rectangle {
+            width: min(720px, root.width - 60px);
+            height: min(content.preferred-height, root.height - 60px);
+            background: @linear-gradient(222.86deg, #262626 7.47%, #0E0F10 95.53%);
+            border-radius: 12px;
+            border-width: 1px;
+            border-color: @linear-gradient(180deg, rgba(255, 255, 255, 0.08) 0%, rgba(255, 255, 255, 0) 100%);
+            clip: true;
+
+            TouchArea { }
+
+            content := VerticalLayout {
+                padding: 30px;
+                spacing: 14px;
+
+                HorizontalLayout {
+                    spacing: 12px;
+
+                    FText {
+                        text: @tr("Playback failed unexpectedly");
+                        font-size: 22px;
+                        font-weight: 600;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+
+                    FText {
+                        text: Bridge.bug-report-code;
+                        font-size: 14px;
+                        color: FCastPalette.opacity-light-500;
+                        vertical-alignment: center;
+                    }
+                }
+
+                FText {
+                    text: @tr("This looks like a bug in the receiver. Please report it by scanning the code, and include the details below.");
+                    wrap: word-wrap;
+                    color: FCastPalette.opacity-light-500;
+                }
+
+                HorizontalLayout {
+                    spacing: 20px;
+
+                    if Bridge.bug-report-qr.width > 0: Rectangle {
+                        width: 140px;
+                        height: 140px;
+                        border-radius: 8px;
+                        background: white;
+                        clip: true;
+
+                        Image {
+                            width: parent.width - 12px;
+                            height: parent.height - 12px;
+                            source: Bridge.bug-report-qr;
+                            image-rendering: pixelated;
+                        }
+                    }
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 8px;
+
+                        // The URL itself, not localized. Clickable on
+                        // platforms that can open a browser.
+                        link := TouchArea {
+                            mouse-cursor: pointer;
+
+                            clicked => {
+                                Platform.open-url("https://github.com/futo-org/fcast/issues");
+                            }
+
+                            HorizontalLayout {
+                                alignment: start;
+                                spacing: 6px;
+
+                                FText {
+                                    text: "github.com/futo-org/fcast/issues";
+                                    font-size: 16px;
+                                    wrap: word-wrap;
+                                    opacity: link.has-hover ? 1.0 : 0.85;
+                                }
+
+                                Image {
+                                    source: Icons.open-external;
+                                    width: 14px;
+                                    opacity: link.has-hover ? 1.0 : 0.85;
+                                }
+                            }
+                        }
+
+                        // Scrolls: with the recent-warnings ring the block
+                        // can be long, and the Dismiss button must stay on
+                        // screen whatever its size.
+                        Rectangle {
+                            background: #00000066;
+                            border-radius: 8px;
+                            height: min(diag.preferred-height, 240px);
+                            clip: true;
+
+                            ScrollView {
+                                diag := VerticalLayout {
+                                    padding: 12px;
+
+                                    FText {
+                                        text: Bridge.bug-report-diagnostic;
+                                        font-size: 12px;
+                                        wrap: word-wrap;
+                                        color: FCastPalette.opacity-light-500;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    alignment: end;
+
+                    Button {
+                        text: @tr("Dismiss");
+
+                        clicked => {
+                            Bridge.bug-report-visible = false;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

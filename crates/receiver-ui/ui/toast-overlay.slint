@@ -5,6 +5,7 @@ import {
 import {
     Bridge,
     Assets,
+    UiToastKind,
 } from "globals.slint";
 
 enum ToastVariant {
@@ -15,6 +16,9 @@ enum ToastVariant {
 component Toast inherits Rectangle {
     in property <ToastVariant> variant;
     in property <string> message;
+    // Stable short code (FC-Exx/FC-Wxx), so a photographed report is
+    // matchable whatever the display language.
+    in property <string> code;
 
     background: @linear-gradient(90.17deg, rgba(255, 255, 255, 0.1) 0.15%, rgba(255, 255, 255, 0.03) 85%);
     background-blur: 44px;
@@ -59,10 +63,65 @@ component Toast inherits Rectangle {
             wrap: word-wrap;
             vertical-alignment: center;
         }
+
+        if code != "": FText {
+            text: code;
+            font-size: 11px;
+            color: rgba(255, 255, 255, 0.45);
+            vertical-alignment: center;
+        }
     }
 }
 
 export component ToastOverlay inherits Rectangle  {
+    // All user-facing toast wording lives here so it localizes. `detail` is
+    // the kind's one interpolable scrap (codec description, host name).
+    pure function toast-text(kind: UiToastKind, detail: string) -> string {
+        if (kind == UiToastKind.MediaNotFound) {
+            return @tr("The media could not be found");
+        }
+        if (kind == UiToastKind.AccessDenied) {
+            return @tr("Access to the media was denied");
+        }
+        if (kind == UiToastKind.NetworkFailure) {
+            if (detail == "") {
+                return @tr("Network error while streaming");
+            }
+            return @tr("Network error while streaming from {}", detail);
+        }
+        if (kind == UiToastKind.UnsupportedFormat) {
+            return @tr("The media format is not supported");
+        }
+        if (kind == UiToastKind.MissingCodec) {
+            return @tr("A codec needed by the media is missing");
+        }
+        if (kind == UiToastKind.DecodeFailed) {
+            return @tr("The media is damaged and could not be decoded");
+        }
+        if (kind == UiToastKind.DrmProtected) {
+            return @tr("The media is DRM protected and cannot be played");
+        }
+        if (kind == UiToastKind.OutputFailure) {
+            return @tr("Audio or video output failed");
+        }
+        if (kind == UiToastKind.ImageDownloadFailed) {
+            return @tr("The image could not be downloaded");
+        }
+        if (kind == UiToastKind.MissingCodecForTrack) {
+            if (detail == "") {
+                return @tr("A track was disabled, its codec is missing");
+            }
+            return @tr("No decoder for {}, the track was disabled", detail);
+        }
+        if (kind == UiToastKind.StuckStream) {
+            return @tr("A stream stopped and will not resume by itself");
+        }
+        if (kind == UiToastKind.SubtitleFormatUnsupported) {
+            return @tr("The subtitle format is not supported");
+        }
+        return @tr("A playback problem was detected");
+    }
+
     VerticalLayout {
         pure function compute-width(available: length) -> length {
             Math.min(available, error-rect.preferred-width + self.padding * 2)
@@ -79,7 +138,8 @@ export component ToastOverlay inherits Rectangle  {
 
                 Toast {
                     variant: Error;
-                    message: Bridge.error-message;
+                    message: toast-text(Bridge.error-toast-kind, Bridge.error-toast-detail);
+                    code: Bridge.error-toast-code;
                 }
             }
 
@@ -88,7 +148,8 @@ export component ToastOverlay inherits Rectangle  {
 
                 Toast {
                     variant: Warning;
-                    message: Bridge.warning-message;
+                    message: toast-text(Bridge.warning-toast-kind, Bridge.warning-toast-detail);
+                    code: Bridge.warning-toast-code;
                 }
             }
        }
@@ -101,7 +162,6 @@ export component ToastOverlay inherits Rectangle  {
         running: Bridge.is-showing-error-message;
         triggered() => {
             Bridge.is-showing-error-message = false;
-            Bridge.error-message = "";
         }
     }
 
@@ -110,7 +170,6 @@ export component ToastOverlay inherits Rectangle  {
         running: Bridge.is-showing-warning-message;
         triggered() => {
             Bridge.is-showing-warning-message = false;
-            Bridge.warning-message = "";
         }
     }
 }

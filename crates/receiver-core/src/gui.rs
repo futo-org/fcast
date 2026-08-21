@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::ui_types::UiUpdaterState;
 use crate::{
     image::DecodedImage,
-    ui_types::{AppState, GuiPlaybackState, QrCode, UiMediaTrack, UiPlayerVariant},
+    ui_types::{AppState, GuiPlaybackState, QrCode, UiMediaTrack, UiPlayerVariant, UiToastKind},
 };
 use parking_lot::{Condvar, Mutex};
 use tokio::sync::mpsc::UnboundedSender;
@@ -46,11 +46,6 @@ impl<T> std::ops::Deref for IgnoredDebug<T> {
     }
 }
 
-#[derive(Debug)]
-pub enum ToastType {
-    Warning,
-    Error,
-}
 
 pub struct GraphDumpData {
     pub trigger: String,
@@ -140,9 +135,23 @@ pub enum UpdateGuiCommand {
     SetVolume(f32),
     SetPlaylistIndex(i32),
     ShowToastMessage {
-        msg: String,
-        typ: ToastType,
+        kind: UiToastKind,
+        /// The kind's interpolable scrap (codec name, host, caps), never a
+        /// full sentence. The wording is slint's.
+        detail: Option<String>,
+        /// Stable short code (FC-Exx/FC-Wxx), shown beside the text.
+        code: &'static str,
     },
+    /// The report-bug popup for unexpected failures. `diagnostic` is the raw
+    /// technical block (never localized), `qr` encodes the issue-tracker URL.
+    ShowBugReport {
+        diagnostic: String,
+        code: &'static str,
+        qr: Option<IgnoredDebug<QrCode>>,
+    },
+    /// Dismisses the report-bug popup so a stale one never sits over the
+    /// next item. Sent on every new load.
+    HideBugReport,
     SetPlaybackState(GuiPlaybackState),
     ClearImageState,
     SetImageViaPlayer(bool),
@@ -403,8 +412,20 @@ impl GuiController {
         self.send(UpdateGuiCommand::SetPlaylistIndex(index));
     }
 
-    pub fn show_toast(&self, typ: ToastType, msg: String) {
-        self.send(UpdateGuiCommand::ShowToastMessage { msg, typ });
+    pub fn show_toast(&self, kind: UiToastKind, detail: Option<String>, code: &'static str) {
+        self.send(UpdateGuiCommand::ShowToastMessage { kind, detail, code });
+    }
+
+    pub fn show_bug_report(&self, diagnostic: String, code: &'static str, qr: Option<QrCode>) {
+        self.send(UpdateGuiCommand::ShowBugReport {
+            diagnostic,
+            code,
+            qr: qr.map(IgnoredDebug),
+        });
+    }
+
+    pub fn hide_bug_report(&self) {
+        self.send(UpdateGuiCommand::HideBugReport);
     }
 
     pub fn set_playback_state(&mut self, state: GuiPlaybackState) {
