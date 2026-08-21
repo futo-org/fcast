@@ -72,6 +72,7 @@ const PLAYBACK: Plugin = Plugin {
         "decodebin3-tolerate-non-update-intermediary-collection",
         "decodebin3-outputless-slot-keeps-its-output",
         "decodebin3-serialize-collection-message-posts",
+        "decodebin3-tolerate-slotless-requested-stream",
     ],
     element: "decodebin3",
 };
