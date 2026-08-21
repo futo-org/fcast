@@ -2243,8 +2243,56 @@ fn with_receiver_env<T>(
     f()
 }
 
+/// cargo fingerprints the link-arg strings, not the archives they name, so a
+/// gstreamer rebuild leaves the receiver binary "fresh" but linked against
+/// old code. Deleting it is not enough, cargo restores it from a hardlink
+/// sibling without relinking. So when any archive is newer than the binary,
+/// dirty the bin crate's root source to force the relink.
+fn force_relink_for_fresh_gst(build: &GstBuild, profile: &Profile) -> Result<()> {
+    let root = crate::workspace::root_path()?;
+    let bin = root.join(receiver_bin_path(profile));
+    let Ok(bin_time) = std::fs::metadata(bin.as_std_path()).and_then(|m| m.modified()) else {
+        return Ok(());
+    };
+    if !newer_archive_under(build.build_dir.as_std_path(), bin_time) {
+        return Ok(());
+    }
+    println!(">> gstreamer archives are newer than {bin}, forcing a relink");
+    let main = root.join("receivers/desktop/src/main.rs");
+    std::fs::File::options()
+        .write(true)
+        .open(main.as_std_path())
+        .and_then(|f| f.set_modified(std::time::SystemTime::now()))
+        .with_context(|| format!("touching {main}"))?;
+    Ok(())
+}
+
+/// Whether any `.a` under `dir` (recursively) is newer than `than`.
+fn newer_archive_under(dir: &std::path::Path, than: std::time::SystemTime) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else { continue };
+        if kind.is_dir() {
+            if newer_archive_under(&entry.path(), than) {
+                return true;
+            }
+        } else if entry.path().extension().and_then(|e| e.to_str()) == Some("a")
+            && entry
+                .metadata()
+                .and_then(|m| m.modified())
+                .is_ok_and(|modified| modified > than)
+        {
+            return true;
+        }
+    }
+    false
+}
+
 /// Build the receiver against the static gstreamer; returns the binary path.
 fn build_receiver(sh: &Rc<Shell>, build: &GstBuild, profile: &Profile) -> Result<Utf8PathBuf> {
+    force_relink_for_fresh_gst(build, profile)?;
     with_receiver_env(sh, build, profile, || {
         let link_args = link_args(sh, build, profile)?;
 

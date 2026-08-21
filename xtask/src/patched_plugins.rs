@@ -95,6 +95,7 @@ const ADAPTIVEDEMUX2: Plugin = Plugin {
     patches: &[
         "adaptivedemux2-transient-flushing-no-permanent-pause",
         "adaptivedemux2-track-flush-keeps-its-caps",
+        "hlsdemux2-abr-stays-in-codec-family",
     ],
     element: "dashdemux2",
 };

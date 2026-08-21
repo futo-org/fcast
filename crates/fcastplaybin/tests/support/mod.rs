@@ -62,6 +62,40 @@ fn generate() -> PathBuf {
     root
 }
 
+/// The generated HLS tree for `tests/regression_hls_codec_family.rs`, built on
+/// first use. `FCAST_HLS_FIXTURES` overrides the gitignored default location.
+pub fn hls_fixtures() -> PathBuf {
+    static ROOT: std::sync::OnceLock<PathBuf> = std::sync::OnceLock::new();
+    ROOT.get_or_init(|| {
+        let root = std::env::var_os("FCAST_HLS_FIXTURES")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| {
+                Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../../target/hls-fixtures")
+                    .to_path_buf()
+            });
+        let script = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/gen-hls.sh");
+        let out = Command::new("bash")
+            .arg(&script)
+            .arg(&root)
+            .output()
+            .unwrap_or_else(|error| panic!("running {}: {error}", script.display()));
+        assert!(
+            out.status.success(),
+            "{} failed: {}",
+            script.display(),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(
+            root.join("master.m3u8").is_file(),
+            "no master playlist under {}",
+            root.display()
+        );
+        root
+    })
+    .clone()
+}
+
 /// Whether the manifest carrying an embedded text AdaptationSet exists.
 pub fn has_embedded_text(root: &Path) -> bool {
     root.join("vod/manifest-text.mpd").is_file()
@@ -338,6 +372,8 @@ fn resolve(root: &Path, target: &str) -> Option<PathBuf> {
 fn content_type(path: &Path) -> &'static str {
     match path.extension().and_then(|e| e.to_str()) {
         Some("mpd") => "application/dash+xml",
+        Some("m3u8") => "application/vnd.apple.mpegurl",
+        Some("ts") => "video/mp2t",
         Some("m4s") | Some("mp4") | Some("m4a") | Some("m4v") => "video/mp4",
         Some("vtt") => "text/vtt",
         Some("srt") => "application/x-subrip",
