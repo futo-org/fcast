@@ -61,8 +61,8 @@ fn missing_plugin_is_ignorable(msg: &gst::Message) -> bool {
 
 /// The debug text our adaptivedemux2 carry-patch posts when it discards a
 /// buffer instead of pausing the output task for good
-/// (`xtask/patches/adaptivedemux2-transient-flushing-no-permanent-pause.
-/// patch`). Ours, so it is stable, and it appears nowhere else in GStreamer.
+/// (the fork's `adaptivedemux2-transient-flushing-no-permanent-pause` patch).
+/// Ours, so it is stable, and it appears nowhere else in GStreamer.
 const TRANSIENT_FLUSHING_DISCARD: &str =
     "downstream returned FLUSHING while this element is not flushing";
 

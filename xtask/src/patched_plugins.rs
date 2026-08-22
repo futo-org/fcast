@@ -1,6 +1,8 @@
-//! Build the `playback` and `adaptivedemux2` plugins with xtask/patches
-//! applied, from the source nixpkgs pins (so they stay ABI-compatible and
-//! GStreamer prefers them over the system copy).
+//! Build the `playback` and `adaptivedemux2` plugins with our patches applied,
+//! from the source nixpkgs pins (so they stay ABI-compatible and GStreamer
+//! prefers them over the system copy). The patches come out of the gstreamer
+//! fork, one commit each; the source cannot, its core is a whole release older
+//! than the fork's and a 1.29 plugin will not load into a 1.28 core.
 //!
 //! `cargo test` links the devshell's GStreamer, which has none of the patches
 //! the shipping static build gets: unpatched decodebin3 aborts test binaries
@@ -44,8 +46,8 @@ struct Plugin {
     /// The built plugin, relative to the unpacked source root.
     so: &'static str,
     meson: &'static [&'static str],
-    /// Patch stems in xtask/patches that touch this plugin. The rest belong to
-    /// gstreamer core, matroska, multiqueue and friends.
+    /// Fork patch stems (the `fcast patch:` trailer) that touch this plugin.
+    /// The rest belong to gstreamer core, matroska, multiqueue and friends.
     patches: &'static [&'static str],
     /// Element used to prove the plugin loaded.
     element: &'static str,
@@ -185,7 +187,9 @@ fn build_plugin(
     let src = work.join("src");
     let so = src.join(plugin.so);
     let stamp = work.join("patches.stamp");
-    let want = patch_stamp(root, plugin.patches)?;
+    let fork = fork_checkout(root)?;
+    let commits = patch_commits(sh, &fork, plugin.patches)?;
+    let want = patch_stamp(&commits);
 
     if so.exists() && std::fs::read_to_string(&stamp).ok().as_deref() == Some(want.as_str()) {
         return Ok(so);
@@ -201,7 +205,7 @@ fn build_plugin(
         quiet,
         &format!("fetching the {} source nixpkgs pins", plugin.attr),
     );
-    unpack_and_patch(sh, root, plugin, &src, quiet)?;
+    unpack_and_patch(sh, &fork, plugin, &commits, &src, quiet)?;
 
     log(quiet, &format!("building {}", plugin.attr));
     {
@@ -230,8 +234,9 @@ fn build_plugin(
 /// Unpack the source tarball into `dest` and apply the plugin's patches.
 fn unpack_and_patch(
     sh: &Rc<Shell>,
-    root: &Utf8Path,
+    fork: &Utf8Path,
     plugin: &Plugin,
+    commits: &[(&str, String)],
     dest: &Utf8Path,
     quiet: bool,
 ) -> Result<()> {
@@ -257,9 +262,9 @@ fn unpack_and_patch(
         .run()?;
 
     let _d = sh.push_dir(dest);
-    for name in plugin.patches {
+    for (name, sha) in commits {
         // -p3 strips a/subprojects/<module>/ down to the tarball's own layout.
-        let patch = std::fs::read(patch_path(root, name))?;
+        let patch = patch_diff(sh, fork, sha)?;
         if cmd!(sh, "patch -p3 --dry-run --silent")
             .stdin(&patch)
             .quiet()
@@ -280,24 +285,98 @@ fn unpack_and_patch(
     Ok(())
 }
 
-/// Cache key for the patch set. Keyed on the .so alone, adding a patch silently
-/// did nothing and handed back a plugin built without it. FNV-1a so the value
-/// stays stable across toolchains.
-fn patch_stamp(root: &Utf8Path, patches: &[&str]) -> Result<String> {
+/// Cache key for the patch set: the commit ids it resolved to. Keyed on the .so
+/// alone, adding a patch silently did nothing and handed back a plugin built
+/// without it. FNV-1a so the value stays stable across toolchains.
+fn patch_stamp(commits: &[(&str, String)]) -> String {
     let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
-    for name in patches {
-        let path = patch_path(root, name);
-        let bytes = std::fs::read(&path).with_context(|| format!("reading {path}"))?;
-        for byte in bytes {
+    for (_, sha) in commits {
+        for byte in sha.bytes() {
             hash ^= u64::from(byte);
             hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
         }
     }
-    Ok(format!("{hash:016x}"))
+    format!("{hash:016x}")
 }
 
-fn patch_path(root: &Utf8Path, name: &str) -> Utf8PathBuf {
-    root.join("xtask/patches").join(format!("{name}.patch"))
+/// The gstreamer fork carries the patches now, one commit each, trailed with
+/// `fcast patch: <stem>`. Resolution order: `$FCAST_GSTREAMER_SRC`, a checkout
+/// beside the workspace, then the one `xtask gstreamer` clones for itself.
+fn fork_checkout(root: &Utf8Path) -> Result<Utf8PathBuf> {
+    let mut tried: Vec<Utf8PathBuf> = Vec::new();
+    let from_env = std::env::var("FCAST_GSTREAMER_SRC")
+        .ok()
+        .filter(|v| !v.is_empty())
+        .map(Utf8PathBuf::from);
+    let siblings = root
+        .parent()
+        .map(|p| p.join("gstreamer"))
+        .into_iter()
+        .chain([root.join("target/gstreamer-src")]);
+
+    for dir in from_env.into_iter().chain(siblings) {
+        if dir.join(".git").exists() {
+            return Ok(dir);
+        }
+        tried.push(dir);
+    }
+    bail!(
+        "no gstreamer fork checkout found (looked in {}). Clone {} or point \
+         FCAST_GSTREAMER_SRC at a checkout",
+        tried
+            .iter()
+            .map(|p| p.as_str())
+            .collect::<Vec<_>>()
+            .join(", "),
+        crate::gstreamer::GST_REPO
+    )
+}
+
+/// Resolve each patch stem to the fork commit carrying it.
+fn patch_commits<'a>(
+    sh: &Rc<Shell>,
+    fork: &Utf8Path,
+    patches: &[&'a str],
+) -> Result<Vec<(&'a str, String)>> {
+    patches
+        .iter()
+        .map(|name| {
+            // --all, not HEAD: the checkout may sit on any branch. -F so a stem
+            // is never read as a regex.
+            let grep = format!("fcast patch: {name}");
+            let sha = cmd!(
+                sh,
+                "git -C {fork} log --all --max-count=1 --format=%H -F --grep={grep}"
+            )
+            .quiet()
+            .read()
+            .with_context(|| format!("searching {fork} for the {name} patch"))?;
+            let sha = sha.trim();
+            if sha.is_empty() {
+                // A --depth 1 clone holds one commit, so every stem misses.
+                let shallow = cmd!(sh, "git -C {fork} rev-parse --is-shallow-repository")
+                    .quiet()
+                    .read()
+                    .unwrap_or_default();
+                let hint = if shallow.trim() == "true" {
+                    ". That checkout is SHALLOW, so it carries no patch history"
+                } else {
+                    ", is a fcast/* branch checked out or fetched there?"
+                };
+                bail!("no commit in {fork} trailed `{grep}`{hint}");
+            }
+            Ok((*name, sha.to_owned()))
+        })
+        .collect()
+}
+
+/// The patch itself, byte-exact, without the commit message.
+fn patch_diff(sh: &Rc<Shell>, fork: &Utf8Path, sha: &str) -> Result<Vec<u8>> {
+    let out = cmd!(sh, "git -C {fork} show --no-color --format= {sha}")
+        .quiet()
+        .output()
+        .with_context(|| format!("reading patch {sha} from {fork}"))?;
+    Ok(out.stdout)
 }
 
 fn parent(so: &Utf8Path) -> Result<&Utf8Path> {

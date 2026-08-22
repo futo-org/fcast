@@ -8,7 +8,7 @@
 //! stream with no slot left. handle_stream_switch() then hit upstream's
 //! g_assert(FALSE) ("Stream switch requested for future collection") and
 //! aborted the whole receiver process. Carried fix:
-//! `xtask/patches/decodebin3-tolerate-slotless-requested-stream.patch`.
+//! the fork's `decodebin3-tolerate-slotless-requested-stream` patch.
 //!
 //! The abort races the input draining, so the load is repeated. Pre-fix a hit
 //! kills this test process outright, post-fix every attempt must end in a

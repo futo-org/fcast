@@ -666,8 +666,8 @@ impl Harness {
     /// A/B lever for the diagnosis in
     /// [`gapless_subtitle_enable_running_time_timeline`].
     ///
-    /// The receiver ships
-    /// `xtask/patches/decodebin3-auto-select-text-property.patch`, which adds
+    /// The receiver ships the gstreamer fork's
+    /// `decodebin3-auto-select-text-property` patch, which adds
     /// an `auto-select-text` property to decodebin3, and the crate never sets
     /// it. So decodebin3's default selection picks a TEXT stream for every new
     /// collection, including the one a gapless swap brings in, and the crate

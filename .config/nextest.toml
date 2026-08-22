@@ -1,0 +1,18 @@
+# Runner config for `cargo nextest run` (what `cargo xtask test` uses when
+# nextest is installed). nextest runs every test as its own process, in
+# parallel across suites, which cuts the lane from ~7 minutes of serialized
+# realtime-paced waits to ~2.
+
+[profile.default]
+# The realtime-paced pipeline suites are timing-sensitive under full
+# parallelism: a settle can occasionally outwait its deadline when dozens of
+# pipelines share the machine (the known ~2% stream-switch settle tail,
+# observed: dash_testbed re-enable settles). One retry keeps the lane green
+# while nextest still reports the test as FLAKY in the summary.
+retries = 1
+# A wedged pipeline must FAIL the lane, not hang it (libtest would wait
+# forever). Slowest healthy test is ~41s under load: warn at 2 minutes,
+# kill after 2 periods.
+slow-timeout = { period = "120s", terminate-after = 2 }
+# One failure must not cancel the rest of the lane's coverage.
+fail-fast = false

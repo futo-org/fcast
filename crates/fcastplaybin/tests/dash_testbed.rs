@@ -1952,8 +1952,8 @@ fn dash_embedded_text_rejoins_after_a_round_trip_through_an_external() {
 ///
 /// # What the upstream patches changed, and what is still red
 ///
-/// `xtask/patches/decodebin3-outputless-slot-keeps-its-output.patch` and
-/// `xtask/patches/adaptivedemux2-track-flush-keeps-its-caps.patch` repair the
+/// The fork's `decodebin3-outputless-slot-keeps-its-output` and
+/// `adaptivedemux2-track-flush-keeps-its-caps` patches repair the
 /// upstream half. Three defects, each pinned by its own capture:
 ///
 /// * with upstream handling the selection, `handle_stream_switch` never runs

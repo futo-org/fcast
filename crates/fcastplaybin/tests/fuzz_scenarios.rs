@@ -36,10 +36,10 @@
 //! files plus the action list, so it replays without the fuzzer.
 //!
 //! Note on GStreamer: `cargo test` links the DYNAMIC system GStreamer, which
-//! carries none of `xtask/patches/`. Schedules that churn text branches reach
-//! upstream bugs the shipped (static, patched) receiver does not have, so a
-//! failure here is worth checking against that patch list before it is filed as
-//! a crate bug.
+//! carries none of our gstreamer fork's patches. Schedules that churn text
+//! branches reach upstream bugs the shipped (static, patched) receiver does not
+//! have, so a failure here is worth checking against that patch list before it
+//! is filed as a crate bug.
 
 use std::{
     cell::{Cell, RefCell},

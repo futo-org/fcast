@@ -76,7 +76,7 @@ const FULL_ELEMENTS: &[(&str, &[&str])] = &[
     // playbin3, playsink, subtitleoverlay and the v1 decodebin/uridecodebin pair
     // (~385K of object code) never link. Subtitle cues are rasterized by the
     // video sink against the display size, so no overlay element is autoplugged.
-    // NB the meson trim in xtask/patches/playback-drop-unused-sources.patch
+    // NB the meson trim in the fork's playback-drop-unused-sources patch
     // assumes this row exists: removing it breaks the link, not just the size.
     (
         "playback",
@@ -723,7 +723,10 @@ impl Profile {
     }
 }
 
-const GST_REPO: &str = "https://gitlab.freedesktop.org/gstreamer/gstreamer.git";
+// Our fork of the GStreamer mono-repo. The `fcast/*` branches carry the patches
+// that used to live in xtask/patches, one commit each, on top of the upstream
+// release tag they were written against.
+pub const GST_REPO: &str = "https://gitlab.futo.org/fcast/gstreamer.git";
 
 #[derive(Args)]
 pub struct GstreamerArgs {
@@ -731,8 +734,9 @@ pub struct GstreamerArgs {
     /// into target/ (needs network; incompatible with `--offline`).
     #[arg(long)]
     source: Option<Utf8PathBuf>,
-    /// Git ref to clone when `--source` is not given.
-    #[arg(long, default_value = "1.29.2")]
+    /// Git ref to clone when `--source` is not given. A `fcast/<version>`
+    /// branch of our fork, i.e. that upstream release plus our patches.
+    #[arg(long, default_value = "fcast/1.29.2")]
     gst_ref: String,
     /// Build directory for the static gstreamer (defaults to
     /// <source>/builddir-static).
@@ -1051,6 +1055,11 @@ fn resolve_source(sh: &Rc<Shell>, gst_ref: &str, offline: bool) -> Result<Utf8Pa
 /// another target), idempotently: a reverse-apply check skips ones already
 /// present. A patch that neither applies nor is applied warns instead of
 /// failing, so a user-provided `--source` on another ref still builds.
+///
+/// Both are normally EMPTY: the mono-repo patches live in the fork `GST_REPO`
+/// points at, one commit each. This stays as the escape hatch for a patch that
+/// is not in the fork yet, and it is what makes a plain upstream `--source`
+/// still buildable once you drop the diffs back in.
 fn apply_gst_patches(sh: &Rc<Shell>, source: &Utf8Path, os: &str) -> Result<()> {
     let patches_root = crate::workspace::root_path()?.join("xtask/patches");
 

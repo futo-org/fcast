@@ -88,7 +88,7 @@ fn main() {
             let _p = sh.push_dir(root_path.clone());
 
             // The receiver suites otherwise link against whatever GStreamer the
-            // environment provides, which has NONE of xtask/patches applied:
+            // environment provides, which has NONE of our fork's patches:
             // unpatched decodebin3 ABORTS the test binary.
             let _patched = patched_plugins::push_env(&sh);
 

@@ -1,7 +1,7 @@
 //! One FLUSHING push must not freeze a whole adaptive item.
 //!
 //! `adaptivedemux2` serves every track from one output task. Without
-//! `xtask/patches/adaptivedemux2-transient-flushing-no-permanent-pause.patch`,
+//! the fork's `adaptivedemux2-transient-flushing-no-permanent-pause` patch,
 //! any non-OK `gst_pad_push` there pauses the task for good, and
 //! `GST_FLOW_FLUSHING` posts no error at all, so one refused text push kills
 //! video and audio output with the element still PLAYING and position pinned.
