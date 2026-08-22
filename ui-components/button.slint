@@ -189,8 +189,8 @@ export component Button {
         }
     }
 
-    // focus border
     if (root.has-focus && root.enabled) : FocusBorder {
         border-radius: i-background.border-radius;
+        opacity: root.fade;
     }
 }
