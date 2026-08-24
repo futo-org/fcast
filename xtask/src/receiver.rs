@@ -362,8 +362,8 @@ impl ReceiverArgs {
                 // scope=Full (the macOS default): gstreamer, the glib/pango stack,
                 // codecs and the GIO TLS module are ALL static, no framework dev kit,
                 // no dylib bundling. Anything non-OS left dynamic is a failure.
-                let mut static_args = static_args;
-                static_args.no_default_features = true; // no systray on macOS
+                // Default features stay on so the system tray is built in (its
+                // macOS impl is NSStatusItem via the slint fork — no extra dylib).
                 let binary = static_args.build()?;
                 let binary_path = concat_path(&root_path, binary.as_str());
 
