@@ -2105,7 +2105,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-receiver"
-version = "3.0.3"
+version = "3.0.4"
 dependencies = [
  "anyhow",
  "enable-ansi-support",
@@ -8037,7 +8037,7 @@ dependencies = [
 
 [[package]]
 name = "receiver-core"
-version = "3.0.3"
+version = "3.0.4"
 dependencies = [
  "aes",
  "alac",
@@ -8144,7 +8144,7 @@ version = "0.1.0"
 
 [[package]]
 name = "receiver-ui"
-version = "3.0.3"
+version = "3.0.4"
 dependencies = [
  "anyhow",
  "fcast-protocol",
