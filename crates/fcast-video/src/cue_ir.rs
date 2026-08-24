@@ -10,19 +10,17 @@
 //! drop-furthest-future trim policy) and must not be regressed by a wholesale
 //! swap.
 //!
-//! What that split buys is coexistence: `text/x-raw, format=pango-markup` and
-//! `format=utf8` keep going through the pango/cairo rasterizer in
-//! [`crate::cue`] (byte-identical output to before) while a stream parsed
-//! with `text-format=cue-ir` gets this one, which understands styled spans,
-//! per-cue positioning and karaoke reveal times.
+//! This is now the ONE rasterizer: `format=utf8` cues arrive as unstyled
+//! IR, `format=pango-markup` cues are parsed by `gst-subparse`'s tolerant
+//! pango-markup reimplementation (see [`crate::cue`]'s `RasterCtx`), and
+//! `text-format=cue-ir` streams carry the IR already parsed. The retired
+//! pango/cairo arm is gone along with its linkage.
 //!
-//! No pango and no cairo on this path: layout and rasterization are pure Rust.
-//! NOT no fontconfig, though the module this was lifted from claimed as much:
-//! parley enumerates system fonts through `fontique`, which links
-//! `yeslogic-fontconfig-sys` on Linux. That is not a new dependency for this
-//! workspace (slint already pulls `fontique` for the same reason), but it does
-//! mean retiring the pango arm would free the pango/cairo stack and NOT
-//! fontconfig.
+//! No pango and no cairo anywhere: layout and rasterization are pure Rust.
+//! NOT no fontconfig, though: parley enumerates system fonts through
+//! `fontique`, which links `yeslogic-fontconfig-sys` on Linux. That is not a
+//! new dependency for this workspace (slint already pulls `fontique` for the
+//! same reason).
 //!
 //! ## Contracts this module owns
 //!
@@ -108,7 +106,7 @@ pub struct CueStyle {
     pub bottom_margin_fraction: f32,
     /// Whether *default-placed* subtitles (no positioning in the file) may sit
     /// in the window's letterbox bars instead of covering the picture (mpv's
-    /// `sub-use-margins`, and what the pango arm effectively does). Cues the
+    /// `sub-use-margins`, and what the retired pango arm always did). Cues the
     /// file positions explicitly always track the video rectangle regardless.
     pub use_window_margins: bool,
     /// Stroked border behind the glyphs; `None` = no outline.
@@ -149,8 +147,7 @@ pub struct BackgroundStyle {
 }
 
 /// The default readability box: semi-transparent black, modest padding,
-/// rounded corners. Named because BOTH rasterizers use it: the pango arm in
-/// [`crate::cue`] reads these very numbers, so the two arms cannot drift.
+/// rounded corners. Named so callers building styles can start from it.
 ///
 /// The values are the ones [`CueStyle::boxed`] was already tuned with upstream
 /// (d82e9d5) rather than new ones: 160/255 is dark enough to carry white text
@@ -165,10 +162,8 @@ pub const DEFAULT_BACKGROUND: BackgroundStyle = BackgroundStyle {
     edge_softness: 0.0,
 };
 
-/// The default glyph outline: near-opaque black, 0.14em wide.
-///
-/// Also shared with the pango arm, which has always hardcoded exactly these
-/// two numbers (width 0.14 of the font size, alpha 0.85 ≈ 217/255).
+/// The default glyph outline: near-opaque black, 0.14em wide (the numbers
+/// the retired pango arm always hardcoded, alpha 0.85 ≈ 217/255).
 pub const DEFAULT_OUTLINE: OutlineStyle = OutlineStyle {
     color: [0, 0, 0, 217],
     width_fraction: 0.14,
@@ -1337,31 +1332,6 @@ fn premul_to_straight_rgba(data: &[u8]) -> Vec<u8> {
     out
 }
 
-/// The readable words of pango markup, with the markup removed.
-///
-/// This is the PANGO ARM's rescue path, not a cue-IR one: when
-/// `pango::parse_markup` refuses a cue, the alternative to this is showing the
-/// viewer the raw source, tags and all. Which is not hypothetical: WebVTT's
-/// `<v Speaker>` is the case that motivated it. `subparse-formats` keeps voice
-/// spans in its pango-markup output on purpose, because that output is
-/// byte-identical to the C `subparse`, whose tag whitelist has the same wart;
-/// pango then rejects `<v Voice1>` ("expected a `=` after attribute name") and
-/// every such cue reached the screen as literal angle brackets.
-///
-/// It parses rather than strips, using `subparse-formats`' own lenient markup
-/// parser (no pango involved) and keeping ONLY the text. Parsing matters
-/// because a strip cannot tell a tag from a less-than: `I <3 you` survives here
-/// and would lose three characters to any `<...>` regex. Entities are decoded
-/// too, so a cue does not trade literal `<v Voice1>` for literal `&amp;`.
-///
-/// STYLING IS DELIBERATELY DISCARDED. The markup was rejected, so nothing about
-/// it is trustworthy enough to interpret; the contract is only that the viewer
-/// reads the words. A stream that wants its styling honoured should be parsed
-/// with `text-format=cue-ir`, which is the whole point of the other arm.
-pub fn plain_text_of_markup(markup: &str) -> String {
-    CueIr::from_pango_markup(markup).plain_text()
-}
-
 /// Map C0 controls (except `\n`) and DEL to a space: fonts carry no glyph for
 /// them, so parley shapes `.notdef` and vello draws a box (field: a literal
 /// tab). One byte for one byte, so span ranges stay valid.
@@ -1868,9 +1838,5 @@ mod tests {
     fn pango_markup_parses_to_ir() {
         let ir = CueIr::from_pango_markup("<i>Hello</i> &amp; more");
         assert_eq!(ir.plain_text(), "Hello & more");
-        assert_eq!(
-            plain_text_of_markup("<i>Hello</i> &amp; more"),
-            "Hello & more"
-        );
     }
 }

@@ -45,7 +45,6 @@ dav1d-sys = { version = "0.8", features = ["bundled"], optional = true }
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 rand = { workspace = true, features = ["std_rng"] }
 tracing-tracy = { version = "=0.11.2", optional = true }
-pango.workspace = true
 hayro-jpeg2000 = "0.3"
 jxl-oxide = { version = "0.12", features = ["image"] }
 oneshot = { version = "0.2", features = ["std"] }

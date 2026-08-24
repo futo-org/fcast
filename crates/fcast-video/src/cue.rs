@@ -20,7 +20,6 @@ use std::{
     time::{Duration, Instant},
 };
 
-use pango::prelude::*;
 use parking_lot::{Condvar, Mutex};
 use smallvec::SmallVec;
 use tracing::{debug, info, warn};
@@ -143,35 +142,20 @@ fn paused_cue_lookahead() -> gst::ClockTime {
 /// whole subtitle file stays resident.
 const RASTER_CACHE_LIMIT: usize = 8;
 
-/// Layout constants, in one place (all derived from the window/canvas size, so
-/// cues are sized against the real display, not the video's coded size).
-mod layout {
-    /// Font size as a fraction of canvas height.
-    pub const FONT_HEIGHT_FRACTION: f64 = 0.045;
-    /// Never smaller than this, however small the window gets.
-    pub const MIN_FONT_PX: f64 = 12.0;
-    /// Wrap width as a fraction of canvas width.
-    pub const WRAP_WIDTH_FRACTION: f64 = 0.90;
-    /// Distance from the bottom edge, as a fraction of canvas height.
-    pub const BOTTOM_MARGIN_FRACTION: f64 = 0.04;
-    pub const FONT_FAMILY: &str = "Sans";
-    /// Refuse to allocate a raster larger than this in either dimension.
-    pub const MAX_RASTER_PX: i32 = 8192;
-}
-
 /// The text formats the renderer accepts.
 ///
 /// [`TextFormat::Utf8`] and [`TextFormat::PangoMarkup`] mirror the `format`
 /// field of the production text caps (`text/x-raw, format={utf8,
-/// pango-markup}`) and are rasterized by the pango/cairo [`RasterCtx`] below,
-/// exactly as they always were.
+/// pango-markup}`). Every arm rasterizes through [`crate::cue_ir`]
+/// (parley + vello_cpu, nothing links pango): plain text wraps as unstyled
+/// lines, markup parses through `gst-subparse`'s tolerant pango-markup
+/// reimplementation with its styling honoured.
 ///
-/// [`TextFormat::CueIr`] is the third arm, added with `gst-subparse`'s
-/// `text-format=cue-ir`. It is not a new caps format: those buffers still
+/// [`TextFormat::CueIr`] carries styling that was already parsed upstream
+/// (`text-format=cue-ir`). It is not a new caps format: those buffers still
 /// negotiate `text/x-raw, format=utf8` and carry readable UTF-8 text, with the
-/// styling travelling beside the payload in a `CueIrMeta`. It is rasterized by
-/// [`crate::cue_ir`] (parley + vello_cpu), the only arm that understands
-/// per-span styling, per-cue positioning and karaoke.
+/// styling travelling beside the payload in a `CueIrMeta`. It is the only arm
+/// with per-cue positioning and karaoke.
 ///
 /// Not `Copy`/`Eq`/`Hash`: the IR is an `Arc` payload holding `f32`s, so there
 /// is no lawful `Eq`. The raster cache is a linear-scan `Vec`, for which
@@ -287,9 +271,9 @@ impl Raster {
 /// how many reveal steps have passed. Same key means byte-identical pixels,
 /// which is what makes the cache sound.
 ///
-/// `style`/`video_rect`/`step` only vary the cue-IR arm's output. Carrying
-/// them for the pango arm too costs nothing but a cache flush on a style
-/// change, which is a user-settings action, not a per-frame one.
+/// `style`/`video_rect`/`step` vary every arm's output now that one
+/// rasterizer draws them all; a style change costs a cache flush, which is a
+/// user-settings action, not a per-frame one.
 ///
 /// Equality is structural with an `Arc` pointer fast path (a re-shown cue is
 /// usually the same allocation). No `Eq`/`Hash`: [`CueIr`] and [`CueStyle`]
@@ -357,7 +341,7 @@ struct Active {
     key: RasterKey,
     raster: RasterState,
     /// Reveal thresholds as running times (see [`cue_ir::reveal_steps`]); empty
-    /// for the non-karaoke common case, which is every pango-arm cue.
+    /// for the non-karaoke common case, which is every utf8/markup cue.
     steps: Vec<gst::ClockTime>,
 }
 
@@ -373,8 +357,7 @@ struct State {
     /// Display size the rasters are laid out against.
     canvas: (u32, u32),
     /// Where the video sits inside that display (see [`VideoRect`]). `None`
-    /// means unknown, and the whole window doubles as the picture, which is
-    /// what the pango arm always did.
+    /// means unknown, and the whole window doubles as the picture.
     video_rect: Option<VideoRect>,
     /// The house style cue-IR rasters are drawn with (see [`CueStyle`]).
     style: Arc<CueStyle>,
@@ -676,7 +659,7 @@ impl CueEngine {
 
     /// Set the rectangle the video occupies inside the window, in window
     /// coordinates (`None` = unknown; the whole window then doubles as the
-    /// picture, which is what the pango arm has always assumed). Update it
+    /// picture). Update it
     /// wherever the sink recomputes its scaled destination rect (resize,
     /// rotation, aspect change).
     ///
@@ -2706,309 +2689,61 @@ fn publish(shared: &Arc<Shared>, key: RasterKey, raster: Option<Arc<Raster>>) ->
     changed
 }
 
-/// Append a rounded rectangle to `cr`'s current path.
+/// The worker's rasterizer state, on the one raster thread.
 ///
-/// cairo has no rounded-rect primitive, so it is four arcs joined by the
-/// implicit lines `arc` draws from the current point. The radius is clamped to
-/// half the shorter side, which is what keeps a tiny box (a one-character cue
-/// at a small window size) from turning inside out.
-fn rounded_rect(cr: &cairo::Context, x: f64, y: f64, w: f64, h: f64, radius: f64) {
-    use std::f64::consts::{FRAC_PI_2, PI};
-    let r = radius.min(w / 2.0).min(h / 2.0).max(0.0);
-    cr.new_sub_path();
-    cr.arc(x + w - r, y + r, r, -FRAC_PI_2, 0.0);
-    cr.arc(x + w - r, y + h - r, r, 0.0, FRAC_PI_2);
-    cr.arc(x + r, y + h - r, r, FRAC_PI_2, PI);
-    cr.arc(x + r, y + r, r, PI, 1.5 * PI);
-    cr.close_path();
-}
-
-/// The worker's rasterizer state: BOTH arms, on the one raster thread.
-///
-/// pango/cairo objects are thread-local by construction (pangocairo's default
-/// fontmap is per-thread) and parley's contexts cache font data and layouts, so
-/// each is built once here and kept for the thread's lifetime.
+/// One parley/vello rasterizer ([`cue_ir::RasterCtx`]) renders every arm.
+/// parley's contexts cache font data and layouts, so it is built once here
+/// and kept for the thread's lifetime.
 struct RasterCtx {
-    context: pango::Context,
-    // Kept alive for the context's lifetime; pangocairo's default fontmap is
-    // per-thread, so this one belongs to the raster thread alone.
-    _fontmap: pango::FontMap,
-    /// The cue-IR arm, built on first use: a pipeline that never carries a
-    /// cue-IR stream never pays for parley's font collection.
-    cue_ir: Option<cue_ir::RasterCtx>,
+    cue_ir: cue_ir::RasterCtx,
 }
 
 impl RasterCtx {
     fn new() -> Self {
-        let fontmap = pangocairo::FontMap::default();
-        let context = fontmap.create_context();
         Self {
-            context,
-            _fontmap: fontmap,
-            cue_ir: None,
+            cue_ir: cue_ir::RasterCtx::new(),
         }
     }
 
-    /// Force the font stacks to actually load: a throwaway layout per arm,
-    /// measured and rasterized exactly like a real cue.
-    ///
-    /// Both arms warm here, on the dedicated thread, at sink construction,
-    /// never on a streaming or event-loop thread and never mid-cue.
-    /// fontconfig's walk is the expensive one. parley's font enumeration is
-    /// much cheaper but still not free.
+    /// Force the font stack to actually load: a throwaway layout, measured
+    /// and rasterized exactly like a real cue. Runs on the dedicated thread
+    /// at sink construction, never on a streaming or event-loop thread and
+    /// never mid-cue.
     fn warm(&mut self) {
-        let key = RasterKey {
-            text: "Warming the font stack".to_owned(),
-            format: TextFormat::Utf8,
-            canvas: (640, 360),
-            style: Arc::new(CueStyle::default()),
-            video_rect: None,
-            step: 0,
-        };
-        if self.render(&key).is_none() {
-            warn!("cue raster warm-up produced no pixels");
-        }
-        self.cue_ir
-            .get_or_insert_with(cue_ir::RasterCtx::new)
-            .warm();
+        self.cue_ir.warm();
     }
 
     fn render(&mut self, key: &RasterKey) -> Option<Raster> {
-        // The cue-IR arm: styled spans, per-cue placement, karaoke. Everything
-        // else goes to pango below, unchanged.
-        if let TextFormat::CueIr { ir, .. } = &key.format {
-            let out = self
-                .cue_ir
-                .get_or_insert_with(cue_ir::RasterCtx::new)
-                .render(ir, &key.style, key.canvas, key.video_rect, key.step)?;
-            return Some(Raster {
-                pixels: Arc::new(out.pixels),
-                width: out.width,
-                height: out.height,
-                x: out.x,
-                y: out.y,
-            });
-        }
-
-        let (canvas_w, canvas_h) = key.canvas;
-        if canvas_w == 0 || canvas_h == 0 {
-            return None;
-        }
-
-        let font_px = (canvas_h as f64 * layout::FONT_HEIGHT_FRACTION).max(layout::MIN_FONT_PX);
-
-        // THE HOUSE STYLE GOVERNS BOTH ARMS. `key.style` is the same
-        // `cue_ir::CueStyle` the parley/vello rasterizer reads, so a
-        // `set_style` call moves the two together and neither can drift into
-        // its own look. Only the readability knobs are read here (box,
-        // outline); the rest of this arm's geometry stays the constants in
-        // `layout`, whose values the style's defaults already match exactly.
-        let house = &*key.style;
-        let outline = house.outline;
-        let outline_px = outline
-            .map(|o| (font_px * o.width_fraction as f64).max(1.0))
-            .unwrap_or(0.0);
-        // The tinted rounded box behind the cue, in pixels. `edge_softness` is
-        // NOT honoured on this arm: the vello rasterizer feathers the rim with
-        // `fill_blurred_rounded_rect` and cairo has no equivalent primitive, so
-        // the box is drawn hard-edged here. The default softness is 0.0, so the
-        // two arms agree unless someone asks for a feathered box.
-        let background = house.background;
-        let box_pad = background.map_or(0.0, |b| (b.padding as f64 * font_px).max(0.0));
-        let box_radius = background.map_or(0.0, |b| (b.corner_radius as f64 * font_px).max(0.0));
-        // With a box the padding has to cover it, plus a pixel so the rounded
-        // corners have somewhere to fade out; without one, this is byte-for-byte
-        // the padding this arm always used.
-        let pad = match background {
-            Some(_) => outline_px.max(box_pad).ceil() as i32 + 1,
-            None => outline_px.ceil() as i32,
-        };
-        let wrap_px = ((canvas_w as f64 * layout::WRAP_WIDTH_FRACTION) as i32).max(1);
-
-        let layout = pango::Layout::new(&self.context);
-        let mut font = pango::FontDescription::new();
-        font.set_family(layout::FONT_FAMILY);
-        font.set_weight(pango::Weight::Bold);
-        font.set_absolute_size(font_px * pango::SCALE as f64);
-        layout.set_font_description(Some(&font));
-        layout.set_alignment(pango::Alignment::Center);
-        layout.set_wrap(pango::WrapMode::WordChar);
-        layout.set_width(wrap_px * pango::SCALE);
-
-        match key.format {
-            // Returned above; the cue-IR arm never reaches pango.
-            TextFormat::CueIr { .. } => return None,
-            TextFormat::Utf8 => layout.set_text(&key.text),
-            TextFormat::PangoMarkup => match pango::parse_markup(&key.text, '\0') {
-                Ok((attrs, text, _)) => {
-                    layout.set_text(text.as_str());
-                    layout.set_attributes(Some(&attrs));
-                }
-                Err(err) => {
-                    // Never drop a cue for bad markup: show its WORDS.
-                    // `Layout::set_markup` would silently leave the layout
-                    // empty (plus a g_warning), which is why parsing is done
-                    // here instead.
-                    //
-                    // The text is sanitized rather than shown raw. Handing
-                    // `key.text` straight to `set_text` puts the markup on
-                    // screen as literal angle brackets: a WebVTT `<v Speaker>`
-                    // cue is rejected by pango (voice spans are kept in the
-                    // pango-markup output on purpose, to stay byte-identical to
-                    // the C subparse) and the viewer reads
-                    // `<v Voice1>Hello there</v>`.
-                    //
-                    // This is NOT only the parser's problem to fix upstream:
-                    // matroskademux emits `format=pango-markup` directly for
-                    // S_TEXT/UTF8 tracks, so cues reach this arm that never
-                    // pass through a parser element at all and can never be
-                    // switched to cue-ir.
-                    warn!(%err, "cue markup did not parse, rendering its text without the markup");
-                    layout.set_text(&cue_ir::plain_text_of_markup(&key.text));
-                }
-            },
-        }
-
-        // With centred alignment every line is centred inside `wrap_px`, so the
-        // widest line determines the tight texture width and the whole layout
-        // is shifted left by the widest line's left inset.
-        let mut text_w = 0;
-        for line in layout.lines() {
-            let (_, logical) = line.pixel_extents();
-            text_w = text_w.max(logical.width());
-        }
-        let text_h = layout.pixel_size().1;
-        if text_w <= 0 || text_h <= 0 {
-            debug!(text = key.text, "cue laid out to nothing");
-            return None;
-        }
-
-        let surface_w = text_w + 2 * pad;
-        let surface_h = text_h + 2 * pad;
-        if surface_w > layout::MAX_RASTER_PX || surface_h > layout::MAX_RASTER_PX {
-            warn!(surface_w, surface_h, "cue raster too large, skipping");
-            return None;
-        }
-
-        let surface = match cairo::ImageSurface::create(cairo::Format::ARgb32, surface_w, surface_h)
-        {
-            Ok(surface) => surface,
-            Err(err) => {
-                warn!(%err, surface_w, surface_h, "cue surface allocation failed");
-                return None;
+        // Every arm renders through parley/vello. Utf8 and pango-markup cues
+        // become an IR right here: plain text wraps as unstyled lines, markup
+        // goes through the tolerant pango-markup reimplementation (pure Rust,
+        // nothing links pango), which never rejects a cue, broken markup
+        // degrades to its words. That matters because matroskademux emits
+        // `format=pango-markup` directly for S_TEXT/UTF8 tracks, so cues
+        // reach this arm that never passed through a parser element.
+        let converted;
+        let ir = match &key.format {
+            TextFormat::CueIr { ir, .. } => ir,
+            TextFormat::Utf8 => {
+                converted = Arc::new(CueIr::from_plain_text(&key.text));
+                &converted
+            }
+            TextFormat::PangoMarkup => {
+                converted = Arc::new(gstrssubparse::pango_markup::markup_to_cue_ir(&key.text));
+                &converted
             }
         };
-
-        let draw = |surface: &cairo::ImageSurface| -> Result<(), cairo::Error> {
-            let cr = cairo::Context::new(surface)?;
-            let origin_x = (pad - (wrap_px - text_w) / 2) as f64;
-            let origin_y = pad as f64;
-
-            // The readability box first, under everything: the cue's ink
-            // (which starts at `pad`, since the layout is shifted left by the
-            // centring inset) grown by the box padding on every side.
-            if let Some(bg) = background {
-                let [r, g, b, a] = bg.color;
-                rounded_rect(
-                    &cr,
-                    pad as f64 - box_pad,
-                    pad as f64 - box_pad,
-                    text_w as f64 + 2.0 * box_pad,
-                    text_h as f64 + 2.0 * box_pad,
-                    box_radius,
-                );
-                cr.set_source_rgba(
-                    r as f64 / 255.0,
-                    g as f64 / 255.0,
-                    b as f64 / 255.0,
-                    a as f64 / 255.0,
-                );
-                cr.fill()?;
-            }
-
-            // Then the outline, then the fill on top of it.
-            if outline_px > 0.0 {
-                let [r, g, b, a] = outline.map_or([0, 0, 0, 217], |o| o.color);
-                cr.move_to(origin_x, origin_y);
-                pangocairo::functions::layout_path(&cr, &layout);
-                cr.set_source_rgba(
-                    r as f64 / 255.0,
-                    g as f64 / 255.0,
-                    b as f64 / 255.0,
-                    a as f64 / 255.0,
-                );
-                cr.set_line_width(outline_px);
-                cr.set_line_join(cairo::LineJoin::Round);
-                cr.set_line_cap(cairo::LineCap::Round);
-                cr.stroke()?;
-            }
-
-            cr.move_to(origin_x, origin_y);
-            cr.set_source_rgb(1.0, 1.0, 1.0);
-            pangocairo::functions::show_layout(&cr, &layout);
-            Ok(())
-        };
-        if let Err(err) = draw(&surface) {
-            warn!(%err, "cue rasterization failed");
-            return None;
-        }
-
-        let mut surface = surface;
-        let stride = surface.stride() as usize;
-        let data = match surface.data() {
-            Ok(data) => data,
-            Err(err) => {
-                warn!(%err, "cue surface data unavailable");
-                return None;
-            }
-        };
-        let pixels = argb32_to_rgba(&data, stride, surface_w as u32, surface_h as u32);
-        drop(data);
-
-        // Bottom-centre, a margin up from the bottom edge.
-        let margin = (canvas_h as f64 * layout::BOTTOM_MARGIN_FRACTION) as i32;
-        let x = ((canvas_w as i32 - surface_w) / 2).max(0);
-        let y = (canvas_h as i32 - margin - surface_h).max(0);
-
+        let out = self
+            .cue_ir
+            .render(ir, &key.style, key.canvas, key.video_rect, key.step)?;
         Some(Raster {
-            pixels: Arc::new(pixels),
-            width: surface_w as u32,
-            height: surface_h as u32,
-            x,
-            y,
+            pixels: Arc::new(out.pixels),
+            width: out.width,
+            height: out.height,
+            x: out.x,
+            y: out.y,
         })
     }
-}
-
-/// Cairo's ARGB32 is native-endian premultiplied; overlays are tightly packed
-/// straight-alpha RGBA (`Overlay::pixels`, uploaded as `PL_ALPHA_INDEPENDENT`).
-fn argb32_to_rgba(data: &[u8], stride: usize, width: u32, height: u32) -> Vec<u8> {
-    #[cfg(target_endian = "little")]
-    const IDX: [usize; 4] = [2, 1, 0, 3]; // R, G, B, A within a BGRA byte quad
-    #[cfg(target_endian = "big")]
-    const IDX: [usize; 4] = [1, 2, 3, 0];
-
-    let row_bytes = width as usize * 4;
-    let mut out = Vec::with_capacity(row_bytes * height as usize);
-    for row in 0..height as usize {
-        let line = &data[row * stride..row * stride + row_bytes];
-        for px in line.as_chunks::<4>().0 {
-            let alpha = px[IDX[3]];
-            if alpha == 0 {
-                out.extend_from_slice(&[0, 0, 0, 0]);
-                continue;
-            }
-            let unpremultiply = |value: u8| -> u8 {
-                let scaled = (value as u32 * 255 + alpha as u32 / 2) / alpha as u32;
-                scaled.min(255) as u8
-            };
-            out.push(unpremultiply(px[IDX[0]]));
-            out.push(unpremultiply(px[IDX[1]]));
-            out.push(unpremultiply(px[IDX[2]]));
-            out.push(alpha);
-        }
-    }
-    out
 }
 
 #[cfg(test)]
@@ -3659,36 +3394,45 @@ mod tests {
     }
 
     #[test]
-    fn invalid_markup_falls_back_to_plain_text_instead_of_dropping_the_cue() {
+    fn invalid_markup_renders_its_words_with_styling_instead_of_dropping_the_cue() {
         let mut ctx = RasterCtx::new();
         let canvas = (1280, 720);
         let broken = "<b>unclosed";
 
-        let fallback = ctx
+        let rendered = ctx
             .render(&raster_key(broken, TextFormat::PangoMarkup, canvas))
             .expect("a cue is never dropped for bad markup");
-        // The fallback shows the WORDS, not the source. This assertion used to
-        // compare against the raw string rendered as utf8 -- i.e. it pinned
-        // "put the markup on screen", which is the defect the sanitizer fixes.
-        let words = ctx
-            .render(&raster_key("unclosed", TextFormat::Utf8, canvas))
-            .expect("utf8 rasterizes");
+        // The tolerant parser closes the tag at end of input, so the cue
+        // renders as its words WITH the styling honoured (pango used to
+        // reject the whole string and the fallback discarded the bold).
+        let ir = Arc::new(gstrssubparse::pango_markup::markup_to_cue_ir(broken));
+        let styled = ctx
+            .render(&RasterKey {
+                format: TextFormat::CueIr {
+                    ir,
+                    pts_start: None,
+                },
+                ..raster_key(broken, TextFormat::Utf8, canvas)
+            })
+            .expect("the parsed IR rasterizes");
         let raw = ctx
             .render(&raster_key(broken, TextFormat::Utf8, canvas))
             .expect("utf8 rasterizes");
 
-        assert_eq!(fallback.size(), words.size());
-        assert_eq!(fallback.pixels(), words.pixels());
+        assert_eq!(rendered.size(), styled.size());
+        assert_eq!(rendered.pixels(), styled.pixels());
         assert_ne!(
-            fallback.pixels(),
+            rendered.pixels(),
             raw.pixels(),
-            "the fallback must not render the markup source"
+            "the markup source must not reach the screen"
         );
     }
 
     /// THE FIELD CASE: a WebVTT voice span reaches this arm as
-    /// `<v Voice1>...</v>`, pango rejects it ("expected a `=` after attribute
-    /// name"), and before the sanitizer the viewer read the tags themselves.
+    /// `<v Voice1>...</v>`, which strict pango parsing rejects ("expected a
+    /// `=` after attribute name"), and before the sanitizer the viewer read
+    /// the tags themselves. The tolerant parser treats the unknown tag as
+    /// transparent, so the words render unstyled.
     ///
     /// It arrives here for two independent reasons, so fixing only one would
     /// not do: `subparse-formats` keeps `v` in the pango-markup output to stay
@@ -3701,11 +3445,12 @@ mod tests {
         let canvas = (1280, 720);
         let voiced = "<v Voice1>Hello there</v> and more";
 
-        // Precondition: pango really does refuse this, so the test is about
-        // the fallback and not about pango quietly coping.
+        // Precondition: strict pango-parity parsing really does refuse this,
+        // so the test is about the tolerant path and not about the strict
+        // parser quietly coping.
         assert!(
-            pango::parse_markup(voiced, '\0').is_err(),
-            "the premise is that pango rejects a voice span"
+            gstrssubparse::pango_markup::parse_markup(voiced, None).is_err(),
+            "the premise is that strict parsing rejects a voice span"
         );
 
         let rendered = ctx
@@ -3933,31 +3678,6 @@ mod tests {
             .filter(|px| px[3] > 200 && px[0] > 180 && px[1] < 60 && px[2] < 60)
             .count();
         assert!(red > 50, "the text is still red, got {red} px");
-    }
-
-    /// The sanitizer parses rather than strips, which is what keeps a
-    /// less-than that is NOT a tag: `I <3 you` must survive intact, and
-    /// entities must not be traded for a different piece of literal noise.
-    #[test]
-    fn the_markup_sanitizer_keeps_text_that_only_looks_like_tags() {
-        assert_eq!(
-            cue_ir::plain_text_of_markup("<v Voice1>Hello there</v> and <c.yellow>yellow</c>"),
-            "Hello there and yellow"
-        );
-        assert_eq!(cue_ir::plain_text_of_markup("I <3 you"), "I <3 you");
-        assert_eq!(
-            cue_ir::plain_text_of_markup("Tom &amp; Jerry &lt;3"),
-            "Tom & Jerry <3"
-        );
-        assert_eq!(cue_ir::plain_text_of_markup("</stray>text"), "text");
-        assert_eq!(cue_ir::plain_text_of_markup("<v Ann>unclosed"), "unclosed");
-        // Line breaks are the cue's shape, not markup: a two-line subtitle
-        // must still be two lines after sanitizing, or the fallback would
-        // silently reflow it into one.
-        assert_eq!(
-            cue_ir::plain_text_of_markup("<v Ann>first line</v>\n<i>second line</i>"),
-            "first line\nsecond line"
-        );
     }
 
     #[test]

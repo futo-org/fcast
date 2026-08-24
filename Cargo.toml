@@ -86,7 +86,7 @@ gst-plugin-rtp = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "http
 gst-plugin-webrtc = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false }
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
-gst-subparse = { git = "https://github.com/MAlba124/gst-subparse-rs.git", rev = "0cdf26b" }
+gst-subparse = { git = "https://github.com/MAlba124/gst-subparse-rs.git", rev = "5c2d463" }
 # The cue-IR renderer stack (crates/fcast-video/src/cue_ir.rs). vello_cpu keeps
 # the exact revision the upstream cueir-demo pins: the parley workspace's own,
 # which its examples (and our rasterizer) are written against.
@@ -127,9 +127,6 @@ webbrowser = "1"
 glow = "0.17"
 # Text shaping/rasterization for sink-side subtitle cues (fcast-video) and the
 # static-build font closure (receiver-core).
-pango = { version = "0.22.0", features = ["v1_44"] }
-pangocairo = "0.22"
-cairo-rs = "0.22"
 libloading = "0.9.0"
 askama = "0.15"
 rustls = { version = "0.23", default-features = false }

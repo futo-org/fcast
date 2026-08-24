@@ -16,15 +16,12 @@ libplacebo = { path = "../libplacebo", optional = true }
 drm-fourcc = "2.2.0"
 tracing.workspace = true
 parking_lot.workspace = true
-pango.workspace = true
-pangocairo.workspace = true
-cairo-rs.workspace = true
-# The cue-IR renderer (src/cue_ir.rs). pango/pangocairo/cairo stay: cue-IR is
-# an ADDITIONAL arm, and a stream that negotiates pango-markup still renders
-# through the pango rasterizer exactly as it did before.
+# The one text rasterizer (src/cue_ir.rs): parley + vello_cpu render every
+# arm, pango-markup cues included (parsed by gst-subparse's pure-Rust
+# pango-markup reimplementation). Nothing here links pango or cairo.
 #
-# gst-subparse is here for its `subparse_formats` re-export alone (the IR
-# types); the plugin's elements are registered by receiver-core, not by us.
+# gst-subparse is here for its `subparse_formats` + `pango_markup` re-exports
+# alone; the plugin's elements are registered by receiver-core, not by us.
 gst-subparse.workspace = true
 parley.workspace = true
 peniko.workspace = true
