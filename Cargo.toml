@@ -184,6 +184,13 @@ zerotrie = { opt-level = 2 }
 zerovec = { opt-level = 2 }
 lyon_tessellation = { opt-level = 2 }
 lyon_path = { opt-level = 2 }
+vello_cpu = { opt-level = 2 }
+vello_common = { opt-level = 2 }
+fearless_simd = { opt-level = 2 }
+kurbo = { opt-level = 2 }
+peniko = { opt-level = 2 }
+color = { opt-level = 2 }
+bytemuck = { opt-level = 2 }
 
 [profile.dev.package.image]
 opt-level = 3
