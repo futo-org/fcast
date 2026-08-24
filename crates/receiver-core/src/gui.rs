@@ -486,7 +486,7 @@ impl GuiController {
     }
 
     #[cfg(any(target_os = "macos", target_os = "windows"))]
-    pub fn set_updater_state(&self, state: crate::UiUpdaterState) {
+    pub fn set_updater_state(&self, state: UiUpdaterState) {
         self.send(UpdateGuiCommand::SetUpdateState(state));
     }
 

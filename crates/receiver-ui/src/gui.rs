@@ -327,7 +327,7 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
     bridge.on_perform_app_update({
         let msg_tx = msg_tx.clone();
         move || {
-            msg_tx.app_update(message::AppUpdate::UpdateApplication);
+            msg_tx.app_update(receiver_core::message::AppUpdate::UpdateApplication);
         }
     });
 
@@ -335,7 +335,7 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
     bridge.on_restart_app({
         let msg_tx = msg_tx.clone();
         move || {
-            msg_tx.app_update(message::AppUpdate::RestartApp);
+            msg_tx.app_update(receiver_core::message::AppUpdate::RestartApp);
         }
     });
 
@@ -549,13 +549,15 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
         }
         UpdateGuiCommand::SetPlaybackRate(rate) => bridge.set_playback_rate(rate),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        UpdateGuiCommand::SetUpdateState(state) => bridge.set_updater_state(state),
+        UpdateGuiCommand::SetUpdateState(state) => bridge.set_updater_state(state.into()),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         UpdateGuiCommand::SetUpdateDownloadProgress(progress) => {
             bridge.set_update_download_progress(progress)
         }
         #[cfg(any(target_os = "macos", target_os = "windows"))]
-        UpdateGuiCommand::SetUpdaterError(err) => bridge.set_updater_error_msg(err),
+        UpdateGuiCommand::SetUpdaterError(err) => bridge.set_updater_error_msg(err.into()),
+        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        UpdateGuiCommand::RunOnMainThread(f) => (f.0)(),
         UpdateGuiCommand::SetWindowVisibility { visible, prev_tx } => {
             let window = ui.window();
             let _ = prev_tx.send(window.is_visible());
