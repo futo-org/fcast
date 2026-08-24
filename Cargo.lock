@@ -5668,7 +5668,7 @@ dependencies = [
 [[package]]
 name = "libheif-sys"
 version = "5.3.0+1.23.0"
-source = "git+https://gitlab.futo.org/fcast/libheif-sys.git?rev=5f4f054de4cc7f64750c759b594df8462c0c86ce#5f4f054de4cc7f64750c759b594df8462c0c86ce"
+source = "git+https://gitlab.futo.org/fcast/libheif-sys.git?rev=d911c7abf73518b24e1e9fcf62fe5821b0f70a52#d911c7abf73518b24e1e9fcf62fe5821b0f70a52"
 dependencies = [
  "cfg-if",
  "cmake",
@@ -9994,7 +9994,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69fff37da548239c3bf9e64a12193d261e8b22b660991c6fd2df057c168f435f"
 dependencies = [
  "cc",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -10743,7 +10743,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

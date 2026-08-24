@@ -220,7 +220,7 @@ opt-level = 3
 # Disable encoders
 image = { git = "https://gitlab.futo.org/fcast/image-rs.git", rev = "9ee78f3f" }
 rustls = { git = "https://gitlab.futo.org/fcast/rustls.git", rev = "72ec207b" }
-libheif-sys = { git = "https://gitlab.futo.org/fcast/libheif-sys.git", rev = "5f4f054de4cc7f64750c759b594df8462c0c86ce" }
+libheif-sys = { git = "https://gitlab.futo.org/fcast/libheif-sys.git", rev = "d911c7abf73518b24e1e9fcf62fe5821b0f70a52" }
 # Bundled-linking forks: the -sys crates probe the static GStreamer through
 # their gstreamer-src dependency, no stub .pc files or env setup. The glib
 # trio is scope-aware (static wrap glib under scope=Full only).
