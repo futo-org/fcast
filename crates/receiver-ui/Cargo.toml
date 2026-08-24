@@ -63,6 +63,5 @@ systray = ["slint/system-tray", "receiver-core/systray"]
 kms-backend = ["slint/backend-linuxkms"]
 android = ["slint/backend-android-activity-06", "slint/renderer-skia", "receiver-core/android"]
 tracy = ["receiver-core/tracy"]
-fhs = ["slint/renderer-dodvg", "receiver-core/fhs"]
 # Forwarded to the core so a receiver binary keeps naming one dependency.
 static-gst-plugins = ["receiver-core/static-gst-plugins"]

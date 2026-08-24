@@ -164,8 +164,6 @@ kms-backend = []
 android = []
 tracy = ["dep:tracing-tracy"]
 static-gst-plugins = ["dep:gst-plugin-dav1d", "dep:gst-plugin-rtp", "dep:dav1d-sys"]
-# Enable when linking against a fully static gstreamer-full build
-fhs = []
 
 [build-dependencies]
 gst-static-link.workspace = true

@@ -16,7 +16,6 @@ members = [
     "crates/receiver-ui",
     "receivers/desktop",
     "receivers/experimental/android",
-    "receivers/experimental/fhs",
     "crates/app-updater",
     "crates/google-cast-protocol",
     "crates/receiver-resources",
@@ -24,8 +23,6 @@ members = [
     "crates/libplacebo",
     "crates/libplacebo-vulkan",
     "crates/egl-sys",
-    "crates/fiatlux-sys",
-    "crates/fiatlux",
     "crates/inhibit-screensaver",
     "crates/fcast-gst-elements",
     "crates/fcast-runtime",
@@ -38,8 +35,7 @@ members = [
 # `--workspace` still reach everything, and every crate below is still a member.
 #
 # Excluded: the image-viewer example (slint + femtovg for an SDK example — dead
-# weight in every sweep), the android crates (need the NDK), fhs + fiatlux (need
-# the system libfiatlux-client this host lacks), and the sender side — the
+# weight in every sweep), the android crates (need the NDK), and the sender side — the
 # senders, the sender SDK and its flutter plugin, plus the crates only they use
 # (mirroring-core, file-server, tools/fast). Work here is receiver work; the
 # sender tree is one `cargo xtask test-sender` away. Shared crates

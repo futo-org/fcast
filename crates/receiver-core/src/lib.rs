@@ -50,7 +50,6 @@ use fcast_video::render_options::{RenderProfile, RenderingOptions};
 // Everything below is the GPU render surface, re-exported for the receiver
 // binaries. Behind `render` so a test build of this crate never drags in
 // libplacebo (and the C library its -sys crate builds).
-// Re-exported: the fhs receiver's pixmap sink uses `receiver_core::egl`.
 #[cfg(all(target_os = "linux", feature = "render"))]
 pub use fcast_video::egl;
 #[cfg(feature = "render")]

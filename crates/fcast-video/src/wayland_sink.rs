@@ -1069,7 +1069,7 @@ fn decide_color(frame: &Frame, allow_hdr: bool) -> Decision {
 
     if is_hdr && allow_hdr {
         // Render HDR into PQ/BT.2020 and let the compositor tone-map. (HLG sources are
-        // converted to PQ too, matching the fhs sink, because HLG carries
+        // converted to PQ too, because HLG carries
         // values outside [0,1].)
         let color = pl_color_space {
             primaries: pl_color_primaries::PL_COLOR_PRIM_BT_2020,
