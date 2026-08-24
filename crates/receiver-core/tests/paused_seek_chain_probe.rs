@@ -20,7 +20,7 @@
 //!
 //! # The chain, and what a break looks like
 //!
-//! The whole path is here: `fcastplaybin`'s transport into `fcast-video`'s
+//! The whole path is here: `flapjack`'s transport into `fcast-video`'s
 //! [`FSink`] and the [`CueEngine`] it owns, wired exactly as
 //! `receiver-core::player` wires it.
 //!
@@ -50,6 +50,10 @@
 //! All four measured green on `DJI_0019_sample.MP4` (qtdemux/tx3g, 25 distinct
 //! cue texts so the raster is genuinely cold) at the time this was written.
 
+// Without an explicit reference rustc drops this rlib and the static GStreamer
+// link line goes with it.
+use gst_static_env as _;
+
 use std::{
     path::PathBuf,
     sync::{
@@ -64,8 +68,8 @@ use fcast_video::{
     cue::{CueInput, TextFormat},
     video::FSink,
 };
-use fcastplaybin::{
-    AudioSink, FcastPlaybin, MediaInput, PlaybinEvent, Seek, SelectionGate, Sinks, StartPoint,
+use flapjack::{
+    AudioSink, Player, MediaInput, PlayerEvent, Seek, SelectionGate, Sinks, StartPoint,
     SubtitleFeedItem, TrackSlot, TrackTarget,
 };
 use gst::prelude::*;
@@ -92,8 +96,8 @@ fn init() {
             let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
         }
         gst::init().unwrap();
-        fcast_gst_elements::fcastaudiostretch::plugin_init()
-            .expect("registering fcastaudiostretch");
+        flapjack::audiostretch::plugin_init()
+            .expect("registering audiostretch");
     });
 }
 
@@ -132,12 +136,12 @@ enum Feed {
 }
 
 struct Probe {
-    playbin: FcastPlaybin,
+    player: Player,
     engine: fcast_video::cue::CueEngine,
     feed: Arc<Mutex<Vec<Feed>>>,
     repaints: Arc<AtomicUsize>,
-    events: mpsc::Receiver<PlaybinEvent>,
-    log: Mutex<Vec<PlaybinEvent>>,
+    events: mpsc::Receiver<PlayerEvent>,
+    log: Mutex<Vec<PlayerEvent>>,
     paused: std::cell::Cell<bool>,
     parked: std::cell::Cell<Option<Seek>>,
 }
@@ -155,7 +159,7 @@ impl Probe {
             None
         });
 
-        let playbin = FcastPlaybin::new(Sinks {
+        let player = Player::new(Sinks {
             video: Some(video_sink.clone().upcast()),
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
@@ -163,14 +167,14 @@ impl Probe {
                     .build()?)
             })),
         })
-        .expect("building fcastplaybin");
+        .expect("building flapjack");
 
         // Wired EXACTLY as `receiver-core::player::set_subtitle_consumer` wires
         // it, so a break here is a break there.
         let feed: Arc<Mutex<Vec<Feed>>> = Arc::new(Mutex::new(Vec::new()));
         let log = feed.clone();
         let sink = engine.clone();
-        playbin.set_subtitle_consumer(move |item| match item {
+        player.set_subtitle_consumer(move |item| match item {
             SubtitleFeedItem::Cue {
                 text,
                 start_rt,
@@ -198,12 +202,12 @@ impl Probe {
         });
 
         let (tx, events) = mpsc::channel();
-        playbin.set_event_handler(None, move |event, _| {
+        player.set_event_handler(None, move |event, _| {
             let _ = tx.send(event);
         });
 
         Self {
-            playbin,
+            player,
             engine,
             feed,
             repaints,
@@ -219,17 +223,17 @@ impl Probe {
     /// give the link policy its chance, what the receiver does on every edge.
     fn pump(&self) {
         while let Ok(event) = self.events.try_recv() {
-            if let PlaybinEvent::QueueSeek(seek) = &event {
+            if let PlayerEvent::QueueSeek(seek) = &event {
                 self.parked.set(Some(*seek));
             }
             self.log.lock().push(event);
         }
-        if self.playbin.is_settled()
+        if self.player.is_settled()
             && let Some(seek) = self.parked.take()
         {
-            self.playbin.seek_async(seek);
+            self.player.seek_async(seek);
         }
-        self.playbin.pump_selection(SelectionGate {
+        self.player.pump_selection(SelectionGate {
             quiet: true,
             paused: self.paused.get(),
             seekable: true,
@@ -257,7 +261,7 @@ impl Probe {
             .iter()
             .rev()
             .find_map(|event| match event {
-                PlaybinEvent::StreamCollection(collection) => Some(
+                PlayerEvent::StreamCollection(collection) => Some(
                     collection
                         .iter()
                         .filter(|s| s.stream_type().contains(gst::StreamType::TEXT))
@@ -304,7 +308,7 @@ fn probe_the_paused_seek_chain() {
 
     let t0 = Instant::now();
     let p = Probe::new(t0);
-    if let Err(error) = p.playbin.load(
+    if let Err(error) = p.player.load(
         MediaInput::Uri(uri),
         StartPoint::Seek {
             position: gst::ClockTime::ZERO,
@@ -322,7 +326,7 @@ fn probe_the_paused_seek_chain() {
     }
     let sids = p.text_sids();
     println!("text sids: {sids:?}");
-    p.playbin.request_track(
+    p.player.request_track(
         TrackSlot::Subtitle,
         TrackTarget::Stream(Some(sids[0].clone())),
     );
@@ -334,13 +338,13 @@ fn probe_the_paused_seek_chain() {
     // requested text branch never goes live in this shape at all. No preroll
     // cue at position 0 within 60s, and nothing after the seek either -- on
     // qtdemux/tx3g AND on the matroskademux/subparse fixture the green guards
-    // in `fcastplaybin` are built from. So it is the driver's paused selection,
+    // in `flapjack` are built from. So it is the driver's paused selection,
     // not a demuxer or a container property.
     let no_play = std::env::var_os("FCAST_PROBE_NO_PLAY").is_some();
     if no_play {
         println!("(FCAST_PROBE_NO_PLAY: staying PAUSED from the load)");
         p.wait_for("a settled PAUSED after the load", |p| {
-            p.playbin.state_summary().0 == gst::State::Paused && p.playbin.is_settled()
+            p.player.state_summary().0 == gst::State::Paused && p.player.is_settled()
         });
         // The branch must actually be LINKED and delivering before the seek, or
         // this measures "seeked before the text branch joined" -- a probe
@@ -353,18 +357,18 @@ fn probe_the_paused_seek_chain() {
             p.cue_count()
         );
     } else {
-        p.playbin.play().expect("play");
+        p.player.play().expect("play");
         p.paused.set(false);
         p.wait_for("the first cue", |p| p.cue_count() > 0);
         p.wait_for("playback to reach the pause point", |p| {
-            p.playbin.position().is_some_and(|pos| pos > play_to)
+            p.player.position().is_some_and(|pos| pos > play_to)
         });
 
-        p.playbin.pause().expect("pause");
+        p.player.pause().expect("pause");
     }
     p.paused.set(true);
     p.wait_for("a settled PAUSED", |p| {
-        p.playbin.state_summary().0 == gst::State::Paused && p.playbin.is_settled()
+        p.player.state_summary().0 == gst::State::Paused && p.player.is_settled()
     });
     println!(
         "before the seek: overlays={} repaints={}",
@@ -375,7 +379,7 @@ fn probe_the_paused_seek_chain() {
     let repaints_before = p.repaints.load(Ordering::Acquire);
 
     println!("\n--- the PAUSED seek ---");
-    p.playbin.seek_async(Seek::new(Some(seek_to), None));
+    p.player.seek_async(Seek::new(Some(seek_to), None));
     let deadline = Instant::now() + Duration::from_secs(12);
     while Instant::now() < deadline {
         p.pump();
@@ -383,9 +387,9 @@ fn probe_the_paused_seek_chain() {
     }
     println!(
         "state={:?} settled={} position={:?}",
-        p.playbin.state_summary(),
-        p.playbin.is_settled(),
-        p.playbin.position()
+        p.player.state_summary(),
+        p.player.is_settled(),
+        p.player.position()
     );
 
     println!("\n--- LINK 1+2 DELIVERY/CLIPPING: what reached the consumer ---");
@@ -430,5 +434,5 @@ fn probe_the_paused_seek_chain() {
         p.repaints.load(Ordering::Acquire) - repaints_before
     );
 
-    let _ = p.playbin.stop();
+    let _ = p.player.stop();
 }

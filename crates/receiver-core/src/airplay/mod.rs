@@ -666,7 +666,7 @@ impl Handler {
         }
 
         // A later audio-only SETUP must NOT re-announce, or the app re-sets the
-        // player URI and playbin builds a second source element whose `prepare`
+        // player URI and the player builds a second source element whose `prepare`
         // fails on the already-claimed channels.
         if video_data_port.is_some()
             && let Some(stream_connection_id) = self.mirror_session

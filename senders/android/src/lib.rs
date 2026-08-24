@@ -1,3 +1,7 @@
+// Forces the static GStreamer link line and isolates the process from on-disk
+// plugins before main.
+use gst_static_env as _;
+
 use anyhow::{Result, bail};
 use fcast_sender_sdk::{context::CastContext, device, device::DeviceInfo};
 use glow::HasContext;

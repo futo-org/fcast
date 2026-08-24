@@ -1,3 +1,7 @@
+// Forces the static GStreamer link line and isolates the process from on-disk
+// plugins before main.
+use gst_static_env as _;
+
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::debug;
 #[cfg(not(target_os = "android"))]

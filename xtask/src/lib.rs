@@ -17,7 +17,6 @@ pub mod gstreamer;
 pub mod kotlin;
 #[cfg(feature = "mdns")]
 pub mod mdns;
-pub mod patched_plugins;
 pub mod protocol;
 pub mod receiver;
 pub mod sender;
@@ -72,7 +71,7 @@ pub struct BuildMacosInstallerArgs {
     pub p12_password_file: Option<String>,
     #[clap(long)]
     pub api_key_file: Option<String>,
-    /// Static GStreamer build options (source tree, offline, LTO, ...).
+    /// Receiver build options (profile, default features).
     #[clap(flatten)]
     pub static_args: gstreamer::GstreamerArgs,
 }

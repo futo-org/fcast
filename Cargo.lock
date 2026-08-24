@@ -297,8 +297,10 @@ dependencies = [
  "fcast-sender-sdk",
  "futures-core",
  "glow",
+ "gst-static-env",
  "gstreamer",
  "gstreamer-app",
+ "gstreamer-src",
  "gstreamer-video",
  "jni 0.21.1",
  "khronos-egl",
@@ -1886,12 +1888,28 @@ dependencies = [
 
 [[package]]
 name = "ctor"
+version = "0.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "424e0138278faeb2b401f174ad17e715c829512d74f3d1e81eb43365c2e0590e"
+dependencies = [
+ "ctor-proc-macro",
+ "dtor 0.1.1",
+]
+
+[[package]]
+name = "ctor"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83cf0d42651b16c6dfe68685716d18480d18a9c39c62d76e8cf3eb6ed5d8bcbf"
 dependencies = [
- "dtor",
+ "dtor 0.8.1",
 ]
+
+[[package]]
+name = "ctor-proc-macro"
+version = "0.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52560adf09603e58c9a7ee1fe1dcb95a16927b17c127f0ac02d6e768a0e25bc1"
 
 [[package]]
 name = "ctr"
@@ -2002,9 +2020,9 @@ dependencies = [
 [[package]]
 name = "dav1d-sys"
 version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c3c91aea6668645415331133ed6f8ddf0e7f40160cd97a12d59e68716a58704b"
+source = "git+https://gitlab.futo.org/fcast/dav1d-rs.git?rev=a915aeca244f9cfd4b3e849499980c4922710af4#a915aeca244f9cfd4b3e849499980c4922710af4"
 dependencies = [
+ "gstreamer-src",
  "libc",
  "system-deps",
 ]
@@ -2134,6 +2152,9 @@ version = "3.0.3"
 dependencies = [
  "anyhow",
  "enable-ansi-support",
+ "gst-static-env",
+ "gst-static-link",
+ "gstreamer-src",
  "receiver-ui",
  "winresource",
 ]
@@ -2156,8 +2177,11 @@ dependencies = [
  "flume 0.11.1",
  "futures",
  "gst-plugin-rtp",
+ "gst-static-env",
+ "gst-static-link",
  "gstreamer",
  "gstreamer-app",
+ "gstreamer-src",
  "gstreamer-video",
  "image",
  "isolang",
@@ -2328,9 +2352,24 @@ dependencies = [
 
 [[package]]
 name = "dtor"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "404d02eeb088a82cfd873006cb713fe411306c7d182c344905e101fb1167d301"
+dependencies = [
+ "dtor-proc-macro",
+]
+
+[[package]]
+name = "dtor"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "edf234dd1594d6dd434a8fb8cada51ddbbc593e40e4a01556a0b31c62da2775b"
+
+[[package]]
+name = "dtor-proc-macro"
+version = "0.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f678cf4a922c215c63e0de95eb1ff08a958a81d47e485cf9da1e27bf6305cfa5"
 
 [[package]]
 name = "egl-sys"
@@ -2606,11 +2645,14 @@ dependencies = [
  "fcast-runtime",
  "futures",
  "gst-plugin-webrtc",
+ "gst-static-env",
+ "gst-static-link",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-audio",
  "gstreamer-base",
  "gstreamer-check",
+ "gstreamer-src",
  "gstreamer-video",
  "gstreamer-webrtc",
  "hayro-jpeg2000",
@@ -2712,12 +2754,15 @@ dependencies = [
  "egl-sys",
  "glow",
  "glutin_egl_sys",
+ "gst-static-env",
+ "gst-static-link",
  "gst-subparse",
  "gstreamer",
  "gstreamer-allocators",
  "gstreamer-app",
  "gstreamer-base",
  "gstreamer-gl-egl",
+ "gstreamer-src",
  "gstreamer-video",
  "i-slint-backend-winit",
  "libplacebo",
@@ -2740,34 +2785,14 @@ dependencies = [
 ]
 
 [[package]]
-name = "fcastplaybin"
-version = "0.1.0"
+name = "fd-lock"
+version = "4.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
- "anyhow",
- "fcast-gst-elements",
- "fcasttest",
- "gst-subparse",
- "gstreamer",
- "gstreamer-app",
- "loom",
- "parking_lot",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
-name = "fcasttest"
-version = "0.1.0"
-dependencies = [
- "gstreamer",
- "gstreamer-app",
- "gstreamer-audio",
- "gstreamer-base",
- "gstreamer-video",
- "parking_lot",
- "serde",
- "toml 1.1.2+spec-1.1.0",
- "tracing",
+ "cfg-if",
+ "rustix 1.1.4",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2889,6 +2914,43 @@ name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
+name = "flapjack"
+version = "0.1.0"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?rev=ddf8e34452d4f3cbfbf312dbe858b44c42c7ee6f#ddf8e34452d4f3cbfbf312dbe858b44c42c7ee6f"
+dependencies = [
+ "anyhow",
+ "gst-static-env",
+ "gst-static-link",
+ "gst-subparse",
+ "gstreamer",
+ "gstreamer-app",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-src",
+ "parking_lot",
+ "tracing",
+]
+
+[[package]]
+name = "flapjack-test"
+version = "0.1.0"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?rev=ddf8e34452d4f3cbfbf312dbe858b44c42c7ee6f#ddf8e34452d4f3cbfbf312dbe858b44c42c7ee6f"
+dependencies = [
+ "ctor 0.2.9",
+ "gst-static-env",
+ "gst-static-link",
+ "gstreamer",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-src",
+ "gstreamer-video",
+ "parking_lot",
+ "serde",
+ "toml 1.1.2+spec-1.1.0",
+ "tracing",
+]
 
 [[package]]
 name = "flatbuffers"
@@ -3393,12 +3455,12 @@ dependencies = [
 
 [[package]]
 name = "gio-sys"
-version = "0.22.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "64729ba2772c080448f9f966dba8f4456beeb100d8c28a865ef8a0f2ef4987e1"
+version = "0.22.8"
+source = "git+https://gitlab.futo.org/fcast/gtk-rs-core.git?rev=bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154#bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154"
 dependencies = [
  "glib-sys",
  "gobject-sys",
+ "gstreamer-src",
  "libc",
  "system-deps",
  "windows-sys 0.61.2",
@@ -3450,10 +3512,10 @@ dependencies = [
 
 [[package]]
 name = "glib-sys"
-version = "0.22.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5f7fbac234ed5bc2a28359b7bde8e1b9cdf1441cc2d7f068e4824672d7db9445"
+version = "0.22.8"
+source = "git+https://gitlab.futo.org/fcast/gtk-rs-core.git?rev=bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154#bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154"
 dependencies = [
+ "gstreamer-src",
  "libc",
  "system-deps",
 ]
@@ -3544,11 +3606,11 @@ dependencies = [
 
 [[package]]
 name = "gobject-sys"
-version = "0.22.6"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "22a861859b887a79cf461359c192c97a57d8fb0229dd291232e57aa11f6fa72c"
+version = "0.22.8"
+source = "git+https://gitlab.futo.org/fcast/gtk-rs-core.git?rev=bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154#bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154"
 dependencies = [
  "glib-sys",
+ "gstreamer-src",
  "libc",
  "system-deps",
 ]
@@ -3580,6 +3642,11 @@ name = "grid"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
+
+[[package]]
+name = "gst-build-config"
+version = "0.1.0"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?rev=b905cfa209cc5ab147ddfac3060b16b68ddb2bb9#b905cfa209cc5ab147ddfac3060b16b68ddb2bb9"
 
 [[package]]
 name = "gst-plugin-dav1d"
@@ -3722,6 +3789,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "gst-static-env"
+version = "0.1.0"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?rev=b905cfa209cc5ab147ddfac3060b16b68ddb2bb9#b905cfa209cc5ab147ddfac3060b16b68ddb2bb9"
+dependencies = [
+ "ctor 0.6.3",
+ "gio-sys",
+ "glib-sys",
+ "gobject-sys",
+ "gstreamer-allocators-sys",
+ "gstreamer-app-sys",
+ "gstreamer-audio-sys",
+ "gstreamer-base-sys",
+ "gstreamer-net-sys",
+ "gstreamer-pbutils-sys",
+ "gstreamer-rtp-sys",
+ "gstreamer-sdp-sys",
+ "gstreamer-src",
+ "gstreamer-sys",
+ "gstreamer-tag-sys",
+ "gstreamer-video-sys",
+ "gstreamer-webrtc-sys",
+]
+
+[[package]]
+name = "gst-static-link"
+version = "0.1.0"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?rev=b905cfa209cc5ab147ddfac3060b16b68ddb2bb9#b905cfa209cc5ab147ddfac3060b16b68ddb2bb9"
+
+[[package]]
 name = "gst-subparse"
 version = "0.1.0"
 source = "git+https://github.com/MAlba124/gst-subparse-rs.git?rev=0cdf26b#0cdf26b4e75520c964150b715479277188545d3c"
@@ -3774,12 +3870,12 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-allocators-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ea44ee4a86b39bcdcfd260179b7dbfdd5f81955d6fee35f11264934caf65230c"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "glib-sys",
  "gobject-sys",
+ "gstreamer-src",
  "gstreamer-sys",
  "libc",
  "system-deps",
@@ -3802,12 +3898,12 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-app-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a74a8211e5d7df2f45b612c284ddf56b92bdf4e879e8ed72e7c46dd0842e158"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "glib-sys",
  "gstreamer-base-sys",
+ "gstreamer-src",
  "gstreamer-sys",
  "libc",
  "system-deps",
@@ -3831,13 +3927,13 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-audio-sys"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3d25892ad6fdd898936ca338d46d8632b298470ecc3eb82098e330ed2cdaec5d"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "glib-sys",
  "gobject-sys",
  "gstreamer-base-sys",
+ "gstreamer-src",
  "gstreamer-sys",
  "libc",
  "system-deps",
@@ -3859,12 +3955,12 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-base-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6569606feeb89cfcf95a6476a64a0f0aec83fadcef0e91c24e576f7851ceac3a"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "glib-sys",
  "gobject-sys",
+ "gstreamer-src",
  "gstreamer-sys",
  "libc",
  "system-deps",
@@ -3962,12 +4058,12 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-net-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bcefb342a98ffca0b106bc9fea13d5df15879e1613b4dc652a6ec1960c32584c"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "gio-sys",
  "glib-sys",
+ "gstreamer-src",
  "gstreamer-sys",
  "libc",
  "system-deps",
@@ -3990,13 +4086,13 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-pbutils-sys"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "eefc07f8f23ca04fae932accefcf22059060b4e3fd41c6445a502cd31c1350b6"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "glib-sys",
  "gobject-sys",
  "gstreamer-audio-sys",
+ "gstreamer-src",
  "gstreamer-sys",
  "gstreamer-video-sys",
  "libc",
@@ -4017,12 +4113,12 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-rtp-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adf8df32469d863ce4375a978233a40efec206c5256bf0c14ee42bb745d8a793"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "glib-sys",
  "gstreamer-base-sys",
+ "gstreamer-src",
  "gstreamer-sys",
  "libc",
  "system-deps",
@@ -4041,25 +4137,34 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-sdp-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c20f0eb41ecfbacbf6a29d9457e6de0f59e2638f47fbdb6a6c1bcfb720c2b9ee"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "glib-sys",
+ "gstreamer-src",
  "gstreamer-sys",
  "libc",
  "system-deps",
 ]
 
 [[package]]
+name = "gstreamer-src"
+version = "0.1.0"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?rev=b905cfa209cc5ab147ddfac3060b16b68ddb2bb9#b905cfa209cc5ab147ddfac3060b16b68ddb2bb9"
+dependencies = [
+ "fd-lock",
+ "gst-build-config",
+]
+
+[[package]]
 name = "gstreamer-sys"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "533fa8d28fc830eafccbcfcfddb390563ea5d3a351af2c3aab99e197e5f5b1ba"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "cfg-if",
  "glib-sys",
  "gobject-sys",
+ "gstreamer-src",
  "libc",
  "system-deps",
 ]
@@ -4078,12 +4183,12 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-tag-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e6bfa5a12fdd4489a50d0022ebd40439e3c4c29e3df96e2ab77fcc354f0d64b4"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "glib-sys",
  "gobject-sys",
+ "gstreamer-src",
  "gstreamer-sys",
  "libc",
  "system-deps",
@@ -4120,13 +4225,13 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-video-sys"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "109c2c997a90a5806a8d7fcb416755e3047d6bab8f580d2ededc9ab7ad553caf"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "glib-sys",
  "gobject-sys",
  "gstreamer-base-sys",
+ "gstreamer-src",
  "gstreamer-sys",
  "libc",
  "system-deps",
@@ -4147,12 +4252,12 @@ dependencies = [
 
 [[package]]
 name = "gstreamer-webrtc-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "405721d1f15bbda47a46f9645077859215a947cdd6af6c7f18e4f4d0cbe63bd7"
+version = "0.25.3"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
 dependencies = [
  "glib-sys",
  "gstreamer-sdp-sys",
+ "gstreamer-src",
  "gstreamer-sys",
  "libc",
  "system-deps",
@@ -6055,10 +6160,13 @@ dependencies = [
  "fcast-sender-sdk",
  "futures",
  "gst-plugin-webrtc",
+ "gst-static-env",
+ "gst-static-link",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-pbutils",
  "gstreamer-sdp",
+ "gstreamer-src",
  "gstreamer-video",
  "gstreamer-webrtc",
  "http-body-util",
@@ -8056,14 +8164,15 @@ dependencies = [
  "clap",
  "ctor 0.2.9",
  "ctr",
+ "dav1d-sys",
  "directories",
  "fast_qr",
  "fcast-gst-elements",
  "fcast-protocol",
  "fcast-runtime",
  "fcast-video",
- "fcastplaybin",
- "fcasttest",
+ "flapjack",
+ "flapjack-test",
  "futures",
  "gethostname",
  "glow",
@@ -8072,6 +8181,8 @@ dependencies = [
  "gst-plugin-dav1d",
  "gst-plugin-rtp",
  "gst-plugin-webrtc",
+ "gst-static-env",
+ "gst-static-link",
  "gst-subparse",
  "gstreamer",
  "gstreamer-app",
@@ -8080,6 +8191,7 @@ dependencies = [
  "gstreamer-check",
  "gstreamer-gl-egl",
  "gstreamer-pbutils",
+ "gstreamer-src",
  "gstreamer-tag",
  "gstreamer-video",
  "hayro-jpeg2000",
@@ -8152,8 +8264,11 @@ dependencies = [
  "fcast-video",
  "glow",
  "glutin_egl_sys",
+ "gst-static-env",
+ "gst-static-link",
  "gstreamer",
  "gstreamer-base",
+ "gstreamer-src",
  "gstreamer-video",
  "i-slint-backend-winit",
  "libplacebo",

@@ -222,7 +222,7 @@ pub mod imp {
             if let Some(ctx) = self.current_context() {
                 return Ok(ctx);
             }
-            // The playbin bus uses a *sync* handler, so `set_context` runs
+            // The player bus uses a *sync* handler, so `set_context` runs
             // synchronously inside this post; the context is available right after.
             let _ = self.obj().post_message(
                 gst::message::NeedContext::builder(AIRPLAY_CONTEXT)

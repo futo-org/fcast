@@ -10,7 +10,7 @@
 use std::collections::HashMap;
 
 use crate::ui_types::Color;
-use fcastplaybin::graph::{GraphCell, GraphSnapshot};
+use flapjack::graph::{GraphCell, GraphSnapshot};
 
 #[derive(Debug, Clone)]
 pub struct SceneRect {
@@ -238,13 +238,13 @@ fn pad_box_h(detail: &str) -> f32 {
     if detail.is_empty() { 16.0 } else { 25.0 }
 }
 
-fn pad_col_w(pads: &[fcastplaybin::graph::GraphPad]) -> f32 {
+fn pad_col_w(pads: &[flapjack::graph::GraphPad]) -> f32 {
     pads.iter()
         .map(|pad| pad_box_w(&pad.name, &pad.detail))
         .fold(0.0, f32::max)
 }
 
-fn pad_col_h(pads: &[fcastplaybin::graph::GraphPad]) -> f32 {
+fn pad_col_h(pads: &[flapjack::graph::GraphPad]) -> f32 {
     pads.iter().map(|pad| pad_box_h(&pad.detail) + 6.0).sum()
 }
 
@@ -544,7 +544,7 @@ fn draw_cell(measured: &Measured<'_>, x: f32, y: f32, out: &mut Out) {
 }
 
 fn draw_pad_col(
-    pads: &[fcastplaybin::graph::GraphPad],
+    pads: &[flapjack::graph::GraphPad],
     x: f32,
     top: f32,
     is_sink: bool,
@@ -922,7 +922,7 @@ fn route_edges(ctx: &Ctx<'_>, out: &mut Out) {
 
 #[cfg(test)]
 mod tests {
-    use fcastplaybin::graph::{GraphLink, GraphPad};
+    use flapjack::graph::{GraphLink, GraphPad};
     use gst::prelude::*;
 
     use super::*;
@@ -1217,7 +1217,7 @@ mod tests {
         pipeline.add_many([&src, bin.upcast_ref(), &sink]).unwrap();
         gst::Element::link_many([&src, bin.upcast_ref(), &sink]).unwrap();
 
-        let snap = fcastplaybin::graph::snapshot(pipeline.upcast_ref());
+        let snap = flapjack::graph::snapshot(pipeline.upcast_ref());
         let scene = layout(&snap);
 
         // Two ghost chains: four routed edges with arrowheads.

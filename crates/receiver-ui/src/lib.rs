@@ -6,6 +6,10 @@
 //! the split this way round is what makes `cargo test -p receiver-core` free of
 //! slint (and of compiling the `.slint` sources).
 
+// Forces the static GStreamer link line and isolates the process from on-disk
+// plugins before main.
+use gst_static_env as _;
+
 use anyhow::Result;
 use gst::prelude::*;
 use gst_base::prelude::BaseSinkExt;

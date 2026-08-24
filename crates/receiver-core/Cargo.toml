@@ -5,9 +5,11 @@ edition = "2024"
 license = "GPL-3.0-only"
 
 [dependencies]
+gst-static-env.workspace = true
+gstreamer-src.workspace = true
 tokio.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
-fcastplaybin = { path = "../fcastplaybin" }
+flapjack.workspace = true
 fcast-gst-elements = { path = "../fcast-gst-elements" }
 gst-subparse.workspace = true
 fcast-runtime = { path = "../fcast-runtime" }
@@ -37,6 +39,9 @@ parking_lot.workspace = true
 bytes.workspace = true
 gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
 gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", features = [ "static" ], optional = true }
+# Flips the forked crate's bundled feature (static wrap dav1d under
+# scope=Full, normal system probe otherwise).
+dav1d-sys = { version = "0.8", features = ["bundled"], optional = true }
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 rand = { workspace = true, features = ["std_rng"] }
 tracing-tracy = { version = "=0.11.2", optional = true }
@@ -139,9 +144,9 @@ ctor = "0.2"
 # their own image fixtures.
 image = { workspace = true, features = ["encode"] }
 # The driver's transport fixtures. This crate is the only one that can see both
-# them and the decoders they are fed to (fcastplaybin cannot depend on
+# them and the decoders they are fed to (flapjack cannot depend on
 # fcast-video), which is what `the_drivers_bitmap_fixtures_decode` needs.
-fcasttest = { path = "../fcasttest" }
+flapjack-test.workspace = true
 
 
 [features]
@@ -158,7 +163,9 @@ systray = []
 kms-backend = []
 android = []
 tracy = ["dep:tracing-tracy"]
-static-gst-plugins = ["dep:gst-plugin-dav1d", "dep:gst-plugin-rtp"]
+static-gst-plugins = ["dep:gst-plugin-dav1d", "dep:gst-plugin-rtp", "dep:dav1d-sys"]
 # Enable when linking against a fully static gstreamer-full build
-static-gstreamer = []
 fhs = []
+
+[build-dependencies]
+gst-static-link.workspace = true

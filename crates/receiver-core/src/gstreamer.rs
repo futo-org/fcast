@@ -6,15 +6,6 @@ use tracing::debug;
 use crate::media_formats::*;
 
 pub fn init_and_load_plugins() {
-    #[cfg(feature = "static-gstreamer")]
-    unsafe {
-        std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", "");
-        std::env::set_var("GST_PLUGIN_SYSTEM_PATH", "");
-        std::env::set_var("GST_PLUGIN_PATH_1_0", "");
-        std::env::set_var("GST_PLUGIN_PATH", "");
-        std::env::set_var("GST_REGISTRY_DISABLE", "yes");
-    }
-
     // Naming the encoding avoids subparse latching a UTF-8 failure for the rest
     // of the stream when a multi-byte character straddles a read boundary.
     if std::env::var_os("GST_SUBTITLE_ENCODING").is_none() {
@@ -24,44 +15,14 @@ pub fn init_and_load_plugins() {
     }
 
     gst::init().unwrap();
+    // Registers the plugins built into the binary. Nothing is on disk to find,
+    // so without this no element factory exists.
+    gstreamer_src::init_static_plugins();
     debug!(gstreamer_version = %gst::version_string());
-
-    // Dynamic builds only: on a static build these on-disk plugins would drag in
-    // a second glib ("cannot register existing type") and TLS is already linked.
-    #[cfg(all(
-        any(target_os = "windows", target_os = "macos"),
-        not(feature = "static-gstreamer")
-    ))]
-    {
-        let mut plugin_dir = std::env::current_exe().unwrap();
-        plugin_dir.pop();
-        #[cfg(target_os = "macos")]
-        plugin_dir.push("lib");
-        unsafe {
-            std::env::set_var("GIO_MODULE_DIR", plugin_dir.join("gio").join("modules"));
-        }
-        #[cfg(target_os = "windows")]
-        let plugins = receiver_resources::all_plugins_for_win();
-        #[cfg(target_os = "macos")]
-        let plugins = receiver_resources::all_plugins_for_macos();
-        for plugin in plugins {
-            use tracing::error;
-
-            let mut path = plugin_dir.clone();
-            path.push(&plugin);
-            let registry = gst::Registry::get();
-            match gst::Plugin::load_file(&path) {
-                Ok(plugin) => {
-                    let _ = registry.add_plugin(&plugin);
-                }
-                Err(err) => error!(?err, plugin, "Failed to load gstreamer plugin"),
-            }
-        }
-    }
 
     fcast_gst_elements::fcastwhepsrcbin::plugin_init().unwrap();
     fcast_gst_elements::fcasthttpsrc::plugin_init().unwrap();
-    fcast_gst_elements::fcastaudiostretch::plugin_init().unwrap();
+    flapjack::audiostretch::plugin_init().unwrap();
     #[cfg(target_os = "linux")]
     fcast_gst_elements::pwaudiosink::plugin_init().unwrap();
     fcast_gst_elements::fcompsrc::plugin_init().unwrap();
@@ -102,27 +63,16 @@ pub fn init_and_load_plugins() {
     }
 }
 
-#[cfg(all(test, feature = "static-gstreamer"))]
-#[ctor::ctor]
-fn isolate_gst_registry_for_tests() {
-    unsafe {
-        std::env::set_var("GST_PLUGIN_SYSTEM_PATH_1_0", "");
-        std::env::set_var("GST_PLUGIN_SYSTEM_PATH", "");
-        std::env::set_var("GST_PLUGIN_PATH_1_0", "");
-        std::env::set_var("GST_PLUGIN_PATH", "");
-        std::env::set_var("GST_REGISTRY_DISABLE", "yes");
-    }
-}
-
 #[cfg(test)]
 pub(crate) fn init_for_tests() {
     use std::sync::Once;
     static INIT: Once = Once::new();
     INIT.call_once(|| {
         gst::init().unwrap();
-        // Elements every fcastplaybin pipeline builds must be registered here too,
+        gstreamer_src::init_static_plugins();
+        // Elements every flapjack pipeline builds must be registered here too,
         // or tests fail on a missing factory rather than on what they assert.
-        fcast_gst_elements::fcastaudiostretch::plugin_init().unwrap();
+        flapjack::audiostretch::plugin_init().unwrap();
         // Registered HERE and not per test. Re-registering replaces the
         // factory in the registry, and a parallel test whose pipeline is
         // mid-flight then reads the replaced factory through

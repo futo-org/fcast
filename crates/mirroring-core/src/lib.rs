@@ -1,3 +1,7 @@
+// Forces the static GStreamer link line and isolates the process from on-disk
+// plugins before main.
+use gst_static_env as _;
+
 use fcast_sender_sdk::device::{self, DeviceInfo, MediaTrack, MediaTrackType};
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use serde::Deserialize;

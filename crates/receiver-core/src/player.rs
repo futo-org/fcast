@@ -9,23 +9,23 @@ use gst::{glib::object::ObjectExt, prelude::*};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::MessageSender;
-use fcastplaybin::state_machine::{
+use flapjack::state_machine::{
     BufferingStateResult, RunningState, Seek, StateChangeResult, StateMachine,
 };
 
-/// What plays. Re-exported from `fcastplaybin`: a URI, or a pre-built source
+/// What plays. Re-exported from `flapjack`: a URI, or a pre-built source
 /// element. The APPLICATION builds the element (HTTP with per-load headers,
-/// WHEP bin, fwebrtc, AirPlay mirror) rather than the playbin resolving a
+/// WHEP bin, fwebrtc, AirPlay mirror) rather than the player resolving a
 /// URI scheme itself: those sources are receiver elements wired to receiver
 /// state (signalling channels, mirror sessions, GStreamer contexts), which
-/// fcastplaybin deliberately knows nothing about: no fake-URI dispatch, no
+/// flapjack deliberately knows nothing about: no fake-URI dispatch, no
 /// global config side channels.
-pub use fcastplaybin::MediaInput;
+pub use flapjack::MediaInput;
 
 /// What the application does to the pipeline right after a gapless cancel.
-/// Re-exported from `fcastplaybin`: it is the caller's half of the cancel
+/// Re-exported from `flapjack`: it is the caller's half of the cancel
 /// contract (see [`Player::cancel_prepared`]).
-pub use fcastplaybin::AfterCancel;
+pub use flapjack::AfterCancel;
 
 /// Correlates missing-plugin element messages with decodebin's follow-up
 /// "missing plugin" WARNING (posted right after, on the same thread) so the
@@ -62,7 +62,7 @@ fn missing_plugin_is_ignorable(msg: &gst::Message) -> bool {
 /// The debug text our adaptivedemux2 carry-patch posts when it discards a
 /// buffer instead of pausing the output task for good
 /// (the fork's `adaptivedemux2-transient-flushing-no-permanent-pause` patch).
-/// Ours, so it is stable, and it appears nowhere else in GStreamer.
+/// Ours, so it is stable and appears nowhere else in GStreamer.
 const TRANSIENT_FLUSHING_DISCARD: &str =
     "downstream returned FLUSHING while this element is not flushing";
 
@@ -161,8 +161,8 @@ impl SubtitleFlow {
     /// A `Clear` is the ABSENCE of a cue, not one, so it does not count: a
     /// track that only ever clears has delivered nothing, which is exactly the
     /// state this verdict exists to name.
-    fn tally(&self, item: fcastplaybin::SubtitleFeedItem) -> fcastplaybin::SubtitleFeedItem {
-        if !matches!(item, fcastplaybin::SubtitleFeedItem::Clear) {
+    fn tally(&self, item: flapjack::SubtitleFeedItem) -> flapjack::SubtitleFeedItem {
+        if !matches!(item, flapjack::SubtitleFeedItem::Clear) {
             self.delivered();
         }
         item
@@ -287,16 +287,16 @@ fn toast_every_warning() -> bool {
 /// renderer) so the whole translation is this match, and this crate is the one
 /// place that sees both sides. That is also why the agreement between their
 /// implemented sets is asserted here (see the test of the same name below).
-fn bitmap_format(format: fcastplaybin::BitmapSubFormat) -> fcast_video::subpic::BitmapFormat {
+fn bitmap_format(format: flapjack::BitmapSubFormat) -> fcast_video::subpic::BitmapFormat {
     match format {
-        fcastplaybin::BitmapSubFormat::Pgs => fcast_video::subpic::BitmapFormat::Pgs,
-        fcastplaybin::BitmapSubFormat::Vobsub => fcast_video::subpic::BitmapFormat::Vobsub,
-        fcastplaybin::BitmapSubFormat::Dvb => fcast_video::subpic::BitmapFormat::Dvb,
+        flapjack::BitmapSubFormat::Pgs => fcast_video::subpic::BitmapFormat::Pgs,
+        flapjack::BitmapSubFormat::Vobsub => fcast_video::subpic::BitmapFormat::Vobsub,
+        flapjack::BitmapSubFormat::Dvb => fcast_video::subpic::BitmapFormat::Dvb,
     }
 }
 
 /// The playback snapshot a load returns to once it prerolls (the start
-/// position/rate seek `fcastplaybin::load` applies in PAUSED).
+/// position/rate seek `flapjack::load` applies in PAUSED).
 #[derive(Debug, Clone, Copy)]
 pub struct RestorePoint {
     pub position: gst::ClockTime,
@@ -353,10 +353,10 @@ pub enum TrackKind {
 }
 
 /// A full track selection, keyed by GStreamer stream id (`None` = slot
-/// disabled). Re-exported from `fcastplaybin`, whose selection engine owns
+/// disabled). Re-exported from `flapjack`, whose selection engine owns
 /// all dispatch/confirmation sequencing; indices exist only at the
 /// protocol/GUI edge.
-pub use fcastplaybin::TrackSelection;
+pub use flapjack::TrackSelection;
 
 /// User-meaningful buckets for fatal playback errors. Classified from the
 /// gst error domain/code plus which side failed (`from_source` is
@@ -506,8 +506,8 @@ fn classify_warning(
 }
 
 /// Receiver-facing playback events, forwarded into the application loop.
-/// The raw GStreamer bus lives inside `fcastplaybin` now: it translates
-/// messages into typed [`fcastplaybin::PlaybinEvent`]s on the posting
+/// The raw GStreamer bus lives inside `flapjack` now: it translates
+/// messages into typed [`flapjack::PlayerEvent`]s on the posting
 /// thread, and [`Player`] maps those onto this protocol-facing enum (see
 /// `relay_event`).
 #[derive(Debug)]
@@ -520,7 +520,7 @@ pub enum PlayerEvent {
     StreamCollection(gst::StreamCollection),
     /// An async state change or (flushing) seek finished prerolling. Not
     /// attributable to a specific operation: `GstBin` posts its aggregated
-    /// ASYNC_DONE with a fresh seqnum (fcastplaybin's selection engine
+    /// ASYNC_DONE with a fresh seqnum (flapjack's selection engine
     /// relies on exclusivity instead).
     AsyncDone,
     /// The media's duration changed and any cached value is stale: re-query
@@ -531,7 +531,7 @@ pub enum PlayerEvent {
     /// while the item plays, which is what this event delivers.
     ///
     /// LOAD-SCOPED deliberately: a superseded load's refresh must be dropped
-    /// by the generation filter, and fcastplaybin already suppresses the one
+    /// by the generation filter, and flapjack already suppresses the one
     /// case where the current generation would still answer for the wrong item
     /// (a performed gapless swap waiting to activate).
     DurationChanged,
@@ -564,11 +564,11 @@ pub enum PlayerEvent {
     /// `Player::recover_clock()`.
     ClockLost,
     Error {
-        /// Which input the error came from (fcastplaybin's generation-tagged
+        /// Which input the error came from (flapjack's generation-tagged
         /// attribution). Never an external subtitle input: those errors are
-        /// handled inside fcastplaybin (in-place recovery or
+        /// handled inside flapjack (in-place recovery or
         /// `ExternalSubtitleFailed`).
-        origin: fcastplaybin::ErrorOrigin,
+        origin: flapjack::ErrorOrigin,
         kind: MediaErrorKind,
         /// The one interpolable scrap the kind needs. For `MissingCodec` the
         /// codec description from the missing-plugin element message.
@@ -577,17 +577,17 @@ pub enum PlayerEvent {
         /// Diagnostic only (the failing source's URI, when it has one).
         failed_uri: Option<String>,
     },
-    /// An attached external subtitle input failed for good and fcastplaybin
+    /// An attached external subtitle input failed for good and flapjack
     /// already detached it (failed attach, bus error while shown, or its
     /// stream never materialized within the crate's watchdog). The
     /// application drops its catalog entry and reports `ResourceNotFound`.
     ExternalSubtitleFailed {
-        id: fcastplaybin::ExternalSubId,
+        id: flapjack::ExternalSubId,
     },
     /// The selected subtitle track carries caps the cue renderer cannot
     /// render (bitmap subtitles, raw ASS/SSA), so nothing will be shown for
-    /// it. Reported by fcastplaybin at most once per track per load; see
-    /// `fcastplaybin::PlaybinEvent::SubtitleTrackUnsupported`.
+    /// it. Reported by flapjack at most once per track per load; see
+    /// `flapjack::PlayerEvent::SubtitleTrackUnsupported`.
     SubtitleTrackUnsupported {
         sid: String,
         /// The caps as a string, for the log and the toast.
@@ -618,7 +618,7 @@ pub enum PlayerEvent {
     /// ([`Player::adopt_gapless_generation`]). The new item's collection
     /// follows under the same generation.
     GaplessActivated,
-    /// A pre-armed next item failed before activating; fcastplaybin already
+    /// A pre-armed next item failed before activating; flapjack already
     /// dropped it and the current item plays on. The application clears its
     /// pre-arm bookkeeping and the item loads through the ordinary
     /// end-of-stream advance instead.
@@ -640,7 +640,7 @@ pub enum PlayerEvent {
     },
 }
 
-/// Parsed form of fimagedec's "fcast-image-stream" announcement.
+/// Parsed form of fimagedec's "flapjack-image-stream" announcement.
 #[derive(Debug, Clone)]
 pub struct ImageStreamInfo {
     /// Source format short name ("gif", "apng", "webp", ...).
@@ -725,9 +725,9 @@ fn merge_streams_stable(previous: Vec<Stream>, collection: &gst::StreamCollectio
 }
 
 pub struct Player {
-    /// The fcastplaybin playback orchestrator: the only pipeline handle.
+    /// The flapjack playback orchestrator: the only pipeline handle.
     /// State changes, seeks, queries and events all go through its API.
-    fcast: fcastplaybin::FcastPlaybin,
+    fcast: flapjack::Player,
     /// A volume change was dispatched and its `VolumeChanged` confirmation
     /// has not arrived yet (see `set_volume`).
     volume_confirm_in_flight: bool,
@@ -738,7 +738,7 @@ pub struct Player {
     /// there is exactly ONE post-load transport driver.
     desired_transport: RunningState,
     /// The generation of the load this player currently expects events for
-    /// (returned by `fcastplaybin::load_async`); `None` when stopped. The
+    /// (returned by `flapjack::load_async`); `None` when stopped. The
     /// application drops load-scoped events from any other generation.
     expected_generation: Option<u64>,
     /// The generation of a pending gapless pre-arm
@@ -778,7 +778,7 @@ impl Player {
         fcomp_context: crate::fcompsrc::imp::CompContext,
         #[cfg(feature = "airplay")] airplay_context: crate::airplay::AirPlayContext,
     ) -> Result<Self> {
-        // The fcastplaybin orchestrator owns the pipeline, its bus and its
+        // The flapjack orchestrator owns the pipeline, its bus and its
         // worker thread, this constructor only wires the receiver-specific
         // pieces onto its API.
         //
@@ -790,10 +790,10 @@ impl Player {
             || !fcast_gst_elements::pwaudiosink::is_available()
         {
             info!("audio sink: autoaudiosink (PipeWire disabled or unreachable)");
-            fcastplaybin::AudioSink::Auto
+            flapjack::AudioSink::Auto
         } else {
             info!("audio sink: native PipeWire (fcastpwaudiosink)");
-            fcastplaybin::AudioSink::Factory(Box::new(|| {
+            flapjack::AudioSink::Factory(Box::new(|| {
                 use anyhow::Context;
                 gst::ElementFactory::make("fcastpwaudiosink")
                     .build()
@@ -801,9 +801,9 @@ impl Player {
             }))
         };
         #[cfg(not(target_os = "linux"))]
-        let audio = fcastplaybin::AudioSink::Auto;
+        let audio = flapjack::AudioSink::Auto;
 
-        let fcast = fcastplaybin::FcastPlaybin::new(fcastplaybin::Sinks {
+        let fcast = flapjack::Player::new(flapjack::Sinks {
             video: video_sink,
             audio,
         })?;
@@ -853,7 +853,7 @@ impl Player {
         // from that branch's pad probe on a flush or stream restart, or from
         // the caller's own thread when a load, a stop or a track switch
         // supersedes the item. The closure must not block on any of them
-        // ([`fcastplaybin::FcastPlaybin::set_subtitle_consumer`]); every engine
+        // ([`flapjack::Player::set_subtitle_consumer`]); every engine
         // method used here is non-blocking by construction (nothing rasterizes
         // inline, nothing waits on the raster worker) and none of them can
         // panic on a caller's cue text.
@@ -863,7 +863,7 @@ impl Player {
             // `tally` counts and hands the item straight back, so the delivery
             // signal costs this match neither an arm nor an indent level.
             fcast.set_subtitle_consumer(move |item| match flow.tally(item) {
-                fcastplaybin::SubtitleFeedItem::Cue {
+                flapjack::SubtitleFeedItem::Cue {
                     format,
                     text,
                     start_rt,
@@ -873,16 +873,16 @@ impl Player {
                     origin: _,
                 } => engine.submit(fcast_video::cue::CueInput {
                     format: match format {
-                        fcastplaybin::SubtitleTextFormat::Utf8 => {
+                        flapjack::SubtitleTextFormat::Utf8 => {
                             fcast_video::cue::TextFormat::Utf8
                         }
-                        fcastplaybin::SubtitleTextFormat::PangoMarkup => {
+                        flapjack::SubtitleTextFormat::PangoMarkup => {
                             fcast_video::cue::TextFormat::PangoMarkup
                         }
                         // The IR is moved across, not copied: both sides hold
                         // the same `Arc`, and the engine's raster cache keys on
                         // it (pointer equality first).
-                        fcastplaybin::SubtitleTextFormat::CueIr { ir, pts_start } => {
+                        flapjack::SubtitleTextFormat::CueIr { ir, pts_start } => {
                             fcast_video::cue::TextFormat::CueIr { ir, pts_start }
                         }
                     },
@@ -896,8 +896,8 @@ impl Player {
                 // nothing, maps nothing and cannot block the streaming thread
                 // it runs on. Live for all three formats, and the
                 // driver's caps gate decides which caps get here (see
-                // `fcastplaybin::bitmap_format_implemented`).
-                fcastplaybin::SubtitleFeedItem::Bitmap {
+                // `flapjack::bitmap_format_implemented`).
+                flapjack::SubtitleFeedItem::Bitmap {
                     format,
                     data,
                     codec_data,
@@ -910,7 +910,7 @@ impl Player {
                     rt,
                     duration,
                 }),
-                fcastplaybin::SubtitleFeedItem::Clear => engine.clear(),
+                flapjack::SubtitleFeedItem::Clear => engine.clear(),
             });
         }
 
@@ -923,7 +923,7 @@ impl Player {
         let teardown_flag = TeardownFlag::default();
         let teardown = teardown_flag.clone();
         let flow_hook = subtitle_flow.clone();
-        let hook: fcastplaybin::MessageHook = Box::new(move |msg| {
+        let hook: flapjack::MessageHook = Box::new(move |msg| {
             use gst::MessageView;
             match msg.view() {
                 MessageView::NeedContext(ctx) => {
@@ -962,8 +962,8 @@ impl Player {
                 }
                 MessageView::Element(_) => {
                     // Consume ONLY missing-plugin reports. Other element
-                    // messages (fcast-image-stream, sabrump-status) belong to
-                    // fcastplaybin's translation and must fall through; a
+                    // messages (flapjack-image-stream, sabrump-status) belong to
+                    // flapjack's translation and must fall through; a
                     // blanket `true` here silently ate them.
                     let Ok(mp) = gst_pbutils::MissingPluginMessage::parse(msg) else {
                         return false;
@@ -1038,7 +1038,7 @@ impl Player {
                         }
                         // LOG-ONLY. Consuming the message here is what keeps the
                         // toast away: the crate emits no event for a consumed
-                        // message, and `PlaybinEvent::Warning` is the only thing
+                        // message, and `PlayerEvent::Warning` is the only thing
                         // that reaches the GUI. Log it anyway (unconditionally,
                         // so the lever's A/B still has the marker), and with the
                         // detail the user-facing text lacks: the message the
@@ -1097,17 +1097,17 @@ impl Player {
         })
     }
 
-    /// Map a playbin event onto the protocol-facing [`PlayerEvent`] and
+    /// Map a player event onto the protocol-facing [`PlayerEvent`] and
     /// forward it into the application loop with the load generation it
     /// belongs to. Runs on whatever thread emitted the event (a streaming
-    /// thread or the playbin worker). It only sends.
+    /// thread or the player worker). It only sends.
     fn relay_event(
         msg_tx: &MessageSender,
-        event: fcastplaybin::PlaybinEvent,
+        event: flapjack::PlayerEvent,
         generation: u64,
         missing_plugins: &MissingPluginTracker,
     ) {
-        use fcastplaybin::PlaybinEvent as E;
+        use flapjack::PlayerEvent as E;
         let event = match event {
             E::EndOfStream => PlayerEvent::EndOfStream,
             E::Loaded { live } => {
@@ -1319,12 +1319,12 @@ impl Player {
     /// Buffered regions of the current media as timeline fractions, for the
     /// scrubber's buffered indicator. Empty when the source can't answer a
     /// buffering query (local file, live/SABR, pre-preroll).
-    pub fn buffered_ranges(&self) -> Vec<fcastplaybin::BufferedRange> {
+    pub fn buffered_ranges(&self) -> Vec<flapjack::BufferedRange> {
         self.fcast.buffered_ranges()
     }
 
     /// Inspector: full buffering state (fill percent, mode, rates, ranges).
-    pub fn dbg_buffering(&self) -> Option<fcastplaybin::BufferingInfo> {
+    pub fn dbg_buffering(&self) -> Option<flapjack::BufferingInfo> {
         self.fcast.buffering_info()
     }
 
@@ -1341,7 +1341,7 @@ impl Player {
         self.seekable_known = false;
         self.volume_confirm_in_flight = false;
         self.expected_generation = None;
-        // A load or stop supersedes any pending pre-arm (fcastplaybin drops
+        // A load or stop supersedes any pending pre-arm (flapjack drops
         // the prepared input in its own reset).
         self.pending_gapless = None;
         // A volume queued behind an in-flight confirmation must not be
@@ -1350,7 +1350,7 @@ impl Player {
         if let Some(volume) = self.pending_volume.take() {
             self.set_volume(volume);
         }
-        // Track desires reset inside fcastplaybin (they are per-item and it
+        // Track desires reset inside flapjack (they are per-item and it
         // owns the engine): its load reset and teardown both clear them.
     }
 
@@ -1369,7 +1369,7 @@ impl Player {
     }
 
     /// Pre-arm the next item on the live pipeline for a gapless transition
-    /// (see `fcastplaybin::prepare_next_async`). Returns the generation the
+    /// (see `flapjack::prepare_next_async`). Returns the generation the
     /// item carries once it activates; the application keeps it to validate
     /// the `GaplessActivated` event.
     pub fn prepare_next(&mut self, source: MediaInput) -> u64 {
@@ -1429,7 +1429,7 @@ impl Player {
     /// decodebin3 on its worker thread. Completion comes back as
     /// `UriLoaded`). External subtitles attach separately as live inputs
     /// (`attach_external_subtitle`). Callers go through `load`.
-    fn set_source(&mut self, source: MediaInput, start: fcastplaybin::StartPoint) {
+    fn set_source(&mut self, source: MediaInput, start: flapjack::StartPoint) {
         // A new item is not the old one's teardown: discards from here on are
         // about THIS load and count normally again.
         self.teardown.set(false);
@@ -1442,11 +1442,11 @@ impl Player {
 
     /// Load a new main source. `start` is the post-preroll start seek
     /// (`None` for live sources, no seek at all). Embedded text auto-selects
-    /// and links itself inside `fcastplaybin`, nothing to sequence here.
+    /// and links itself inside `flapjack`, nothing to sequence here.
     pub fn load(&mut self, source: MediaInput, start: Option<RestorePoint>) {
         // A new load auto-plays unless a pause arrives while it is in flight.
         self.desired_transport = RunningState::Playing;
-        // The start position/rate is applied inside `fcastplaybin::load`
+        // The start position/rate is applied inside `flapjack::load`
         // while the pipeline is still in PAUSED, so a non-1.0 rate never
         // renders a 1.0x slice that a later seek flushes (the pop). `None`
         // marks a source with no start seek (live sources).
@@ -1462,12 +1462,12 @@ impl Player {
                     warn!(rate = rp.rate, "invalid start speed, playing at 1.0x");
                     1.0
                 };
-                fcastplaybin::StartPoint::Seek {
+                flapjack::StartPoint::Seek {
                     position: rp.position,
                     rate,
                 }
             }
-            None => fcastplaybin::StartPoint::Live,
+            None => flapjack::StartPoint::Live,
         };
         self.set_source(source, start);
     }
@@ -1510,7 +1510,7 @@ impl Player {
     ///
     /// Deliberately not [`Self::seek`]. That path refuses unless the pipeline
     /// is settled at PAUSED and drives it there first (`Job::Seek` in
-    /// fcastplaybin), and a starved pipeline can NEVER complete a
+    /// flapjack), and a starved pipeline can NEVER complete a
     /// PLAYING->PAUSED transition: it needs a buffer to preroll with and none
     /// will arrive, so every sink returns ASYNC and stays there
     /// (`gstbasesink.c:5815-5834`, `needs_preroll` at `:3749`). The seek would
@@ -1532,7 +1532,7 @@ impl Player {
     /// Handle a track-change request. Sequencing (latest-wins composition,
     /// serialization against in-flight work, confirmation, re-assertion
     /// when decodebin3's auto-select stomps it, the switch's re-emit flush
-    /// and its hazards) all lives in fcastplaybin's selection engine; this
+    /// and its hazards) all lives in flapjack's selection engine; this
     /// only states the desire and pumps. Returns whether the currently
     /// displayed subtitle cue became stale. The caller should clear the
     /// overlay so the change registers visually, even while paused.
@@ -1541,12 +1541,12 @@ impl Player {
         let stale_cue =
             kind == TrackKind::Subtitle && applied.subtitle.is_some() && sid != applied.subtitle;
         let slot = match kind {
-            TrackKind::Video => fcastplaybin::TrackSlot::Video,
-            TrackKind::Audio => fcastplaybin::TrackSlot::Audio,
-            TrackKind::Subtitle => fcastplaybin::TrackSlot::Subtitle,
+            TrackKind::Video => flapjack::TrackSlot::Video,
+            TrackKind::Audio => flapjack::TrackSlot::Audio,
+            TrackKind::Subtitle => flapjack::TrackSlot::Subtitle,
         };
         self.fcast
-            .request_track(slot, fcastplaybin::TrackTarget::Stream(sid));
+            .request_track(slot, flapjack::TrackTarget::Stream(sid));
         self.pump_selection();
         stale_cue
     }
@@ -1556,10 +1556,10 @@ impl Player {
     /// until the stream is advertised, then selects it and re-asserts it
     /// against decodebin3's collection-default auto-select. Replaces the
     /// application's parked-desire enforcement.
-    pub fn request_external_subtitle(&mut self, handle: fcastplaybin::ExternalSubId) {
+    pub fn request_external_subtitle(&mut self, handle: flapjack::ExternalSubId) {
         self.fcast.request_track(
-            fcastplaybin::TrackSlot::Subtitle,
-            fcastplaybin::TrackTarget::ExternalSubtitle(handle),
+            flapjack::TrackSlot::Subtitle,
+            flapjack::TrackTarget::ExternalSubtitle(handle),
         );
         self.pump_selection();
     }
@@ -1575,7 +1575,7 @@ impl Player {
     }
 
     /// Let the selection engine act, under the transport gate only this
-    /// side knows (see `fcastplaybin::SelectionGate`).
+    /// side knows (see `flapjack::SelectionGate`).
     fn pump_selection(&mut self) {
         // Ask the pipeline whether an async state change (re-preroll, seek
         // preroll) is in progress instead of predicting from the kind of
@@ -1585,7 +1585,7 @@ impl Player {
             Some(state) => (true, state == RunningState::Paused),
             None => (false, false),
         };
-        self.fcast.pump_selection(fcastplaybin::SelectionGate {
+        self.fcast.pump_selection(flapjack::SelectionGate {
             quiet: running && !async_busy,
             paused,
             seekable: self.seekable,
@@ -1621,7 +1621,7 @@ impl Player {
     }
 
     /// The current volume: the queued pending request when one exists (it
-    /// is the receiver's newest intent), otherwise the playbin's live
+    /// is the receiver's newest intent), otherwise the player's live
     /// value. For seeding a newly connected sender's state.
     pub fn volume(&self) -> f32 {
         match self.pending_volume {
@@ -1630,8 +1630,8 @@ impl Player {
         }
     }
 
-    /// Set the volume. The value itself lives in the playbin
-    /// (`FcastPlaybin::set_volume`). What stays here is the receiver's
+    /// Set the volume. The value itself lives in the player
+    /// (`Player::set_volume`). What stays here is the receiver's
     /// confirmation protocol: senders expect exactly one `VolumeChanged`
     /// per request, so overlapping requests are queued (latest wins) and an
     /// idempotent set re-emits its confirmation.
@@ -1714,14 +1714,14 @@ impl Player {
     }
 
     /// Produce a graph snapshot of the pipeline for the inspector, delivered
-    /// via `done`. Runs on the fcastplaybin worker so the graph walk is
+    /// via `done`. Runs on the flapjack worker so the graph walk is
     /// serialized against loads and teardowns (the walk reads every
     /// element's properties, and racing the per-load audio sink's finalize
     /// double-freed in the sink back when this was a dot dump). `done` is
     /// invoked on the worker thread: hand the work off, do not block in it.
     pub fn request_graph_snapshot(
         &self,
-        done: impl FnOnce(fcastplaybin::graph::GraphSnapshot) + Send + 'static,
+        done: impl FnOnce(flapjack::graph::GraphSnapshot) + Send + 'static,
     ) {
         self.fcast.debug_graph_async(Box::new(done));
     }
@@ -1807,10 +1807,10 @@ impl Player {
 
     /// Cumulative parsed-byte counters per live input stream, for the
     /// inspector's bitrate sampling (poll and diff; see
-    /// `fcastplaybin::StreamIoStats`). All of the item's streams are counted,
+    /// `flapjack::StreamIoStats`). All of the item's streams are counted,
     /// selected or not; correlate with `streams`/`current_*_sid` for kind and
     /// selection.
-    pub fn stream_io_stats(&self) -> Vec<fcastplaybin::StreamIoStats> {
+    pub fn stream_io_stats(&self) -> Vec<flapjack::StreamIoStats> {
         self.fcast.stream_io_stats()
     }
 
@@ -1845,7 +1845,7 @@ impl Player {
     }
 
     /// Inspector: every live input's factory and uri.
-    pub fn dbg_sources(&self) -> Vec<fcastplaybin::SourceDbg> {
+    pub fn dbg_sources(&self) -> Vec<flapjack::SourceDbg> {
         self.fcast.source_summaries()
     }
 
@@ -1999,25 +1999,25 @@ impl Player {
 
     /// Live-attach an external subtitle input to the running pipeline.
     /// Returns the reserved id immediately, the attach itself runs on the
-    /// playbin's worker thread (the source's `start()` blocks). The stream
+    /// player's worker thread (the source's `start()` blocks). The stream
     /// becomes selectable once decodebin3 announces the updated collection
     /// (always a later collection, mapped back with
-    /// `external_stream_sid_of`). fcastplaybin babysits the input from
+    /// `external_stream_sid_of`). flapjack babysits the input from
     /// here: deselect-race deaths recover in place under the same id, and
     /// a genuine failure (failed attach, error while shown, or no stream
     /// within its watchdog) comes back as
     /// `PlayerEvent::ExternalSubtitleFailed` with the input already
     /// detached.
-    pub fn attach_external_subtitle(&mut self, url: &str) -> fcastplaybin::ExternalSubId {
+    pub fn attach_external_subtitle(&mut self, url: &str) -> flapjack::ExternalSubId {
         let id = self.fcast.allocate_subtitle_id();
         self.fcast.attach_subtitle_async(id, url.to_string());
         id
     }
 
     /// Detach a live external subtitle input (failed URL, or its catalog
-    /// entry going away). Best effort, on the playbin's worker thread. The
+    /// entry going away). Best effort, on the player's worker thread. The
     /// input is leaving regardless.
-    pub fn detach_external_subtitle(&mut self, id: fcastplaybin::ExternalSubId) {
+    pub fn detach_external_subtitle(&mut self, id: flapjack::ExternalSubId) {
         self.fcast.detach_subtitle_async(id);
     }
 
@@ -2025,7 +2025,7 @@ impl Player {
     /// its stream has appeared in the advertised collection. The id is
     /// URI-derived and therefore STABLE for the input's lifetime, so
     /// callers should remember it rather than re-query.
-    pub fn external_stream_sid_of(&self, id: fcastplaybin::ExternalSubId) -> Option<String> {
+    pub fn external_stream_sid_of(&self, id: flapjack::ExternalSubId) -> Option<String> {
         let sids = self.fcast.subtitle_stream_ids(id);
         let sid = sids
             .into_iter()
@@ -2057,9 +2057,9 @@ impl Player {
         // instead, when the seek, if any, already owns the state machine.
         match self.state_machine.state_changed(old, new, pending) {
             // Map the backend-native playback state onto the FCast wire enum
-            // (fcastplaybin is protocol-agnostic, this is the only seam).
+            // (flapjack is protocol-agnostic, this is the only seam).
             StateChangeResult::NewPlaybackState(new_state) => {
-                use fcastplaybin::state_machine::PlaybackState as SmState;
+                use flapjack::state_machine::PlaybackState as SmState;
                 Some(match new_state {
                     SmState::Idle => PlaybackState::Idle,
                     SmState::Paused => PlaybackState::Paused,
@@ -2178,7 +2178,7 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
-        // The playbin's worker exits on its own once the last handle drops.
+        // The player's worker exits on its own once the last handle drops.
         // Queue the final teardown (usually a no-op, `shutdown` already
         // drove the pipeline to Null and waited).
         self.set_state_async(gst::State::Null);
@@ -2538,9 +2538,9 @@ mod tests {
     /// can be drawn stuck behind `SubtitleTrackUnsupported`.
     #[test]
     fn the_drivers_implemented_set_and_the_engines_agree() {
-        for format in fcastplaybin::BitmapSubFormat::ALL {
+        for format in flapjack::BitmapSubFormat::ALL {
             assert_eq!(
-                fcastplaybin::bitmap_format_implemented(format),
+                flapjack::bitmap_format_implemented(format),
                 fcast_video::subpic::implemented(bitmap_format(format)),
                 "{format:?}: the driver's gate and the engine's decoder table disagree"
             );
@@ -2549,14 +2549,14 @@ mod tests {
 
     /// The bytes the driver's tests push are bytes a decoder can actually read.
     ///
-    /// `fcasttest`'s bitmap fixtures are DELIBERATELY not the decoders' own:
+    /// `flapjack_test`'s bitmap fixtures are DELIBERATELY not the decoders' own:
     /// they are written from the specifications a second time, so that a
     /// transport test cannot pass because both ends share one author's
     /// misreading. The cost of that is a fixture nobody ever decodes: every
     /// driver-side test counts samples and never looks inside them, so a
     /// fixture that was malformed would prove the carriage works while
     /// proving nothing about what it carries. This is the join, and this
-    /// crate is the only place it can be made, since `fcastplaybin` cannot
+    /// crate is the only place it can be made, since `flapjack` cannot
     /// depend on `fcast-video`.
     #[test]
     fn the_drivers_bitmap_fixtures_decode() {
@@ -2565,17 +2565,17 @@ mod tests {
         for (format, bytes, codec_data) in [
             (
                 fcast_video::subpic::BitmapFormat::Pgs,
-                fcasttest::pgs::display_set(0),
+                flapjack_test::pgs::display_set(0),
                 None,
             ),
             (
                 fcast_video::subpic::BitmapFormat::Vobsub,
-                fcasttest::vobsub::subpicture_unit(0),
-                Some(fcasttest::vobsub::SAMPLE_IDX.to_vec()),
+                flapjack_test::vobsub::subpicture_unit(0),
+                Some(flapjack_test::vobsub::SAMPLE_IDX.to_vec()),
             ),
             (
                 fcast_video::subpic::BitmapFormat::Dvb,
-                fcasttest::dvb::display_set(0),
+                flapjack_test::dvb::display_set(0),
                 None,
             ),
         ] {
@@ -2620,12 +2620,12 @@ mod tests {
     /// carried by the real driver into the real engine, and no frame between
     /// the first cue's start and the last one's end comes out blank.
     ///
-    /// This crate is the only place the join can be made (`fcastplaybin`
+    /// This crate is the only place the join can be made (`flapjack`
     /// cannot depend on `fcast-video`) and the join is the point. The
     /// engine's own `contiguous_cues_hand_over_without_a_blank_frame` pins
     /// the seam against cues handed straight to `submit`; this one makes
     /// the DRIVER produce them, through decodebin3, the stock
-    /// `fpb-tqueue-*` and the consumer appsink, so a regression in how cues
+    /// `fj-tqueue-*` and the consumer appsink, so a regression in how cues
     /// are timed or delivered fails here too.
     ///
     /// # The pacing, which is not symmetric and should not be
@@ -2656,11 +2656,11 @@ mod tests {
         };
 
         use fcast_video::cue::{CueEngine, CueInput, TextFormat};
-        use fcastplaybin::{
-            AudioSink, FcastPlaybin, PlaybinEvent, SelectionGate, Sinks, StartPoint,
+        use flapjack::{
+            AudioSink, Player, PlayerEvent, SelectionGate, Sinks, StartPoint,
             SubtitleFeedItem, TrackSlot, TrackTarget,
         };
-        use fcasttest::{
+        use flapjack_test::{
             scenario::ScenarioBuilder,
             sink::FTestSink,
             spec::{CueSpec, Pacing, StreamSpec},
@@ -2670,9 +2670,9 @@ mod tests {
         gst::init().unwrap();
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| {
-            fcasttest::register_for_tests();
-            fcast_gst_elements::fcastaudiostretch::plugin_init()
-                .expect("registering fcastaudiostretch");
+            flapjack_test::register_for_tests();
+            flapjack::audiostretch::plugin_init()
+                .expect("registering audiostretch");
         });
 
         // CONTIGUOUS, as measured on a real file: cue N ends on
@@ -2717,12 +2717,12 @@ mod tests {
 
         let video_sink = FTestSink::new();
         let frames = video_sink.recording();
-        let playbin = Arc::new(
-            FcastPlaybin::new(Sinks {
+        let player = Arc::new(
+            Player::new(Sinks {
                 video: Some(video_sink.upcast()),
                 audio: AudioSink::Factory(Box::new(|| Ok(FTestSink::new().upcast()))),
             })
-            .expect("building fcastplaybin"),
+            .expect("building flapjack"),
         );
 
         // The REAL engine, wired the way `set_subtitle_consumer` wires it above.
@@ -2740,7 +2740,7 @@ mod tests {
         // not to contain any.
         let clears = Arc::new(AtomicUsize::new(0));
         let clear_count = clears.clone();
-        playbin.set_subtitle_consumer(move |item| match item {
+        player.set_subtitle_consumer(move |item| match item {
             SubtitleFeedItem::Cue {
                 text,
                 start_rt,
@@ -2771,12 +2771,12 @@ mod tests {
         let sink = errors.clone();
         let flag = loaded.clone();
         let sids = text_sids.clone();
-        playbin.set_event_handler(None, move |event, _| match event {
-            PlaybinEvent::Error { error, .. } => sink.lock().push(error.to_string()),
-            PlaybinEvent::Loaded { .. } => {
+        player.set_event_handler(None, move |event, _| match event {
+            PlayerEvent::Error { error, .. } => sink.lock().push(error.to_string()),
+            PlayerEvent::Loaded { .. } => {
                 flag.store(true, Ordering::Release);
             }
-            PlaybinEvent::StreamCollection(collection) => {
+            PlayerEvent::StreamCollection(collection) => {
                 *sids.lock() = collection
                     .iter()
                     .filter(|stream| stream.stream_type().contains(gst::StreamType::TEXT))
@@ -2791,8 +2791,8 @@ mod tests {
             seekable: true,
         };
         let pump = || {
-            playbin.poll_text_policy();
-            playbin.pump_selection(gate);
+            player.poll_text_policy();
+            player.pump_selection(gate);
             assert!(
                 errors.lock().is_empty(),
                 "pipeline error: {:?}",
@@ -2800,7 +2800,7 @@ mod tests {
             );
         };
 
-        playbin.load_async(
+        player.load_async(
             MediaInput::Uri(scenario.uri()),
             StartPoint::Seek {
                 position: gst::ClockTime::ZERO,
@@ -2813,7 +2813,7 @@ mod tests {
             pump();
             std::thread::sleep(Duration::from_millis(10));
         }
-        playbin.play().expect("play");
+        player.play().expect("play");
 
         // The subtitle track is off until something asks for it, exactly as in
         // the app, and the request only takes once the pipeline is running.
@@ -2827,7 +2827,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let sid = text_sids.lock()[0].clone();
-        playbin.request_track(TrackSlot::Subtitle, TrackTarget::Stream(Some(sid)));
+        player.request_track(TrackSlot::Subtitle, TrackTarget::Stream(Some(sid)));
         // The branch has to actually carry a cue before the walk can claim
         // anything: a run where selection never landed would show a clean sweep
         // of blank frames and call it a pass.
@@ -2878,7 +2878,7 @@ mod tests {
         let epoch = clears.load(Ordering::Acquire);
 
         let (tx, rx) = mpsc::channel();
-        playbin.shutdown_async(Box::new(move || {
+        player.shutdown_async(Box::new(move || {
             let _ = tx.send(());
         }));
         let _ = rx.recv_timeout(Duration::from_secs(30));
@@ -2991,7 +2991,7 @@ mod tests {
     #[test]
     fn the_carry_patchs_discard_warning_is_recognized() {
         let debug = "gstadaptivedemux.c(3705): gst_adaptive_demux_output_loop (): \
-                     /GstPipeline:fcastplaybin/GstURISourceBin:fpb-src-0/GstDashDemux2:dashdemux2:\n\
+                     /GstPipeline:flapjack/GstURISourceBin:fj-src-0/GstDashDemux2:dashdemux2:\n\
                      Discarding data on subtitle_00: downstream returned FLUSHING while this \
                      element is not flushing";
         assert!(warning_is_transient_flushing_discard(Some(debug)));
@@ -3026,7 +3026,7 @@ mod tests {
     #[test]
     fn the_discarded_stream_is_named() {
         let debug = "gstadaptivedemux.c(3705): gst_adaptive_demux_output_loop (): \
-                     /GstPipeline:fcastplaybin/GstURISourceBin:urisourcebin0/GstDashDemux2:dashdemux2-0:\n\
+                     /GstPipeline:flapjack/GstURISourceBin:urisourcebin0/GstDashDemux2:dashdemux2-0:\n\
                      Discarding data on subtitle_00: downstream returned FLUSHING while this \
                      element is not flushing";
         assert_eq!(discarded_stream_name(debug), Some("subtitle_00"));

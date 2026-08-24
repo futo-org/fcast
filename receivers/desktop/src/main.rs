@@ -1,5 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+// Forces the static GStreamer link line and isolates the process from on-disk
+// plugins before main.
+use gst_static_env as _;
+
 use rcore::clap::Parser;
 
 fn main() -> anyhow::Result<()> {

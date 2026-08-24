@@ -4,7 +4,7 @@
 //!
 //! Everything here runs the production chain except the transport: the driver's
 //! `item_from_sample` is the piece that lifts `CueIrMeta` off a buffer and the
-//! `fcastplaybin` suites own that half (`tests/cue_ir_transport.rs`), so this
+//! `flapjack` suites own that half (`tests/cue_ir_transport.rs`), so this
 //! one brackets the parser with appsrc/appsink and does the same lift inline.
 //! What it owns is the claim the driver cannot make from its side: that the IR
 //! a real file produces actually RENDERS, with its styling, its placement and
@@ -365,7 +365,7 @@ fn an_anchored_srt_cue_is_placed_against_the_video_rect() {
 /// A cue that covers the frame already on screen must become visible with NO
 /// frame flowing: the engine repaints off `current_overlays` and signals
 /// through the `on_change` callback the sink turns into `overlays-changed`.
-/// The staging mirrors `fcastplaybin`'s
+/// The staging mirrors `flapjack`'s
 /// `a_paused_cue_covers_the_frozen_frame_without_resuming`, from the engine's
 /// side: one frame establishes the frozen running time, then nothing moves.
 #[test]

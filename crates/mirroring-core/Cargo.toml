@@ -5,6 +5,8 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+gst-static-env.workspace = true
+gstreamer-src = { workspace = true, features = ["sender"] }
 fcast-protocol = { path = "../../crates/fcast-protocol" }
 fcast-sender-sdk = { path = "../../sdk/sender/fcast-sender-sdk", default-features = false, features = [ "fcast", "discovery" ] }
 parking_lot.workspace = true
@@ -36,3 +38,6 @@ libpulse-binding = "2.30.1"
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 app-updater = { path = "../../crates/app-updater"}
+
+[build-dependencies]
+gst-static-link.workspace = true

@@ -9,7 +9,7 @@
 //!
 //! Division of work:
 //!
-//!  * the **driver** (`fcastplaybin`) stays a byte pipe. It decides from caps
+//!  * the **driver** (`flapjack`) stays a byte pipe. It decides from caps
 //!    that a stream is a bitmap format, converts the sample's pts to running
 //!    time, and hands the untouched [`gst::Buffer`] over as a [`BitmapPacket`].
 //!  * the **engine** owns reassembly and decode on its own worker thread, so

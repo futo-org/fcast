@@ -5,6 +5,8 @@ edition = "2024"
 license = "GPL-3.0-only"
 
 [dependencies]
+gst-static-env.workspace = true
+gstreamer-src.workspace = true
 # This crate owns the GL/render loop, so it is where `render` is switched on —
 # for itself and for the surface receiver-core re-exports to the binaries.
 receiver-core = { path = "../receiver-core", features = ["render"] }
@@ -41,6 +43,7 @@ i-slint-backend-winit = { workspace = true, optional = true }
 objc2-app-kit = { version = "0.3.2", features = ["NSCursor"] }
 
 [build-dependencies]
+gst-static-link.workspace = true
 slint-build.workspace = true
 
 [features]
@@ -63,4 +66,3 @@ tracy = ["receiver-core/tracy"]
 fhs = ["slint/renderer-dodvg", "receiver-core/fhs"]
 # Forwarded to the core so a receiver binary keeps naming one dependency.
 static-gst-plugins = ["receiver-core/static-gst-plugins"]
-static-gstreamer = ["receiver-core/static-gstreamer"]

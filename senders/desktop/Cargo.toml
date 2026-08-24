@@ -7,6 +7,8 @@ license.workspace = true
 publish = false
 
 [dependencies]
+gst-static-env.workspace = true
+gstreamer-src = { workspace = true, features = ["sender"] }
 slint = { workspace = true, features = [ "backend-default", "compat-1-2", "renderer-femtovg", "renderer-software", "std" ] }
 anyhow.workspace = true
 tokio.workspace = true
@@ -44,6 +46,7 @@ default-features = false
 features = [ "fcast", "chromecast", "discovery" ]
 
 [build-dependencies]
+gst-static-link.workspace = true
 slint-build.workspace = true
 winresource = "0.1.28"
 

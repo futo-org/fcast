@@ -2,3 +2,21 @@
 xtask = "run -p xtask --"
 utask = "run -p xtask --features uniffi --"
 fast = "run -p fast --"
+
+# The static link line interleaves ~100 archives with dynamic system libs. bfd
+# is single pass and cannot resolve helper archives appended after the dynamic
+# libs they reference, so pin a modern linker.
+[target.x86_64-unknown-linux-gnu]
+linker = "clang"
+rustflags = ["-C", "link-arg=--ld-path=wild"]
+
+# Static GStreamer for the whole tree, zero env setup. The forked -sys crates
+# (see [patch.crates-io]) probe the static build through their gstreamer-src
+# dependency, so no pkg-config stubs or shims are involved. Every value here
+# is a default a real environment variable still overrides.
+[env]
+# Our fork is 1.29.2 plus the patch set, one commit each.
+GSTREAMER_SRC_REPO = "https://gitlab.futo.org/fcast/gstreamer.git"
+GSTREAMER_SRC_REF = "fcast/1.29.2"
+# Deterministic build-tree location, independent of any global cargo build-dir.
+GSTREAMER_SRC_BUILD_ROOT = { value = "target/gst-static", relative = true }

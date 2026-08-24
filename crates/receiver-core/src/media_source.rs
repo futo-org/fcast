@@ -380,13 +380,13 @@ mod tests {
     }
 
     /// Gapless handoff between two `fcomp://` items through a real
-    /// `FcastPlaybin`: the next item must play to ITS end, not be cut off at
+    /// `Player`: the next item must play to ITS end, not be cut off at
     /// the previous item's.
     #[test]
     fn gapless_fcomp_next_item_plays_to_its_end() {
         use fcast_protocol::companion;
-        use fcastplaybin::{
-            AudioSink, FcastPlaybin, MediaInput, MessageHook, PlaybinEvent, Sinks, StartPoint,
+        use flapjack::{
+            AudioSink, Player, MediaInput, MessageHook, PlayerEvent, Sinks, StartPoint,
         };
         use std::{
             sync::mpsc,
@@ -408,7 +408,7 @@ mod tests {
             vec![(0, a_bytes.clone(), a_len), (1, b_bytes.clone(), b_len)],
         );
 
-        let playbin = FcastPlaybin::new(Sinks {
+        let player = Player::new(Sinks {
             video: None,
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
@@ -439,11 +439,11 @@ mod tests {
         });
 
         let (tx, rx) = mpsc::channel();
-        playbin.set_event_handler(Some(hook), move |event, _generation| match event {
-            PlaybinEvent::PreparedActivated => {
+        player.set_event_handler(Some(hook), move |event, _generation| match event {
+            PlayerEvent::PreparedActivated => {
                 let _ = tx.send("activated");
             }
-            PlaybinEvent::EndOfStream => {
+            PlayerEvent::EndOfStream => {
                 let _ = tx.send("eos");
             }
             _ => {}
@@ -468,13 +468,13 @@ mod tests {
         )
         .unwrap();
 
-        playbin
+        player
             .load(MediaInput::Element(a_src), StartPoint::Live)
             .unwrap();
         // Pre-arm up front so `pending` is set before A's EOS reaches the hold.
-        playbin.prepare_next_async(MediaInput::Element(b_src));
+        player.prepare_next_async(MediaInput::Element(b_src));
         let t0 = Instant::now();
-        playbin.play().unwrap();
+        player.play().unwrap();
 
         let mut activated = false;
         let eos_elapsed = loop {
@@ -484,7 +484,7 @@ mod tests {
                 _ => break None,
             }
         };
-        let _ = playbin.stop();
+        let _ = player.stop();
 
         let eos_elapsed = eos_elapsed.expect("pipeline never reached EOS (wedged)");
         assert!(
@@ -505,8 +505,8 @@ mod tests {
     #[test]
     fn gapless_fcomp_survives_a_midplayback_prearm() {
         use fcast_protocol::companion;
-        use fcastplaybin::{
-            AudioSink, FcastPlaybin, MediaInput, MessageHook, PlaybinEvent, Sinks, StartPoint,
+        use flapjack::{
+            AudioSink, Player, MediaInput, MessageHook, PlayerEvent, Sinks, StartPoint,
         };
         use std::{
             sync::mpsc,
@@ -526,7 +526,7 @@ mod tests {
             vec![(0, a_bytes.clone(), a_len), (1, b_bytes.clone(), b_len)],
         );
 
-        let playbin = FcastPlaybin::new(Sinks {
+        let player = Player::new(Sinks {
             video: None,
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
@@ -535,7 +535,7 @@ mod tests {
             })),
         })
         .unwrap();
-        // Audio-only, so fcastplaybin's decoupling queue is shallow (the deep
+        // Audio-only, so flapjack's decoupling queue is shallow (the deep
         // queue is video-only): the outgoing EOS reaches the gapless hold near
         // the sink boundary, so this mid-playback pre-arm still catches it.
 
@@ -558,11 +558,11 @@ mod tests {
             false
         });
         let (tx, rx) = mpsc::channel();
-        playbin.set_event_handler(Some(hook), move |event, _g| match event {
-            PlaybinEvent::PreparedActivated => {
+        player.set_event_handler(Some(hook), move |event, _g| match event {
+            PlayerEvent::PreparedActivated => {
                 let _ = tx.send("activated");
             }
-            PlaybinEvent::EndOfStream => {
+            PlayerEvent::EndOfStream => {
                 let _ = tx.send("eos");
             }
             _ => {}
@@ -576,15 +576,15 @@ mod tests {
             }),
         )
         .unwrap();
-        playbin
+        player
             .load(MediaInput::Element(a_src), StartPoint::Live)
             .unwrap();
         let t0 = Instant::now();
-        playbin.play().unwrap();
+        player.play().unwrap();
 
         // Pre-arm MID-playback (2s into A's 5s): the swap and activation land
         // while A's decoded tail is still draining.
-        let pb2 = playbin.clone();
+        let pb2 = player.clone();
         std::thread::spawn(move || {
             std::thread::sleep(Duration::from_secs(2));
             let b_src = super::build_uri_source_with_head(
@@ -607,7 +607,7 @@ mod tests {
                 _ => break None,
             }
         };
-        let _ = playbin.stop();
+        let _ = player.stop();
 
         let eos_elapsed = eos_elapsed.expect("pipeline never reached EOS (wedged)");
         assert!(activated, "the prepared fcomp item never activated");

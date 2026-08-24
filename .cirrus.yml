@@ -65,7 +65,6 @@ desktop_receiver_task:
     - source $HOME/.cargo/env
 
     - cargo xtask receiver build-macos-installer
-      --gst-ref fcast/1.29.2
       --sign --p12-file=./.secure_files/Certificates.p12
       --p12-password-file=./.secure_files/p12_certs_password
       --api-key-file=./.secure_files/notary_key.json

@@ -1,4 +1,6 @@
 fn main() {
+    // rpath the dynamic system libs the static GStreamer pulls in.
+    gst_static_link::emit_rpath();
     // Set at build time, the slint compiler const-folds it and pins the scale
     // factor with `set_const_scale_factor`, which silently disables the runtime
     // policy in `scaling.rs`. Fail loudly instead of shipping a frozen UI.

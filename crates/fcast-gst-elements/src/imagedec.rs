@@ -6,7 +6,7 @@
 //! - Animations loop by re-decoding the retained bytes (no seeks) with PTS
 //!   accumulating monotonically. Upstream EOS is swallowed; the element never
 //!   sends EOS downstream. A still pushes its one frame and parks.
-//! - Posts a "fcast-image-stream" element message (format, dimensions,
+//! - Posts a "flapjack-image-stream" element message (format, dimensions,
 //!   animated).
 
 use gst::{glib, prelude::*};
@@ -42,7 +42,7 @@ pub mod imp {
     const DEFAULT_DELAY_MS: u64 = 100;
 
     /// The bus message the application uses to classify an image load.
-    pub const IMAGE_STREAM_MESSAGE: &str = "fcast-image-stream";
+    pub const IMAGE_STREAM_MESSAGE: &str = "flapjack-image-stream";
 
     struct InputState {
         /// Retained after EOS so animations can loop by re-decoding.
@@ -1376,7 +1376,7 @@ mod tests {
         pipeline.set_state(gst::State::Null).unwrap();
     }
 
-    /// The "fcast-image-stream" message must reach the bus with the right
+    /// The "flapjack-image-stream" message must reach the bus with the right
     /// format, dimensions, and animated flag.
     #[test]
     fn image_stream_message_posted() {
@@ -1419,7 +1419,7 @@ mod tests {
                 break;
             }
             pipeline.set_state(gst::State::Null).unwrap();
-            result.expect("fcast-image-stream message must be posted")
+            result.expect("flapjack-image-stream message must be posted")
         }
 
         let (fmt, w, h, animated) = stream_info("image/gif", make_gif(4));

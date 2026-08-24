@@ -1,4 +1,6 @@
 fn main() {
+    // rpath the dynamic system libs the static GStreamer pulls in.
+    gst_static_link::emit_rpath();
     slint_build::compile("ui/main.slint").unwrap();
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();

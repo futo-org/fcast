@@ -1,4 +1,6 @@
 fn main() {
+    // rpath the dynamic system libs the static GStreamer pulls in.
+    gst_static_link::emit_rpath();
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
 
     // https://github.com/servo/servo/blob/613f2ec869cc72d9dfa6641fba51f99f856e2e95/ports/servoshell/build.rs#L88

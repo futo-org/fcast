@@ -1,5 +1,3 @@
-#[cfg(target_os = "windows")]
-use anyhow::anyhow;
 use anyhow::Result;
 use camino::Utf8PathBuf;
 use clap::{Args, Subcommand};
@@ -52,19 +50,17 @@ pub struct AndroidReceiverArgs {
 #[derive(Subcommand)]
 pub enum ReceiverCommand {
     Android(AndroidReceiverArgs),
-    /// Build a statically-linked GStreamer from a source tree and link the
-    /// desktop receiver against it.
-    BuildStatic(crate::gstreamer::GstreamerArgs),
-    /// Build the statically-linked receiver and run it. Arguments after `--`
-    /// are forwarded to the receiver binary.
+    /// Build the desktop receiver.
+    BuildStatic(CargoSubcmdArgs),
+    /// Build the receiver and run it. Arguments after `--` are forwarded to
+    /// the receiver binary.
     Run(RunStaticArgs),
-    /// `cargo check` the desktop receiver against a static GStreamer.
+    /// `cargo check` the desktop receiver.
     Check(CargoSubcmdArgs),
-    /// `cargo clippy` the desktop receiver against a static GStreamer.
+    /// `cargo clippy` the desktop receiver.
     Clippy(CargoSubcmdArgs),
-    /// `cargo test` receiver-core against a static GStreamer. Args after `--`
-    /// go to the libtest harness, e.g. `-- --nocapture` or a test-name
-    /// filter.
+    /// `cargo test` receiver-core. Args after `--` go to the libtest harness,
+    /// e.g. `-- --nocapture` or a test-name filter.
     Test(CargoSubcmdArgs),
     #[cfg(target_os = "windows")]
     BuildWindowsInstaller(crate::gstreamer::GstreamerArgs),
@@ -74,9 +70,7 @@ pub enum ReceiverCommand {
 
 #[derive(Args)]
 pub struct CargoSubcmdArgs {
-    #[command(flatten)]
-    pub gst: crate::gstreamer::GstreamerArgs,
-    /// Check/lint the release profile instead of the default fast debug build.
+    /// Use the release profile instead of the default fast debug build.
     #[arg(long)]
     pub release: bool,
     /// Extra args appended to the inner cargo invocation (everything after
@@ -87,9 +81,7 @@ pub struct CargoSubcmdArgs {
 
 #[derive(Args)]
 pub struct RunStaticArgs {
-    #[command(flatten)]
-    pub gst: crate::gstreamer::GstreamerArgs,
-    /// Build the receiver in release (GStreamer follows --gst-buildtype).
+    /// Build the receiver in release.
     #[arg(long)]
     pub release: bool,
     /// Arguments forwarded to the receiver binary (everything after `--`).
@@ -101,6 +93,27 @@ pub struct RunStaticArgs {
 pub struct ReceiverArgs {
     #[clap(subcommand)]
     pub cmd: ReceiverCommand,
+}
+
+/// GStreamer is built and linked by the gstreamer-src crate, so these commands
+/// are thin `cargo` wrappers, kept for the scripts that still call them.
+fn cargo_receiver(
+    sh: &xshell::Shell,
+    subcmd: &str,
+    package: &str,
+    release: bool,
+    extra: &[String],
+) -> Result<()> {
+    let mut args: Vec<String> = vec![subcmd.to_owned(), "-p".to_owned(), package.to_owned()];
+    if release {
+        args.push("--release".to_owned());
+    }
+    if !extra.is_empty() {
+        args.push("--".to_owned());
+        args.extend(extra.iter().cloned());
+    }
+    cmd!(sh, "cargo {args...}").run()?;
+    Ok(())
 }
 
 fn concat_path(a: &Utf8PathBuf, b: &str) -> Utf8PathBuf {
@@ -128,11 +141,23 @@ impl ReceiverArgs {
         let _p = sh.push_dir(root_path.clone());
 
         match self.cmd {
-            ReceiverCommand::BuildStatic(args) => return args.run(),
-            ReceiverCommand::Run(a) => return a.gst.run_binary(a.args, a.release),
-            ReceiverCommand::Check(a) => return a.gst.check(a.args, a.release),
-            ReceiverCommand::Clippy(a) => return a.gst.clippy(a.args, a.release),
-            ReceiverCommand::Test(a) => return a.gst.test(a.args, a.release),
+            ReceiverCommand::BuildStatic(a) => {
+                crate::gstreamer::guard_receiver_relink(a.release)?;
+                return cargo_receiver(&sh, "build", "desktop-receiver", a.release, &a.args);
+            }
+            ReceiverCommand::Run(a) => {
+                crate::gstreamer::guard_receiver_relink(a.release)?;
+                return cargo_receiver(&sh, "run", "desktop-receiver", a.release, &a.args);
+            }
+            ReceiverCommand::Check(a) => {
+                return cargo_receiver(&sh, "check", "desktop-receiver", a.release, &a.args);
+            }
+            ReceiverCommand::Clippy(a) => {
+                return cargo_receiver(&sh, "clippy", "desktop-receiver", a.release, &a.args);
+            }
+            ReceiverCommand::Test(a) => {
+                return cargo_receiver(&sh, "test", "receiver-core", a.release, &a.args);
+            }
             ReceiverCommand::Android(args) => {
                 let _env_andr_sdk = sh.push_env(
                     "ANDROID_HOME",
@@ -265,9 +290,7 @@ impl ReceiverArgs {
                 // codecs and the GIO TLS module are ALL statically linked, no dev kit
                 // and no bundled DLLs beyond the MSVC redists. NEEDS VALIDATION on a
                 // Windows box: `dumpbin /dependents` must show only OS DLLs + redists.
-                let binary = static_args
-                    .build()?
-                    .ok_or_else(|| anyhow!("--clean/--gstreamer-only produce no binary"))?;
+                let binary = static_args.build()?;
 
                 let build_dir_root = crate::setup_build_dir(&sh, &root_path);
 
@@ -341,9 +364,7 @@ impl ReceiverArgs {
                 // no dylib bundling. Anything non-OS left dynamic is a failure.
                 let mut static_args = static_args;
                 static_args.no_default_features = true; // no systray on macOS
-                let binary = static_args
-                    .build()?
-                    .ok_or_else(|| anyhow::anyhow!("--clean/--gstreamer-only produce no binary"))?;
+                let binary = static_args.build()?;
                 let binary_path = concat_path(&root_path, binary.as_str());
 
                 let leftover = crate::find_non_system_dependencies_with_otool(&binary_path);

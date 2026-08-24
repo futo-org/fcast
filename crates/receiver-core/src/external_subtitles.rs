@@ -21,10 +21,10 @@ pub(crate) fn is_external_track_id(id: u32) -> bool {
     id >= EXTERNAL_TRACK_ID_BASE
 }
 
-/// The live-input handle in production: fcastplaybin's attached-input id. The
+/// The live-input handle in production: flapjack's attached-input id. The
 /// catalog is generic over it only so the id policy can be unit-tested without
 /// a pipeline.
-pub(crate) type SubHandle = fcastplaybin::ExternalSubId;
+pub(crate) type SubHandle = flapjack::ExternalSubId;
 
 pub(crate) struct ExternalSubtitle<H = SubHandle> {
     /// Stable id advertised as this track's `MediaTrack.id`
@@ -39,7 +39,7 @@ pub(crate) struct ExternalSubtitle<H = SubHandle> {
     /// the entry's whole life.
     pub(crate) handle: H,
     /// The entry's GStreamer stream id, learned when its stream first
-    /// materializes. URI-derived, so it stays valid across fcastplaybin's
+    /// materializes. URI-derived, so it stays valid across flapjack's
     /// internal input replacements; all id/stream mapping goes through this.
     pub(crate) stream_sid: Option<String>,
 }
@@ -99,7 +99,7 @@ impl<H: Copy + PartialEq> Catalog<H> {
         self.entries.iter().find(|entry| entry.id == id)
     }
 
-    /// The stable track id of the entry fcastplaybin knows by `handle`.
+    /// The stable track id of the entry flapjack knows by `handle`.
     pub(crate) fn id_of_handle(&self, handle: H) -> Option<u32> {
         self.entries
             .iter()
@@ -165,7 +165,7 @@ mod tests {
     use super::*;
 
     /// Handles are plain integers here: the real
-    /// [`fcastplaybin::ExternalSubId`] can only be minted by a live playbin.
+    /// [`flapjack::ExternalSubId`] can only be minted by a live player.
     type TestCatalog = Catalog<u32>;
 
     fn attach(catalog: &mut TestCatalog, url: &str, handle: u32) -> u32 {

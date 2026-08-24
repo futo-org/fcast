@@ -5,6 +5,8 @@ edition = "2024"
 license.workspace = true
 
 [dependencies]
+gst-static-env.workspace = true
+gstreamer-src.workspace = true
 gst = { workspace = true, features = ["v1_26"] }
 gst-base.workspace = true
 gst-app.workspace = true
@@ -52,6 +54,10 @@ reqwest = { version = "0.13", default-features = false, features = [ "native-tls
 textoverlay = []
 
 [dev-dependencies]
+# Tests drive audiotestsrc/videotestsrc pipelines, which shipping builds leave
+# out. Every test target in the tree asks for the same feature set, so the C
+# build is configured once for tests and once for builds.
+gstreamer-src = { workspace = true, features = ["test-media"] }
 hyper = { workspace = true, features = ["server"] }
 http-body-util = "0.1.1"
 pin-project-lite = "0.2"
@@ -61,3 +67,6 @@ ctor = "0.2"
 # Encoders are excluded from shipping builds (binary size); fimagedec's tests
 # encode their own image fixtures.
 image = { workspace = true, features = ["encode"] }
+
+[build-dependencies]
+gst-static-link.workspace = true

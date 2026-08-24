@@ -4287,7 +4287,7 @@ mod tests {
     /// The renderer's half. A cue that covers the FROZEN frame becomes a
     /// non-empty overlay set with no new frame anywhere.
     ///
-    /// Its other half is `fcastplaybin`'s
+    /// Its other half is `flapjack`'s
     /// `sink_subtitles::a_paused_embedded_switch_shows_its_cue_without_resuming`,
     /// which pins that a paused track switch really delivers such a cue,
     /// covering the frame the sink is showing, through the whole transport.
@@ -4553,7 +4553,7 @@ mod tests {
     /// separately in `the_fontmap_warm_up_is_measured`, so it is excluded here
     /// the way the plan words the gate.
     ///
-    /// The integration half is `fcastplaybin`'s
+    /// The integration half is `flapjack`'s
     /// `sink_subtitles::a_delivered_cue_covers_a_frame_within_the_cue_bound`.
     #[test]
     fn raster_latency_stays_under_the_gate_when_warm() {

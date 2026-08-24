@@ -1,5 +1,9 @@
+// Forces the static GStreamer link line and isolates the process from on-disk
+// plugins before main.
+use gst_static_env as _;
+
 pub mod companion_ctx;
-pub mod fcastaudiostretch;
+
 pub mod fcasthttpsrc;
 #[cfg(feature = "textoverlay")]
 pub mod fcasttextoverlay;

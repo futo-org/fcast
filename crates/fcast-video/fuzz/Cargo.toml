@@ -18,6 +18,8 @@ libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 fcast-video = { path = ".." }
 gst = { package = "gstreamer", version = "0.25", features = ["v1_26"] }
+# Own workspace, so no workspace inheritance and the path is spelled out.
+gstreamer-src = { path = "../../../../gstreamer-src/gstreamer-src" }
 
 [lib]
 name = "fcast_video_fuzz"

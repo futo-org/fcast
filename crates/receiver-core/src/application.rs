@@ -724,7 +724,7 @@ pub struct Application {
     gapless_prearm: Option<GaplessPrearm>,
     /// Invariant: a parked operation only ever exists alongside a `cancelling`
     /// pre-arm, so every site that clears `gapless_prearm` must also decide
-    /// this one's fate. Untimed by design: fcastplaybin reports exactly one
+    /// this one's fate. Untimed by design: flapjack reports exactly one
     /// outcome per cancel.
     gapless_parked_op: Option<GaplessParkedOp>,
     /// Events stamped with the PENDING pre-arm's generation, held until the
@@ -3262,7 +3262,7 @@ impl Application {
         self.maybe_apply_pending_subtitle_adds();
 
         // Only replays a sender seek that raced the load; the start position/rate is
-        // applied inside `fcastplaybin::load`.
+        // applied inside `flapjack::load`.
         self.maybe_apply_pending_seek();
     }
 
@@ -3559,7 +3559,7 @@ impl Application {
                 }
             }
             SubtitleTarget::Stream(stream_sid) => {
-                // Safe to apply while paused: fcastplaybin flushes the blocked push before
+                // Safe to apply while paused: flapjack flushes the blocked push before
                 // unlinking text, so the deselect cannot deadlock waiting for data.
                 self.apply_track_change(player::TrackKind::Subtitle, stream_sid);
             }
@@ -3599,7 +3599,7 @@ impl Application {
         }
     }
 
-    /// Retire an external subtitle fcastplaybin already detached; playback is
+    /// Retire an external subtitle flapjack already detached; playback is
     /// untouched.
     fn fail_fcast_external_subtitle(&mut self, ext_id: u32) {
         let Some(media) = self.current_media.as_mut() else {
@@ -4133,15 +4133,15 @@ impl Application {
                 message,
                 failed_uri,
             } => {
-                // Attribution comes from fcastplaybin's generation-tagged inputs.
+                // Attribution comes from flapjack's generation-tagged inputs.
                 // `failed_uri` is not just diagnostic: `kind` was classified from
                 // its presence, and its host is the network-failure detail below.
                 // External subtitles never error here.
                 match err_origin {
-                    fcastplaybin::ErrorOrigin::Stale => {
+                    flapjack::ErrorOrigin::Stale => {
                         debug!(?failed_uri, message, "Dropping error from a stale input");
                     }
-                    fcastplaybin::ErrorOrigin::Main | fcastplaybin::ErrorOrigin::Unknown => {
+                    flapjack::ErrorOrigin::Main | flapjack::ErrorOrigin::Unknown => {
                         self.player.stop();
                         if let Some(origin) = self.current_media.as_ref().map(|m| m.origin) {
                             self.send_error(origin, media_error_kind_to_error(kind));
@@ -4163,7 +4163,7 @@ impl Application {
                 }
             }
             player::PlayerEvent::ExternalSubtitleFailed { id } => {
-                // fcastplaybin already detached the input; only the protocol side is left.
+                // flapjack already detached the input; only the protocol side is left.
                 let ext_id = self
                     .current_media
                     .as_ref()
