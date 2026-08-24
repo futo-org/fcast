@@ -2000,7 +2000,7 @@ dependencies = [
 [[package]]
 name = "dav1d-sys"
 version = "0.8.3"
-source = "git+https://gitlab.futo.org/fcast/dav1d-rs.git?rev=a915aeca244f9cfd4b3e849499980c4922710af4#a915aeca244f9cfd4b3e849499980c4922710af4"
+source = "git+https://gitlab.futo.org/fcast/dav1d-rs.git?branch=fcast%2F0.11.1#7c6d30a9bc7e9841623675c37bb5acb527df2b6d"
 dependencies = [
  "gstreamer-src",
  "libc",
@@ -2873,7 +2873,7 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 [[package]]
 name = "flapjack"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?rev=ddf8e34452d4f3cbfbf312dbe858b44c42c7ee6f#ddf8e34452d4f3cbfbf312dbe858b44c42c7ee6f"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#26427fffd8c476a55f3e23070ea57aa9e6585c33"
 dependencies = [
  "anyhow",
  "gst-static-env",
@@ -2891,7 +2891,7 @@ dependencies = [
 [[package]]
 name = "flapjack-test"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?rev=ddf8e34452d4f3cbfbf312dbe858b44c42c7ee6f#ddf8e34452d4f3cbfbf312dbe858b44c42c7ee6f"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#26427fffd8c476a55f3e23070ea57aa9e6585c33"
 dependencies = [
  "ctor 0.2.9",
  "gst-static-env",
@@ -3411,14 +3411,14 @@ dependencies = [
 [[package]]
 name = "gio-sys"
 version = "0.22.8"
-source = "git+https://gitlab.futo.org/fcast/gtk-rs-core.git?rev=bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154#bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154"
+source = "git+https://gitlab.futo.org/fcast/gtk-rs-core.git?branch=fcast%2F0.22.8#91e1c1b6ebafe322f67d25b2c04952d12e266200"
 dependencies = [
  "glib-sys",
  "gobject-sys",
  "gstreamer-src",
  "libc",
  "system-deps",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3468,7 +3468,7 @@ dependencies = [
 [[package]]
 name = "glib-sys"
 version = "0.22.8"
-source = "git+https://gitlab.futo.org/fcast/gtk-rs-core.git?rev=bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154#bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154"
+source = "git+https://gitlab.futo.org/fcast/gtk-rs-core.git?branch=fcast%2F0.22.8#91e1c1b6ebafe322f67d25b2c04952d12e266200"
 dependencies = [
  "gstreamer-src",
  "libc",
@@ -3562,7 +3562,7 @@ dependencies = [
 [[package]]
 name = "gobject-sys"
 version = "0.22.8"
-source = "git+https://gitlab.futo.org/fcast/gtk-rs-core.git?rev=bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154#bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154"
+source = "git+https://gitlab.futo.org/fcast/gtk-rs-core.git?branch=fcast%2F0.22.8#91e1c1b6ebafe322f67d25b2c04952d12e266200"
 dependencies = [
  "glib-sys",
  "gstreamer-src",
@@ -3601,7 +3601,7 @@ checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
 [[package]]
 name = "gst-build-config"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?rev=b905cfa209cc5ab147ddfac3060b16b68ddb2bb9#b905cfa209cc5ab147ddfac3060b16b68ddb2bb9"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#2cce0623f4a66cb9fbb38a6742a9127a5f1c7c78"
 
 [[package]]
 name = "gst-plugin-dav1d"
@@ -3746,7 +3746,7 @@ dependencies = [
 [[package]]
 name = "gst-static-env"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?rev=b905cfa209cc5ab147ddfac3060b16b68ddb2bb9#b905cfa209cc5ab147ddfac3060b16b68ddb2bb9"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#2cce0623f4a66cb9fbb38a6742a9127a5f1c7c78"
 dependencies = [
  "ctor 0.6.3",
  "gio-sys",
@@ -3770,7 +3770,7 @@ dependencies = [
 [[package]]
 name = "gst-static-link"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?rev=b905cfa209cc5ab147ddfac3060b16b68ddb2bb9#b905cfa209cc5ab147ddfac3060b16b68ddb2bb9"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#2cce0623f4a66cb9fbb38a6742a9127a5f1c7c78"
 
 [[package]]
 name = "gst-subparse"
@@ -3826,7 +3826,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-allocators-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "glib-sys",
  "gobject-sys",
@@ -3854,7 +3854,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-app-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "glib-sys",
  "gstreamer-base-sys",
@@ -3883,7 +3883,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-audio-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "glib-sys",
  "gobject-sys",
@@ -3911,7 +3911,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-base-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "glib-sys",
  "gobject-sys",
@@ -4014,7 +4014,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-net-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "gio-sys",
  "glib-sys",
@@ -4042,7 +4042,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-pbutils-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "glib-sys",
  "gobject-sys",
@@ -4069,7 +4069,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-rtp-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "glib-sys",
  "gstreamer-base-sys",
@@ -4093,7 +4093,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-sdp-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "glib-sys",
  "gstreamer-src",
@@ -4105,7 +4105,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-src"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?rev=b905cfa209cc5ab147ddfac3060b16b68ddb2bb9#b905cfa209cc5ab147ddfac3060b16b68ddb2bb9"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#2cce0623f4a66cb9fbb38a6742a9127a5f1c7c78"
 dependencies = [
  "fd-lock",
  "gst-build-config",
@@ -4114,7 +4114,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "cfg-if",
  "glib-sys",
@@ -4139,7 +4139,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-tag-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "glib-sys",
  "gobject-sys",
@@ -4181,7 +4181,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-video-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "glib-sys",
  "gobject-sys",
@@ -4208,7 +4208,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-webrtc-sys"
 version = "0.25.3"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?rev=9f6e78ebe45f9321a71e76b8cc87eca232159e45#9f6e78ebe45f9321a71e76b8cc87eca232159e45"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-rs.git?branch=fcast%2F0.25.3#7814ac847f7d90d05af79809acc04c18cf1c4be0"
 dependencies = [
  "glib-sys",
  "gstreamer-sdp-sys",

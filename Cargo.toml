@@ -70,12 +70,12 @@ license = "MIT"
 # Build script builds our patched GStreamer fork with meson/ninja and emits the
 # static link line, inherited by every binary that depends on it. Every crate that touches
 # gst carries it so its own test binaries link too.
-gstreamer-src = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", rev = "b905cfa209cc5ab147ddfac3060b16b68ddb2bb9" }
-gst-static-link = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", rev = "b905cfa209cc5ab147ddfac3060b16b68ddb2bb9" }
-gst-static-env = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", rev = "b905cfa209cc5ab147ddfac3060b16b68ddb2bb9" }
+gstreamer-src = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branch = "master" }
+gst-static-link = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branch = "master" }
+gst-static-env = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branch = "master" }
 # The media player library and its test harness, extracted 2026-08-23.
-flapjack = { git = "https://gitlab.futo.org/fcast/flapjack.git", rev = "ddf8e34452d4f3cbfbf312dbe858b44c42c7ee6f" }
-flapjack-test = { git = "https://gitlab.futo.org/fcast/flapjack.git", rev = "ddf8e34452d4f3cbfbf312dbe858b44c42c7ee6f" }
+flapjack = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "master" }
+flapjack-test = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "master" }
 tokio = { version = "1.52", features = [ "full" ] }
 serde = { version = "1.0", features = [ "derive" ] }
 gst = { package = "gstreamer", version = "0.25" }
@@ -220,19 +220,20 @@ libheif-sys = { git = "https://gitlab.futo.org/fcast/libheif-sys.git", rev = "5f
 # Bundled-linking forks: the -sys crates probe the static GStreamer through
 # their gstreamer-src dependency, no stub .pc files or env setup. The glib
 # trio is scope-aware (static wrap glib under scope=Full only).
-gstreamer-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-gstreamer-app-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-gstreamer-audio-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-gstreamer-base-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-gstreamer-video-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-gstreamer-tag-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-gstreamer-allocators-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-gstreamer-pbutils-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-gstreamer-webrtc-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-gstreamer-sdp-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-gstreamer-rtp-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-gstreamer-net-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", rev = "9f6e78ebe45f9321a71e76b8cc87eca232159e45" }
-glib-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", rev = "bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154" }
-gobject-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", rev = "bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154" }
-gio-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", rev = "bccc9e4b0925a7e2f1b375ec25ace6bcb3dc6154" }
-dav1d-sys = { git = "https://gitlab.futo.org/fcast/dav1d-rs.git", rev = "a915aeca244f9cfd4b3e849499980c4922710af4" }
+gstreamer-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-app-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-audio-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-base-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-video-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-tag-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-allocators-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-pbutils-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-webrtc-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-sdp-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-rtp-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-net-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+glib-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", branch = "fcast/0.22.8" }
+gobject-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", branch = "fcast/0.22.8" }
+gio-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", branch = "fcast/0.22.8" }
+dav1d-sys = { git = "https://gitlab.futo.org/fcast/dav1d-rs.git", branch = "fcast/0.11.1" }
+
