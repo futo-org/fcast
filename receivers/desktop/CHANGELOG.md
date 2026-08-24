@@ -1,6 +1,33 @@
 # FCast Receiver Changelog
 
-## 3.0.3 - UNRELEASED
+## 3.0.4 - UNRELEASED
+
+### New Features
+
+ - Settings menu in the UI, backed by a config file that covers every setting and can be edited by hand
+ - UI scaling for TVs and high-DPI displays
+ - Keyboard navigation of the playback controls
+ - Warnings and errors are shown as detailed popups instead of only going to the log
+ - External subtitle tracks can be added while the media is still loading
+ - A button to stop the current media from the GUI
+ - HEIC/HEIF image decoding on all platforms
+
+### Changes
+
+ - Google Cast is now off by default, turn it on in the settings menu
+
+### Fixes
+
+ - Fix the missing system tray icon in the Flatpak
+ - Fix HLS playback failing when the ABR track changes
+ - Fix YouTube (UMP/SABR) livestreams not always starting
+ - Fix external subtitle tracks not coming back after being switched off
+ - Fix the mouse cursor not always reappearing after playback
+ - Respect the audio output latency, fixing lip-sync on Bluetooth devices
+ - Improved playback and rendering performance
+ - Many stability and robustness fixes, mostly crashes and hangs on unusual sources and malformed data from senders
+
+## 3.0.3 - 2026-07-23
 
 ### New Features
 
@@ -11,9 +38,6 @@
  - Wayland subsurface video sink (experimental, enable with `FCAST_VIDEO_SINK=wayland-subsurface`)
  - Debug inspector view (Ctrl+Shift+I)
  - Enable system tray icon on macOS
- - Bitmap subtitles now render: Blu-ray PGS, DVD (VOBSUB) and DVB subtitle
-   tracks are decoded and drawn instead of being reported as unsupported. Set
-   `FCAST_NO_BITMAP_SUBS=1` to go back to the previous behaviour.
 
 ### Fixes
 
