@@ -1,8 +1,15 @@
 ## 0.1.0
 
+- Update to `fcast-sender-sdk` 0.3.0
+- Subtitle data over the FCast companion channel: `addSubtitleSource` can now
+  carry raw subtitle bytes via `SubtitleContent.data`, so no receiver-reachable
+  URL is required
+- In-memory companion payloads via `CompanionSourceDescriptor.bytes`
 - Fix device discovery on Bonsoir 7 / macOS
 - Discovered devices are deduplicated by a stable key so add and remove events line up
 - Fix builds when not using default features
+- BREAKING: `SubtitleSource` now takes a `content` (`SubtitleContent`) instead of
+  a `url` string. Wrap an existing URL as `SubtitleContent.url(url: ...)`
 - BREAKING: `DiscoveryEventDeviceRemoved.name` is renamed to `storageKey`.
   `DiscoveryEventDeviceAdded` and `DiscoveryEventDeviceUpdated` now expose a
   matching `storageKey`. Index your device list by `storageKey` (from

@@ -10,11 +10,11 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_rust_bridge: 2.13.0-beta.5
+  flutter_rust_bridge: 2.13.0
   plugin_platform_interface: ^2.0.2
   freezed_annotation: ^3.1.0
   bonsoir: ^7.1.4
-  flutter_rust_bridge_hooks: 2.13.0-beta.5
+  flutter_rust_bridge_hooks: 2.13.0
 
 dev_dependencies:
   ffi: ^2.1.3

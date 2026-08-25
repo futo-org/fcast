@@ -9,7 +9,7 @@ use crate::{sh, workspace};
 /// codegen binary, both Dart packages and the Rust crate must all carry it (a
 /// mismatch fails at app startup). Re-asserted from here rather than trusted,
 /// because a stray codegen run rewrites the manifest pins to its own version.
-const FRB_VERSION: &str = "2.13.0-beta.5";
+const FRB_VERSION: &str = "2.13.0";
 
 #[derive(Subcommand)]
 pub enum FlutterCommand {
