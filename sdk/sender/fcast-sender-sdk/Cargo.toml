@@ -27,7 +27,7 @@ tokio-rustls = { workspace = true, default-features = false, features = [ "loggi
 google-cast-protocol = { path = "../../../crates/google-cast-protocol", version = "0.1.0", optional = true }
 
 # FCast
-fcast-protocol = { path = "../../../crates/fcast-protocol", version = "0.1.5", optional = true, features = ["tokio-sender"] }
+fcast-protocol = { path = "../../../crates/fcast-protocol", version = "0.2.0", optional = true, features = ["tokio-sender"] }
 base64 = { workspace = true, optional = true }
 
 env_logger = { workspace = true, optional = true }
