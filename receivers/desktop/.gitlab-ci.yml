@@ -125,6 +125,7 @@ provision_windows_vm_receiver:
       done
 
   artifacts:
+    expire_in: "1 hour"
     reports:
       dotenv: provision.env
 
