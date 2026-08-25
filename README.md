@@ -1,17 +1,10 @@
 <div align="center">
 <p>
-  <br/>
-  <a href="https://opensource.org/license/mit"><img src="https://img.shields.io/badge/License-MIT-blue.svg?color=008BD7&style=for-the-badge&label=License&logoColor=000000&labelColor=ececec" alt="License: MIT"></a>
-  <br/>
-  <br/>
-</p>
-
-<p>
 <a href="https://fcast.org/">
 <img src="website/dist/images/ic_banner.svg" height="300">
 </a>
 </p>
-<h3> Open source protocol for audio and video content streaming</h3>
+<h3>Open source protocol for audio and video content streaming</h3>
 </div>
 <br/>
 
