@@ -79,8 +79,22 @@ $env:PATH = @(
   [System.Environment]::GetEnvironmentVariable("Path", "User")
 ) -join ";"
 
-$env:CC  = "clang-cl"
-$env:CXX = "clang-cl"
+# Do NOT export CC/CXX here. gstreamer-src pins meson to MSVC cl (wrap meson
+# checks gate on cc.get_id() == 'msvc'), but its vcvars env capture re-exports
+# whatever CC this shell set, silently overriding the pin. clang-cl here is
+# what broke flex --nounistd and the openssl wrap's find_library workaround.
+# LLVM stays installed above for bindgen's libclang and for libplacebo, whose
+# build script pins clang-cl itself (GNU C extensions, cl cannot build it).
+#
+# Instead enter a VS dev shell so cl/INCLUDE/LIB exist for every build script
+# that spawns meson itself (libplacebo-sys inherits this env directly).
+Step "Entering VS developer environment"
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if (-not $vsPath) { throw "vswhere found no VS installation with C++ tools" }
+Import-Module (Join-Path $vsPath "Common7\Tools\Microsoft.VisualStudio.DevShell.dll")
+Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
+if (-not (Get-Command cl -ErrorAction SilentlyContinue)) { throw "cl not on PATH after Enter-VsDevShell" }
 
 # The real check that provisioning worked. --version too: Get-Command also
 # matches the Windows Store python.exe alias stub.
