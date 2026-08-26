@@ -9,9 +9,9 @@
 //!
 //! Division of work:
 //!
-//!  * the **driver** (`flapjack`) stays a byte pipe. It decides from caps
-//!    that a stream is a bitmap format, converts the sample's pts to running
-//!    time, and hands the untouched [`gst::Buffer`] over as a [`BitmapPacket`].
+//!  * the **driver** (`flapjack`) stays a byte pipe. It decides from caps that
+//!    a stream is a bitmap format, converts the sample's pts to running time,
+//!    and hands the untouched [`gst::Buffer`] over as a [`BitmapPacket`].
 //!  * the **engine** owns reassembly and decode on its own worker thread, so
 //!    nothing here ever runs on a streaming thread.
 //!  * a **decoder** ([`SubpicDecoder`]) is a pure state machine from packets to

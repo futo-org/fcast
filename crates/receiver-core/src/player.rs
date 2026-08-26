@@ -873,9 +873,7 @@ impl Player {
                     origin: _,
                 } => engine.submit(fcast_video::cue::CueInput {
                     format: match format {
-                        flapjack::SubtitleTextFormat::Utf8 => {
-                            fcast_video::cue::TextFormat::Utf8
-                        }
+                        flapjack::SubtitleTextFormat::Utf8 => fcast_video::cue::TextFormat::Utf8,
                         flapjack::SubtitleTextFormat::PangoMarkup => {
                             fcast_video::cue::TextFormat::PangoMarkup
                         }
@@ -1165,11 +1163,7 @@ impl Player {
                     origin,
                     kind,
                     detail,
-                    message: format!(
-                        "{} [{}]",
-                        error.message(),
-                        gst_error_domain_code(&error)
-                    ),
+                    message: format!("{} [{}]", error.message(), gst_error_domain_code(&error)),
                     failed_uri,
                 }
             }
@@ -2549,9 +2543,9 @@ mod tests {
 
     /// The bytes the driver's tests push are bytes a decoder can actually read.
     ///
-    /// `flapjack_test`'s bitmap fixtures are DELIBERATELY not the decoders' own:
-    /// they are written from the specifications a second time, so that a
-    /// transport test cannot pass because both ends share one author's
+    /// `flapjack_test`'s bitmap fixtures are DELIBERATELY not the decoders'
+    /// own: they are written from the specifications a second time, so that
+    /// a transport test cannot pass because both ends share one author's
     /// misreading. The cost of that is a fixture nobody ever decodes: every
     /// driver-side test counts samples and never looks inside them, so a
     /// fixture that was malformed would prove the carriage works while
@@ -2657,8 +2651,8 @@ mod tests {
 
         use fcast_video::cue::{CueEngine, CueInput, TextFormat};
         use flapjack::{
-            AudioSink, Player, PlayerEvent, SelectionGate, Sinks, StartPoint,
-            SubtitleFeedItem, TrackSlot, TrackTarget,
+            AudioSink, Player, PlayerEvent, SelectionGate, Sinks, StartPoint, SubtitleFeedItem,
+            TrackSlot, TrackTarget,
         };
         use flapjack_test::{
             scenario::ScenarioBuilder,
@@ -2671,8 +2665,7 @@ mod tests {
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| {
             flapjack_test::register_for_tests();
-            flapjack::audiostretch::plugin_init()
-                .expect("registering audiostretch");
+            flapjack::audiostretch::plugin_init().expect("registering audiostretch");
         });
 
         // CONTIGUOUS, as measured on a real file: cue N ends on
@@ -3143,9 +3136,19 @@ mod tests {
         // Side-independent identities.
         assert_eq!(kind_of(R::NotFound, true), MediaErrorKind::NotFound);
         assert_eq!(kind_of(R::NotFound, false), MediaErrorKind::NotFound);
-        assert_eq!(kind_of(R::NotAuthorized, true), MediaErrorKind::AccessDenied);
+        assert_eq!(
+            kind_of(R::NotAuthorized, true),
+            MediaErrorKind::AccessDenied
+        );
         // Source side reads/seeks are network trouble.
-        for code in [R::OpenRead, R::OpenReadWrite, R::Read, R::Seek, R::Sync, R::Busy] {
+        for code in [
+            R::OpenRead,
+            R::OpenReadWrite,
+            R::Read,
+            R::Seek,
+            R::Sync,
+            R::Busy,
+        ] {
             assert_eq!(kind_of(code, true), MediaErrorKind::NetworkFailure);
         }
         // The same codes on a sink are an output failure, as is anything
@@ -3165,7 +3168,10 @@ mod tests {
         for code in [S::TypeNotFound, S::WrongType, S::Format, S::Demux] {
             assert_eq!(kind_of(code, true), MediaErrorKind::UnsupportedFormat);
         }
-        assert_eq!(kind_of(S::CodecNotFound, true), MediaErrorKind::MissingCodec);
+        assert_eq!(
+            kind_of(S::CodecNotFound, true),
+            MediaErrorKind::MissingCodec
+        );
         assert_eq!(kind_of(S::Decode, false), MediaErrorKind::DecodeFailed);
         assert_eq!(kind_of(S::Decrypt, true), MediaErrorKind::DrmProtected);
         assert_eq!(kind_of(S::DecryptNokey, true), MediaErrorKind::DrmProtected);
@@ -3224,7 +3230,11 @@ mod tests {
             .collect();
         all.sort();
         all.dedup();
-        assert_eq!(all.len(), codes.len() + warning_codes.len(), "duplicate code");
+        assert_eq!(
+            all.len(),
+            codes.len() + warning_codes.len(),
+            "duplicate code"
+        );
     }
 
     #[test]

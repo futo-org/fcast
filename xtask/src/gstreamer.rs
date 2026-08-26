@@ -100,7 +100,9 @@ fn newer_archive_under(dir: &std::path::Path, than: std::time::SystemTime) -> bo
         return false;
     };
     for entry in entries.flatten() {
-        let Ok(kind) = entry.file_type() else { continue };
+        let Ok(kind) = entry.file_type() else {
+            continue;
+        };
         if kind.is_dir() {
             if newer_archive_under(&entry.path(), than) {
                 return true;

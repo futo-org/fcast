@@ -386,7 +386,7 @@ mod tests {
     fn gapless_fcomp_next_item_plays_to_its_end() {
         use fcast_protocol::companion;
         use flapjack::{
-            AudioSink, Player, MediaInput, MessageHook, PlayerEvent, Sinks, StartPoint,
+            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint,
         };
         use std::{
             sync::mpsc,
@@ -506,7 +506,7 @@ mod tests {
     fn gapless_fcomp_survives_a_midplayback_prearm() {
         use fcast_protocol::companion;
         use flapjack::{
-            AudioSink, Player, MediaInput, MessageHook, PlayerEvent, Sinks, StartPoint,
+            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint,
         };
         use std::{
             sync::mpsc,

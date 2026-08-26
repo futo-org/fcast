@@ -46,7 +46,6 @@ impl<T> std::ops::Deref for IgnoredDebug<T> {
     }
 }
 
-
 pub struct GraphDumpData {
     pub trigger: String,
     pub timestamp: String,

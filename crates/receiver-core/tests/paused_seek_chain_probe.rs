@@ -69,7 +69,7 @@ use fcast_video::{
     video::FSink,
 };
 use flapjack::{
-    AudioSink, Player, MediaInput, PlayerEvent, Seek, SelectionGate, Sinks, StartPoint,
+    AudioSink, MediaInput, Player, PlayerEvent, Seek, SelectionGate, Sinks, StartPoint,
     SubtitleFeedItem, TrackSlot, TrackTarget,
 };
 use gst::prelude::*;
@@ -96,8 +96,7 @@ fn init() {
             let _ = tracing_subscriber::fmt().with_env_filter(filter).try_init();
         }
         gst::init().unwrap();
-        flapjack::audiostretch::plugin_init()
-            .expect("registering audiostretch");
+        flapjack::audiostretch::plugin_init().expect("registering audiostretch");
     });
 }
 

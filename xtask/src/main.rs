@@ -2,9 +2,7 @@ use clap::{Parser, Subcommand};
 use xshell::cmd;
 #[cfg(feature = "mdns")]
 use xtask::mdns;
-use xtask::{
-    android, flutter, protocol, receiver, sender, sh, test_corpus, workspace,
-};
+use xtask::{android, flutter, protocol, receiver, sender, sh, test_corpus, workspace};
 #[cfg(feature = "uniffi")]
 use xtask::{
     csharp, kotlin,

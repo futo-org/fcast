@@ -454,7 +454,9 @@ fn uri_host(uri: &str) -> Option<&str> {
     let rest = uri.split_once("://")?.1;
     let end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
     let authority = &rest[..end];
-    let host = authority.rsplit_once('@').map_or(authority, |(_, host)| host);
+    let host = authority
+        .rsplit_once('@')
+        .map_or(authority, |(_, host)| host);
     let host = host.split_once(':').map_or(host, |(host, _)| host);
     (!host.is_empty()).then_some(host)
 }
@@ -4147,10 +4149,9 @@ impl Application {
                             self.send_error(origin, media_error_kind_to_error(kind));
                         }
                         let detail = match kind {
-                            player::MediaErrorKind::NetworkFailure => failed_uri
-                                .as_deref()
-                                .and_then(uri_host)
-                                .map(str::to_owned),
+                            player::MediaErrorKind::NetworkFailure => {
+                                failed_uri.as_deref().and_then(uri_host).map(str::to_owned)
+                            }
                             player::MediaErrorKind::MissingCodec => codec_detail,
                             _ => None,
                         };
@@ -6046,7 +6047,10 @@ mod tests {
             push_recent_warning(&mut ring, t0, "FC-W02", &format!("m{i}"));
         }
         assert_eq!(ring.len(), RECENT_WARNINGS_CAP);
-        assert_eq!(ring.back().unwrap().2, format!("m{}", RECENT_WARNINGS_CAP + 4));
+        assert_eq!(
+            ring.back().unwrap().2,
+            format!("m{}", RECENT_WARNINGS_CAP + 4)
+        );
 
         let formatted = format_recent_warnings(&ring, t0 + Duration::from_secs(7));
         assert!(formatted.starts_with("recent warnings"));
