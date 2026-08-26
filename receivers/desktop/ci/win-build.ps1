@@ -79,8 +79,22 @@ $env:PATH = @(
   [System.Environment]::GetEnvironmentVariable("Path", "User")
 ) -join ";"
 
-$env:CC  = "clang-cl"
-$env:CXX = "clang-cl"
+# Do NOT export CC/CXX here. gstreamer-src pins meson to MSVC cl (wrap meson
+# checks gate on cc.get_id() == 'msvc'), but its vcvars env capture re-exports
+# whatever CC this shell set, silently overriding the pin. clang-cl here is
+# what broke flex --nounistd and the openssl wrap's find_library workaround.
+# LLVM stays installed above for bindgen's libclang and for libplacebo, whose
+# build script pins clang-cl itself (GNU C extensions, cl cannot build it).
+#
+# Instead enter a VS dev shell so cl/INCLUDE/LIB exist for every build script
+# that spawns meson itself (libplacebo-sys inherits this env directly).
+Step "Entering VS developer environment"
+$vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$vsPath = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+if (-not $vsPath) { throw "vswhere found no VS installation with C++ tools" }
+Import-Module (Join-Path $vsPath "Common7\Tools\Microsoft.VisualStudio.DevShell.dll")
+Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments '-arch=x64'
+if (-not (Get-Command cl -ErrorAction SilentlyContinue)) { throw "cl not on PATH after Enter-VsDevShell" }
 
 # The real check that provisioning worked. --version too: Get-Command also
 # matches the Windows Store python.exe alias stub.
@@ -116,6 +130,27 @@ Set-Location $RepoRoot
 # The GStreamer repo/ref come from .cargo/config.toml (GSTREAMER_SRC_REPO/REF);
 # the old --gst-ref flag no longer exists and would fail argument parsing.
 cargo xtask receiver build-windows-installer
+if ($LASTEXITCODE -ne 0) {
+  # The VM is deleted after the job, so dump the meson log while we can. The
+  # console error is often a late echo of a subproject that failed pages
+  # earlier and only the meson log holds the first failure.
+  Step "Build failed, dumping meson logs"
+  Get-ChildItem (Join-Path $RepoRoot "target\gst-static\build-*\meson-logs\meson-log.txt") -ErrorAction SilentlyContinue | ForEach-Object {
+    Write-Host "===== $($_.FullName): libnice/openssl mentions ====="
+    Select-String -Path $_.FullName -Pattern 'libnice|openssl' -SimpleMatch:$false -Context 2,10 | ForEach-Object { $_.ToString() }
+    Write-Host "===== $($_.FullName) (last 400 lines) ====="
+    Get-Content $_.FullName -Tail 400
+  }
+  # ninja interleaves job output, so the failing job is usually NOT at the
+  # tail. Pull every FAILED: block with enough context to see the error.
+  $ninjaLog = Join-Path $RepoRoot "target\gst-static\ninja.log"
+  if (Test-Path $ninjaLog) {
+    Write-Host "===== ${ninjaLog}: FAILED jobs ====="
+    Select-String -Path $ninjaLog -Pattern '^FAILED:' -Context 1,60 | ForEach-Object { $_.ToString() }
+    Write-Host "===== ${ninjaLog}: error lines ====="
+    Select-String -Path $ninjaLog -Pattern 'error:|error C\d|LNK\d{4}|fatal' -Context 2,6 | Select-Object -First 40 | ForEach-Object { $_.ToString() }
+  }
+}
 Assert-Native "cargo xtask receiver build-windows-installer"
 
 Step "Done. Installer(s):"
