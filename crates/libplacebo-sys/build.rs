@@ -120,8 +120,15 @@ mod build {
             build_path.to_str().unwrap(),
             source.to_str().unwrap(),
         ]);
-        let status = Command::new("meson")
-            .args(&setup_args)
+        let mut setup = Command::new("meson");
+        setup.args(&setup_args);
+        // libplacebo needs GNU C extensions (__typeof__, __builtin_*) that
+        // MSVC cl lacks, so pin clang-cl here instead of exporting CC into
+        // the whole build, which breaks the meson builds that require cl.
+        if cfg!(target_os = "windows") {
+            setup.env("CC", "clang-cl").env("CXX", "clang-cl");
+        }
+        let status = setup
             .stderr(Stdio::inherit())
             .stdout(Stdio::inherit())
             .status()
