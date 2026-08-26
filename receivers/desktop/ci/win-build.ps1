@@ -113,7 +113,9 @@ if (-not (Get-Command meson -ErrorAction SilentlyContinue)) { throw "meson missi
 
 Step "Building the Windows installer"
 Set-Location $RepoRoot
-cargo xtask receiver build-windows-installer --gst-ref 1.29.2
+# The GStreamer repo/ref come from .cargo/config.toml (GSTREAMER_SRC_REPO/REF);
+# the old --gst-ref flag no longer exists and would fail argument parsing.
+cargo xtask receiver build-windows-installer
 Assert-Native "cargo xtask receiver build-windows-installer"
 
 Step "Done. Installer(s):"

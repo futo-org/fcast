@@ -74,8 +74,8 @@ gstreamer-src = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branc
 gst-static-link = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branch = "master" }
 gst-static-env = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branch = "master" }
 # The media player library and its test harness, extracted 2026-08-23.
-flapjack = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "master" }
-flapjack-test = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "master" }
+flapjack = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "stable" }
+flapjack-test = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "stable" }
 tokio = { version = "1.52", features = [ "full" ] }
 serde = { version = "1.0", features = [ "derive" ] }
 gst = { package = "gstreamer", version = "0.25" }
@@ -86,7 +86,7 @@ gst-plugin-rtp = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "http
 gst-plugin-webrtc = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false }
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
-gst-subparse = { git = "https://github.com/MAlba124/gst-subparse-rs.git", rev = "5c2d463" }
+gst-subparse = { git = "https://github.com/MAlba124/gst-subparse-rs.git", rev = "506831f" }
 # The cue-IR renderer stack (crates/fcast-video/src/cue_ir.rs). vello_cpu keeps
 # the exact revision the upstream cueir-demo pins: the parley workspace's own,
 # which its examples (and our rasterizer) are written against.
@@ -220,7 +220,7 @@ opt-level = 3
 # Disable encoders
 image = { git = "https://gitlab.futo.org/fcast/image-rs.git", rev = "9ee78f3f" }
 rustls = { git = "https://gitlab.futo.org/fcast/rustls.git", rev = "72ec207b" }
-libheif-sys = { git = "https://gitlab.futo.org/fcast/libheif-sys.git", rev = "88d49ab9500b7bb90243e1263bda7e98a8ccfcbe" }
+libheif-sys = { git = "https://gitlab.futo.org/fcast/libheif-sys.git", rev = "f8dc2979346be29c85facf307d42a72745d5d038" }
 # Bundled-linking forks: the -sys crates probe the static GStreamer through
 # their gstreamer-src dependency, no stub .pc files or env setup. The glib
 # trio is scope-aware (static wrap glib under scope=Full only).
