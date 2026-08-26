@@ -1,6 +1,6 @@
 # FCast Receiver Changelog
 
-## 3.0.4 - 2026-08-25
+## 3.0.4 - 2026-08-26
 
 ### New Features
 

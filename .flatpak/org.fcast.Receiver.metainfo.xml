@@ -24,7 +24,7 @@
   </description>
   <content_rating type="oars-1.1" />
   <releases>
-    <release version="3.0.4" date="2026-08-25">
+    <release version="3.0.4" date="2026-08-26">
       <description>
         <ul>
             <li>Settings menu in the UI, backed by a config file that covers every setting and can be edited by hand</li>
