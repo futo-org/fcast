@@ -116,6 +116,27 @@ Set-Location $RepoRoot
 # The GStreamer repo/ref come from .cargo/config.toml (GSTREAMER_SRC_REPO/REF);
 # the old --gst-ref flag no longer exists and would fail argument parsing.
 cargo xtask receiver build-windows-installer
+if ($LASTEXITCODE -ne 0) {
+  # The VM is deleted after the job, so dump the meson log while we can. The
+  # console error is often a late echo of a subproject that failed pages
+  # earlier and only the meson log holds the first failure.
+  Step "Build failed, dumping meson logs"
+  Get-ChildItem (Join-Path $RepoRoot "target\gst-static\build-*\meson-logs\meson-log.txt") -ErrorAction SilentlyContinue | ForEach-Object {
+    Write-Host "===== $($_.FullName): libnice/openssl mentions ====="
+    Select-String -Path $_.FullName -Pattern 'libnice|openssl' -SimpleMatch:$false -Context 2,10 | ForEach-Object { $_.ToString() }
+    Write-Host "===== $($_.FullName) (last 400 lines) ====="
+    Get-Content $_.FullName -Tail 400
+  }
+  # ninja interleaves job output, so the failing job is usually NOT at the
+  # tail. Pull every FAILED: block with enough context to see the error.
+  $ninjaLog = Join-Path $RepoRoot "target\gst-static\ninja.log"
+  if (Test-Path $ninjaLog) {
+    Write-Host "===== ${ninjaLog}: FAILED jobs ====="
+    Select-String -Path $ninjaLog -Pattern '^FAILED:' -Context 1,60 | ForEach-Object { $_.ToString() }
+    Write-Host "===== ${ninjaLog}: error lines ====="
+    Select-String -Path $ninjaLog -Pattern 'error:|error C\d|LNK\d{4}|fatal' -Context 2,6 | Select-Object -First 40 | ForEach-Object { $_.ToString() }
+  }
+}
 Assert-Native "cargo xtask receiver build-windows-installer"
 
 Step "Done. Installer(s):"
