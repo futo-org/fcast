@@ -194,7 +194,16 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
             let ui = ui_weak
                 .upgrade()
                 .expect("callbacks always get called from the event loop");
+            // android has no windowed state, fullscreen means immersive
+            // (system bars hidden); the bridge tracks it since the slint
+            // window knows nothing about it
+            #[cfg(target_os = "android")]
+            let is_fullscreen = !ui.global::<Bridge>().get_is_fullscreen();
+            #[cfg(target_os = "android")]
+            crate::android_immersive::set(is_fullscreen);
+            #[cfg(not(target_os = "android"))]
             let is_fullscreen = !ui.window().is_fullscreen();
+            #[cfg(not(target_os = "android"))]
             ui.window().set_fullscreen(is_fullscreen);
             ui.global::<Bridge>().set_is_fullscreen(is_fullscreen);
         }
@@ -431,6 +440,29 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             window.set_fullscreen(fullscreen);
         }
         UpdateGuiCommand::SetAppState(state) => {
+            // A load is coming: get the video surface up before the codec
+            // builds, a window handed late costs a rebuild and a keyframe
+            // wait (frozen first seconds)
+            #[cfg(target_os = "android")]
+            if matches!(state, ui_types::AppState::LoadingMedia) {
+                crate::android_surface_video::preopen_current();
+            }
+            // the sw frame belongs to the leaving item, a retained image
+            // would flash it when the next video starts
+            if matches!(
+                state,
+                ui_types::AppState::LoadingMedia | ui_types::AppState::Idle
+            ) {
+                bridge.set_sw_video_frame(slint::Image::default());
+                bridge.set_sw_video_active(false);
+                // The zero-copy android arm also holds gst buffers behind
+                // that image, and those are pool slots the next item's
+                // decoder wants back.
+                #[cfg(target_os = "android")]
+                crate::android_video::release_frames();
+                // and so does its bitmap subtitle
+                bridge.set_bitmap_subtitle(crate::SubtitleOverlay::default());
+            }
             bridge.set_app_state(state.into());
             unhide_cursor_outside_video_scene(&ui);
         }

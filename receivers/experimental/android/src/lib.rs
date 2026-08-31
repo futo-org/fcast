@@ -5,12 +5,21 @@ use std::{
     sync::LazyLock,
 };
 
-use rcore::{Mdns, slint, tracing::error};
+use rcore::{message::Mdns, slint, tracing::error};
 
-use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
-static EVENT_TX: LazyLock<Mutex<Option<UnboundedSender<rcore::Message>>>> =
-    LazyLock::new(|| Mutex::new(None));
+// The activity's JNI up-calls (network callback, NSD name) start firing
+// before android_main runs, so the sender must exist from the first touch
+// and early events wait in the channel until rcore::run drains them.
+#[allow(clippy::type_complexity)]
+static EVENT_CHANNEL: LazyLock<(
+    UnboundedSender<rcore::message::Message>,
+    Mutex<Option<UnboundedReceiver<rcore::message::Message>>>,
+)> = LazyLock::new(|| {
+    let (tx, rx) = unbounded_channel();
+    (tx, Mutex::new(Some(rx)))
+});
 
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
@@ -29,15 +38,53 @@ fn android_main(app: slint::android::AndroidApp) {
 
     slint::android::init(app.clone()).unwrap();
 
-    rcore::slint::BackendSelector::new()
-        .require_opengl_es()
-        .select()
-        .unwrap();
+    // No graphics API requirement. This asked for OpenGL ES, which was right
+    // while the android backend rendered with skia, but it now renders with
+    // dodvg on wgpu 30 and that lane is Vulkan. The request is carried all the
+    // way to surface creation, where anything other than the wgpu API is
+    // refused outright ("does not implement renderer selection by graphics
+    // API"), so requiring GLES here panicked the receiver on the first frame.
+    rcore::slint::BackendSelector::new().select().unwrap();
 
-    let (event_tx, event_rx) = unbounded_channel();
-    *EVENT_TX.lock() = Some(event_tx);
+    let event_rx = EVENT_CHANNEL.1.lock().take().expect("android_main ran twice");
 
-    rcore::run(app, event_rx, rcore::SwapchainSink::new()).unwrap();
+    rcore::run(app, event_rx).unwrap();
+
+    // The activity is gone (Destroy broke the event loop), but android keeps
+    // the process around and serves the NEXT activity from it, which runs
+    // android_main again. The receiver is a per-process singleton: the slint
+    // platform is set once, gst is initialized once, and the event channel's
+    // receiver was taken above, so a second run can only hit that expect and
+    // die on a background thread with the new activity left blank. Exit
+    // instead. The next launch gets a fresh process and an honest cold start,
+    // which the splash window already covers.
+    std::process::exit(0);
+}
+
+/// The fcast TXT records for the NSD registration. Returns false while the
+/// receiver has not minted its TLS identity yet, the activity retries.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getFCastTxtAttribs<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    attrs: jni::objects::JObject,
+) -> jni::sys::jboolean {
+    let Some(records) = rcore::fcast_txt_records() else {
+        return 0;
+    };
+    let Ok(attrs) = env.get_map(&attrs) else {
+        return 0;
+    };
+    for (k, v) in records {
+        let (Ok(k), Ok(v)) = (env.new_string(k), env.new_string(v)) else {
+            return 0;
+        };
+        if attrs.put(&mut env, &k, &v).is_err() {
+            return 0;
+        }
+    }
+    1
 }
 
 #[allow(non_snake_case)]
@@ -47,18 +94,12 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_setMdnsDeviceNa
     _class: jni::objects::JClass<'local>,
     name: jni::objects::JString,
 ) {
-    let event_tx = EVENT_TX.lock();
-    let Some(event_tx) = event_tx.as_ref() else {
-        // Unreachable
-        return;
-    };
-
     let Ok(device_name) = env.get_string(&name) else {
         return;
     };
 
-    let event = rcore::Mdns::NameSet(device_name.to_string_lossy().to_string());
-    let _ = event_tx.send(rcore::Message::Mdns(event));
+    let event = Mdns::NameSet(device_name.to_string_lossy().to_string());
+    let _ = EVENT_CHANNEL.0.send(rcore::message::Message::Mdns(event));
 }
 
 #[allow(non_snake_case)]
@@ -72,12 +113,9 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getDeviceNameRa
     let name = name.to_str().unwrap();
     let hash = rcore::device_name_hash(&name);
     let hash_str = rcore::hash_to_string(&hash);
-    let event_tx = EVENT_TX.lock();
-    if let Some(event_tx) = event_tx.as_ref() {
-        let _ = event_tx.send(rcore::Message::Raop(rcore::Raop::ConfigAvailable(
-            rcore::Configuration { hw_addr: hash },
-        )));
-    }
+    let _ = EVENT_CHANNEL.0.send(rcore::message::Message::Raop(
+        rcore::message::Raop::ConfigAvailable(rcore::Configuration { hw_addr: hash }),
+    ));
 
     env.new_string(hash_str).unwrap().into_raw()
 }
@@ -95,6 +133,18 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getRaopTxtAttri
         let v = env.new_string(v).unwrap();
         attrs.put(&mut env, &k, &v).unwrap();
     }
+}
+
+/// Activity start/stop. The video surface dies with the activity, the
+/// player must let go of it first and re-adopt a fresh one on return.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeAppVisibility<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    visible: jni::sys::jboolean,
+) {
+    rcore::android_app_visibility(visible != 0);
 }
 
 #[allow(non_snake_case)]
@@ -119,11 +169,6 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeNetworkEv
             error!(?err, "Failed to get JList size");
             return;
         }
-    };
-    let event_tx = EVENT_TX.lock();
-    let Some(event_tx) = event_tx.as_ref() else {
-        // Unreachable
-        return;
     };
     for i in 0..n_addrs {
         let Ok(Some(addr)) = addrs.get(&mut env, i) else {
@@ -174,12 +219,12 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeNetworkEv
         };
 
         let event = if available {
-            MdnsEvent::IpAdded(addr)
+            Mdns::IpAdded(addr)
         } else {
-            MdnsEvent::IpRemoved(addr)
+            Mdns::IpRemoved(addr)
         };
 
-        if let Err(err) = event_tx.send(rcore::Message::Mdns(event)) {
+        if let Err(err) = EVENT_CHANNEL.0.send(rcore::message::Message::Mdns(event)) {
             error!(?err, "Failed to send mDNS event");
             return;
         }

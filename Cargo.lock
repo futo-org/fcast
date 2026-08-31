@@ -494,6 +494,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ash"
+version = "0.38.0+1.3.281"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0bb44936d800fea8f016d7f2311c6a4f97aebd5dc86f09906139ec848cf3a46f"
+dependencies = [
+ "libloading 0.8.9",
+]
+
+[[package]]
 name = "ashpd"
 version = "0.12.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1032,6 +1041,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bit-set"
+version = "0.10.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "09ec2f926cc3060f09db9ebc5b52823d85268d24bb917e472c0c4bea35780a7d"
+dependencies = [
+ "bit-vec",
+]
+
+[[package]]
 name = "bit-vec"
 version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1518,6 +1536,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "codespan-reporting"
+version = "0.13.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af491d569909a7e4dee0ad7db7f5341fef5c614d5b8ec8cf765732aba3cff681"
+dependencies = [
+ "unicode-width 0.2.2",
+]
+
+[[package]]
 name = "color"
 version = "0.3.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1587,7 +1614,6 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.2.0"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1596,7 +1622,6 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.2.0"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1977,7 +2002,6 @@ dependencies = [
 [[package]]
 name = "dav1d-sys"
 version = "0.8.3"
-source = "git+https://gitlab.futo.org/fcast/dav1d-rs.git?branch=fcast%2F0.11.1#7c6d30a9bc7e9841623675c37bb5acb527df2b6d"
 dependencies = [
  "gstreamer-src",
  "libc",
@@ -2763,7 +2787,6 @@ dependencies = [
  "gstreamer-allocators",
  "gstreamer-app",
  "gstreamer-base",
- "gstreamer-gl-egl",
  "gstreamer-src",
  "gstreamer-video",
  "i-slint-backend-winit",
@@ -2771,7 +2794,7 @@ dependencies = [
  "libplacebo-vulkan",
  "objc2-app-kit 0.3.2",
  "parking_lot",
- "parley 0.11.0",
+ "parley",
  "peniko",
  "raw-window-handle",
  "slint",
@@ -2893,9 +2916,9 @@ checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
 [[package]]
 name = "flapjack"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=stable#a5f3a86f1af27c66da299c349a73d97e54132f08"
 dependencies = [
  "anyhow",
+ "gst-plugin-androidmedia",
  "gst-static-env",
  "gst-static-link",
  "gst-subparse",
@@ -2904,7 +2927,9 @@ dependencies = [
  "gstreamer-audio",
  "gstreamer-base",
  "gstreamer-src",
+ "libspa",
  "parking_lot",
+ "pipewire",
  "tracing",
 ]
 
@@ -3079,28 +3104,6 @@ dependencies = [
  "slotmap",
  "tinyvec",
  "ttf-parser",
-]
-
-[[package]]
-name = "fontique"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "274fa4f0f0a926ae182c7c076c078cce8a38471d15e61a102a02cac984be9813"
-dependencies = [
- "hashbrown 0.17.1",
- "linebender_resource_handle",
- "memmap2",
- "objc2 0.6.4",
- "objc2-core-foundation",
- "objc2-core-text",
- "objc2-foundation 0.3.2",
- "parlance",
- "read-fonts 0.39.2",
- "roxmltree",
- "smallvec",
- "windows",
- "windows-core",
- "yeslogic-fontconfig-sys",
 ]
 
 [[package]]
@@ -3626,6 +3629,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "gpu-allocator"
+version = "0.28.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "51255ea7cfaadb6c5f1528d43e92a82acb2b96c43365989a28b2d44ee38f8795"
+dependencies = [
+ "ash",
+ "hashbrown 0.16.1",
+ "log",
+ "presser",
+ "thiserror 2.0.18",
+ "windows",
+]
+
+[[package]]
 name = "grid"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3634,7 +3651,21 @@ checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
 [[package]]
 name = "gst-build-config"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#a27e9b7a8a4ff9065891854fa85b315c9683e6ac"
+
+[[package]]
+name = "gst-plugin-androidmedia"
+version = "0.1.0"
+dependencies = [
+ "gst-static-env",
+ "gst-static-link",
+ "gstreamer",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-src",
+ "gstreamer-video",
+ "jni 0.21.1",
+ "ndk-sys 0.6.0+11769913",
+]
 
 [[package]]
 name = "gst-plugin-dav1d"
@@ -3779,7 +3810,6 @@ dependencies = [
 [[package]]
 name = "gst-static-env"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#a27e9b7a8a4ff9065891854fa85b315c9683e6ac"
 dependencies = [
  "ctor 0.6.3",
  "gio-sys",
@@ -3803,7 +3833,6 @@ dependencies = [
 [[package]]
 name = "gst-static-link"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#a27e9b7a8a4ff9065891854fa85b315c9683e6ac"
 
 [[package]]
 name = "gst-subparse"
@@ -3980,60 +4009,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gstreamer-gl"
-version = "0.25.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "91d452d542cee699b747f3b5ab54096fcdf1d9b6f22b890d9d86a9d9f9258f49"
-dependencies = [
- "glib",
- "gstreamer",
- "gstreamer-base",
- "gstreamer-gl-sys",
- "gstreamer-video",
- "libc",
-]
-
-[[package]]
-name = "gstreamer-gl-egl"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff3c29e6d4b92ef22b0bacc2cff02902d40516942fead63c656d7fccc75221e8"
-dependencies = [
- "glib",
- "gstreamer",
- "gstreamer-gl",
- "gstreamer-gl-egl-sys",
- "libc",
-]
-
-[[package]]
-name = "gstreamer-gl-egl-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e7294007aa6c0c6082d4835c391ab4094ef09ef581cde4c67edad2c1befcfd84"
-dependencies = [
- "glib-sys",
- "gstreamer-gl-sys",
- "libc",
- "system-deps",
-]
-
-[[package]]
-name = "gstreamer-gl-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9c57ba9f4e0f2d852d480049b9eae4f69f0abe450eece4d96494da0b4857b04e"
-dependencies = [
- "glib-sys",
- "gobject-sys",
- "gstreamer-base-sys",
- "gstreamer-sys",
- "gstreamer-video-sys",
- "libc",
- "system-deps",
-]
-
-[[package]]
 name = "gstreamer-net"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4139,7 +4114,6 @@ dependencies = [
 [[package]]
 name = "gstreamer-src"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#a27e9b7a8a4ff9065891854fa85b315c9683e6ac"
 dependencies = [
  "fd-lock",
  "gst-build-config",
@@ -4288,19 +4262,8 @@ checksum = "6ea2d84b969582b4b1864a92dc5d27cd2b77b622a8d79306834f1be5ba20d84b"
 dependencies = [
  "cfg-if",
  "crunchy",
+ "num-traits",
  "zerocopy",
-]
-
-[[package]]
-name = "harfrust"
-version = "0.8.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d12c7c642d4ce8c2e784b4751a6634bd89583912265add4a679a8882d123fbcd"
-dependencies = [
- "bitflags 2.13.0",
- "bytemuck",
- "read-fonts 0.39.2",
- "smallvec",
 ]
 
 [[package]]
@@ -4571,14 +4534,13 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-android-activity"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "android-activity 0.5.2",
  "android-activity 0.6.1",
  "android-build",
  "i-slint-common",
  "i-slint-core",
- "i-slint-renderer-skia",
+ "i-slint-renderer-dodvg",
  "jni 0.22.4",
  "ndk 0.9.0",
  "raw-window-handle",
@@ -4587,7 +4549,6 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-linuxkms"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "bytemuck",
  "calloop 0.14.4",
@@ -4611,7 +4572,6 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-selector"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "cfg-if",
  "cfg_aliases",
@@ -4630,12 +4590,10 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-testing"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "cfg_aliases",
  "i-slint-common",
  "i-slint-core",
- "i-slint-renderer-skia",
  "i-slint-renderer-software",
  "vtable",
 ]
@@ -4643,7 +4601,6 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-winit"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -4690,23 +4647,21 @@ dependencies = [
 [[package]]
 name = "i-slint-common"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "derive_more",
- "fontique 0.10.0",
+ "fontique",
  "htmlparser",
  "icu_decimal",
  "icu_locale_core",
  "icu_provider",
  "pulldown-cmark",
  "resvg",
- "skrifa 0.42.1",
+ "skrifa 0.43.2",
 ]
 
 [[package]]
 name = "i-slint-compiler"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "annotate-snippets 0.12.16",
  "by_address",
@@ -4726,7 +4681,7 @@ dependencies = [
  "resvg",
  "rowan",
  "rspolib",
- "skrifa 0.42.1",
+ "skrifa 0.43.2",
  "smol_str 0.3.6",
  "strum",
  "swash",
@@ -4738,7 +4693,6 @@ dependencies = [
 [[package]]
 name = "i-slint-core"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "async-channel",
  "auto_enums",
@@ -4751,6 +4705,7 @@ dependencies = [
  "euclid",
  "i-slint-common",
  "i-slint-core-macros",
+ "i-slint-video",
  "icu_normalizer",
  "image",
  "ksni",
@@ -4763,7 +4718,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "once_cell",
- "parley 0.10.0",
+ "parley",
  "pin-project",
  "pin-weak",
  "portable-atomic",
@@ -4771,7 +4726,7 @@ dependencies = [
  "resvg",
  "rgb",
  "scopeguard",
- "skrifa 0.42.1",
+ "skrifa 0.43.2",
  "slab",
  "strum",
  "swash",
@@ -4784,13 +4739,13 @@ dependencies = [
  "wasm-bindgen",
  "web-sys",
  "web-time",
+ "wgpu",
  "windows",
 ]
 
 [[package]]
 name = "i-slint-core-macros"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "quote",
  "serde_json",
@@ -4800,19 +4755,20 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-dodvg"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "glow",
  "i-slint-core",
+ "i-slint-video",
+ "i-slint-video-wgpu",
  "lyon_path",
  "lyon_tessellation",
  "swash",
+ "wgpu",
 ]
 
 [[package]]
 name = "i-slint-renderer-femtovg"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "cfg-if",
  "const-field-offset",
@@ -4833,8 +4789,8 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-skia"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
+ "ash",
  "bytemuck",
  "cfg-if",
  "cfg_aliases",
@@ -4856,20 +4812,22 @@ dependencies = [
  "pin-weak",
  "raw-window-handle",
  "raw-window-metal",
- "read-fonts 0.39.2",
+ "read-fonts 0.40.2",
  "scoped-tls-hkt",
  "skia-safe",
  "softbuffer",
+ "spin_on",
  "unicode-segmentation",
  "vtable",
+ "wgpu",
  "windows",
+ "windows-core",
  "write-fonts",
 ]
 
 [[package]]
 name = "i-slint-renderer-software"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "bytemuck",
  "clru",
@@ -4880,9 +4838,24 @@ dependencies = [
  "integer-sqrt",
  "lyon_path",
  "num-traits",
- "skrifa 0.42.1",
+ "skrifa 0.43.2",
  "swash",
  "zeno",
+]
+
+[[package]]
+name = "i-slint-video"
+version = "1.17.1"
+dependencies = [
+ "wgpu",
+]
+
+[[package]]
+name = "i-slint-video-wgpu"
+version = "1.17.1"
+dependencies = [
+ "thiserror 2.0.18",
+ "wgpu",
 ]
 
 [[package]]
@@ -5425,9 +5398,9 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.103"
+version = "0.3.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "53b44bfcdb3f8d5837a46dae1ca9660a837176eee74a28b229bc626816589102"
+checksum = "0e0c1080212aad755ea003d18543e8768dd432c48819efd73a7bf1e39b7a5a3a"
 dependencies = [
  "cfg-if",
  "futures-util",
@@ -5633,6 +5606,7 @@ checksum = "6aae1df220ece3c0ada96b8153459b67eebe9ae9212258bb0134ae60416fdf76"
 dependencies = [
  "libc",
  "libloading 0.8.9",
+ "pkg-config",
 ]
 
 [[package]]
@@ -6352,6 +6326,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
 
 [[package]]
+name = "naga"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a616d2fb8c89516ac2723a581f69d6c18576046bed761bd6b305e5618e6ae130"
+dependencies = [
+ "arrayvec",
+ "bit-set",
+ "bitflags 2.13.0",
+ "cfg-if",
+ "cfg_aliases",
+ "codespan-reporting",
+ "half",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "libm",
+ "log",
+ "naga-types",
+ "num-traits",
+ "once_cell",
+ "rustc-hash 1.1.0",
+ "spirv",
+ "thiserror 2.0.18",
+ "unicode-ident",
+]
+
+[[package]]
+name = "naga-types"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "590afbf58a6f4f62873cd5cff4468061844bafa1cdf399cc954537c22d768d49"
+dependencies = [
+ "hashbrown 0.17.1",
+ "indexmap",
+ "rustc-hash 1.1.0",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "nanorand"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6910,6 +6922,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a0125f776a10d00af4152d74616409f0d4a2053a6f57fa5b7d6aa2854ac04794"
 dependencies = [
  "bitflags 2.13.0",
+ "block2 0.6.2",
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
 ]
@@ -6948,6 +6961,7 @@ dependencies = [
  "bitflags 2.13.0",
  "objc2 0.6.4",
  "objc2-core-foundation",
+ "objc2-core-graphics",
  "objc2-foundation 0.3.2",
  "objc2-metal 0.3.2",
 ]
@@ -7130,6 +7144,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ordered-float"
+version = "5.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8c7c9e0d9b23589f26070720bac724174bfec1083e82f7854cdd0267518343c0"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
 name = "ordered-stream"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7218,47 +7241,20 @@ checksum = "4b6937eda350acc1a5d05872c3cbf99fe78619c269096e2be3d4a350058639d5"
 
 [[package]]
 name = "parley"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6b1cfcf399c774719fb1fa51bc6b91e86bdf003b03202a0902f1827ba6750746"
-dependencies = [
- "fontique 0.10.0",
- "harfrust 0.8.4",
- "hashbrown 0.17.1",
- "icu_normalizer",
- "icu_properties",
- "icu_segmenter",
- "linebender_resource_handle",
- "parlance",
- "parley_data 0.10.0",
- "skrifa 0.42.1",
-]
-
-[[package]]
-name = "parley"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e0478b47dd9885a5e0a4f1c0782ffc42bf6ee8c41dea0917d7a9bcee3e6585fc"
 dependencies = [
- "fontique 0.11.0",
- "harfrust 0.10.0",
+ "fontique",
+ "harfrust",
  "hashbrown 0.17.1",
  "icu_normalizer",
  "icu_properties",
  "icu_segmenter",
  "linebender_resource_handle",
  "parlance",
- "parley_data 0.11.0",
+ "parley_data",
  "skrifa 0.43.2",
-]
-
-[[package]]
-name = "parley_data"
-version = "0.10.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1d3755e2cc12c0625b0cd2f2773c6a37dd11d1531940c945ade4aeb78f2b145"
-dependencies = [
- "icu_properties",
 ]
 
 [[package]]
@@ -7617,6 +7613,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "presser"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e8cf8e6a8aa66ce33f63993ffc4ea4271eb5b0530a9002db8455ea6050c77bfa"
+
+[[package]]
 name = "prettyplease"
 version = "0.2.37"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7947,6 +7949,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
 
 [[package]]
+name = "range-alloc"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
+
+[[package]]
 name = "rav1e"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8137,7 +8145,6 @@ dependencies = [
  "gstreamer-audio",
  "gstreamer-base",
  "gstreamer-check",
- "gstreamer-gl-egl",
  "gstreamer-pbutils",
  "gstreamer-src",
  "gstreamer-tag",
@@ -8159,6 +8166,7 @@ dependencies = [
  "md-5 0.11.0",
  "mdns-sd",
  "mime",
+ "ndk-context",
  "nom 7.1.3",
  "oneshot",
  "parking_lot",
@@ -8206,19 +8214,31 @@ name = "receiver-ui"
 version = "3.0.4"
 dependencies = [
  "anyhow",
+ "ash",
+ "dav1d-sys",
  "fcast-protocol 0.2.0",
  "fcast-runtime",
  "fcast-video",
+ "flapjack",
+ "flapjack-test",
  "glow",
  "glutin_egl_sys",
+ "gst-plugin-dav1d",
  "gst-static-env",
  "gst-static-link",
  "gstreamer",
+ "gstreamer-allocators",
+ "gstreamer-app",
  "gstreamer-base",
  "gstreamer-src",
  "gstreamer-video",
+ "i-slint-backend-android-activity",
  "i-slint-backend-winit",
+ "i-slint-video-wgpu",
+ "jni 0.21.1",
  "libplacebo",
+ "ndk-context",
+ "ndk-sys 0.6.0+11769913",
  "objc2-app-kit 0.3.2",
  "oneshot",
  "parking_lot",
@@ -8228,6 +8248,8 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+ "tracing-subscriber",
+ "wgpu",
 ]
 
 [[package]]
@@ -8296,6 +8318,12 @@ name = "regex-syntax"
 version = "0.8.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
+
+[[package]]
+name = "renderdoc-sys"
+version = "1.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
 name = "reqwest"
@@ -9052,17 +9080,16 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slint"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-android-activity",
  "i-slint-backend-selector",
+ "i-slint-backend-winit",
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
  "i-slint-renderer-dodvg",
  "i-slint-renderer-femtovg",
- "i-slint-renderer-skia",
  "i-slint-renderer-software",
  "num-traits",
  "once_cell",
@@ -9070,15 +9097,15 @@ dependencies = [
  "slint-macros",
  "unicode-segmentation",
  "vtable",
+ "wgpu",
 ]
 
 [[package]]
 name = "slint-build"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "derive_more",
- "fontique 0.10.0",
+ "fontique",
  "i-slint-compiler",
  "spin_on",
  "toml_edit",
@@ -9087,7 +9114,6 @@ dependencies = [
 [[package]]
 name = "slint-macros"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -9291,6 +9317,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "076e103ed41b9864aa838287efe5f4e3a7a0362dd00671ae62a212e5e4612da2"
 dependencies = [
  "pin-utils",
+]
+
+[[package]]
+name = "spirv"
+version = "0.4.0+sdk-1.4.341.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d9571ea910ebd84c86af4b3ed27f9dbdc6ad06f17c5f96146b2b671e2976744f"
+dependencies = [
+ "bitflags 2.13.0",
 ]
 
 [[package]]
@@ -10478,7 +10513,6 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vtable"
 version = "0.4.0"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -10489,7 +10523,6 @@ dependencies = [
 [[package]]
 name = "vtable-macro"
 version = "0.4.0"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=8796fa98619e560970a3ab82bc97efa0a5894778#8796fa98619e560970a3ab82bc97efa0a5894778"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -10532,9 +10565,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.126"
+version = "0.2.127"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4b067c0c11094aef6b7a801c1e34a26affafdf3d051dba08456b868789aaf9a4"
+checksum = "1b70935747edd64d89de3efa29d73789b806c15798f8e7dca4d8ac356b50ce70"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -10545,9 +10578,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-futures"
-version = "0.4.76"
+version = "0.4.77"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c62df1340f32221cb9c54d6a27b030e3dba64361d4a95bed55f9aacb44da291d"
+checksum = "6b7777d5cc23d0e91404e53ce2d5e8ec7acae3026b16233dba62cd3246457950"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -10555,9 +10588,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.126"
+version = "0.2.127"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "167ce5e579f6bcf889c4f7175a8a5a585de84e8ff93976ce393efa5f2837aab1"
+checksum = "77775f8f3f7217702089053b94958f8f54061a3f663417df76e19cbdcca29bc1"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -10565,9 +10598,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.126"
+version = "0.2.127"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f3997c7839262f4ef12cf90b818d6340c18e80f263f1a94bf157d0ec4420380e"
+checksum = "e11d33f857dc2fb11b8bc75aee111aa9cbeb12cd9f25efd3d4c2a3dd4e235284"
 dependencies = [
  "bumpalo",
  "proc-macro2",
@@ -10578,9 +10611,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.126"
+version = "0.2.127"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc1b4cb0cc549fcf58d7dfc081778139b3d283a081644e833e84682ad71cea24"
+checksum = "7ef64dbcc55df09c7e5a46182d181c2cfa3e925f3da937ea764728b4bbb9dcbf"
 dependencies = [
  "unicode-ident",
 ]
@@ -10722,9 +10755,9 @@ dependencies = [
 
 [[package]]
 name = "web-sys"
-version = "0.3.103"
+version = "0.3.104"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8622dcb61c0bcc9fffa6938bed81210af2da9a7e4a1a834b2e37a59b6dfb6141"
+checksum = "c435338968042f4f59a557f690a253676d47ce13ceb55d70100e7facf6620a30"
 dependencies = [
  "js-sys",
  "wasm-bindgen",
@@ -10779,6 +10812,177 @@ name = "weezl"
 version = "0.1.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
+
+[[package]]
+name = "wgpu"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "527ccdf43dd5b2e8676eed9984ce00e2bbb0a1b85b70c1969dcb6cd2eb55ab9e"
+dependencies = [
+ "arrayvec",
+ "bitflags 2.13.0",
+ "bytemuck",
+ "cfg-if",
+ "cfg_aliases",
+ "document-features",
+ "hashbrown 0.17.1",
+ "js-sys",
+ "log",
+ "portable-atomic",
+ "profiling",
+ "raw-window-handle",
+ "smallvec",
+ "static_assertions",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "web-sys",
+ "wgpu-core",
+ "wgpu-hal",
+ "wgpu-types",
+]
+
+[[package]]
+name = "wgpu-core"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "14c018fce9b6270aa203c2fdd56f3cce996713534bd757e4ea58c8560b121f14"
+dependencies = [
+ "arrayvec",
+ "bit-set",
+ "bit-vec",
+ "bitflags 2.13.0",
+ "bytemuck",
+ "cfg_aliases",
+ "document-features",
+ "hashbrown 0.17.1",
+ "indexmap",
+ "log",
+ "naga",
+ "naga-types",
+ "once_cell",
+ "parking_lot",
+ "portable-atomic",
+ "profiling",
+ "raw-window-handle",
+ "rustc-hash 1.1.0",
+ "smallvec",
+ "thiserror 2.0.18",
+ "wgpu-core-deps-apple",
+ "wgpu-core-deps-emscripten",
+ "wgpu-core-deps-windows-linux-android",
+ "wgpu-hal",
+ "wgpu-naga-bridge",
+ "wgpu-types",
+]
+
+[[package]]
+name = "wgpu-core-deps-apple"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "061f3d319a40d39d00b1ecc2c33b89fe21d4e6fe01859df3500a3a8ecccd6b68"
+dependencies = [
+ "wgpu-hal",
+]
+
+[[package]]
+name = "wgpu-core-deps-emscripten"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d98b86cf4abf524a902dd35f18ca6a3f08fc2ae9847c8f10b48e30491b1f0b86"
+dependencies = [
+ "wgpu-hal",
+]
+
+[[package]]
+name = "wgpu-core-deps-windows-linux-android"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7586165fd5f6d881cb9ce4bb71f40d6caab2c0f1837e3fc1d9788a197fb6004f"
+dependencies = [
+ "wgpu-hal",
+]
+
+[[package]]
+name = "wgpu-hal"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6b7fb58561a792bc237628ba0792e332de418fefe145f13b5ed8201e6d52f58"
+dependencies = [
+ "android_system_properties",
+ "arrayvec",
+ "ash",
+ "bit-set",
+ "bitflags 2.13.0",
+ "block2 0.6.2",
+ "bytemuck",
+ "cfg-if",
+ "cfg_aliases",
+ "glow",
+ "glutin_wgl_sys",
+ "gpu-allocator",
+ "hashbrown 0.17.1",
+ "js-sys",
+ "khronos-egl",
+ "libc",
+ "libloading 0.8.9",
+ "log",
+ "naga",
+ "naga-types",
+ "ndk-sys 0.6.0+11769913",
+ "objc2 0.6.4",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation 0.3.2",
+ "objc2-metal 0.3.2",
+ "objc2-quartz-core 0.3.2",
+ "once_cell",
+ "ordered-float",
+ "parking_lot",
+ "portable-atomic",
+ "portable-atomic-util",
+ "profiling",
+ "range-alloc",
+ "raw-window-handle",
+ "raw-window-metal",
+ "renderdoc-sys",
+ "smallvec",
+ "static_assertions",
+ "thiserror 2.0.18",
+ "wasm-bindgen",
+ "wayland-sys",
+ "web-sys",
+ "wgpu-naga-bridge",
+ "wgpu-types",
+ "windows",
+ "windows-core",
+ "windows-result",
+]
+
+[[package]]
+name = "wgpu-naga-bridge"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d2f62e73117bb7a62bfd9c5a5841438a823f6566c6442a808ee269d2d055c081"
+dependencies = [
+ "naga",
+ "wgpu-types",
+]
+
+[[package]]
+name = "wgpu-types"
+version = "30.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "99dad6f1fbdbbdb4c278a6508b059d44688f5cebddf78d005a46a31340269286"
+dependencies = [
+ "bitflags 2.13.0",
+ "bytemuck",
+ "js-sys",
+ "log",
+ "naga-types",
+ "raw-window-handle",
+ "static_assertions",
+ "web-sys",
+]
 
 [[package]]
 name = "winapi"

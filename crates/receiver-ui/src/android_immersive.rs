@@ -1,0 +1,38 @@
+//! Immersive-mode toggle: system-ui visibility can only be driven from the
+//! activity, so this calls its `setImmersive` across JNI. ndk-context only
+//! carries the Application context; the ACTIVITY instance jobject comes
+//! from `AndroidApp::activity_as_ptr` (a global ref android-activity keeps
+//! alive for the app's life), captured once at startup.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+static ACTIVITY: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) fn init(app: &slint::android::AndroidApp) {
+    ACTIVITY.store(app.activity_as_ptr() as usize, Ordering::Release);
+}
+
+pub fn set(on: bool) {
+    let activity_ptr = ACTIVITY.load(Ordering::Acquire);
+    if activity_ptr == 0 {
+        tracing::warn!("immersive toggle before the activity was captured");
+        return;
+    }
+    let ctx = ndk_context::android_context();
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
+        return;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return;
+    };
+    let activity = unsafe { jni::objects::JObject::from_raw(activity_ptr as jni::sys::jobject) };
+    if let Err(err) = env.call_method(
+        &activity,
+        "setImmersive",
+        "(Z)V",
+        &[jni::objects::JValue::Bool(on as u8)],
+    ) {
+        let _ = env.exception_clear();
+        tracing::warn!(?err, "setImmersive call into the activity failed");
+    }
+}

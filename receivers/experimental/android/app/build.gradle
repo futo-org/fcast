@@ -17,7 +17,14 @@ android {
 
     defaultConfig {
         applicationId "org.fcast.rsreceiver.android"
-        minSdk 25
+        // Tied to the level the native library links against, which is
+        // GSTREAMER_SRC_ANDROID_API in android-linker-aarch64, default 28.
+        // This said 25, which the library can never satisfy: it needs
+        // libnativewindow and libaaudio, both API 26, plus the AAudio, AImage
+        // and AHardwareBuffer calls behind them. An API 25 device would
+        // install the apk and then fail to load the .so. Move the two
+        // together or not at all.
+        minSdk 28
         targetSdk 34
         versionCode 1
         versionName "1.0"
@@ -28,6 +35,9 @@ android {
     buildTypes {
         release {
             minifyEnabled false
+            // debug-signed so adb install keeps working locally; a real
+            // release keystore replaces this for distribution
+            signingConfig signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
@@ -35,13 +45,12 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-    buildFeatures {
-        viewBinding true
-    }
 }
 
 dependencies {
-    implementation libs.material
+    // annotation only; material dragged in emoji2 whose startup init cost
+    // 15% of launch CPU, and nothing here uses material widgets
+    compileOnly libs.annotation
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core

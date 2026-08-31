@@ -415,6 +415,7 @@ mod tests {
                     .property("sync", true)
                     .build()?)
             })),
+            subtitle: flapjack::SubtitleSink::None,
         })
         .unwrap();
 
@@ -469,12 +470,11 @@ mod tests {
         .unwrap();
 
         player
-            .load(MediaInput::Element(a_src), StartPoint::Live)
-            .unwrap();
+            .load(MediaInput::Element(a_src), StartPoint::Live);
         // Pre-arm up front so `pending` is set before A's EOS reaches the hold.
-        player.prepare_next_async(MediaInput::Element(b_src));
+        player.prepare_next(MediaInput::Element(b_src));
         let t0 = Instant::now();
-        player.play().unwrap();
+        player.play();
 
         let mut activated = false;
         let eos_elapsed = loop {
@@ -533,6 +533,7 @@ mod tests {
                     .property("sync", true)
                     .build()?)
             })),
+            subtitle: flapjack::SubtitleSink::None,
         })
         .unwrap();
         // Audio-only, so flapjack's decoupling queue is shallow (the deep
@@ -577,10 +578,9 @@ mod tests {
         )
         .unwrap();
         player
-            .load(MediaInput::Element(a_src), StartPoint::Live)
-            .unwrap();
+            .load(MediaInput::Element(a_src), StartPoint::Live);
         let t0 = Instant::now();
-        player.play().unwrap();
+        player.play();
 
         // Pre-arm MID-playback (2s into A's 5s): the swap and activation land
         // while A's decoded tail is still draining.
@@ -596,7 +596,7 @@ mod tests {
                 }),
             )
             .unwrap();
-            pb2.prepare_next_async(MediaInput::Element(b_src));
+            pb2.prepare_next(MediaInput::Element(b_src));
         });
 
         let mut activated = false;

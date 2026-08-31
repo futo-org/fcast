@@ -594,8 +594,9 @@ component PlaybackControls inherits Rectangle {
 
     changed pointer-inside-window => {
         // Don't yank the controls away mid-scrub if the pointer slips out of the window while
-        // dragging (mirrors the idle timer's guard).
-        if !self.pointer-inside-window && !Bridge.is-scrubbing-position {
+        // dragging (mirrors the idle timer's guard). On touch, hover dies on every
+        // finger-up, so only the idle timer hides there.
+        if !Bridge.touch-mode && !self.pointer-inside-window && !Bridge.is-scrubbing-position {
             close();
         }
     }
@@ -680,11 +681,22 @@ component PlaybackControls inherits Rectangle {
         double-clicked => Bridge.toggle-fullscreen();
 
         clicked => {
+            // touch has no hover to reveal with: a tap on the video toggles
+            // the controls instead (button taps never reach this area)
+            if Bridge.touch-mode && !show-settings {
+                if is-visible {
+                    root.close();
+                } else {
+                    root.show();
+                }
+            }
             root.close-settings();
         }
 
         pointer-event(pe) => {
-            if (pe.kind == PointerEventKind.move) {
+            // touch taps leak micro-moves on release, which would re-reveal
+            // right after the tap-to-hide; on touch only the tap toggles
+            if (pe.kind == PointerEventKind.move && !Bridge.touch-mode) {
                 parent.show();
             }
         }
@@ -719,9 +731,10 @@ component PlaybackControls inherits Rectangle {
     }
 
     main-vlayout := VerticalLayout {
-        padding: 58px;
-        padding-top: 20px;
-        padding-bottom: 20px;
+        padding-left: 58px + Bridge.safe-area-left;
+        padding-right: 58px + Bridge.safe-area-right;
+        padding-top: 20px + Bridge.safe-area-top;
+        padding-bottom: 20px + Bridge.safe-area-bottom;
         spacing: 5px;
 
         if Bridge.ui-mode == UiMode.Full: HorizontalLayout {
@@ -1155,7 +1168,7 @@ component PlaybackControls inherits Rectangle {
     }
 
     tim := Timer {
-        interval: 2s;
+        interval: Bridge.touch-mode ? 4s : 2s;
         running: true;
         triggered => {
             // The scene condition mirrors main.slint's mount condition: once
@@ -1168,7 +1181,7 @@ component PlaybackControls inherits Rectangle {
                 return;
             }
             if !Bridge.is-scrubbing-position
-                && (ta.has-hover || !focus.has-focus || show-settings) {
+                && (ta.has-hover || !focus.has-focus || show-settings || Bridge.touch-mode) {
                 parent.close();
                 Bridge.set-cursor-hidden(true);
             }
@@ -1180,6 +1193,79 @@ export component VideoPlayerView inherits Rectangle {
     width: 100%;
     height: 100%;
     background: transparent;
+
+    // CPU-delivered video, behind every control. The desktop libplacebo
+    // path leaves the source empty and paints under the window instead.
+    // Black bars around the frame, but only while this path presents;
+    // an unconditional fill would cover the under-window video paths.
+    if Bridge.sw-video-active: Rectangle {
+        width: 100%;
+        height: 100%;
+        background: black;
+    }
+    // Two elements, one clip rect apart, because binding a source-clip at all
+    // turns an Image into a clipped one whose rect is taken literally. Only
+    // android's zero-copy lane ever needs one (its texture is the whole
+    // gralloc allocation, decoder padding included); every other path hands
+    // over an image that is already exactly the picture and keeps the plain
+    // element it has always had.
+    if Bridge.sw-video-clip-width <= 0 || Bridge.sw-video-clip-height <= 0: Image {
+        width: 100%;
+        height: 100%;
+        source: Bridge.sw-video-frame;
+        image-fit: contain;
+    }
+    if Bridge.sw-video-clip-width > 0 && Bridge.sw-video-clip-height > 0: Image {
+        width: 100%;
+        height: 100%;
+        source: Bridge.sw-video-frame;
+        image-fit: contain;
+        source-clip-x: Bridge.sw-video-clip-x;
+        source-clip-y: Bridge.sw-video-clip-y;
+        source-clip-width: Bridge.sw-video-clip-width;
+        source-clip-height: Bridge.sw-video-clip-height;
+    }
+
+    // Subtitle cues above the video, below the controls. The engine lays
+    // them out in window coordinates, so anchor to the window origin no
+    // matter where this view sits (safe-area offsets move it around).
+    for overlay in Bridge.subtitle-overlays: Image {
+        source: overlay.img;
+        x: overlay.x - root.absolute-position.x;
+        y: overlay.y - root.absolute-position.y;
+        width: overlay.w;
+        height: overlay.h;
+    }
+
+    // Bitmap subtitles on the desktop wgpu lane, one image covering the joint
+    // bounding box of the active regions, already mapped from video pixels onto
+    // the letterboxed picture. Immediately before the cue anchor below, so the
+    // z order is inherited rather than argued about: above the video, below the
+    // dodvg text cues, below the controls. Same window-origin anchoring as the
+    // cue loop above.
+    if Bridge.bitmap-subtitle.w > 0px: Image {
+        source: Bridge.bitmap-subtitle.img;
+        x: Bridge.bitmap-subtitle.x - root.absolute-position.x;
+        y: Bridge.bitmap-subtitle.y - root.absolute-position.y;
+        width: Bridge.bitmap-subtitle.w;
+        height: Bridge.bitmap-subtitle.h;
+        // The composite is already the right shape; fill keeps it there rather
+        // than re-letterboxing it inside its own rect.
+        image-fit: fill;
+    }
+
+    // The z order seam for the dodvg scene overlay: the renderer draws the cue
+    // display list straight after this rectangle and never paints it, so cues
+    // land above the video and below everything below. One physical pixel, and
+    // a color no other element uses (Bridge.cue-anchor). On a renderer that
+    // does not know the marker it is an invisible pixel in the corner.
+    Rectangle {
+        x: 0px;
+        y: 0px;
+        width: 1phx;
+        height: 1phx;
+        background: Bridge.cue-anchor;
+    }
 
     // Ancestor TouchArea covering the whole view: its has-hover stays true while the pointer is
     // anywhere in the window and drops to false the moment the pointer leaves the window. It

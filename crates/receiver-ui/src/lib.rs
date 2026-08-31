@@ -11,15 +11,16 @@
 use gst_static_env as _;
 
 use anyhow::Result;
+#[cfg(not(target_os = "android"))]
 use gst::prelude::*;
+#[cfg(not(target_os = "android"))]
 use gst_base::prelude::BaseSinkExt;
-#[cfg(target_os = "android")]
-use slint::android::android_activity::WindowManagerFlags;
 use tokio::sync::mpsc;
 use tracing::{debug, error, info};
 
 #[cfg(target_os = "linux")]
 use std::collections::HashSet;
+#[cfg(not(target_os = "android"))]
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
 pub use slint;
@@ -30,15 +31,118 @@ pub use receiver_core::*;
 // The rest arrives through the `receiver_core::*` glob above.
 use receiver_core::{gui::GuiController, message::Message};
 
+// The GPU render stack is desktop-only, android video goes through
+// MediaCodec's direct surface once the surface integration lands.
+#[cfg(not(target_os = "android"))]
 use fcast_video::{opengl, placebo, render_latency, video};
 
 slint::include_modules!();
 
+mod video_math;
+
+/// The android AHardwareBuffer lane's gating, kept off the FFI so it can be
+/// tested on a host with no NDK.
+#[cfg(any(target_os = "android", test))]
+mod ahb_plan;
+
+/// A gralloc-backed allocator and pool proposed to android's software
+/// decoders, so their frames arrive as memory the GPU can sample instead of
+/// as pixels the bridge has to convert and upload.
+#[cfg(target_os = "android")]
+mod android_ahb;
+/// The other half of that: AHardwareBuffer to GL texture through EGL, with
+/// no renderer type anywhere in it.
+#[cfg(target_os = "android")]
+mod android_ahb_gl;
+#[cfg(target_os = "android")]
+mod android_immersive;
+
+/// Activity start/stop from the entry crate. Detaches the video surface
+/// from the player before android destroys it and re-adopts a fresh one on
+/// return, see android_surface_video.rs.
+#[cfg(target_os = "android")]
+pub fn android_app_visibility(visible: bool) {
+    android_surface_video::app_visibility(visible);
+}
+#[cfg(target_os = "android")]
+mod android_subtitles;
+#[cfg(target_os = "android")]
+mod android_surface_video;
+#[cfg(target_os = "android")]
+mod android_video;
+/// Bitmap subtitles on the wgpu lane. Not shared with the GL lane: there,
+/// libplacebo composites the decoded regions into the video itself, and only a
+/// lane that puts its video in the scene has to put them in the scene too.
+#[cfg(all(not(target_os = "android"), feature = "video-wgpu"))]
+mod bitmap_overlay;
+/// Subtitle cues on both desktop lanes: the engine's display lists,
+/// translated into the dodvg renderer's own scene type. The GL lane and the
+/// wgpu lane share it verbatim, because they are the same renderer on two
+/// graphics APIs and the overlay slot is the same slot.
+#[cfg(all(not(target_os = "android"), feature = "scene-cues"))]
+mod cue_overlay;
+/// Zero-copy import of the decoder's dmabuf planes for the lane above.
+#[cfg(all(target_os = "linux", feature = "video-wgpu"))]
+mod desktop_wgpu_dmabuf;
+/// The other half of that import: a udmabuf pool proposed to software
+/// decoders, so their frames arrive as dmabufs too instead of as sysmem the
+/// lane has to upload.
+#[cfg(all(target_os = "linux", feature = "video-wgpu"))]
+mod desktop_wgpu_udmabuf;
+/// Desktop presentation through i-slint-video-wgpu, selected at runtime by
+/// FCAST_DESKTOP_WGPU_VIDEO=1. Compiled in but dormant otherwise.
+#[cfg(all(not(target_os = "android"), feature = "video-wgpu"))]
+mod desktop_wgpu_video;
+
+/// Puts slint's renderer on the same wgpu device the video lane presents
+/// with, so decoded frames reach the scene as textures instead of a readback.
+/// Must run before any slint window exists, which is why the binary calls it
+/// where it picks a backend.
+///
+/// False when the lane is off, no gpu device could be built, or slint
+/// refused the selection. The caller then makes its usual OpenGL selection
+/// and, if the lane was asked for, it presents through the readback.
+#[cfg(all(not(target_os = "android"), feature = "video-wgpu"))]
+pub fn select_wgpu_video_backend() -> bool {
+    if !desktop_wgpu_video::enabled() {
+        return false;
+    }
+    let Some(shared) = desktop_wgpu_video::create_shared_device() else {
+        return false;
+    };
+    let config = slint::wgpu_30::WGPUConfiguration::Manual {
+        instance: shared.instance.clone(),
+        adapter: shared.adapter.clone(),
+        device: shared.device.clone(),
+        queue: shared.queue.clone(),
+    };
+    // Named, not left to the backend's default order: dodvg's OpenGL lane is
+    // compiled in too and wins that order, so the wgpu one has to be asked for.
+    match slint::BackendSelector::new()
+        .renderer_name("dodvg-wgpu".into())
+        .require_wgpu_30(config)
+        .select()
+    {
+        // Nothing is logged here either way: this runs before the subscriber
+        // is installed. The sink reports which lane it got.
+        Ok(()) => {
+            desktop_wgpu_video::adopt_shared_device(shared);
+            true
+        }
+        Err(err) => {
+            // No log subscriber exists yet, so hand the reason to the sink,
+            // which reports it once there is one.
+            desktop_wgpu_video::note_shared_device_refused(err.to_string());
+            false
+        }
+    }
+}
 pub mod gui;
 pub mod scaling;
 
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
+#[cfg(not(target_os = "android"))]
 fn video_dbg_info(frame: &video::Frame) -> Option<UiVideoDbgInfo> {
     use slint::ToSharedString;
 
@@ -99,6 +203,7 @@ fn video_dbg_info(frame: &video::Frame) -> Option<UiVideoDbgInfo> {
 /// rendering notifier and the event-loop-clocked handlers: a subsurface sink
 /// stacked above the GUI parks winit's redraw loop, so frames and obstruction
 /// changes must reach the sink without a repaint.
+#[cfg(not(target_os = "android"))]
 struct VideoTick<S> {
     video_sink: S,
     payload_handle: Option<video::imp::VideoPayloadHandle>,
@@ -112,6 +217,22 @@ struct VideoTick<S> {
     /// flush next tick.
     pending_gl_flush: bool,
     render_latency: render_latency::RenderLatencyTracker,
+    /// What the cue engine has been told about the window and the picture
+    /// inside it, so positioned cues anchor to the picture. Pushed from every
+    /// path that can see both, and only when one of them moved.
+    cue_geometry: video_math::CueGeometry,
+    /// The renderer's cue overlay slot, on a lane that draws text cues in the
+    /// GUI scene instead of compositing them into the video.
+    ///
+    /// `None` until the lane is picked, and `None` for good on a sink that
+    /// keeps the rasters or a window with no dodvg renderer behind it. That
+    /// `Option` IS the lane: nothing else in here branches on it.
+    #[cfg(feature = "scene-cues")]
+    cues: Option<cue_overlay::CueOverlay>,
+    /// What `cue-overlay-visible` was last told, so a steady cue does not
+    /// dirty a slint property (and everything reading it) every repaint.
+    #[cfg(feature = "scene-cues")]
+    cue_visible: bool,
 }
 
 /// Whether an overlay change can be folded into a frame right now, taking the
@@ -132,10 +253,12 @@ struct VideoTick<S> {
 /// Leaving the bit up instead is safe in both directions: the engine keeps the
 /// overlays, `current_overlays()` re-reads them, and the pass that folds the
 /// next payload applies them.
+#[cfg(not(target_os = "android"))]
 fn overlay_change_applies(has_frame: bool, engine: &fcast_video::cue::CueEngine) -> bool {
     has_frame && engine.take_dirty()
 }
 
+#[cfg(not(target_os = "android"))]
 impl<S> VideoTick<S> {
     /// Fold an overlay change into the cached frame, and say whether that
     /// leaves something to draw.
@@ -152,6 +275,57 @@ impl<S> VideoTick<S> {
         frame.overlays = engine.current_overlays().into_iter().collect();
         self.force_render = true;
         true
+    }
+
+    /// Anchor positioned cues to the picture rather than to the window.
+    ///
+    /// The rect is the one libplacebo fits the frame into: the coded size
+    /// turned by the container rotation, centered in the window
+    /// (`scale_and_fit` over `rotated_fit_rect`). Pixel aspect is deliberately
+    /// not corrected here, because that lane does not correct it either, so
+    /// the rect stays the picture that is actually on screen.
+    fn sync_cue_geometry(&self, engine: &fcast_video::cue::CueEngine, window: (u32, u32)) {
+        let Some(frame) = self.cached_frame.as_ref() else {
+            return;
+        };
+        let picture = video_math::turned(frame.rotation, frame.data.width(), frame.data.height());
+        self.cue_geometry.sync(engine, window, picture);
+    }
+
+    /// Put whatever the engine is showing on the renderer's overlay slot, and
+    /// answer with the new `cue-overlay-visible` when it changed.
+    ///
+    /// A pure READ of the engine
+    /// ([`fcast_video::cue::CueEngine::shown_scenes`]). The schedule is
+    /// advanced exactly where it was before this lane existed:
+    /// on the streaming thread, per frame, and by [`Self::fold_overlay_change`]
+    /// while paused. So the cue timing here is the raster lane's timing, not an
+    /// approximation of it, and the two can be compared cue for cue.
+    ///
+    /// No cached frame means no picture, and the overlay slot lives in the
+    /// renderer rather than on the frame, so it would otherwise outlast the
+    /// video it belongs to (EOS, stop, a track teardown). Same for a player
+    /// that no longer owns the screen: the rasters this replaces were inside
+    /// the picture and went away with it.
+    #[cfg(feature = "scene-cues")]
+    fn pump_cues(
+        &mut self,
+        window: &slint::Window,
+        bridge: &Bridge,
+        engine: &fcast_video::cue::CueEngine,
+        keep: bool,
+    ) -> Option<bool> {
+        let showing = keep
+            && self.cached_frame.is_some()
+            && bridge.get_app_state() == AppState::Playing
+            && bridge.get_player_variant() == UiPlayerVariant::Video;
+        let overlay = self.cues.as_mut()?;
+        let shown = match showing {
+            true => engine.shown_scenes(),
+            false => Default::default(),
+        };
+        let visible = overlay.sync(&cue_overlay::WindowCues(window), &shown);
+        (std::mem::replace(&mut self.cue_visible, visible) != visible).then_some(visible)
     }
 
     /// Record one render's cost and, on a meaningful change, push the new
@@ -174,8 +348,38 @@ impl<S> VideoTick<S> {
     }
 }
 
+#[cfg(all(not(target_os = "android"), feature = "scene-cues"))]
+impl<S: VideoSink> VideoTick<S> {
+    /// Pick the cue lane for this sink and this window, once, when the sink is
+    /// adopted. Called from inside a render pass, which is the earliest the
+    /// renderer exists to be asked about.
+    ///
+    /// Two conditions, both necessary. The sink has to be one that draws under
+    /// the GUI ([`VideoSink::scene_cues`]), and the window has to be on the
+    /// dodvg renderer, which owns the overlay slot. Either answer of no leaves
+    /// the engine on its paint lane and the libplacebo overlay path exactly as
+    /// it was, which is why the probe comes BEFORE `set_scene_consumer`.
+    fn adopt_cue_lane(&mut self, window: &slint::Window, engine: &fcast_video::cue::CueEngine) {
+        use slint::winit_030::DodvgWindowAccessor;
+        if !self.video_sink.scene_cues() {
+            info!("subtitle cues: libplacebo overlays, this sink composites them itself");
+            return;
+        }
+        if window.with_dodvg_renderer(|_| ()).is_none() {
+            info!("subtitle cues: libplacebo overlays, no dodvg renderer to draw a scene on");
+            return;
+        }
+        // Only now, and only once: this is what stops the worker painting
+        // rasters nothing will read.
+        engine.set_scene_consumer(true);
+        self.cues = Some(cue_overlay::CueOverlay::default());
+        info!("subtitle cues: dodvg scene overlay");
+    }
+}
+
 /// Run the main app. Slint is assumed to be initialized by the platform
 /// specific target.
+#[cfg(not(target_os = "android"))]
 pub fn run<S: VideoSink + 'static>(
     #[cfg(not(target_os = "android"))] settings: Settings,
     #[cfg(target_os = "android")] android_app: slint::android::AndroidApp,
@@ -215,6 +419,11 @@ pub fn run<S: VideoSink + 'static>(
     let is_headless = settings.headless();
 
     let sink_mutex = Arc::new(parking_lot::Mutex::new(None::<video::FSink>));
+    // The wgpu lane's cue geometry tick. Built with the sink, on the event loop
+    // task, and read by the rendering notifier, which is the only thing that
+    // runs on a resize with no frame behind it.
+    #[cfg(feature = "video-wgpu")]
+    let wgpu_cues = Arc::new(parking_lot::Mutex::new(None::<desktop_wgpu_video::CueTick>));
     let ui = if is_headless {
         None
     } else {
@@ -247,6 +456,11 @@ pub fn run<S: VideoSink + 'static>(
             force_render: false,
             pending_gl_flush: false,
             render_latency: render_latency::RenderLatencyTracker::new(),
+            cue_geometry: video_math::CueGeometry::new(),
+            #[cfg(feature = "scene-cues")]
+            cues: None,
+            #[cfg(feature = "scene-cues")]
+            cue_visible: false,
         }));
 
         let (renderer_chan_tx, renderer_rx) = std::sync::mpsc::channel::<gui::RendererMessage>();
@@ -265,6 +479,10 @@ pub fn run<S: VideoSink + 'static>(
             let gui_is_visible = gui_is_visible.clone();
             let tick = tick.clone();
             let sink_mutex = Arc::clone(&sink_mutex);
+            #[cfg(feature = "video-wgpu")]
+            let wgpu_cues = Arc::clone(&wgpu_cues);
+            #[cfg(feature = "video-wgpu")]
+            let mut wgpu_cue_tick: Option<desktop_wgpu_video::CueTick> = None;
             move |state, graphics_api| match state {
                 slint::RenderingState::RenderingSetup => {
                     debug!("Got graphics API: {graphics_api:?}");
@@ -383,6 +601,26 @@ pub fn run<S: VideoSink + 'static>(
                     // Let the sink grab native window handles (e.g. the surface to parent to).
                     if let Some(ui) = ui_weak.upgrade() {
                         tick.borrow_mut().video_sink.setup(ui.window());
+
+                        // Whether the subtitle overlay slot is reachable at all
+                        // on this window. The lane is not picked until a sink
+                        // exists, which needs media; this is the half of the
+                        // decision that can be reported at startup.
+                        #[cfg(feature = "scene-cues")]
+                        {
+                            use slint::winit_030::DodvgWindowAccessor;
+                            // Where the overlay goes in the item tree: right
+                            // after the marker rectangle the player view paints
+                            // with this color, which is above the video and
+                            // below the controls. Named once, from the single
+                            // definition in globals.slint, on both lanes.
+                            let anchor = ui.global::<Bridge>().get_cue_anchor();
+                            let dodvg = ui
+                                .window()
+                                .with_dodvg_renderer(|r| r.set_cue_anchor(Some(anchor)))
+                                .is_some();
+                            debug!(dodvg, "cue overlay slot");
+                        }
                     }
 
                     gui_is_visible.set(true);
@@ -394,6 +632,22 @@ pub fn run<S: VideoSink + 'static>(
                     };
 
                     let bridge = ui.global::<Bridge>();
+
+                    // The wgpu lane's whole cue path hangs off its appsink, so
+                    // a resize with no frame behind it (paused, or between two
+                    // frames) reaches the engine nowhere else. This is the one
+                    // hook that runs on every render pass on that lane, and it
+                    // costs a compare when the window did not move. Before the
+                    // `sink` bail below, which that lane never gets past.
+                    #[cfg(feature = "video-wgpu")]
+                    {
+                        if wgpu_cue_tick.is_none() {
+                            wgpu_cue_tick = wgpu_cues.lock().clone();
+                        }
+                        if let Some(cues) = wgpu_cue_tick.as_ref() {
+                            cues.on_render(&ui);
+                        }
+                    }
 
                     let mut clear_video_overlays = false;
                     while let Ok(msg) = renderer_rx.try_recv() {
@@ -452,6 +706,8 @@ pub fn run<S: VideoSink + 'static>(
                                 video::imp::DrmFormats(Arc::new(drm_formats.clone())),
                             );
                             t.payload_handle = Some(new_sink.property("payload-handle"));
+                            #[cfg(feature = "scene-cues")]
+                            t.adopt_cue_lane(ui.window(), &new_sink.cue_engine());
                             t.sink_elem = Some(new_sink.clone());
                             sink = Some(new_sink);
                         }
@@ -516,6 +772,7 @@ pub fn run<S: VideoSink + 'static>(
                         );
                         prev_size = new_size;
                     }
+                    t.sync_cue_geometry(&engine, new_size);
 
                     if let Some(renderer) = renderer.as_mut() {
                         use glow::HasContext;
@@ -584,6 +841,23 @@ pub fn run<S: VideoSink + 'static>(
                             );
                         }
                     }
+
+                    // Last, so the fold above has already promoted whatever the
+                    // worker finished and the geometry is the one this pass
+                    // drew with. The renderer reads the slot after this
+                    // notifier returns, in its own post-render callback.
+                    #[cfg(feature = "scene-cues")]
+                    {
+                        let visible =
+                            t.pump_cues(ui.window(), &bridge, &engine, !clear_video_overlays);
+                        // Outside the tick borrow: `video-obstructed-changed`
+                        // takes it, and slint runs change handlers from the
+                        // event loop rather than from the setter.
+                        drop(tick_ref);
+                        if let Some(visible) = visible {
+                            bridge.set_cue_overlay_visible(visible);
+                        }
+                    }
                 }
                 slint::RenderingState::RenderingTeardown => {
                     gui_is_visible.set(false);
@@ -600,6 +874,13 @@ pub fn run<S: VideoSink + 'static>(
 
                     let mut t = tick.borrow_mut();
                     t.cached_frame.take();
+                    // The scene pool outlives the renderer that holds the other
+                    // half of it otherwise.
+                    #[cfg(feature = "scene-cues")]
+                    {
+                        t.cues = None;
+                        t.cue_visible = false;
+                    }
 
                     if let Some(placebo) = pl_context.as_mut() {
                         t.video_sink.teardown(placebo);
@@ -669,11 +950,14 @@ pub fn run<S: VideoSink + 'static>(
                     if !t.fold_overlay_change(&engine) {
                         return;
                     }
+                    // A subsurface sink parks winit's redraw loop, so this is
+                    // also where a resize while paused reaches the engine.
+                    let size = ui.window().size();
+                    t.sync_cue_geometry(&engine, (size.width, size.height));
                     let frame = t
                         .cached_frame
                         .as_mut()
                         .expect("fold_overlay_change only answers true with a frame");
-                    let size = ui.window().size();
                     let start = std::time::Instant::now();
                     let render_result = t
                         .video_sink
@@ -707,10 +991,13 @@ pub fn run<S: VideoSink + 'static>(
                     }
                     Some(frame) => {
                         t.cached_frame = Some(frame);
+                        let size = ui.window().size();
+                        if let Some(engine) = t.sink_elem.as_ref().map(|sink| sink.cue_engine()) {
+                            t.sync_cue_geometry(&engine, (size.width, size.height));
+                        }
                         let frame = t.cached_frame.as_mut().unwrap();
                         bridge.set_video_frame_width(frame.data.width() as i32);
                         bridge.set_video_frame_height(frame.data.height() as i32);
-                        let size = ui.window().size();
                         let start = std::time::Instant::now();
                         let render_result = t
                             .video_sink
@@ -843,13 +1130,48 @@ pub fn run<S: VideoSink + 'static>(
     #[allow(unused_variables)]
     #[cfg(not(target_os = "android"))]
     let no_main_window = settings.no_main_window();
+    // The wgpu lane fixes its quality knobs at startup off the same resolved
+    // options the libplacebo lane turns into a preset struct, so both lanes
+    // read one profile from one place.
+    #[cfg(feature = "video-wgpu")]
+    let wgpu_render_opts = settings.rendering_options();
     let event_loop_jh = RUNTIME.spawn({
         let ui_weak = ui.as_ref().map(|ui| ui.as_weak());
         let msg_tx = msg_tx.clone();
+        #[cfg(feature = "video-wgpu")]
+        let wgpu_cues = Arc::clone(&wgpu_cues);
+        #[cfg(feature = "video-wgpu")]
+        let render_opts = wgpu_render_opts;
         async move {
             gstreamer::init_and_load_plugins();
 
-            let (video_sink_elem, cue_engine) = if let Some(ui_weak) = ui_weak {
+            // The wgpu lane owns presentation end to end: its appsink renders
+            // each frame and pushes a slint image, so no FSink is built and
+            // the rendering notifier's video half never sees a sink. It falls
+            // back to FSink when no gpu device exists.
+            // The engine is built here rather than below because the lane
+            // owns its geometry: nothing draws its cues yet (that is wave 6),
+            // but the canvas and the picture rect have to be right from the
+            // first frame or every raster it builds is keyed to a stale one.
+            #[cfg(feature = "video-wgpu")]
+            let wgpu = ui_weak
+                .as_ref()
+                .filter(|_| desktop_wgpu_video::enabled())
+                .and_then(|w| {
+                    let engine = fcast_video::cue::CueEngine::new();
+                    desktop_wgpu_video::make_sink(w.clone(), engine.clone(), render_opts).map(
+                        |(sink, cue_tick)| {
+                            *wgpu_cues.lock() = Some(cue_tick);
+                            (sink, engine)
+                        },
+                    )
+                });
+            #[cfg(not(feature = "video-wgpu"))]
+            let wgpu: Option<(gst::Element, fcast_video::cue::CueEngine)> = None;
+
+            let (video_sink_elem, cue_engine) = if let Some((sink, engine)) = wgpu {
+                (Some(sink), Some(engine))
+            } else if let Some(ui_weak) = ui_weak {
                 let sink = video::FSink::new();
                 // Cloned out here because the player only ever sees the bare `gst::Element`.
                 let cue_engine = sink.cue_engine();
@@ -875,14 +1197,14 @@ pub fn run<S: VideoSink + 'static>(
 
                 let video_sink_elem = sink.clone();
                 *sink_mutex.lock() = Some(sink);
-                (Some(video_sink_elem), Some(cue_engine))
+                (Some(video_sink_elem.upcast()), Some(cue_engine))
             } else {
                 (None, None)
             };
 
             let app = application::Application::new(
                 gui,
-                video_sink_elem.map(|e| e.upcast()),
+                video_sink_elem,
                 cue_engine,
                 msg_tx,
                 #[cfg(target_os = "android")]
@@ -970,6 +1292,136 @@ pub fn run<S: VideoSink + 'static>(
             }
         });
     }
+
+    Ok(())
+}
+
+/// Run the app on android: the slint UI and the receiver application,
+/// without the desktop render loop. The player and the audio path are fully
+/// live; video decodes headless until the direct-surface integration lands.
+/// Platform events (mdns name, network changes, raop config) arrive from
+/// the activity's JNI bridges.
+#[cfg(target_os = "android")]
+pub fn run(
+    android_app: slint::android::AndroidApp,
+    mut platform_event_rx: mpsc::UnboundedReceiver<Message>,
+) -> Result<()> {
+    let start = std::time::Instant::now();
+
+    receiver_core::tune_allocator();
+    receiver_core::allow_ptrace_attach();
+    // Installs the panic hook and the gst log integration; no fmt
+    // subscriber on android, tracing's `log` bridge forwards everything to
+    // the android logger the activity installed.
+    logging::init(None);
+    receiver_core::install_default_crypto_provider();
+
+    let (msg_tx, event_rx) = mpsc::unbounded_channel::<Message>();
+    let msg_tx = MessageSender::new(msg_tx);
+    let (fin_tx, fin_rx) = tokio::sync::oneshot::channel::<()>();
+
+    RUNTIME.spawn({
+        let msg_tx = msg_tx.clone();
+        async move {
+            while let Some(event) = platform_event_rx.recv().await {
+                msg_tx.send(event);
+            }
+            debug!("Platform event proxy finished");
+        }
+    });
+
+    let ui = MainWindow::new()?;
+    ui.global::<Bridge>().set_touch_mode(true);
+    android_immersive::init(&android_app);
+    // starts with system bars, the player's toggle enters immersive
+    ui.global::<Bridge>().set_is_fullscreen(false);
+    let gui_is_visible = gui::GuiIsVisible::new();
+    // one window, no tray: visible for the app's whole life
+    gui_is_visible.set(true);
+
+    let (gui_tx, gui_rx) = mpsc::unbounded_channel();
+    {
+        // no renderer thread on android, the dropped receiver makes the
+        // handler's renderer sends no-ops
+        let (renderer_tx, _) = std::sync::mpsc::channel::<gui::RendererMessage>();
+        gui::spawn_command_handler(ui.as_weak(), gui_rx, renderer_tx, Box::new(|| {}));
+    }
+    let gui = GuiController::new(Some(gui_tx), gui_is_visible);
+
+    // Element creation needs gst up, and the surface setup needs the live
+    // ui, so both happen here on the main thread before the app task runs.
+    gstreamer::init_and_load_plugins();
+
+    // Zero-copy surface video by default (see android_surface_video.rs);
+    // FCAST_ANDROID_SW_VIDEO=1 selects the software bridge instead.
+    let use_sw_video = std::env::var("FCAST_ANDROID_SW_VIDEO").is_ok_and(|v| v == "1");
+    let mut _surface_video = None;
+    let video_sink = if use_sw_video {
+        android_video::make_sink(&ui)
+    } else {
+        match android_surface_video::SurfaceVideo::setup(&ui, &android_app) {
+            Some((surface_video, sink)) => {
+                _surface_video = Some(surface_video);
+                sink
+            }
+            None => android_video::make_sink(&ui),
+        }
+    };
+
+    // Subtitles: the engine's cues render as slint overlays above the video
+    // hole, driven off the video sink (see android_subtitles.rs).
+    let cue_engine = fcast_video::cue::CueEngine::new();
+    let subtitles = android_subtitles::attach(cue_engine.clone(), &video_sink, &ui);
+
+    // A fullscreen toggle resizes the window; re-fit the video rect and the
+    // cue canvas together or they drift apart by the inset delta.
+    {
+        let ui_weak = ui.as_weak();
+        let surface_video = _surface_video.clone();
+        ui.global::<Bridge>().on_window_geometry_changed(move || {
+            if let Some(surface_video) = &surface_video {
+                surface_video.relayout(&ui_weak);
+            }
+            if let Some(ui) = ui_weak.upgrade() {
+                android_subtitles::resync(&subtitles, &ui);
+            }
+        });
+    }
+
+    RUNTIME.spawn({
+        let msg_tx = msg_tx.clone();
+        async move {
+            let app = application::Application::new(
+                gui,
+                Some(video_sink),
+                Some(cue_engine),
+                msg_tx,
+                android_app,
+            )
+            .await;
+
+            // Detached: fail visibly and quit rather than leave the slint
+            // loop running a UI with no protocol handling behind it.
+            let result = match app {
+                Ok(app) => app.run_event_loop(event_rx, fin_tx).await,
+                Err(err) => Err(err),
+            };
+            if let Err(err) = result {
+                error!(?err, "Receiver event loop failed");
+                let _ = slint::quit_event_loop();
+            }
+        }
+    });
+
+    gui::register_callbacks(&ui, msg_tx.clone());
+    info!(initialized_in = ?start.elapsed());
+    ui.run()?;
+
+    info!("Shutting down...");
+    RUNTIME.block_on(async move {
+        msg_tx.send(Message::Quit);
+        let _ = fin_rx.await;
+    });
 
     Ok(())
 }

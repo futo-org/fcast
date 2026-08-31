@@ -39,8 +39,8 @@ parking_lot.workspace = true
 bytes.workspace = true
 gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
 gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", features = [ "static" ], optional = true }
-# Flips the forked crate's bundled feature (static wrap dav1d under
-# scope=Full, normal system probe otherwise).
+# Flips the forked crate's bundled feature: the static wrap's dav1d whenever
+# gstreamer-src built one, a normal system probe otherwise.
 dav1d-sys = { version = "0.8", features = ["bundled"], optional = true }
 gst-tag = { package = "gstreamer-tag", version = "0.25" }
 rand = { workspace = true, features = ["std_rng"] }
@@ -59,7 +59,7 @@ regex.workspace = true
 self_cell.workspace = true
 image = { workspace = true, features = [
     "decode",
-    "avif-native", "bmp", "dds", "ff", "gif", "ico",
+    "bmp", "dds", "ff", "gif", "ico",
     "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
 ] }
 
@@ -95,6 +95,11 @@ glow = { workspace = true, optional = true }
 
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
+# AVIF decode, which needs dav1d through the `image` crate's own binding.
+# gstreamer-src does cross-build a dav1d for android now (that is what feeds
+# the dav1d-plugin feature), but nothing has wired THIS consumer to it, so
+# still images in AVIF stay off there.
+image = { workspace = true, features = ["avif-native"] }
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing.workspace = true
@@ -117,13 +122,12 @@ tokio-rustls = { workspace = true, default-features = false, features = [ "loggi
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = "0.6"
-gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.25" }
-glutin_egl_sys = { version = "0.7.1" }
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing = { workspace = true, features = [ "log" ] }
 jni = "0.21.1"
-reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "gzip", "cookies" ] }
+ndk-context = "0.1"
+reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
@@ -160,9 +164,15 @@ airplay = ["dep:plist", "dep:ctr", "dep:apple-fairplay"]
 desktop = ["static-gst-plugins"]
 systray = []
 kms-backend = []
-android = []
+android = ["dav1d-plugin"]
 tracy = ["dep:tracing-tracy"]
-static-gst-plugins = ["dep:gst-plugin-dav1d", "dep:gst-plugin-rtp", "dep:dav1d-sys"]
+static-gst-plugins = ["dav1d-plugin", "dep:gst-plugin-rtp"]
+# The software AV1 decoder, split out of `static-gst-plugins` so android can
+# take it without `gst-plugin-rtp`, which that feature also pulls and which is
+# not registered there anyway. Android needs this more than desktop does:
+# hardware AV1 decoding is far from universal, and without a software decoder
+# an AV1 stream on a device that lacks it has nothing to fall back to.
+dav1d-plugin = ["dep:gst-plugin-dav1d", "dep:dav1d-sys"]
 
 [build-dependencies]
 gst-static-link.workspace = true

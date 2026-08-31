@@ -8,7 +8,9 @@ fast = "run -p fast --"
 # libs they reference, so pin a modern linker.
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
-rustflags = ["-C", "link-arg=--ld-path=wild"]
+# RELR-packed relative relocations, ~2.2MB smaller binary; needs glibc
+# 2.36+, satisfied by NixOS and the flathub 25.08 runtime
+rustflags = ["-C", "link-arg=--ld-path=wild", "-Clink-arg=-Wl,-z,pack-relative-relocs"]
 
 # Static GStreamer for the whole tree, zero env setup. The forked -sys crates
 # (see [patch.crates-io]) probe the static build through their gstreamer-src
@@ -20,3 +22,25 @@ GSTREAMER_SRC_REPO = "https://gitlab.futo.org/fcast/gstreamer.git"
 GSTREAMER_SRC_REF = "fcast/1.29.2"
 # Deterministic build-tree location, independent of any global cargo build-dir.
 GSTREAMER_SRC_BUILD_ROOT = { value = "target/gst-static", relative = true }
+# Target-scoped C toolchain for cc-rs build scripts (ring, skia glue, ...):
+# the nix host clang wrapper cannot cross-compile to android. The wrappers
+# resolve the NDK like the linkers do.
+CC_aarch64-linux-android = { value = "android-linker-aarch64", relative = true }
+CXX_aarch64-linux-android = { value = "android-cxx-aarch64", relative = true }
+AR_aarch64-linux-android = { value = "android-ar", relative = true }
+CC_x86_64-linux-android = { value = "android-linker-x86_64", relative = true }
+CXX_x86_64-linux-android = { value = "android-cxx-x86_64", relative = true }
+AR_x86_64-linux-android = { value = "android-ar", relative = true }
+
+# NDK clang as the final-link linker for android targets (executable paths
+# with separators in config are config-relative since cargo 1.73). The
+# wrappers resolve the NDK like gstreamer-src's build.rs does.
+# packed dynamic relocations save ~2.2MB in the .so; APS2 needs API 23+,
+# our minSdk is 25 (RELR would need 30)
+[target.aarch64-linux-android]
+linker = "./android-linker-aarch64"
+rustflags = ["-Clink-arg=-Wl,--pack-dyn-relocs=android"]
+
+[target.x86_64-linux-android]
+linker = "./android-linker-x86_64"
+rustflags = ["-Clink-arg=-Wl,--pack-dyn-relocs=android"]

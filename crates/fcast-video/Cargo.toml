@@ -53,10 +53,6 @@ libplacebo-vulkan = { path = "../libplacebo-vulkan", optional = true }
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = "0.3.2"
 
-[target.'cfg(target_os = "android")'.dependencies]
-gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.25" }
-glutin_egl_sys = { version = "0.7.1", optional = true }
-
 [features]
 default = []
 # The GPU renderer: libplacebo (which builds the C library from the git
@@ -87,6 +83,16 @@ wayland-subsurface = [
     "slint/backend-winit",
     "slint/renderer-dodvg",
 ]
+# The dodvg subtitle oracle fixtures. Gates
+# the `cue_dodvg_fixture` example, which dumps `CueScene`s plus the pixels the
+# vello_cpu backend paints from them, so the dodvg consumer in the slint fork
+# can draw the same display list and be diffed against it. Adds no dependency
+# and nothing links it in a normal build.
+cue-ir-spike = []
+
+[[example]]
+name = "cue_dodvg_fixture"
+required-features = ["cue-ir-spike"]
 
 [build-dependencies]
 gst-static-link.workspace = true

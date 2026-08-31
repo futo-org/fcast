@@ -45,6 +45,7 @@ pub use fcast_gst_elements::{fcompsrc, fwebrtcsrc, imagedec, imagetypefind};
 
 // Renderer *settings* only: plain data, no libplacebo. This is what the CLI and
 // the config store carry, so it stays available with `render` off.
+#[cfg(not(target_os = "android"))]
 use fcast_video::render_options::{RenderProfile, RenderingOptions};
 
 // Everything below is the GPU render surface, re-exported for the receiver
@@ -68,7 +69,9 @@ pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
 pub type SenderId = u32;
 
-use message::{Mdns, Raop};
+#[cfg(not(target_os = "android"))]
+use message::Mdns;
+use message::Raop;
 
 pub const FCAST_TCP_PORT: u16 = 46899;
 pub const GCAST_TCP_PORT: u16 = 8009;
@@ -94,6 +97,39 @@ macro_rules! log_if_err {
 // Own crate so receiver-core and the GStreamer element crate share one thread
 // pool.
 pub use fcast_runtime::RUNTIME;
+
+/// The fcast TXT records (fingerprint, protocol version), set once the
+/// application has minted its TLS identity. Desktop hands them to mdns-sd
+/// directly; android's NsdManager owns the broadcast and pulls them across
+/// the activity's JNI bridge, polling until they exist.
+#[cfg(target_os = "android")]
+static FCAST_TXT_RECORDS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
+pub(crate) fn publish_fcast_txt_records(records: Vec<(String, String)>) {
+    let _ = FCAST_TXT_RECORDS.set(records);
+}
+
+/// The android video surface handoff, re-exported so the UI crate can hand
+/// the codec its window without its own flapjack dependency.
+#[cfg(target_os = "android")]
+pub use flapjack::android::set_video_window;
+
+#[cfg(target_os = "android")]
+pub fn fcast_txt_records() -> Option<&'static [(String, String)]> {
+    FCAST_TXT_RECORDS.get().map(|v| v.as_slice())
+}
+
+/// Install ring as the process-wide rustls crypto provider, before any TLS
+/// work. Idempotent enough for one call per process entry.
+pub fn install_default_crypto_provider() {
+    if let Err(err) = tokio_rustls::rustls::crypto::ring::default_provider().install_default() {
+        tracing::error!(
+            ?err,
+            "Failed to register ring as rustls default crypto provider"
+        );
+    }
+}
 
 struct GCastUpdateSender(Option<UnboundedSender<gcast::StatusUpdate>>);
 
@@ -173,6 +209,7 @@ pub struct CliArgs {
 ///
 /// A passed CLI flag always wins; the flags are one-directional, so the CLI can
 /// force a behavior on but never off.
+#[cfg(not(target_os = "android"))]
 pub struct Settings {
     pub cli: CliArgs,
     pub config: config::ConfigStore,

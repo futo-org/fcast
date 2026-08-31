@@ -40,12 +40,34 @@ export {
 export component MainWindow inherits Window {
     title: @tr("FCast Receiver");
 
+    // On touch (android) the video surface lives BEHIND this window and a
+    // transparent scene region is a real hole onto it. Every non-video
+    // scene paints its own full-bleed background, so nothing else leaks.
+    background: Bridge.touch-mode ? transparent : Palette.background;
+
     default-font-family: "Outfit";
     default-font-size: 15px;
     default-font-weight: 400;
 
     public function device-connected() {
         Bridge.connected_devices += 1;
+    }
+
+    // slint's own inset tracking (fed by the android backend), mirrored
+    // into the Bridge for the views
+    property <length> sai-left: self.safe-area-insets.left;
+    property <length> sai-top: self.safe-area-insets.top;
+    property <length> sai-right: self.safe-area-insets.right;
+    property <length> sai-bottom: self.safe-area-insets.bottom;
+    changed sai-left => { Bridge.safe-area-left = self.sai-left; }
+    changed sai-top => { Bridge.safe-area-top = self.sai-top; }
+    changed sai-right => { Bridge.safe-area-right = self.sai-right; }
+    changed sai-bottom => { Bridge.safe-area-bottom = self.sai-bottom; }
+    init => {
+        Bridge.safe-area-left = self.sai-left;
+        Bridge.safe-area-top = self.sai-top;
+        Bridge.safe-area-right = self.sai-right;
+        Bridge.safe-area-bottom = self.sai-bottom;
     }
 
     property <bool> video-obstructed: Bridge.video-obstructed;
@@ -195,8 +217,13 @@ export component MainWindow inherits Window {
             opacity: Bridge.starting-up ? 100% : 0%;
             visible: self.opacity > 0%;
 
+            // The delay keeps this fully opaque until the idle view under
+            // it finished fading in; both paint the same background art, so
+            // the handoff is invisible. Without it the two half-opaque
+            // layers over the translucent window dip to near black.
             animate opacity {
                 duration: 250ms;
+                delay: 120ms;
                 easing: ease-in-out;
             }
         }

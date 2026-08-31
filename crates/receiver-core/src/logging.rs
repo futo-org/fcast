@@ -1,7 +1,5 @@
-#[cfg(not(target_os = "android"))]
 use tracing::level_filters::LevelFilter;
 
-#[cfg(not(target_os = "android"))]
 fn default_level() -> LevelFilter {
     if cfg!(debug_assertions) {
         LevelFilter::DEBUG
@@ -11,13 +9,27 @@ fn default_level() -> LevelFilter {
 }
 
 pub fn init(loglevel: Option<LevelFilter>) {
+    // android installs no subscriber, the tracing `log` bridge feeds the
+    // activity's android logger and the level lives there
+    #[cfg(target_os = "android")]
+    let _ = loglevel;
     let prev_panic_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |panic_info| {
         tracing_panic::panic_hook(panic_info);
         prev_panic_hook(panic_info);
     }));
-    tracing_gstreamer::integrate_events();
-    gst::log::remove_default_log_function();
+    // NOT on android: the tracing bridge needs a subscriber and android
+    // installs none (only the tracing macros' own `log` fallback reaches the
+    // activity logger, and bridged gst events do not take that path). Hooking
+    // gst into it there sent every GStreamer line into the void, which is how
+    // both a caps-negotiation failure and the codec probe's own output became
+    // undebuggable from logcat. GStreamer's default handler already writes to
+    // logcat natively on android, so the right move is to leave it installed.
+    #[cfg(not(target_os = "android"))]
+    {
+        tracing_gstreamer::integrate_events();
+        gst::log::remove_default_log_function();
+    }
 
     #[cfg(not(target_os = "android"))]
     {
@@ -58,7 +70,28 @@ pub fn init(loglevel: Option<LevelFilter>) {
     #[cfg(target_os = "android")]
     {
         gst::log::set_default_threshold(gst::DebugLevel::Warning);
+        // GST_DEBUG has no way in from adb (env vars do not cross the
+        // zygote), so a system property stands in. Survives reinstalls,
+        // read once at startup:
+        //   adb shell setprop debug.fcast.gst "GST_PADS:5,GST_CAPS:5"
+        //   (restart the app; clear with: setprop debug.fcast.gst '""')
+        if let Ok(out) = std::process::Command::new("getprop")
+            .arg("debug.fcast.gst")
+            .output()
+        {
+            let spec = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if !spec.is_empty() && spec != "\"\"" {
+                gst::log::set_threshold_from_string(&spec, false);
+            }
+        }
         gst::log::set_threshold_for_name("gldebug", gst::DebugLevel::None);
         gst::log::set_threshold_for_name("video-info", gst::DebugLevel::None);
+        // the android decoder is young, keep its negotiation visible
+        gst::log::set_threshold_for_name("amcviddec", gst::DebugLevel::Info);
+        // What the device's MediaCodec can actually decode, which decides
+        // whether a stream gets hardware decode or falls through to software.
+        // Logged once at startup, and the only evidence that the probe ran at
+        // all rather than silently degrading to "assume everything works".
+        gst::log::set_threshold_for_name("amccodeclist", gst::DebugLevel::Info);
     }
 }

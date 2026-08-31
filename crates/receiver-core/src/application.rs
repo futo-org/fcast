@@ -638,10 +638,14 @@ impl FCastSenderHandle {
 }
 
 pub struct Application {
+    // (vm, activity) jobject ptrs captured once at startup so playback code
+    // never touches android-activity's RwLock, see set_keep_screen_on
     #[cfg(target_os = "android")]
-    android_app: android_activity::AndroidApp,
+    android_jni: (usize, usize),
     msg_tx: MessageSender,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
+    // start of the current load, drives the load-latency marks
+    load_t0: Option<Instant>,
     #[cfg(not(target_os = "android"))]
     mdns: mdns_sd::ServiceDaemon,
     last_sent_update: Instant,
@@ -751,6 +755,7 @@ pub struct Application {
     gapless_blocked_item: Option<MediaItemId>,
     /// Kill switch: FCAST_NO_GAPLESS=1 forces the ordinary EOS-then-load path.
     gapless_enabled: bool,
+    #[cfg(not(target_os = "android"))]
     screensaver_inhibitor: inhibit_screensaver::Inhibitor,
     tls_acceptor: tokio_rustls::TlsAcceptor,
     companion_ctx: CompanionContext,
@@ -812,6 +817,7 @@ impl Application {
         cue_engine: Option<fcast_video::cue::CueEngine>,
         msg_tx: MessageSender,
         #[cfg(not(target_os = "android"))] settings: Settings,
+        #[cfg(target_os = "android")] android_app: android_activity::AndroidApp,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         for nv_feature in registry.features_by_plugin("nvcodec") {
@@ -882,14 +888,22 @@ impl Application {
             ("fp".to_owned(), fingerprint),
             ("v".to_owned(), "4".to_owned()),
         ]);
+        // android's NsdManager owns the mdns broadcast; the activity pulls
+        // these across its JNI bridge and holds the registration until then
+        #[cfg(target_os = "android")]
+        crate::publish_fcast_txt_records(
+            fcast_txt_records
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        );
         #[cfg(not(target_os = "android"))]
         let mdns = mdns::start_daemon(&msg_tx, &settings)?;
 
-        let run_gcast = if cfg!(not(target_os = "android")) {
-            settings.google_cast_enabled()
-        } else {
-            true
-        };
+        #[cfg(not(target_os = "android"))]
+        let run_gcast = settings.google_cast_enabled();
+        #[cfg(target_os = "android")]
+        let run_gcast = true;
 
         let gcast_tx = if run_gcast {
             let (gcast_tx, gcast_rx) = mpsc::unbounded_channel::<gcast::StatusUpdate>();
@@ -952,9 +966,13 @@ impl Application {
 
         Ok(Self {
             #[cfg(target_os = "android")]
-            android_app,
+            android_jni: (
+                android_app.vm_as_ptr() as usize,
+                android_app.activity_as_ptr() as usize,
+            ),
             msg_tx,
             updates_tx,
+            load_t0: None,
             #[cfg(not(target_os = "android"))]
             mdns,
             last_sent_update: Instant::now() - SENDER_UPDATE_INTERVAL,
@@ -1023,6 +1041,7 @@ impl Application {
             load_start_override: None,
             gapless_blocked_item: None,
             gapless_enabled: !std::env::var("FCAST_NO_GAPLESS").is_ok_and(|v| v == "1"),
+            #[cfg(not(target_os = "android"))]
             screensaver_inhibitor: inhibit_screensaver::Inhibitor::new(
                 inhibit_screensaver::Options {
                     app_reverse_domain: "org.fcast.receiver".to_owned(),
@@ -1449,17 +1468,10 @@ impl Application {
         };
 
         info!("Media loaded successfully");
+        self.load_mark("loaded");
 
         #[cfg(target_os = "android")]
-        {
-            let android_app = self.android_app.clone();
-            tokio::task::spawn_blocking(move || {
-                android_app.set_window_flags(
-                    WindowManagerFlags::KEEP_SCREEN_ON,
-                    WindowManagerFlags::empty(),
-                );
-            });
-        }
+        self.set_keep_screen_on(true);
 
         let Some(current_media) = self.current_media.as_ref() else {
             return;
@@ -1618,19 +1630,49 @@ impl Application {
         Ok(())
     }
 
+    /// One line per load phase with time since the load command, the whole
+    /// of the receiver's cast-latency instrumentation. "playing" ends the
+    /// trace so later pause/resume edges stay silent.
+    fn load_mark(&mut self, phase: &str) {
+        let Some(t0) = self.load_t0 else {
+            return;
+        };
+        info!(elapsed_ms = t0.elapsed().as_millis() as u64, phase, "load timeline");
+        if phase == "playing" {
+            self.load_t0 = None;
+        }
+    }
+
+    /// Toggles FLAG_KEEP_SCREEN_ON through the activity over JNI.
+    /// android-activity's set_window_flags takes its process-wide RwLock as
+    /// a writer, which deadlocks against the slint event loop holding the
+    /// read side across every callback dispatch.
+    #[cfg(target_os = "android")]
+    fn set_keep_screen_on(&self, on: bool) {
+        let (vm, activity) = self.android_jni;
+        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(vm as *mut _) }) else {
+            return;
+        };
+        let Ok(mut env) = vm.attach_current_thread() else {
+            return;
+        };
+        let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
+        if let Err(err) = env.call_method(
+            &activity,
+            "setKeepScreenOn",
+            "(Z)V",
+            &[jni::objects::JValue::Bool(on as u8)],
+        ) {
+            let _ = env.exception_clear();
+            warn!(?err, "setKeepScreenOn call into the activity failed");
+        }
+    }
+
     fn media_ended(&mut self) {
         info!("Media finished");
 
         #[cfg(target_os = "android")]
-        {
-            let android_app = self.android_app.clone();
-            tokio::task::spawn_blocking(move || {
-                android_app.set_window_flags(
-                    WindowManagerFlags::empty(),
-                    WindowManagerFlags::KEEP_SCREEN_ON,
-                );
-            });
-        }
+        self.set_keep_screen_on(false);
 
         // An autoplay queue with a next item is exempt: the receiver-side advance must
         // keep working after the last sender disconnects.
@@ -1639,7 +1681,33 @@ impl Application {
             self.current_media = None;
         }
 
+        #[cfg(not(target_os = "android"))]
         self.screensaver_inhibitor.un_inhibit();
+    }
+
+    /// Settings consulted from shared code paths. Android has no
+    /// [`Settings`](crate::Settings) (CLI flags and the config store are
+    /// desktop concepts) and answers with its constants.
+    fn is_headless(&self) -> bool {
+        #[cfg(not(target_os = "android"))]
+        {
+            self.settings.headless()
+        }
+        #[cfg(target_os = "android")]
+        {
+            false
+        }
+    }
+
+    fn is_fcast_enabled(&self) -> bool {
+        #[cfg(not(target_os = "android"))]
+        {
+            self.settings.fcast_enabled()
+        }
+        #[cfg(target_os = "android")]
+        {
+            true
+        }
     }
 
     fn queue_mut(&mut self) -> Option<&mut QueueState> {
@@ -1869,7 +1937,7 @@ impl Application {
         }
 
         let mut media_title = None;
-        if !self.settings.headless()
+        if !self.is_headless()
             && let Some(v3::MetadataObject::Generic {
                 title,
                 thumbnail_url: Some(thumbnail_url),
@@ -1959,6 +2027,7 @@ impl Application {
             });
         }
         self.is_loading_media = true;
+        self.load_t0 = Some(Instant::now());
         self.clear_source_backoff();
 
         // A pipeline load should reach a steady PAUSED quickly; dump diagnostics if
@@ -1974,6 +2043,7 @@ impl Application {
             });
         }
 
+        #[cfg(not(target_os = "android"))]
         self.screensaver_inhibitor.inhibit("Media playback");
 
         Ok(())
@@ -2061,6 +2131,7 @@ impl Application {
             self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
             self.current_media = None;
             self.queue_cache.clear();
+            #[cfg(not(target_os = "android"))]
             self.screensaver_inhibitor.un_inhibit();
         }
     }
@@ -2700,7 +2771,7 @@ impl Application {
             media.pending_thumbnail = None;
             media.pending_thumbnail_download = None;
         }
-        if !self.settings.headless()
+        if !self.is_headless()
             && let Some(thumbnail_url) = thumbnail_url
         {
             self.have_audio_track_cover = true;
@@ -3652,28 +3723,14 @@ impl Application {
                     if external_stream_idxs.contains(&(idx as u32)) {
                         return None;
                     }
-                    let typ = s.inner.stream_type();
-
-                    let metadata = if typ.contains(gst::StreamType::VIDEO) {
-                        Some(v4::MediaTrackMetadata::Video)
-                    } else if typ.contains(gst::StreamType::AUDIO) {
-                        Some(v4::MediaTrackMetadata::Audio)
-                    } else if typ.contains(gst::StreamType::TEXT) {
-                        Some(v4::MediaTrackMetadata::Subtitle)
-                    } else {
-                        return None;
+                    let metadata = match s.info.slot {
+                        flapjack::TrackSlot::Video => Some(v4::MediaTrackMetadata::Video),
+                        flapjack::TrackSlot::Audio => Some(v4::MediaTrackMetadata::Audio),
+                        flapjack::TrackSlot::Subtitle => Some(v4::MediaTrackMetadata::Subtitle),
                     };
 
-                    let (title, iso_639) = if let Some(tags) = s.inner.tags() {
-                        (
-                            tags.get::<gst::tags::Title>()
-                                .map(|t| smol_str::SmolStr::new(t.get())),
-                            tags.get::<gst::tags::LanguageCode>()
-                                .map(|t| SmolStr::new(t.get())),
-                        )
-                    } else {
-                        (None, None)
-                    };
+                    let title = s.info.title.as_deref().map(smol_str::SmolStr::new);
+                    let iso_639 = s.info.language.as_deref().map(SmolStr::new);
 
                     Some(v4::MediaTrack {
                         id: idx as u32,
@@ -3706,15 +3763,10 @@ impl Application {
             if external_stream_idxs.contains(&(idx as u32)) {
                 continue;
             }
-            let typ = stream.inner.stream_type();
-            let dst = if typ.contains(gst::StreamType::VIDEO) {
-                Some(&mut videos)
-            } else if typ.contains(gst::StreamType::AUDIO) {
-                Some(&mut audios)
-            } else if typ.contains(gst::StreamType::TEXT) {
-                Some(&mut subtitles)
-            } else {
-                None
+            let dst = match stream.info.slot {
+                flapjack::TrackSlot::Video => Some(&mut videos),
+                flapjack::TrackSlot::Audio => Some(&mut audios),
+                flapjack::TrackSlot::Subtitle => Some(&mut subtitles),
             };
 
             if let Some(dst) = dst {
@@ -3876,7 +3928,7 @@ impl Application {
                     return Ok(());
                 };
 
-                if !self.settings.headless()
+                if !self.is_headless()
                     && !self.have_audio_track_cover
                     && let Some(cover) = tags.get::<gst::tags::Image>()
                     && let Some(buffer) = cover.get().buffer()
@@ -4016,6 +4068,12 @@ impl Application {
                     && pending == gst::State::VoidPending;
                 let started_playing =
                     current == gst::State::Playing && pending == gst::State::VoidPending;
+                if first_paused {
+                    self.load_mark("prerolled");
+                }
+                if started_playing {
+                    self.load_mark("playing");
+                }
                 // The only duration writer that deliberately overwrites: preroll/resume is
                 // where the pipeline first has a real answer. A gapless swap produces
                 // neither edge, hence the `DurationChanged` handler and the activation reset.
@@ -4055,7 +4113,6 @@ impl Application {
                 self.clear_source_backoff();
             }
             player::PlayerEvent::RequestState(state) => self.player.request_state(state),
-            player::PlayerEvent::QueueSeek(seek) => self.player.queue_seek(seek),
             player::PlayerEvent::SubtitleRefreshFailed { seqnum } => {
                 // The freeze watchdog's recovery seek rides the same job; a refusal means
                 // only the escalation can recover.
@@ -4412,11 +4469,10 @@ impl Application {
     fn handle_raop_event(&mut self, event: Raop) -> Result<bool> {
         match event {
             Raop::ConfigAvailable(config) => {
-                let run_raop = if cfg!(not(target_os = "android")) {
-                    self.settings.raop_enabled()
-                } else {
-                    true
-                };
+                #[cfg(not(target_os = "android"))]
+                let run_raop = self.settings.raop_enabled();
+                #[cfg(target_os = "android")]
+                let run_raop = true;
 
                 if run_raop && self.raop_server.is_none() {
                     info!(?config, "Starting raop server");
@@ -4900,9 +4956,11 @@ impl Application {
         // Tapped stream ids match the collection's for parsed containers; a sid-less
         // input falls back to the first tap of the right caps kind.
         let sample = |current_sid: Option<&str>, kind: &str| -> Option<(String, u64)> {
+            // stats carry flapjack handles, compare in the receiver's string form
+            let sid_str = |s: &flapjack::StreamIoStats| s.stream_id.map(|id| id.to_string());
             let by_sid = stats
                 .iter()
-                .find(|s| s.stream_id.as_deref() == current_sid && current_sid.is_some());
+                .find(|s| sid_str(s).as_deref() == current_sid && current_sid.is_some());
             let by_kind = || {
                 stats.iter().find(|s| {
                     s.external.is_none()
@@ -4912,12 +4970,9 @@ impl Application {
                             .is_some_and(|structure| structure.name().as_str().starts_with(kind))
                 })
             };
-            by_sid.or_else(by_kind).map(|s| {
-                (
-                    s.stream_id.clone().unwrap_or_else(|| kind.to_string()),
-                    s.bytes,
-                )
-            })
+            by_sid
+                .or_else(by_kind)
+                .map(|s| (sid_str(s).unwrap_or_else(|| kind.to_string()), s.bytes))
         };
         let video = sample(self.player.current_video_sid(), "video/");
         let audio = sample(self.player.current_audio_sid(), "audio/");
@@ -5003,19 +5058,14 @@ impl Application {
     }
 
     /// One track-table row from an advertised stream.
-    fn inspector_track_row(stream: &gst::Stream, selected: bool) -> gui::InspectorTrackRow {
-        let ty = stream.stream_type();
-        let kind = if ty.contains(gst::StreamType::VIDEO) {
-            "Video"
-        } else if ty.contains(gst::StreamType::AUDIO) {
-            "Audio"
-        } else if ty.contains(gst::StreamType::TEXT) {
-            "Text"
-        } else {
-            "Other"
+    fn inspector_track_row(stream: &flapjack::StreamInfo, selected: bool) -> gui::InspectorTrackRow {
+        let kind = match stream.slot {
+            flapjack::TrackSlot::Video => "Video",
+            flapjack::TrackSlot::Audio => "Audio",
+            flapjack::TrackSlot::Subtitle => "Text",
         };
 
-        let caps = stream.caps();
+        let caps = stream.caps.clone();
         let codec = caps
             .as_ref()
             .map(|c| gst_pbutils::pb_utils_get_codec_description(c).to_string())
@@ -5038,21 +5088,9 @@ impl Application {
             }
         }
 
-        let tags = stream.tags();
-        let language = tags
-            .as_ref()
-            .and_then(|t| t.get::<gst::tags::LanguageCode>())
-            .map(|v| v.get().to_string())
-            .unwrap_or_default();
-        if let Some(bitrate) = tags.as_ref().and_then(|t| t.get::<gst::tags::Bitrate>()) {
-            let kbps = bitrate.get() / 1000;
-            if kbps > 0 {
-                if !detail.is_empty() {
-                    detail += ", ";
-                }
-                detail += &format!("{kbps} kbit/s");
-            }
-        }
+        // bitrate came from the stream's tags, which StreamInfo does not
+        // carry; the inspector's bitrate card samples io stats instead
+        let language = stream.language.clone().unwrap_or_default();
 
         gui::InspectorTrackRow {
             kind: kind.to_string(),
@@ -5594,7 +5632,7 @@ impl Application {
         // we commit with no listeners so the loop still serves
         // chromecast/airplay/raop; the empty listener stream stays pending and
         // never fires.
-        let listeners = if self.settings.fcast_enabled() {
+        let listeners = if self.is_fcast_enabled() {
             self.resolve_listen_port(&mut event_rx).await?
         } else {
             info!("FCast receiver disabled by settings, not binding or advertising it");
@@ -5683,7 +5721,19 @@ impl Application {
 
         debug!("Quitting");
 
-        self.player.stop();
+        // A queued stop returns before the pipeline reaches Null, and process
+        // exit while the VA-API decoder tears down on a worker thread
+        // segfaults inside the driver (vaTerminate walking a freed map). Wait
+        // for the descent, bounded so a wedged teardown still lets exit win.
+        let (null_tx, null_rx) = oneshot::channel::<()>();
+        self.player.shutdown(null_tx);
+        let wait = tokio::task::spawn_blocking(move || {
+            null_rx.recv_timeout(std::time::Duration::from_secs(5))
+        });
+        match wait.await {
+            Ok(Ok(())) => debug!("pipeline reached null before exit"),
+            _ => warn!("pipeline teardown did not finish in 5s, exiting anyway"),
+        }
         self.gui.quit_loop();
 
         if fin_tx.send(()).is_err() {

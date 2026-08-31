@@ -55,9 +55,10 @@ export component IdleView inherits Rectangle {
     }
 
     VerticalLayout {
-        padding: 32px;
-        padding-right: 58px;
-        padding-left: self.padding-right;
+        padding-top: 32px + Bridge.safe-area-top;
+        padding-bottom: 32px + Bridge.safe-area-bottom;
+        padding-right: 58px + Bridge.safe-area-right;
+        padding-left: 58px + Bridge.safe-area-left;
         spacing: 20px;
 
 

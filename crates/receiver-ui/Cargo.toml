@@ -9,11 +9,10 @@ gst-static-env.workspace = true
 gstreamer-src.workspace = true
 # This crate owns the GL/render loop, so it is where `render` is switched on —
 # for itself and for the surface receiver-core re-exports to the binaries.
-receiver-core = { path = "../receiver-core", features = ["render"] }
-fcast-video = { path = "../fcast-video", features = ["slint", "render"] }
+receiver-core = { path = "../receiver-core" }
+fcast-video = { path = "../fcast-video", features = ["slint"] }
 fcast-protocol = { path = "../fcast-protocol", features = ["tokio-receiver"] }
 fcast-runtime = { path = "../fcast-runtime" }
-libplacebo.path = "../libplacebo"
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
@@ -33,14 +32,107 @@ features = [
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
+# This half of the GPU stack stays off android: video is MediaCodec's direct
+# surface there, so the receiver's own presentation lane is not built. The UI
+# still renders on the GPU, through dodvg's wgpu executor in the fork.
+receiver-core = { path = "../receiver-core", features = ["render"] }
+fcast-video = { path = "../fcast-video", features = ["slint", "render"] }
+libplacebo.path = "../libplacebo"
+# The `video-wgpu` lane only: its appsink, and the presentation crate with
+# the wgpu it is built against (30, matching the slint fork's lock so the two
+# never resolve to different wgpu crates). The presentation crate lives in the
+# slint fork, which is what makes the single-wgpu property structural: dodvg
+# depends on the same path.
+gst-app = { workspace = true, optional = true }
+i-slint-video-wgpu = { path = "../../../slint-forked/internal/video-wgpu", optional = true }
+# Shader language only. The backend features are per-OS in the sections below,
+# and cargo unions the features of every target section that matches, so a mac
+# build gets `wgsl` from here and `metal` from its own.
+#
+# They cannot be one list: wgpu 30 turns the `vulkan` feature off on apple
+# targets unless `vulkan-portability` is also set (it is meant for MoltenVK),
+# and the `gles` feature off there unless `angle` is set. A single
+# wgsl+vulkan+gles list therefore compiled NO backend at all into a mac build
+# while still dragging ash in, which is why the lane could never have found an
+# adapter on a MacBook.
+wgpu = { version = "30", default-features = false, features = [
+    "wgsl",
+], optional = true }
+
+[target.'cfg(target_os = "android")'.dependencies]
+# the software video bridge's appsink
+gst-app.workspace = true
+# the immersive toggle's call into the activity
+jni = "0.21"
+ndk-context = "0.1"
+# AHardwareBuffer, for the zero-copy software video lane. Raw bindings, not
+# the safe `ndk` wrapper: its HardwareBuffer is behind an api-level feature
+# and does not expose lockPlanes, which is the whole point here. Same version
+# the slint android backend already pulls in, so nothing is duplicated.
+ndk-sys = "0.6"
+# the video surface behind the window (fork addition)
+i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "8796fa98619e560970a3ab82bc97efa0a5894778" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 glutin_egl_sys = { version = "0.7.1" }
 i-slint-backend-winit = { workspace = true, optional = true }
+# The `video-wgpu` lane's dmabuf import. `ash` must resolve to the same crate
+# wgpu-hal 30 uses, or the raw vulkan handles are different types; `gst-app`
+# already pins the gst side and gst-allocators is where the dmabuf memory
+# wrapper lives.
+#
+# `v1_28` is the floor the software-decode arm needs: gst 1.28 is where
+# GstUdmabufAllocator and GstVideoDmabufPool landed, and the lane proposes
+# that pair to software decoders (see src/desktop_wgpu_udmabuf.rs). Linux
+# only, which is also the only place the bindings exist.
+gst-allocators = { package = "gstreamer-allocators", version = "0.25", features = [ "v1_28" ], optional = true }
+gst-video = { workspace = true, features = [ "v1_28" ] }
+ash = { version = "0.38", optional = true }
+# gles probes the wgpu GL backend as the future floor for retiring the hand
+# written GL lane, selected at runtime by FCAST_WGPU_BACKEND=gl.
+wgpu = { version = "30", default-features = false, features = [
+    "vulkan",
+    "gles",
+], optional = true }
+
+# The lane has never been run on windows and is not compiled into the shipping
+# msi (`video-wgpu` is off in every build the CI makes), so windows keeps
+# exactly the backends it has always had rather than gaining an untested third
+# one. `dx12` is a one word addition here whenever someone has a box to try it
+# on; nothing else in the lane is D3D aware either way.
+[target.'cfg(target_os = "windows")'.dependencies]
+wgpu = { version = "30", default-features = false, features = [
+    "vulkan",
+    "gles",
+], optional = true }
 
 # The cursor-hide callback in gui.rs sets the macOS cursor directly.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3.2", features = ["NSCursor"] }
+# Metal is the only backend wgpu offers on mac without a translation layer
+# (vulkan needs MoltenVK, gl needs ANGLE), so it is the whole list. There is no
+# dmabuf import here: gst-allocators and ash stay linux-only above and the
+# appsink offers system memory only, so every frame takes the upload arm.
+wgpu = { version = "30", default-features = false, features = [
+    "metal",
+], optional = true }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The AV1 arm of the udmabuf proof needs dav1ddec in the test binary. The
+# shipping receivers get it through receiver-core's `static-gst-plugins`, but
+# that feature is off in the lane's own test runs, so the plugin is registered
+# here instead and the test never silently skips. Same rev and same bundled
+# dav1d wiring as receiver-core, or the two would resolve to different copies.
+gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", features = [ "static" ] }
+dav1d-sys = { version = "0.8", features = ["bundled"] }
+
+[dev-dependencies]
+# The end-to-end subtitle proof drives the real player and the real text
+# branch: flapjack owns the pipeline, flapjack-test synthesizes the streams.
+flapjack.workspace = true
+flapjack-test.workspace = true
+# The transition soak prints the lane's own log lines when RUST_LOG is set.
+tracing-subscriber = { workspace = true, features = [ "env-filter" ] }
 
 [build-dependencies]
 gst-static-link.workspace = true
@@ -54,14 +146,41 @@ desktop = [
     "slint/renderer-dodvg",
     "receiver-core/desktop",
     "wayland-subsurface",
+    "scene-cues",
 ]
+# The route from the application to the dodvg renderer, which is where the
+# subtitle cue overlay slot lives. Both desktop lanes draw text cues through
+# it, so it is a feature of its own rather than a line in either.
+scene-cues = ["slint/unstable-winit-030"]
 wayland-subsurface = [
     "dep:i-slint-backend-winit",
     "fcast-video/wayland-subsurface",
 ]
 systray = ["slint/system-tray", "receiver-core/systray"]
+# Desktop presentation through i-slint-video-wgpu instead of libplacebo.
+# Compiling it changes nothing: the lane is selected at runtime by
+# FCAST_DESKTOP_WGPU_VIDEO=1. See src/desktop_wgpu_video.rs.
+#
+# The zero-copy lane needs slint itself on wgpu 30, so the dodvg renderer's
+# wgpu backend rides along. The GL lane keeps dodvg on OpenGL, which the
+# `desktop` feature above already pulls in, so both lanes are the same
+# renderer on two graphics APIs.
+video-wgpu = [
+    "dep:i-slint-video-wgpu",
+    "dep:wgpu",
+    "dep:gst-app",
+    "dep:gst-allocators",
+    "dep:ash",
+    "slint/unstable-wgpu-30",
+    "slint/renderer-dodvg-wgpu",
+    # Pulls `backend-winit` with it.
+    "scene-cues",
+]
 kms-backend = ["slint/backend-linuxkms"]
-android = ["slint/backend-android-activity-06", "slint/renderer-skia", "receiver-core/android"]
+# No renderer feature: the android backend carries dodvg on wgpu 30 itself,
+# where it used to name skia here. `backend-android-activity-06` pulls no
+# renderer of its own, so this list is the whole choice.
+android = ["slint/backend-android-activity-06", "receiver-core/android"]
 tracy = ["receiver-core/tracy"]
 # Forwarded to the core so a receiver binary keeps naming one dependency.
 static-gst-plugins = ["receiver-core/static-gst-plugins"]

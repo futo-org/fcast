@@ -4,6 +4,7 @@ use gst_static_env as _;
 
 pub mod cue;
 pub mod cue_ir;
+pub mod cue_scene;
 pub mod render_latency;
 pub mod render_options;
 pub mod subpic;

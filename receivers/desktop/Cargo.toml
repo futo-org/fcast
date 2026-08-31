@@ -19,6 +19,9 @@ kms-backend = ["rcore/kms-backend"]
 tracy = ["rcore/tracy"]
 static-gst-plugins = ["rcore/static-gst-plugins"]
 airplay = ["rcore/airplay"]
+# Compiles the i-slint-video-wgpu presentation lane in; it stays dormant
+# unless FCAST_DESKTOP_WGPU_VIDEO=1 is set at runtime.
+video-wgpu = ["rcore/video-wgpu"]
 
 [target.'cfg(target_os = "windows")'.dependencies]
 enable-ansi-support = "0.3.1"

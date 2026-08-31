@@ -1,7 +1,13 @@
 // SPDX-FileCopyrightText: 2026 Marcus Hanestad <marlhan@proton.me>
 // SPDX-License-Identifier: LGPL-2.1-or-later
 
-//! The cue-IR rasterizer: parley for layout, vello_cpu for pixels.
+//! The cue-IR layout half: parley for layout, [`CueScene`] for the answer.
+//!
+//! This module stops at the display list. [`RasterCtx::build_scene`] turns an
+//! IR plus the house style into a [`CueScene`], and a backend turns that into
+//! pixels: [`crate::cue_scene::VelloBackend`] here (which is what
+//! [`RasterCtx::render`] still hands back), the dodvg scene consumer in the
+//! slint fork later.
 //!
 //! Lifted from the cue-IR demo renderer in `gst-subparse-rs`. That code is a
 //! whole engine, scheduler and renderer. Only the RENDERER half lives here. The
@@ -27,9 +33,23 @@
 //! * **Position against the video rect.** Everything a subtitle file expresses
 //!   (SSA `\pos`, WebVTT `line:`/`position:`, margins, SSA font sizes) is
 //!   relative to the PICTURE, not the window (see [`place`] and [`VideoRect`]).
-//!   A cue the file says nothing about is house policy, and
-//!   [`CueStyle::use_window_margins`] lets it sit in the letterbox bars instead
-//!   of covering the picture (mpv's `sub-use-margins`).
+//!   That is libass' model: the scale is always `orig_height / PlayResY` over
+//!   the video area, and `\pos` goes through `x2scr_pos`/`y2scr_pos`, which
+//!   always add the letterbox bars back. A cue the file says nothing about is
+//!   house policy, and [`CueStyle::use_window_margins`] lets it sit in the bars
+//!   instead of covering the picture (mpv's `sub-use-margins=yes` default for
+//!   plain text, `sub-ass-use-margins=no` for ASS, which an SSA alignment
+//!   selects between here). The policy moves BOTH axes, as libass' `x2scr_*`
+//!   and `y2scr_*` do: a cue allowed into the bottom bar wraps at the window's
+//!   width too. See [`Band`].
+//!
+//!   WebVTT is the one place the spec disagrees: its `line:`/`position:` are
+//!   percentages of the "video viewport", which in a browser is the whole
+//!   `<video>` element including any letterbox bars. They resolve against the
+//!   picture here, so one rule covers every format and a positioned caption
+//!   cannot land in a bar the picture never reaches. Unreachable in practice:
+//!   `gst-subparse`'s WebVTT parser carries no cue settings into the IR at all,
+//!   so only a `text-format=cue-ir` producer can set them.
 //! * **House style.** [`CueStyle`] is what the cue looks like where the file
 //!   says nothing; everything the IR does specify overrides the corresponding
 //!   field.
@@ -38,18 +58,17 @@
 //!   included) before any integer cast, and font sizes are clamped. Rejection
 //!   is a "no pixels" answer, never a panic.
 
-use std::sync::Arc;
+use std::{borrow::Cow, sync::Arc};
 
 use parley::{
-    Alignment, AlignmentOptions, FontContext, FontFamilyName, FontWeight, GenericFamily, GlyphRun,
-    LayoutContext, LineHeight, PositionedLayoutItem, StyleProperty,
+    Alignment, AlignmentOptions, FontContext, FontFamily, FontFamilyName, FontWeight,
+    GenericFamily, GlyphRun, LayoutContext, LineHeight, PositionedLayoutItem, StyleProperty,
 };
 use peniko::Color;
 use tracing::{debug, warn};
-use vello_cpu::{
-    Glyph, Pixmap, RenderContext,
-    kurbo::{Affine, Cap, Join, Rect, Stroke, Vec2},
-};
+
+use crate::cue_scene::{ALL_REVEALED, VelloBackend};
+pub use crate::cue_scene::{CueRun, CueScene, RasterOut, Rgba};
 
 /// The IR the parser elements attach to their buffers as a `CueIrMeta`.
 ///
@@ -78,9 +97,6 @@ pub struct VideoRect {
 // -- house style
 // ----------------------------------------------------------------
 
-/// Straight-alpha RGBA, toolkit-agnostic.
-pub type Rgba = [u8; 4];
-
 /// How cue text is presented when (and wherever) the subtitle file itself says
 /// nothing: the *house style*. Set it with `CueEngine::set_style`, e.g. from a
 /// user settings menu, and the active cue re-rasterizes. Everything the IR
@@ -96,13 +112,19 @@ pub struct CueStyle {
     pub font_family: Option<String>,
     /// CSS-style weight (400 normal, 700 bold).
     pub font_weight: f32,
-    /// Font size as a fraction of canvas height.
+    /// Font size as a fraction of the PICTURE's height, so a letterboxed movie
+    /// does not get subtitles sized for the whole screen (mpv's
+    /// `sub-scale-with-window=no` default).
     pub font_height_fraction: f32,
     /// Never smaller than this, however small the window gets.
     pub min_font_px: f32,
-    /// Wrap width as a fraction of canvas width.
+    /// Wrap width as a fraction of the band the cue lays out in, which is the
+    /// picture, or the window when `use_window_margins` applies. Only used when
+    /// the file says nothing: SSA margins and WebVTT `size` both override it.
     pub wrap_width_fraction: f32,
-    /// Distance from the bottom edge, as a fraction of canvas height.
+    /// Distance from the bottom edge, as a fraction of the PICTURE's height.
+    /// The edge itself is the window's under `use_window_margins`, so the look
+    /// does not change with the bars.
     pub bottom_margin_fraction: f32,
     /// Whether *default-placed* subtitles (no positioning in the file) may sit
     /// in the window's letterbox bars instead of covering the picture (mpv's
@@ -275,29 +297,32 @@ pub fn has_reveals(ir: &CueIr) -> bool {
 
 /// How many reveal thresholds a span at `reveal_ns` sits behind, i.e. its rank
 /// in the sorted step list. Rank 0 means "visible from the start".
-fn reveal_rank(ir_steps: &[u64], reveal_ns: Option<u64>) -> usize {
+///
+/// Saturates at [`cue_scene::ALL_REVEALED`], which needs more distinct reveal
+/// times in one cue than a `u16` can count and would mean a syllable per frame
+/// for eighteen minutes. Such a span reveals with the last one rather than
+/// wrapping round to visible-from-the-start.
+fn reveal_rank(ir_steps: &[u64], reveal_ns: Option<u64>) -> u16 {
     match reveal_ns {
         None => 0,
-        Some(ns) => ir_steps.partition_point(|s| *s < ns) + 1,
+        Some(ns) => (ir_steps.partition_point(|s| *s < ns) + 1).min(ALL_REVEALED as usize) as u16,
     }
 }
 
-// -- the parley/vello rasterizer
-// ----------------------------------------------------
-
-/// Finished pixels plus their placement, in window coordinates. The engine
-/// wraps this in its own `Raster`.
-pub struct RasterOut {
-    /// Tightly packed RGBA with straight (non-premultiplied) alpha.
-    pub pixels: Vec<u8>,
-    pub width: u32,
-    pub height: u32,
-    pub x: i32,
-    pub y: i32,
-}
+// -- the parley scene builder
+// -------------------------------------------------------
 
 /// Parley brush for cue text: fill color, optional background box, the outline
-/// stroke, and whether this span has been revealed yet (karaoke).
+/// stroke, and the karaoke rank this span appears at.
+///
+/// The rank rides in the brush because that is what carries a span's identity
+/// through shaping: parley splits runs where the resolved style changes, so a
+/// syllable that reveals separately becomes a run of its own and every glyph of
+/// that run inherits its rank. It is a property of the CUE and not of the
+/// clock, so the split is the same at every reveal step, which is what makes
+/// one scene serve the whole sweep. Nothing here is ever compared against a
+/// clock; that comparison happens at draw time, against
+/// [`CueScene::glyph_rank`].
 #[derive(Clone, Debug, PartialEq)]
 struct CueBrush {
     fg: Color,
@@ -307,9 +332,9 @@ struct CueBrush {
     outline: (Color, f32),
     /// `(color, dx_px, dy_px)` drop shadow, when the IR sets one.
     shadow: Option<(Color, f32, f32)>,
-    /// Unrevealed karaoke spans still occupy their space (layout must not
-    /// reflow as syllables appear) but paint nothing.
-    revealed: bool,
+    /// Reveal rank (see [`reveal_rank`]); 0 is a span with no karaoke timing,
+    /// which is every span of an ordinary cue.
+    rank: u16,
 }
 
 impl Default for CueBrush {
@@ -319,7 +344,7 @@ impl Default for CueBrush {
             bg: None,
             outline: (Color::from_rgba8(0, 0, 0, 217), 1.0),
             shadow: None,
-            revealed: true,
+            rank: 0,
         }
     }
 }
@@ -406,16 +431,15 @@ fn base_extent(
     None
 }
 
-/// The worker's layout/render state. Both contexts cache aggressively, so one
-/// long-lived instance per worker thread.
+/// The worker's layout/render state. Both parley contexts cache aggressively,
+/// so one long-lived instance per worker thread.
 pub struct RasterCtx {
     font_cx: FontContext,
     layout_cx: LayoutContext<CueBrush>,
-    /// The render surface, reused across rasters of the same size (karaoke
-    /// steps in particular): keeps vello's glyph outline/hinting cache warm
-    /// (`reset()` retains it) and avoids two large allocations per raster.
-    /// `render_to_pixmap` clears before writing, so reuse is safe.
-    surface: Option<((u16, u16), RenderContext, Pixmap)>,
+    backend: VelloBackend,
+    /// The scene [`RasterCtx::render`] builds into, cleared and refilled so a
+    /// steady stream of cues allocates nothing.
+    scratch: CueScene,
 }
 
 impl Default for RasterCtx {
@@ -429,22 +453,9 @@ impl RasterCtx {
         Self {
             font_cx: FontContext::new(),
             layout_cx: LayoutContext::new(),
-            surface: None,
+            backend: VelloBackend::new(),
+            scratch: CueScene::default(),
         }
-    }
-
-    /// The reusable `(RenderContext, Pixmap)` for a `dims`-sized raster.
-    fn surface(&mut self, dims: (u16, u16)) -> (&mut RenderContext, &mut Pixmap) {
-        let reusable = matches!(&self.surface, Some((have, _, _)) if *have == dims);
-        if !reusable {
-            let (w, h) = dims;
-            self.surface = Some((dims, RenderContext::new(w, h), Pixmap::new(w, h)));
-        }
-        let (_, rc, pixmap) = self.surface.as_mut().expect("just ensured");
-        if reusable {
-            rc.reset();
-        }
-        (rc, pixmap)
     }
 
     /// Lay one ruby annotation out on its own, returning it with its ink size.
@@ -475,7 +486,7 @@ impl RasterCtx {
         b.push_default(StyleProperty::FontSize(px));
         b.push_default(FontWeight::new(weight));
         if let Some(family) = family {
-            b.push_default(FontFamilyName::Named(family.into()));
+            b.push_default(family_stack(family));
         }
         let mut layout = b.build(text);
         layout.break_all_lines(Some(wrap));
@@ -515,6 +526,13 @@ impl RasterCtx {
 
     /// Rasterize `ir` at reveal `step` (0 = only the un-timed spans are
     /// visible; `usize::MAX` = everything).
+    ///
+    /// [`RasterCtx::build_scene`] then the vello_cpu backend, over a scene this
+    /// context keeps and reuses. The step is no longer a layout input: it is
+    /// the rank threshold the backend paints at, so two steps of one cue are
+    /// two paints of one scene (see [`CueScene::glyph_rank`]). Its signature
+    /// and its answer are unchanged, which is what keeps this the oracle every
+    /// pixel test in the tree was written against.
     pub fn render(
         &mut self,
         ir: &CueIr,
@@ -523,9 +541,46 @@ impl RasterCtx {
         video_rect: Option<VideoRect>,
         step: usize,
     ) -> Option<RasterOut> {
+        let mut scene = std::mem::take(&mut self.scratch);
+        let built = self.build_scene_into(&mut scene, ir, house, canvas, video_rect);
+        let rank = step.min(ALL_REVEALED as usize) as u16;
+        let out = built
+            .then(|| self.backend.rasterize(&scene, rank))
+            .flatten();
+        self.scratch = scene;
+        out
+    }
+
+    /// The display list for `ir`: what a cue paints, with nothing about how,
+    /// and every syllable of it at its own rank. `None` when the cue lays out
+    /// to nothing or asks for a surface no raster can hold, which is the same
+    /// "no pixels" answer [`RasterCtx::render`] gives and never a panic.
+    pub fn build_scene(
+        &mut self,
+        ir: &CueIr,
+        house: &CueStyle,
+        canvas: (u32, u32),
+        video_rect: Option<VideoRect>,
+    ) -> Option<CueScene> {
+        let mut scene = CueScene::default();
+        self.build_scene_into(&mut scene, ir, house, canvas, video_rect)
+            .then_some(scene)
+    }
+
+    /// [`RasterCtx::build_scene`] into a scene whose capacity is already
+    /// grown. `false` means "no pixels" and leaves `scene` cleared.
+    fn build_scene_into(
+        &mut self,
+        scene: &mut CueScene,
+        ir: &CueIr,
+        house: &CueStyle,
+        canvas: (u32, u32),
+        video_rect: Option<VideoRect>,
+    ) -> bool {
+        scene.clear();
         let (canvas_w, canvas_h) = canvas;
         if canvas_w == 0 || canvas_h == 0 {
-            return None;
+            return false;
         }
         let (cw, ch) = (canvas_w as f32, canvas_h as f32);
         // The *frame*: where the picture sits in the window. Everything the
@@ -549,15 +604,24 @@ impl RasterCtx {
         // Text scales with the picture, not the window: a pillarboxed video
         // should not get subtitles sized for the full screen.
         let base_px = (frame.h * house.font_height_fraction).max(house.min_font_px);
-        // Cue box width from the IR's `size` (WebVTT), else the house wrap.
-        let size_pct = ir
-            .layout
-            .size
-            .unwrap_or(house.wrap_width_fraction * 100.0)
-            .clamp(1.0, 100.0);
-        let wrap_px = (frame.w * size_pct / 100.0).max(1.0);
+        // Where the cue may lay out: the picture inset by the file's own
+        // margins, or the whole window for a cue nothing positioned (see
+        // [`Band`]).
+        let band = Band::new(ir, house, frame, cw);
+        // Cue box width: the WebVTT `size` percent of that band, else the band
+        // itself when SSA margins already said how wide the cue may be, else
+        // the house wrap.
+        let wrap_px = match (ir.layout.size, ir.layout.margins) {
+            (Some(size), _) => band.width() * size.clamp(1.0, 100.0) / 100.0,
+            (None, Some(_)) => band.width(),
+            (None, None) => {
+                band.width() * (house.wrap_width_fraction * 100.0).clamp(1.0, 100.0) / 100.0
+            }
+        }
+        .max(1.0);
 
-        // Which reveal ranks are visible at this step (see `reveal_rank`).
+        // The cue's own reveal thresholds, which every span's rank indexes
+        // into (see `reveal_rank`). No clock is consulted here.
         let mut step_ns: Vec<u64> = ir
             .lines
             .iter()
@@ -598,7 +662,7 @@ impl RasterCtx {
         }
         if text.trim().is_empty() {
             debug!("cue laid out to nothing");
-            return None;
+            return false;
         }
 
         let base = &ir.base;
@@ -616,13 +680,13 @@ impl RasterCtx {
             shadow: base
                 .shadow
                 .map(|s| (color(s.color), pt_to_px(s.dx), pt_to_px(s.dy))),
-            revealed: true,
+            rank: 0,
         };
 
         // The brush a span paints with: its own colours where it sets them, the
         // cue's underneath. Shared with the ruby pre-pass below, so an
         // annotation is drawn in the same ink as the text it annotates.
-        let brush_for = |s: &ir::SpanStyle, revealed: bool| CueBrush {
+        let brush_for = |s: &ir::SpanStyle, rank: u16| CueBrush {
             fg: s.foreground.map(color).unwrap_or(base_brush.fg),
             bg: s.background.map(color).or(base_brush.bg),
             outline: s
@@ -633,7 +697,7 @@ impl RasterCtx {
                 .shadow
                 .map(|sh| (color(sh.color), pt_to_px(sh.dx), pt_to_px(sh.dy)))
                 .or(base_brush.shadow),
-            revealed,
+            rank,
         };
 
         // ---- RUBY, pass 1 of 2: lay the annotations out BEFORE the cue.
@@ -651,8 +715,7 @@ impl RasterCtx {
                 continue;
             }
             let base_font = font_px(span.style.font_size, base_px, frame.h);
-            let revealed = reveal_rank(&step_ns, span.reveal_ns) <= step;
-            let brush = brush_for(&span.style, revealed);
+            let brush = brush_for(&span.style, reveal_rank(&step_ns, span.reveal_ns));
             let family = span
                 .style
                 .font_family
@@ -701,7 +764,7 @@ impl RasterCtx {
         )));
         match (base.font_family.as_deref(), house.font_family.as_deref()) {
             (Some(family), _) | (None, Some(family)) => {
-                b.push_default(FontFamilyName::Named(family.into()));
+                b.push_default(family_stack(family));
             }
             (None, None) => {}
         }
@@ -722,14 +785,17 @@ impl RasterCtx {
 
         for (range, span) in &spans {
             let s = &span.style;
-            let revealed = reveal_rank(&step_ns, span.reveal_ns) <= step;
-            if !revealed
+            // A karaoke span gets a brush of its own whether or not it also
+            // recolours, so it shapes as its own run and its glyphs can carry
+            // its rank. Same split at every step, since the rank does not move.
+            let rank = reveal_rank(&step_ns, span.reveal_ns);
+            if rank > 0
                 || s.foreground.is_some()
                 || s.background.is_some()
                 || s.outline.is_some()
                 || s.shadow.is_some()
             {
-                b.push(StyleProperty::Brush(brush_for(s, revealed)), range.clone());
+                b.push(StyleProperty::Brush(brush_for(s, rank)), range.clone());
             }
             if let Some(style) = s.font_style {
                 b.push(font_style(style), range.clone());
@@ -750,7 +816,7 @@ impl RasterCtx {
                 );
             }
             if let Some(family) = s.font_family.as_deref() {
-                b.push(FontFamilyName::Named(family.into()), range.clone());
+                b.push(family_stack(family), range.clone());
             }
             if let Some(spacing) = s.letter_spacing {
                 b.push(
@@ -808,7 +874,7 @@ impl RasterCtx {
         }
         if ink_x0 >= ink_x1 {
             debug!("cue laid out to nothing");
-            return None;
+            return false;
         }
         // An annotation wider than the text it annotates is part of the cue:
         // the surface has to hold it and the readability box has to cover it.
@@ -865,16 +931,15 @@ impl RasterCtx {
             && surface_h <= MAX_RASTER_PX as f32)
         {
             warn!(surface_w, surface_h, "cue raster size unusable, skipping");
-            return None;
+            return false;
         }
         let surface_w = surface_w as i32;
         let surface_h = surface_h as i32;
 
-        let (rc, pixmap) = self.surface((surface_w as u16, surface_h as u16));
-        rc.set_transform(Affine::translate(Vec2::new(
-            (pad - ink_x0) as f64,
-            (pad - ink_y0) as f64,
-        )));
+        scene.size = [surface_w as u32, surface_h as u32];
+        // Layout space onto the surface. Kept as scene data rather than folded
+        // into every coordinate so a backend applies it in its own precision.
+        scene.translate = [pad - ink_x0, pad - ink_y0];
 
         // Paint order, whole layout at a time so nothing overdraws a
         // neighbouring run: cue box, span boxes, shadows, outlines, fills (with
@@ -889,176 +954,163 @@ impl RasterCtx {
             .map(color)
             .or_else(|| house.background.map(|b| rgba(b.color)));
         if let Some(bg) = box_color {
-            rc.set_paint(bg);
-            let rect = Rect::new(
-                (ink_x0 - box_pad) as f64,
-                (ink_y0 - box_pad) as f64,
-                (ink_x1 + box_pad) as f64,
-                (ink_y1 + box_pad) as f64,
+            scene.push_rect(
+                [
+                    ink_x0 - box_pad,
+                    ink_y0 - box_pad,
+                    ink_x1 + box_pad,
+                    ink_y1 + box_pad,
+                ],
+                box_radius,
+                box_soft,
+                straight(bg),
+                0,
             );
-            if box_soft > 0.0 {
-                rc.fill_blurred_rounded_rect(&rect, box_radius, box_soft);
-            } else if box_radius > 0.0 {
-                use vello_cpu::kurbo::{RoundedRect, Shape};
-                rc.fill_path(&RoundedRect::from_rect(rect, box_radius as f64).to_path(0.1));
-            } else {
-                rc.fill_rect(&rect);
-            }
         }
         for line in playout.lines() {
             let m = line.metrics();
-            let (top, bottom) = (
-                (m.baseline - m.ascent) as f64,
-                (m.baseline + m.descent) as f64,
-            );
+            let (top, bottom) = (m.baseline - m.ascent, m.baseline + m.descent);
             for item in line.items() {
                 let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                     continue;
                 };
-                let brush = glyph_run.style().brush.clone();
-                if !brush.revealed {
-                    continue;
-                }
+                let brush = &glyph_run.style().brush;
                 if let Some(bg) = brush.bg {
-                    rc.set_paint(bg);
-                    rc.fill_rect(&Rect::new(
-                        glyph_run.offset() as f64,
-                        top,
-                        (glyph_run.offset() + glyph_run.advance()) as f64,
-                        bottom,
-                    ));
+                    scene.push_rect(
+                        [
+                            glyph_run.offset(),
+                            top,
+                            glyph_run.offset() + glyph_run.advance(),
+                            bottom,
+                        ],
+                        0.0,
+                        0.0,
+                        straight(bg),
+                        brush.rank,
+                    );
                 }
             }
         }
-        for_each_revealed_run(&playout, |glyph_run| {
+        // `ok` goes false only when the run table overflows, which needs a cue
+        // with more distinct fonts than a u16 can index. Refuse it whole.
+        let mut ok = true;
+        for_each_glyph_run(&playout, |glyph_run| {
             if let Some((shadow, dx, dy)) = glyph_run.style().brush.shadow {
-                rc.set_paint(shadow);
-                draw_glyphs(rc, glyph_run, Pass::Fill, Vec2::new(dx as f64, dy as f64));
+                ok &= push_run_glyphs(scene, glyph_run, 0.0, shadow, (dx, dy));
             }
         });
-        for_each_revealed_run(&playout, |glyph_run| {
+        for_each_glyph_run(&playout, |glyph_run| {
             let (outline, width) = glyph_run.style().brush.outline;
             if width > 0.0 {
-                rc.set_paint(outline);
-                rc.set_stroke(
-                    Stroke::new(width as f64)
-                        .with_join(Join::Round)
-                        .with_caps(Cap::Round),
-                );
-                draw_glyphs(rc, glyph_run, Pass::Stroke, Vec2::ZERO);
+                ok &= push_run_glyphs(scene, glyph_run, width, outline, (0.0, 0.0));
             }
         });
-        for_each_revealed_run(&playout, |glyph_run| {
-            let brush = glyph_run.style().brush.clone();
-            rc.set_paint(brush.fg);
-            draw_glyphs(rc, glyph_run, Pass::Fill, Vec2::ZERO);
+        for_each_glyph_run(&playout, |glyph_run| {
+            let fg = glyph_run.style().brush.fg;
+            ok &= push_run_glyphs(scene, glyph_run, 0.0, fg, (0.0, 0.0));
 
             let run = glyph_run.run();
             let style = glyph_run.style();
             if let Some(decoration) = &style.underline {
                 let offset = decoration.offset.unwrap_or(run.metrics().underline_offset);
                 let size = decoration.size.unwrap_or(run.metrics().underline_size);
-                draw_decoration(rc, glyph_run, brush.fg, offset, size);
+                push_decoration(scene, glyph_run, fg, offset, size);
             }
             if let Some(decoration) = &style.strikethrough {
                 let offset = decoration
                     .offset
                     .unwrap_or(run.metrics().strikethrough_offset);
                 let size = decoration.size.unwrap_or(run.metrics().strikethrough_size);
-                draw_decoration(rc, glyph_run, brush.fg, offset, size);
+                push_decoration(scene, glyph_run, fg, offset, size);
             }
         });
 
         // ---- RUBY, drawn last and in its own coordinates: shadow, outline,
         // fill, the same three passes the cue's own text gets, offset to where
-        // pass 2 put the annotation. Visibility follows the BASE span (the
-        // brush was built from it), so a karaoke syllable and its furigana
-        // appear together.
+        // pass 2 put the annotation. Its rank follows the BASE span (the brush
+        // was built from it), so a karaoke syllable and its furigana appear
+        // together.
         for ruby in &rubies {
-            let offset = Vec2::new((ruby.x - ruby.origin_x) as f64, ruby.y as f64);
-            for_each_revealed_run(&ruby.layout, |glyph_run| {
+            let offset = (ruby.x - ruby.origin_x, ruby.y);
+            for_each_glyph_run(&ruby.layout, |glyph_run| {
                 if let Some((shadow, dx, dy)) = glyph_run.style().brush.shadow {
-                    rc.set_paint(shadow);
-                    draw_glyphs(
-                        rc,
+                    ok &= push_run_glyphs(
+                        scene,
                         glyph_run,
-                        Pass::Fill,
-                        offset + Vec2::new(dx as f64, dy as f64),
+                        0.0,
+                        shadow,
+                        (offset.0 + dx, offset.1 + dy),
                     );
                 }
             });
-            for_each_revealed_run(&ruby.layout, |glyph_run| {
+            for_each_glyph_run(&ruby.layout, |glyph_run| {
                 let (outline, width) = glyph_run.style().brush.outline;
                 if width > 0.0 {
-                    rc.set_paint(outline);
-                    rc.set_stroke(
-                        Stroke::new(width as f64)
-                            .with_join(Join::Round)
-                            .with_caps(Cap::Round),
-                    );
-                    draw_glyphs(rc, glyph_run, Pass::Stroke, offset);
+                    ok &= push_run_glyphs(scene, glyph_run, width, outline, offset);
                 }
             });
-            for_each_revealed_run(&ruby.layout, |glyph_run| {
-                rc.set_paint(glyph_run.style().brush.fg);
-                draw_glyphs(rc, glyph_run, Pass::Fill, offset);
+            for_each_glyph_run(&ruby.layout, |glyph_run| {
+                let fg = glyph_run.style().brush.fg;
+                ok &= push_run_glyphs(scene, glyph_run, 0.0, fg, offset);
             });
         }
-
-        rc.flush();
-        rc.render_to_pixmap(pixmap);
-        let pixels = premul_to_straight_rgba(pixmap.data_as_u8_slice());
+        if !ok {
+            warn!("cue has more distinct glyph runs than a scene can index, skipping");
+            scene.clear();
+            return false;
+        }
 
         let (x, y) = place(
             ir,
             house,
             (cw, ch),
-            frame,
+            band,
             surface_w as f32,
             surface_h as f32,
         );
-        Some(RasterOut {
-            pixels,
-            width: surface_w as u32,
-            height: surface_h as u32,
-            x,
-            y,
-        })
+        scene.origin = [x, y];
+        true
     }
 }
 
-/// Which vello pass `draw_glyphs` runs.
-enum Pass {
-    Fill,
-    Stroke,
+/// Straight (non-premultiplied) RGBA. Every cue colour arrives as `u8`
+/// through `Color::from_rgba8`, so the round trip is exact.
+fn straight(c: Color) -> Rgba {
+    c.to_rgba8().to_u8_array()
 }
 
-/// One glyph run through vello's glyph pipeline, optionally offset (shadows).
-fn draw_glyphs(
-    rc: &mut RenderContext,
+/// One glyph run into the scene, optionally offset (shadows, ruby). A stroke
+/// width of `0.0` is the fill pass. `false` when the run table is full.
+///
+/// The run's rank is stamped on every glyph it produces. That is the whole of
+/// the karaoke mechanism on this side: shaping has already happened, the pen
+/// positions are final, and the rank rides beside them as data.
+fn push_run_glyphs(
+    scene: &mut CueScene,
     glyph_run: &GlyphRun<'_, CueBrush>,
-    pass: Pass,
-    offset: Vec2,
-) {
+    stroke_width: f32,
+    paint: Color,
+    offset: (f32, f32),
+) -> bool {
     let run = glyph_run.run();
-    let builder = rc
-        .glyph_run(run.font())
-        .font_size(run.font_size())
-        .hint(true)
-        .normalized_coords(run.normalized_coords());
-    let glyphs = glyph_run.positioned_glyphs().map(|g| Glyph {
-        id: g.id,
-        x: g.x + offset.x as f32,
-        y: g.y + offset.y as f32,
-    });
-    match pass {
-        Pass::Fill => builder.fill_glyphs(glyphs),
-        Pass::Stroke => builder.stroke_glyphs(glyphs),
+    let Some(idx) = scene.intern_run(
+        run.font(),
+        run.font_size(),
+        run.normalized_coords(),
+        stroke_width,
+    ) else {
+        return false;
+    };
+    let color = straight(paint);
+    let rank = glyph_run.style().brush.rank;
+    for g in glyph_run.positioned_glyphs() {
+        scene.push_glyph(idx, g.id, g.x + offset.0, g.y + offset.1, color, rank);
     }
+    true
 }
 
-/// Iterate the revealed glyph runs of the whole layout, in order.
-fn for_each_revealed_run<'a>(
+/// Iterate the glyph runs of the whole layout, in order.
+fn for_each_glyph_run<'a>(
     layout: &'a parley::Layout<CueBrush>,
     mut f: impl FnMut(&GlyphRun<'a, CueBrush>),
 ) {
@@ -1067,31 +1119,30 @@ fn for_each_revealed_run<'a>(
             let PositionedLayoutItem::GlyphRun(glyph_run) = item else {
                 continue;
             };
-            if glyph_run.style().brush.revealed {
-                f(&glyph_run);
-            }
+            f(&glyph_run);
         }
     }
 }
 
 /// A decoration (underline/strikethrough) is a filled rectangle across the
-/// run's advance.
-fn draw_decoration(
-    rc: &mut RenderContext,
+/// run's advance, drawn over the run's own fill and under the next run's, and
+/// revealed with it.
+fn push_decoration(
+    scene: &mut CueScene,
     glyph_run: &GlyphRun<'_, CueBrush>,
     color: Color,
     offset: f32,
     size: f32,
 ) {
-    rc.set_paint(color);
-    let y = (glyph_run.baseline() - offset) as f64;
-    let x = glyph_run.offset() as f64;
-    rc.fill_rect(&Rect::new(
-        x,
-        y,
-        x + glyph_run.advance() as f64,
-        y + size as f64,
-    ));
+    let y = glyph_run.baseline() - offset;
+    let x = glyph_run.offset();
+    scene.push_rect(
+        [x, y, x + glyph_run.advance(), y + size],
+        0.0,
+        0.0,
+        straight(color),
+        glyph_run.style().brush.rank,
+    );
 }
 
 /// The rectangle the file's coordinates are relative to (the video rect, or the
@@ -1104,13 +1155,74 @@ struct Frame {
     h: f32,
 }
 
+/// Where a cue wraps and aligns, in window coordinates.
+///
+/// [`Band::frame`] is the picture, and every PROPORTIONAL quantity resolves
+/// against it: font sizes, margins, `\pos`. [`Band::x0`]/[`Band::x1`] are the
+/// EXTENT the cue lays out inside, which is a different thing: the picture
+/// inset by the file's own left/right margins, or the whole window when the
+/// window-margins policy applies. libass splits the two the same way, in
+/// `x2scr_left`/`x2scr_right`: the scale is always `orig_width / PlayResX`,
+/// and `use_margins` only moves where the result may land.
+#[derive(Debug, Clone, Copy)]
+struct Band {
+    frame: Frame,
+    x0: f32,
+    x1: f32,
+    /// Whether an unpositioned cue may sit in the window's letterbox bars.
+    window_margins: bool,
+}
+
+impl Band {
+    fn new(ir: &CueIr, house: &CueStyle, frame: Frame, cw: f32) -> Self {
+        let l = &ir.layout;
+        // "The file said nothing": no explicit placement of any kind. Note the
+        // anchor alone (SSA alignment, {\an8}) counts as placement, which is
+        // what keeps ASS cues on the picture while plain text may use the
+        // bars: mpv's `sub-ass-use-margins=no` / `sub-use-margins=yes` pair.
+        let positioned = l.origin.is_some()
+            || l.position.is_some()
+            || l.line.is_some()
+            || l.margins.is_some()
+            || l.anchor.is_some();
+        let window_margins = house.use_window_margins && !positioned;
+        // SSA MarginL/MarginR, percent of the picture, inset the band.
+        let (ml, mr) = l.margins.map_or((0.0, 0.0), |m| {
+            (
+                frame.w * m.left.clamp(0.0, 100.0) / 100.0,
+                frame.w * m.right.clamp(0.0, 100.0) / 100.0,
+            )
+        });
+        let whole = if window_margins {
+            (0.0, cw)
+        } else {
+            (frame.x, frame.x + frame.w)
+        };
+        let (x0, x1) = (whole.0 + ml, whole.1 - mr);
+        // Margins out of a subtitle file can meet or cross, and NaN fails
+        // every comparison: fall back to the whole band rather than laying
+        // out into nothing.
+        let (x0, x1) = if x1 - x0 >= 1.0 { (x0, x1) } else { whole };
+        Self {
+            frame,
+            x0,
+            x1,
+            window_margins,
+        }
+    }
+
+    fn width(&self) -> f32 {
+        self.x1 - self.x0
+    }
+}
+
 /// Place the finished raster, in window coordinates.
 ///
 /// Everything the subtitle file expresses is resolved inside the *frame* (the
 /// picture): an explicit SSA origin (`\pos`) pins the anchor point exactly,
-/// then WebVTT `position`/`line` percentages, then the anchor's own frame
-/// region with the IR margins. A cue the file says nothing about is house
-/// policy: bottom-center of the frame, or of the *window* when
+/// then WebVTT `position`/`line` percentages, then the anchor's own place in
+/// the [`Band`] the IR margins carve out. A cue the file says nothing about is
+/// house policy: bottom-center of the frame, or of the *window* when
 /// [`CueStyle::use_window_margins`] is set, letting default subtitles sit in
 /// the letterbox bars instead of covering the picture (the margin itself stays
 /// proportional to the picture so the look does not change with the bars).
@@ -1118,22 +1230,15 @@ fn place(
     ir: &CueIr,
     house: &CueStyle,
     (cw, ch): (f32, f32),
-    frame: Frame,
+    band: Band,
     w: f32,
     h: f32,
 ) -> (i32, i32) {
     let anchor = ir.layout.anchor.unwrap_or(ir::Anchor::BottomCenter);
     let (col, row) = anchor_cell(anchor);
     let l = &ir.layout;
-    // "The file said nothing": no explicit placement of any kind. Note the
-    // anchor alone (SSA alignment, {\an8}) keeps frame placement: a
-    // top-anchored cue belongs over the picture's top, not the window's.
-    let positioned = l.origin.is_some()
-        || l.position.is_some()
-        || l.line.is_some()
-        || l.margins.is_some()
-        || l.anchor.is_some();
-    let window_margins = house.use_window_margins && !positioned;
+    let frame = band.frame;
+    let window_margins = band.window_margins;
 
     let x = if let Some((ox, _)) = l.origin {
         frame.x + frame.w * ox / 100.0 - w * col
@@ -1153,8 +1258,11 @@ fn place(
         };
         frame.x + frame.w * p / 100.0 - w * at
     } else {
-        // Centered on the picture (which is centered in the window anyway).
-        frame.x + (frame.w - w) / 2.0
+        // Aligned inside the band: a left-anchored cue at its left edge, a
+        // right-anchored one at its right, centered between them otherwise.
+        // libass' three halign arms, which is the only thing MarginL/MarginR
+        // do for an unpositioned event.
+        band.x0 + (band.width() - w) * col
     };
     let y = if let Some((_, oy)) = l.origin {
         frame.y + frame.h * oy / 100.0 - h * row
@@ -1255,15 +1363,16 @@ fn pt_to_px(pt: f32) -> f32 {
 }
 
 /// IR font size → pixels: absolute points via the CSS factor, scales against
-/// the house base size, frame-height percents (SSA) against the canvas. IR
-/// values are attacker-controlled f32s (a CSS `font-size: NaN%` parses), so the
-/// result is clamped to something a raster can hold, and anything non-finite
-/// falls back to the base size.
-fn font_px(size: Option<ir::FontSize>, base_px: f32, canvas_h: f32) -> f32 {
+/// the house base size, frame-height percents (SSA) against the PICTURE, which
+/// is libass' `font_scale = orig_height / PlayResY` and mpv's
+/// `sub-ass-scale-with-window=no` default. IR values are attacker-controlled
+/// f32s (a CSS `font-size: NaN%` parses), so the result is clamped to something
+/// a raster can hold, and anything non-finite falls back to the base size.
+fn font_px(size: Option<ir::FontSize>, base_px: f32, frame_h: f32) -> f32 {
     let px = match size {
         Some(ir::FontSize::Points(pt)) => pt_to_px(pt),
         Some(ir::FontSize::Scale(s)) => base_px * s,
-        Some(ir::FontSize::FrameHeightPercent(p)) => canvas_h * p / 100.0,
+        Some(ir::FontSize::FrameHeightPercent(p)) => frame_h * p / 100.0,
         None => base_px,
     };
     if px.is_finite() {
@@ -1271,6 +1380,37 @@ fn font_px(size: Option<ir::FontSize>, base_px: f32, canvas_h: f32) -> f32 {
     } else {
         base_px
     }
+}
+
+/// The font stack a subtitle's family name resolves to: what the file asked
+/// for, then the platform sans-serif as the last resort.
+///
+/// The name is parsed as a CSS family list, so generics are recognised rather
+/// than looked up as families (`sans-serif` IS a generic, and subtitle files
+/// name it constantly, `Style: Default,sans-serif,53` in SSA) and a WebVTT
+/// `font-family: Arial, sans-serif` keeps all of its entries instead of only
+/// the first.
+///
+/// The generic tail is not cosmetic. A stack whose every entry is
+/// unresolvable resolves to no font at all, and fontique then picks a face per
+/// CHARACTER instead. That per-character fallback hands ASCII digits to the
+/// colour emoji face, because `0` to `9` carry the Unicode Emoji property as
+/// keycap bases, so "It's a little after 12" comes back with the letters in a
+/// text face and the digits as emoji. Ending the stack in a generic keeps the
+/// line on one real face and leaves fallback to the characters that genuinely
+/// need it.
+fn family_stack(family: &str) -> FontFamily<'static> {
+    const SANS: FontFamilyName<'static> = FontFamilyName::Generic(GenericFamily::SansSerif);
+    let mut names: Vec<FontFamilyName<'static>> = FontFamilyName::parse_css_list(family)
+        .filter_map(|name| name.ok().map(FontFamilyName::into_owned))
+        .collect();
+    if names.last() != Some(&SANS) {
+        names.push(SANS);
+    }
+    if names.len() == 1 {
+        return FontFamily::Single(names.pop().expect("one name"));
+    }
+    FontFamily::List(Cow::Owned(names))
 }
 
 fn font_style(style: ir::FontStyle) -> parley::FontStyle {
@@ -1290,46 +1430,6 @@ fn alignment(align: Option<ir::TextAlign>) -> Alignment {
         Some(ir::TextAlign::Left) => Alignment::Left,
         Some(ir::TextAlign::Right) => Alignment::Right,
     }
-}
-
-/// `⌈255/a⌉` in 16.16 fixed point, per alpha value: `(v * RECIP[a]) >> 16`
-/// rounds to within 1 LSB of `v * 255 / a` without a per-pixel division.
-static UNPREMUL_RECIP: [u32; 256] = {
-    let mut table = [0u32; 256];
-    let mut a = 1usize;
-    while a < 256 {
-        table[a] = ((255u32 << 16) + (a as u32) / 2) / (a as u32);
-        a += 1;
-    }
-    table
-};
-
-/// vello_cpu's pixmap is premultiplied RGBA; overlays are tightly packed
-/// straight-alpha RGBA (`Overlay::pixels`, uploaded as `PL_ALPHA_INDEPENDENT`).
-///
-/// This runs over every pixel of every raster (~20% of a raster's cost before
-/// it was tuned), so the two dominant alpha populations are fast-pathed (fully
-/// transparent padding and fully opaque glyph interiors) and the remainder
-/// uses the reciprocal table instead of three integer divisions per pixel.
-fn premul_to_straight_rgba(data: &[u8]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(data.len());
-    for px in data.as_chunks::<4>().0 {
-        let alpha = px[3];
-        match alpha {
-            0 => out.extend_from_slice(&[0, 0, 0, 0]),
-            255 => out.extend_from_slice(px),
-            _ => {
-                let recip = UNPREMUL_RECIP[alpha as usize];
-                let unpremultiply =
-                    |value: u8| -> u8 { ((value as u32 * recip + (1 << 15)) >> 16).min(255) as u8 };
-                out.push(unpremultiply(px[0]));
-                out.push(unpremultiply(px[1]));
-                out.push(unpremultiply(px[2]));
-                out.push(alpha);
-            }
-        }
-    }
-    out
 }
 
 /// Map C0 controls (except `\n`) and DEL to a space: fonts carry no glyph for
@@ -1365,6 +1465,7 @@ pub fn ir_eq(a: &Arc<CueIr>, b: &Arc<CueIr>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cue_scene::premul_to_straight_rgba;
 
     // ---- ruby annotations ----
 
@@ -1717,6 +1818,19 @@ mod tests {
         }
     }
 
+    /// `place` against a canvas, with the band the scene builder would have
+    /// built for the same cue.
+    fn placed(
+        ir: &CueIr,
+        house: &CueStyle,
+        canvas: (f32, f32),
+        frame: Frame,
+        size: (f32, f32),
+    ) -> (i32, i32) {
+        let band = Band::new(ir, house, frame, canvas.0);
+        place(ir, house, canvas, band, size.0, size.1)
+    }
+
     /// Bug review #6 upstream: `LinePosition::Line` used to fall through to the
     /// bottom strip; `line:0` means the frame's top.
     #[test]
@@ -1730,10 +1844,10 @@ mod tests {
         let style = CueStyle::default();
         let mut ir = CueIr::from_plain_text("one line");
         ir.layout.line = Some(ir::LinePosition::Line(0));
-        let (_, y) = place(&ir, &style, (640.0, 360.0), frame, 100.0, 40.0);
+        let (_, y) = placed(&ir, &style, (640.0, 360.0), frame, (100.0, 40.0));
         assert_eq!(y, 0, "line:0 sits at the frame top");
         ir.layout.line = Some(ir::LinePosition::Line(-1));
-        let (_, y) = place(&ir, &style, (640.0, 360.0), frame, 100.0, 40.0);
+        let (_, y) = placed(&ir, &style, (640.0, 360.0), frame, (100.0, 40.0));
         assert_eq!(y, 320, "line:-1 is bottom-aligned");
     }
 
@@ -1748,13 +1862,12 @@ mod tests {
         };
         let mut ir = CueIr::from_plain_text("sign");
         ir.layout.origin = Some((50.0, 50.0));
-        let (x, y) = place(
+        let (x, y) = placed(
             &ir,
             &CueStyle::default(),
             (640.0, 360.0),
             frame,
-            100.0,
-            40.0,
+            (100.0, 40.0),
         );
         // Default anchor is bottom-center: the anchor point sits at the
         // picture's center (320, 180 in window coords).
@@ -1772,13 +1885,12 @@ mod tests {
             h: 270.0,
         };
         let ir = CueIr::from_plain_text("plain subtitle");
-        let (_, y) = place(
+        let (_, y) = placed(
             &ir,
             &CueStyle::default(),
             (640.0, 360.0),
             frame,
-            200.0,
-            40.0,
+            (200.0, 40.0),
         );
         assert!(y + 40 > 315, "window-margins policy must use the bar");
 
@@ -1786,10 +1898,351 @@ mod tests {
             use_window_margins: false,
             ..CueStyle::default()
         };
-        let (_, y) = place(&ir, &over_video, (640.0, 360.0), frame, 200.0, 40.0);
+        let (_, y) = placed(&ir, &over_video, (640.0, 360.0), frame, (200.0, 40.0));
         assert!(
             y + 40 <= 315,
             "without window margins the cue stays on the picture"
+        );
+    }
+
+    // ---- placement oracle: hand-computed libass positions ----
+    //
+    // The reference is libass' `ass_render_event`, whose whole placement model
+    // for an unpositioned event is three scalars:
+    //
+    //   x2scr_left(MarginL)            = MarginL * orig_w / PlayResX + left
+    //   x2scr_right(PlayResX-MarginR)  = orig_w - MarginR*orig_w/PlayResX + left
+    //   y2scr_bottom(PlayResY-MarginV) = orig_h - MarginV*orig_h/PlayResY + top
+    //
+    // with `orig_w`/`orig_h` the PICTURE and `left`/`top` the letterbox bars,
+    // and `use_margins` replacing the two x terms by the whole window and the
+    // y term by the window bottom. `Margins` in the IR is already those
+    // PlayRes ratios as percentages, so PlayRes never appears below: a
+    // MarginV of 20 at PlayResY 804 is 2.4876%, and that is the number a
+    // subtitle file's own units reduce to.
+
+    /// A 2.40:1 picture letterboxed in a 1920x1080 window, the shape most of
+    /// the corpus has.
+    const SCOPE: Frame = Frame {
+        x: 0.0,
+        y: 140.0,
+        w: 1920.0,
+        h: 800.0,
+    };
+    const WINDOW: (f32, f32) = (1920.0, 1080.0);
+
+    /// One ASS dialogue event's layout: an alignment and the style margins,
+    /// both as the parser normalises them out of `PlayRes` space.
+    fn ass_cue(anchor: ir::Anchor, margins: (f32, f32, f32)) -> CueIr {
+        let mut ir = CueIr::from_plain_text("dialogue");
+        ir.layout.anchor = Some(anchor);
+        ir.layout.margins = Some(ir::Margins {
+            left: margins.0,
+            right: margins.1,
+            vertical: margins.2,
+        });
+        ir
+    }
+
+    /// `\pos` is `x * orig_w / PlayResX + left_bar`, exactly, for every anchor
+    /// cell. Checked on a letterboxed and on a pillarboxed picture so an
+    /// origin that silently used the window would fail on one of them.
+    #[test]
+    fn oracle_ass_pos_is_the_libass_point() {
+        let house = CueStyle::default();
+        let (w, h) = (200.0, 60.0);
+        // \pos(480,201) in a 1920x804 script over the 1920x800 picture: 25%
+        // and 25% of the frame.
+        for (anchor, cell) in [
+            (ir::Anchor::TopLeft, (0.0, 0.0)),
+            (ir::Anchor::Center, (0.5, 0.5)),
+            (ir::Anchor::BottomRight, (1.0, 1.0)),
+        ] {
+            let mut ir = CueIr::from_plain_text("sign");
+            ir.layout.origin = Some((25.0, 25.0));
+            ir.layout.anchor = Some(anchor);
+            let (x, y) = placed(&ir, &house, WINDOW, SCOPE, (w, h));
+            // x2scr_pos / y2scr_pos, then the anchor cell of the cue box.
+            let want = (
+                (SCOPE.x + SCOPE.w * 0.25 - w * cell.0) as i32,
+                (SCOPE.y + SCOPE.h * 0.25 - h * cell.1) as i32,
+            );
+            assert_eq!((x, y), want, "{anchor:?}");
+        }
+
+        // The same script coordinates against a 4:3 picture pillarboxed in the
+        // same window: the left bar is part of the answer.
+        let pillar = Frame {
+            x: 240.0,
+            y: 0.0,
+            w: 1440.0,
+            h: 1080.0,
+        };
+        let mut ir = CueIr::from_plain_text("sign");
+        ir.layout.origin = Some((25.0, 25.0));
+        ir.layout.anchor = Some(ir::Anchor::TopLeft);
+        let (x, y) = placed(&ir, &house, WINDOW, pillar, (w, h));
+        assert_eq!((x, y), (240 + 360, 270));
+    }
+
+    /// MarginL/MarginR are the horizontal band an unpositioned event aligns
+    /// in, which is the only thing libass does with them. Every alignment
+    /// column, hand-computed.
+    #[test]
+    fn oracle_ass_margins_are_the_alignment_band() {
+        let house = CueStyle::default();
+        let w = 300.0;
+        // MarginL 192px, MarginR 96px of a 1920px-wide picture.
+        let (ml, mr) = (10.0, 5.0);
+        let (left, right) = (SCOPE.x + 192.0, SCOPE.x + SCOPE.w - 96.0);
+        for (anchor, want) in [
+            (ir::Anchor::BottomLeft, left),
+            (ir::Anchor::BottomCenter, left + (right - left - w) / 2.0),
+            (ir::Anchor::BottomRight, right - w),
+        ] {
+            let ir = ass_cue(anchor, (ml, mr, 5.0));
+            let (x, _) = placed(&ir, &house, WINDOW, SCOPE, (w, 60.0));
+            assert_eq!(x, want as i32, "{anchor:?}");
+        }
+    }
+
+    /// MarginV is measured from the picture's edge for an ASS cue, and from
+    /// the window's for a plain-text one. The two numbers are the whole of the
+    /// user-visible change this branch made to a letterboxed movie.
+    #[test]
+    fn oracle_marginv_against_picture_then_window() {
+        let house = CueStyle::default();
+        let h = 60.0;
+        // MarginV 20 at PlayResY 804 is 2.4876%, so 19.9px of the 800px
+        // picture. libass: y2scr_bottom without use_margins.
+        let mv = 20.0 / 804.0 * 100.0;
+        let ir = ass_cue(ir::Anchor::BottomCenter, (0.0, 0.0, mv));
+        let (_, y) = placed(&ir, &house, WINDOW, SCOPE, (300.0, h));
+        let want = SCOPE.y + SCOPE.h - SCOPE.h * mv / 100.0 - h;
+        assert_eq!(y, want as i32);
+        assert_eq!(y, 860, "the picture's bottom is 940, less 19.9 and 60");
+
+        // Top-anchored: the same distance from the picture's top edge.
+        let ir = ass_cue(ir::Anchor::TopCenter, (0.0, 0.0, mv));
+        let (_, y) = placed(&ir, &house, WINDOW, SCOPE, (300.0, h));
+        assert_eq!(y, (SCOPE.y + SCOPE.h * mv / 100.0) as i32);
+        assert_eq!(y, 159);
+
+        // Plain text says nothing, so the house margin applies and the cue may
+        // sit in the bottom bar. libass: y2scr_bottom WITH use_margins is the
+        // window bottom, and the margin still scales with the picture.
+        let plain = CueIr::from_plain_text("plain");
+        let (_, y) = placed(&plain, &house, WINDOW, SCOPE, (300.0, h));
+        let mv = SCOPE.h * house.bottom_margin_fraction;
+        assert_eq!(y, (WINDOW.1 - mv - h) as i32);
+        assert_eq!(y, 988, "1080 less 32px of margin and the 60px cue");
+    }
+
+    /// Anamorphic content: the rect is the SQUARE-PIXEL picture, so a 720x576
+    /// DVD frame with a 16:15 pixel aspect places against the 768x576 picture
+    /// it plays as. Nothing in placement knows about pixel aspect, which is
+    /// the point: it is the presenter's job to hand over a corrected rect.
+    #[test]
+    fn oracle_anamorphic_places_against_the_display_rect() {
+        let house = CueStyle::default();
+        // 768x576 fitted into 1920x1080 is 1440x1080, pillared by 240.
+        let display = Frame {
+            x: 240.0,
+            y: 0.0,
+            w: 1440.0,
+            h: 1080.0,
+        };
+        // The same clip taken at its coded 720x576 would fit to 1350x1080.
+        let coded = Frame {
+            x: 285.0,
+            y: 0.0,
+            w: 1350.0,
+            h: 1080.0,
+        };
+        let mut ir = CueIr::from_plain_text("sign");
+        ir.layout.origin = Some((100.0, 50.0));
+        ir.layout.anchor = Some(ir::Anchor::TopRight);
+        let (x, _) = placed(&ir, &house, WINDOW, display, (200.0, 60.0));
+        assert_eq!(x, 240 + 1440 - 200, "the picture's right edge");
+        let (coded_x, _) = placed(&ir, &house, WINDOW, coded, (200.0, 60.0));
+        assert_ne!(coded_x, x, "coded dims would place it 45px short");
+    }
+
+    /// The window-margins policy is BOTH axes in libass (`x2scr_*` take the
+    /// same branch as `y2scr_*`), so a plain cue over a pillarboxed picture
+    /// wraps at the window's width, not the picture's. Anchoring the wrap to
+    /// the picture is what made 4:3 content break lines it never used to.
+    #[test]
+    fn oracle_window_margins_widen_both_axes() {
+        let house = CueStyle::default();
+        let pillar = Frame {
+            x: 240.0,
+            y: 0.0,
+            w: 1440.0,
+            h: 1080.0,
+        };
+        let plain = CueIr::from_plain_text("plain");
+        let band = Band::new(&plain, &house, pillar, WINDOW.0);
+        assert_eq!((band.x0, band.x1), (0.0, 1920.0));
+
+        // An ASS cue is positioned by its alignment, so it keeps the picture.
+        let ass = ass_cue(ir::Anchor::BottomCenter, (0.0, 0.0, 5.0));
+        let band = Band::new(&ass, &house, pillar, WINDOW.0);
+        assert_eq!((band.x0, band.x1), (240.0, 1680.0));
+
+        // ...and opting out of the policy keeps plain text on the picture too.
+        let over_video = CueStyle {
+            use_window_margins: false,
+            ..house
+        };
+        let band = Band::new(&plain, &over_video, pillar, WINDOW.0);
+        assert_eq!((band.x0, band.x1), (240.0, 1680.0));
+    }
+
+    /// Margins that meet or cross, and NaN, leave a band the cue can still lay
+    /// out in. Every one of these comes straight out of a subtitle file.
+    #[test]
+    fn oracle_hostile_margins_keep_a_band() {
+        let house = CueStyle::default();
+        for (l, r) in [
+            (60.0, 60.0),
+            (100.0, 100.0),
+            (f32::NAN, 0.0),
+            (0.0, f32::NAN),
+            (-50.0, 0.0),
+            (1e30, 1e30),
+        ] {
+            let ir = ass_cue(ir::Anchor::BottomCenter, (l, r, 5.0));
+            let band = Band::new(&ir, &house, SCOPE, WINDOW.0);
+            assert!(
+                band.width() >= 1.0 && band.x0.is_finite() && band.x1.is_finite(),
+                "{l} / {r} left no band"
+            );
+        }
+    }
+
+    /// The wrap width follows the band, so the three sources agree with what
+    /// libass wraps at: WebVTT `size` of the band, the SSA margin band whole,
+    /// and the house fraction when the file said nothing.
+    #[test]
+    fn oracle_wrap_width_follows_the_band() {
+        let mut ctx = RasterCtx::new();
+        let house = CueStyle::default();
+        let rect = Some(VideoRect {
+            x: 0,
+            y: 140,
+            width: 1920,
+            height: 800,
+        });
+        // A cue too long to fit on one line at any of the three widths, so the
+        // surface reports the wrap it was given.
+        let long = "word ".repeat(120);
+
+        let width_of = |ctx: &mut RasterCtx, ir: &CueIr| {
+            ctx.build_scene(ir, &house, (1920, 1080), rect)
+                .expect("the cue rasterizes")
+                .size[0] as f32
+        };
+
+        let plain = CueIr::from_plain_text(&long);
+        let house_wrap = width_of(&mut ctx, &plain);
+
+        let mut sized = plain.clone();
+        sized.layout.size = Some(50.0);
+        let half = width_of(&mut ctx, &sized);
+        assert!(
+            half < house_wrap * 0.62,
+            "size:50% must wrap near half the band, got {half} against {house_wrap}"
+        );
+
+        // SSA margins ARE the wrap: 1% each side of the picture leaves 98% of
+        // 1920, wider than the house 90%.
+        let mut margined = plain.clone();
+        margined.layout.anchor = Some(ir::Anchor::BottomCenter);
+        margined.layout.margins = Some(ir::Margins {
+            left: 1.0,
+            right: 1.0,
+            vertical: 5.0,
+        });
+        assert!(
+            width_of(&mut ctx, &margined) > house_wrap,
+            "the margin band is wider than the house wrap"
+        );
+    }
+
+    // ---- font stacks ----
+
+    /// Every stack ends in a generic, and a generic name is one rather than a
+    /// family to look up.
+    #[test]
+    fn a_family_name_resolves_to_a_stack_that_ends_in_a_generic() {
+        let sans = FontFamilyName::Generic(GenericFamily::SansSerif);
+        let generic_only = FontFamily::Single(sans.clone());
+        // What SSA files carry: `Style: Default,sans-serif,53`.
+        assert_eq!(family_stack("sans-serif"), generic_only);
+        // Nothing to parse is the platform sans too.
+        assert_eq!(family_stack(""), generic_only);
+        // A real name keeps its place and gains the generic behind it.
+        assert_eq!(
+            family_stack("Arial"),
+            FontFamily::List(Cow::Owned(vec![
+                FontFamilyName::Named(Cow::Owned("Arial".to_owned())),
+                sans.clone(),
+            ]))
+        );
+        // A WebVTT CSS list keeps every entry and does not grow a second
+        // generic on the end.
+        assert_eq!(family_stack("Arial, sans-serif"), family_stack("Arial"));
+        // Another generic is honoured as itself, with sans behind it.
+        assert_eq!(
+            family_stack("monospace"),
+            FontFamily::List(Cow::Owned(vec![
+                FontFamilyName::Generic(GenericFamily::Monospace),
+                sans,
+            ]))
+        );
+    }
+
+    /// Digits and letters of one cue land on ONE face.
+    ///
+    /// A stack of a single unresolvable name resolves to no font, and fontique
+    /// then picks a face per character. ASCII digits carry the Unicode Emoji
+    /// property (they are keycap bases), so they used to come back from the
+    /// colour emoji face while the letters stayed in a text face, which is what
+    /// drew "It's a little after 12" with two emoji digits.
+    #[test]
+    fn a_cue_naming_sans_serif_keeps_its_digits_on_the_text_face() {
+        let mut ctx = RasterCtx::new();
+        let named = CueStyle {
+            font_family: Some("sans-serif".to_owned()),
+            ..CueStyle::default()
+        };
+        let faces = |ctx: &mut RasterCtx, text: &str, house: &CueStyle| {
+            let scene = ctx
+                .build_scene(&CueIr::from_plain_text(text), house, (1280, 720), None)
+                .expect("the cue rasterizes");
+            let mut fonts: Vec<parley::FontData> = Vec::new();
+            for run in &scene.runs {
+                if !fonts.contains(&run.font) {
+                    fonts.push(run.font.clone());
+                }
+            }
+            assert!(!fonts.is_empty(), "{text}: the cue has no runs");
+            fonts
+        };
+
+        let letters = faces(&mut ctx, "after", &named);
+        let digits = faces(&mut ctx, "12", &named);
+        assert_eq!(
+            digits, letters,
+            "digits and letters of a sans-serif cue must share one face"
+        );
+        // And it is the face the house generic picks, not some fallback that
+        // happens to cover both.
+        assert_eq!(
+            digits,
+            faces(&mut ctx, "12", &CueStyle::default()),
+            "a cue naming sans-serif must land where the generic does"
         );
     }
 

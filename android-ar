@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# NDK llvm-ar for cc-rs cross builds, resolved like the linker wrappers.
+set -eu
+ndk="${GSTREAMER_SRC_ANDROID_NDK:-${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}}"
+if [ -z "$ndk" ]; then
+  base="${ANDROID_HOME:-$HOME/Android/Sdk}/ndk"
+  ndk="$base/$(ls "$base" | sort -V | tail -1)"
+fi
+host=linux-x86_64
+[ "$(uname -s)" = Darwin ] && host=darwin-x86_64
+exec "$ndk/toolchains/llvm/prebuilt/$host/bin/llvm-ar" "$@"

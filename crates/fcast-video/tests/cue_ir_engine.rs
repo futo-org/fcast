@@ -425,15 +425,18 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 Dialogue: 0,0:00:00.00,0:00:04.00,Default,,0,0,0,,{\\k100}first {\\k100}second {\\k100}third
 ";
 
-/// KARAOKE: `\k` syllables become per-span reveal times, and the engine re-keys
-/// its raster as the frame clock passes each one.
+/// KARAOKE: `\k` syllables become per-span reveal times, and the engine raises
+/// the reveal rank it paints its scene at as the frame clock passes each one.
 ///
-/// Two things are being held down at once. The obvious one is that the picture
-/// CHANGES at a syllable boundary, more ink, same geometry, because an
+/// Three things are being held down at once. The obvious one is that the
+/// picture CHANGES at a syllable boundary, more ink, same geometry, because an
 /// unrevealed span still occupies its space so the line cannot reflow. The
-/// subtle one is that it never goes BLANK doing it: a re-key keeps the previous
-/// raster on screen (`RasterState::Stale`) until the replacement lands, which
-/// is the difference between a line that fills in and a line that strobes.
+/// subtle one is that it never goes BLANK doing it: the syllable before keeps
+/// showing until the new one is painted, which is the difference between a line
+/// that fills in and a line that strobes.
+///
+/// The third, on a real `\k` file: the whole sweep costs ONE layout. The cue
+/// used to be re-keyed and re-laid-out per syllable.
 #[test]
 fn karaoke_syllables_reveal_progressively_without_blinking() {
     let cues = parse_as_cue_ir("rsssaparse", "application/x-ssa", KARAOKE_ASS.as_bytes());
@@ -460,6 +463,8 @@ fn karaoke_syllables_reveal_progressively_without_blinking() {
     // Before any syllable has fired.
     engine.overlays_for(Some(gst::ClockTime::from_mseconds(100)));
     let first = ready_overlay(&engine);
+    let layouts = engine.scene_builds();
+    assert_eq!(layouts, 1, "the cue was laid out {layouts} times, not once");
 
     // Past the first \k boundary (100 centiseconds = 1s).
     engine.overlays_for(Some(gst::ClockTime::from_mseconds(1_500)));
@@ -500,6 +505,29 @@ fn karaoke_syllables_reveal_progressively_without_blinking() {
         "revealing a syllable must paint MORE ink, got {} then {}",
         ink(&first),
         ink(&later)
+    );
+
+    // THE GATE. Walk the rest of the reveal and count layouts: a syllable is a
+    // threshold on the scene already built, so this must not move. It is
+    // asserted after the sweep rather than before it because the count is what
+    // the wave is for.
+    for rt in [2_500u64, 3_500] {
+        engine.overlays_for(Some(gst::ClockTime::from_mseconds(rt)));
+        assert!(
+            !engine.current_overlays().is_empty(),
+            "the line blanked crossing the threshold at {rt} ms"
+        );
+    }
+    assert_eq!(
+        engine.scene_builds(),
+        layouts,
+        "the karaoke sweep laid the cue out again; a reveal step must cost a paint \
+         and not a layout"
+    );
+    assert_eq!(
+        engine.cached_rasters(),
+        1,
+        "a reveal step keyed a scene of its own"
     );
 }
 

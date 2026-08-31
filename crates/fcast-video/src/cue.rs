@@ -26,6 +26,7 @@ use tracing::{debug, info, warn};
 
 use crate::{
     cue_ir::{self, CueIr, CueStyle, VideoRect},
+    cue_scene::{ALL_REVEALED, CueScene, VelloBackend},
     subpic::{BitmapFormat, BitmapPacket, DisplayUpdate, SubpicDecoder},
     video::{Overlay, OverlaySpace},
 };
@@ -82,6 +83,15 @@ const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 /// arrived are the ones the viewer has not read yet.
 const MAX_ACTIVE_CUES: usize = 8;
 
+/// Inline capacity of the overlay set the GL lane reads per frame.
+///
+/// Text cues alone are bounded by [`MAX_ACTIVE_CUES`], but a bitmap set adds a
+/// region per subpicture on top, so this cannot be made spill-proof the way the
+/// scene set is. Four covers a text cue beside a two-region display set, which
+/// is what real sources carry; past it the frame pays one allocation, which is
+/// what it used to pay at two.
+const MAX_OVERLAYS: usize = 4;
+
 /// Whether the engine shows exactly one text cue at a time.
 ///
 /// Lever: `FCAST_SINGLE_ACTIVE_CUE=1` (set = on). It restores the
@@ -136,11 +146,19 @@ fn paused_cue_lookahead() -> gst::ClockTime {
     }
 }
 
-/// Rasters kept around after they stop being active. Small on purpose. It
+/// Scenes kept around after they stop being active. Small on purpose. It
 /// exists so a re-show (a track toggled off and on, a seek back into the same
 /// cue, a canvas that returns to a previous size) is instant, not so that a
 /// whole subtitle file stays resident.
-const RASTER_CACHE_LIMIT: usize = 8;
+const SCENE_CACHE_LIMIT: usize = 8;
+
+/// Rasters kept for the lanes that still take pixels (see [`PixelCache`]).
+///
+/// The same eight as the scene cache above and for the same reason, but this
+/// one is where the MEMORY is: a scene is a few thousand glyph positions, a
+/// raster is megabytes. Eight is what the raster cache held before the scene
+/// split, so the budget is unchanged.
+const PIXEL_CACHE_LIMIT: usize = 8;
 
 /// The text formats the renderer accepts.
 ///
@@ -219,6 +237,12 @@ pub fn cue_is_in_future(start_rt: gst::ClockTime, frame_rt: gst::ClockTime) -> b
 
 /// A rendered cue: tightly packed RGBA with straight (non-premultiplied) alpha,
 /// placed in window coordinates.
+///
+/// One paint of a [`CueScene`] at one reveal rank, produced by the worker's
+/// vello_cpu backend for the lanes that take [`Overlay`]s (the wayland
+/// subsurface sink and android). The
+/// engine's own artifact is the scene, which is what the dodvg lanes will draw
+/// directly.
 #[derive(Debug)]
 pub struct Raster {
     /// Shared with every [`Overlay`] built from this raster. A cue strip is
@@ -266,38 +290,94 @@ impl Raster {
     }
 }
 
-/// What a raster is fully determined by: the cue's content, the canvas it is
-/// laid out against, the house style, where the picture sits, and for karaoke
-/// how many reveal steps have passed. Same key means byte-identical pixels,
-/// which is what makes the cache sound.
+/// One cue on screen, as a display list plus where it ended up.
 ///
-/// `style`/`video_rect`/`step` vary every arm's output now that one
-/// rasterizer draws them all; a style change costs a cache flush, which is a
-/// user-settings action, not a per-frame one.
+/// What a SCENE consumer gets instead of an [`Overlay`]: the dodvg lanes draw
+/// the scene straight into their frame, so nothing here has been painted and
+/// the engine's vello_cpu backend is never asked for it (see
+/// [`CueEngine::set_wants_pixels`]).
+#[derive(Debug, Clone)]
+pub struct ShownScene {
+    pub scene: Arc<CueScene>,
+    /// Reveal threshold: rank <= this draws. [`ALL_REVEALED`] is the whole cue.
+    pub rank: u16,
+    /// Where the cue lands in window coordinates, after stacking. `x` is the
+    /// scene's own; `y` may have moved up out of an earlier cue's way, exactly
+    /// as [`active_overlays`] moves a raster.
+    pub x: i32,
+    pub y: i32,
+}
+
+/// What a scene is fully determined by: the cue's content, the canvas it is
+/// laid out against, the house style, and where the picture sits. Same key
+/// means the same display list, which is what makes the cache sound.
+///
+/// KARAOKE IS NOT IN HERE, and that is the wave 5 change. A reveal step used to
+/// be part of this key, so every syllable was a different key, a different
+/// layout and a different raster. A scene now holds the whole cue with a rank
+/// per glyph ([`CueScene::glyph_rank`]) and the step is a threshold applied
+/// when it is painted, so a karaoke line lays out exactly once.
+///
+/// `style`/`video_rect` vary every arm's output now that one rasterizer draws
+/// them all; a style change costs a cache flush, which is a user-settings
+/// action, not a per-frame one.
 ///
 /// Equality is structural with an `Arc` pointer fast path (a re-shown cue is
 /// usually the same allocation). No `Eq`/`Hash`: [`CueIr`] and [`CueStyle`]
 /// hold `f32`s, and the linear-scan cache never needed them.
 #[derive(Debug, Clone)]
-struct RasterKey {
+struct SceneKey {
     text: String,
     format: TextFormat,
     canvas: (u32, u32),
     style: Arc<CueStyle>,
     video_rect: Option<VideoRect>,
-    /// Number of reveal thresholds at or before the frame clock (0 = only the
-    /// un-timed spans are visible). Always 0 for non-karaoke cues.
-    step: usize,
 }
 
-impl PartialEq for RasterKey {
+impl PartialEq for SceneKey {
     fn eq(&self, other: &Self) -> bool {
+        self.as_ref() == *other
+    }
+}
+
+impl SceneKey {
+    fn as_ref(&self) -> SceneKeyRef<'_> {
+        SceneKeyRef {
+            text: &self.text,
+            format: &self.format,
+            canvas: self.canvas,
+            style: &self.style,
+            video_rect: self.video_rect,
+        }
+    }
+}
+
+/// A [`SceneKey`] that has not been built. The same five fields, borrowed from
+/// the cue and the state they would be copied out of.
+///
+/// The per frame boundary warm asks the scene cache one question ("is the next
+/// cue built yet") and throws the key away. Building an owned key to ask it
+/// cost a `String` clone on every frame of every file with a cue still pending,
+/// which is every file. Borrowing makes the probe free and leaves the clone on
+/// the path that genuinely needs an owned key: handing a job to the worker.
+#[derive(Clone, Copy)]
+struct SceneKeyRef<'a> {
+    text: &'a str,
+    format: &'a TextFormat,
+    canvas: (u32, u32),
+    style: &'a Arc<CueStyle>,
+    video_rect: Option<VideoRect>,
+}
+
+/// The one comparison, so the borrowed probe and [`SceneKey`]'s own `PartialEq`
+/// can never disagree about what keys a scene.
+impl PartialEq<SceneKey> for SceneKeyRef<'_> {
+    fn eq(&self, other: &SceneKey) -> bool {
         self.canvas == other.canvas
             && self.video_rect == other.video_rect
-            && self.step == other.step
             && self.text == other.text
-            && (Arc::ptr_eq(&self.style, &other.style) || self.style == other.style)
-            && match (&self.format, &other.format) {
+            && (Arc::ptr_eq(self.style, &other.style) || *self.style == other.style)
+            && match (self.format, &other.format) {
                 (TextFormat::CueIr { ir: a, .. }, TextFormat::CueIr { ir: b, .. }) => {
                     cue_ir::ir_eq(a, b)
                 }
@@ -306,31 +386,68 @@ impl PartialEq for RasterKey {
     }
 }
 
+impl SceneKeyRef<'_> {
+    /// Materialize the key, for the one caller that needs to own it.
+    fn to_key(self) -> SceneKey {
+        SceneKey {
+            text: self.text.to_owned(),
+            format: self.format.clone(),
+            canvas: self.canvas,
+            style: Arc::clone(self.style),
+            video_rect: self.video_rect,
+        }
+    }
+}
+
+/// One job for the worker: the scene to have (built, or taken from the cache)
+/// and the reveal rank to have pixels for.
+///
+/// The rank is not part of the key on purpose. It selects a PAINT of the scene
+/// the key names, never a layout, so a karaoke sweep is a run of jobs that all
+/// hit the same scene.
+#[derive(Debug, Clone)]
+struct Job {
+    key: SceneKey,
+    rank: u16,
+}
+
 #[derive(Debug)]
-enum RasterState {
-    /// Requested (or requestable), no pixels yet. The frame renders bare and
-    /// the completion signal repaints. The engine never waits.
+enum SceneState {
+    /// Requested (or requestable), nothing built yet. The frame renders bare
+    /// and the completion signal repaints. The engine never waits.
     Pending,
-    Ready(Arc<Raster>),
+    Ready(Arc<CueScene>),
     /// Like `Pending` for the worker (a replacement is wanted), but the
-    /// previous raster keeps showing meanwhile. Its placement is still valid,
-    /// so a stale frame beats a blank one. Used when the same cue re-keys in
-    /// place (a karaoke step, a style change). A canvas/video-rect change stays
-    /// `Pending` instead, because the old placement is wrong in the new
-    /// geometry.
-    Stale(Arc<Raster>),
-    /// The worker could not produce pixels (empty text, absurd size, cairo
-    /// refusal). Remembered so the cue is not re-requested every frame.
+    /// previous scene keeps showing meanwhile. A stale frame beats a blank one.
+    ///
+    /// Every re-key of a cue that is still on screen lands here: a style
+    /// change, and also a canvas or video-rect change. The old placement is
+    /// slightly wrong in the new geometry for the one or two frames the worker
+    /// takes, and a cue that jumps a few pixels and settles reads far better
+    /// than a cue that blinks out, which is what a window resize used to do to
+    /// every line on screen. A cue that genuinely ENDS is dropped from
+    /// [`State::active`] and is unaffected by any of this.
+    Stale(Arc<CueScene>),
+    /// The worker could not produce a scene (empty text, absurd size).
+    /// Remembered so the cue is not re-requested every frame.
     Failed,
 }
 
-impl RasterState {
-    /// Re-key in place. Keep any pixels on screen while the replacement
-    /// renders; otherwise start over as `Pending`.
-    fn into_stale(self) -> RasterState {
+impl SceneState {
+    /// Re-key in place. Keep anything on screen while the replacement is built;
+    /// otherwise start over as `Pending`.
+    fn into_stale(self) -> SceneState {
         match self {
-            RasterState::Ready(raster) | RasterState::Stale(raster) => RasterState::Stale(raster),
-            _ => RasterState::Pending,
+            SceneState::Ready(scene) | SceneState::Stale(scene) => SceneState::Stale(scene),
+            _ => SceneState::Pending,
+        }
+    }
+
+    /// The scene to draw, whether it is the current one or the previous one.
+    fn showing(&self) -> Option<&Arc<CueScene>> {
+        match self {
+            SceneState::Ready(scene) | SceneState::Stale(scene) => Some(scene),
+            _ => None,
         }
     }
 }
@@ -338,11 +455,18 @@ impl RasterState {
 #[derive(Debug)]
 struct Active {
     cue: CueInput,
-    key: RasterKey,
-    raster: RasterState,
+    key: SceneKey,
+    scene: SceneState,
     /// Reveal thresholds as running times (see [`cue_ir::reveal_steps`]); empty
     /// for the non-karaoke common case, which is every utf8/markup cue.
     steps: Vec<gst::ClockTime>,
+    /// How much of the cue is revealed at the frame clock: the number of
+    /// thresholds passed, which is exactly the rank a glyph may carry and still
+    /// be drawn. [`ALL_REVEALED`] shows the whole cue.
+    ///
+    /// Where the karaoke step went. It re-keyed a raster; it now selects a
+    /// paint of one scene and never touches [`Active::scene`].
+    rank: u16,
 }
 
 #[derive(Default)]
@@ -401,7 +525,17 @@ type OnChange = Arc<dyn Fn() + Send + Sync>;
 #[derive(Default)]
 struct Shared {
     state: Mutex<State>,
-    cache: Mutex<RasterCache>,
+    /// Display lists, by [`SceneKey`]. The engine's artifact.
+    scenes: Mutex<SceneCache>,
+    /// Set when the consumer draws scenes itself, which takes the paint lane
+    /// below out of the loop. See [`CueEngine::set_scene_consumer`]. `false`,
+    /// the `Default`, is the overlay lanes' behaviour.
+    scene_consumer: AtomicBool,
+    /// Those scenes painted, by (scene, rank), for the overlay lanes. Never
+    /// taken while the state lock is held for longer than a lookup, and never
+    /// held across a render (the worker rasterizes with its own backend and
+    /// only takes this to file the answer).
+    pixels: Mutex<PixelCache>,
     /// How long a worker idles before retiring, in nanoseconds; zero means
     /// [`WORKER_IDLE_TIMEOUT`]. Only a test ever writes it.
     worker_idle_nanos: AtomicU64,
@@ -411,9 +545,14 @@ struct Shared {
     dropped: AtomicU64,
     /// Fontmap warm-up cost in nanoseconds; 0 until the worker has warmed.
     warm_nanos: AtomicU64,
-    /// How long each raster the worker produced took, newest last, bounded.
-    /// Cache hits never reach the worker, so counting them would report the
-    /// cache rather than the rasterizer.
+    /// Scenes the worker actually laid out, i.e. parley layouts run. A cache
+    /// hit does not count, so this is the measurement behind the karaoke gate:
+    /// a whole reveal sweep must add nothing to it.
+    scene_builds: AtomicU64,
+    /// How long each job the worker did any WORK for took (a layout, a paint,
+    /// or both), newest last, bounded. A job both caches answered is not
+    /// recorded, since counting it would report the cache rather than the
+    /// rasterizer.
     raster_latencies: Mutex<VecDeque<Duration>>,
 
     // ---- the bitmap side ----
@@ -507,7 +646,7 @@ impl CueEngine {
                 Some(rt) => evaluate_paused(&mut state, rt),
                 None => false,
             };
-            let (want, filled) = self.resolve_raster(&mut state);
+            let (want, filled) = self.resolve_work(&mut state);
             changed |= filled;
             fetch = want;
         }
@@ -636,15 +775,18 @@ impl CueEngine {
             }
             state.canvas = (width, height);
 
-            // Every active cue's raster was laid out against the old size.
+            // Every active cue's scene was laid out against the old size. Keep
+            // it up while the replacement is built, or a resize blanks every
+            // line on screen for as long as the worker takes.
             for active in state.active.iter_mut() {
                 active.key.canvas = (width, height);
-                active.raster = RasterState::Pending;
+                active.scene =
+                    std::mem::replace(&mut active.scene, SceneState::Pending).into_stale();
             }
             // The old-canvas rasters stay in the cache. A canvas that returns
             // to a previous size is one of the re-shows [`RASTER_CACHE_LIMIT`]
             // exists to make instant; LRU is the eviction policy.
-            let (want, filled) = self.resolve_raster(&mut state);
+            let (want, filled) = self.resolve_work(&mut state);
             fetch = want;
             changed = filled;
         }
@@ -684,15 +826,18 @@ impl CueEngine {
             }
             state.video_rect = rect;
 
-            // The active cues' rasters were laid out against the old frame, so
-            // their placement is now wrong. Pending, not Stale.
+            // The active cues were laid out against the old picture rect, so
+            // their placement is now slightly wrong. Stale, not Pending: it
+            // settles on the next publish, and a resize while playing must not
+            // strobe the line (see [`SceneState::Stale`]).
             for active in state.active.iter_mut() {
                 active.key.video_rect = rect;
-                active.raster = RasterState::Pending;
+                active.scene =
+                    std::mem::replace(&mut active.scene, SceneState::Pending).into_stale();
             }
             // Rasters for the old rect stay cached, as in `set_canvas`. LRU is
             // the policy.
-            let (want, filled) = self.resolve_raster(&mut state);
+            let (want, filled) = self.resolve_work(&mut state);
             fetch = want;
             changed = filled;
         }
@@ -748,12 +893,12 @@ impl CueEngine {
             // ones land, rather than blinking blank on a settings toggle.
             for active in state.active.iter_mut() {
                 active.key.style = style.clone();
-                let raster = std::mem::replace(&mut active.raster, RasterState::Pending);
-                active.raster = raster.into_stale();
+                let raster = std::mem::replace(&mut active.scene, SceneState::Pending);
+                active.scene = raster.into_stale();
             }
             // Old-style rasters stay cached too (LRU is the policy), so a
             // style toggled back is instant as well.
-            let (want, filled) = self.resolve_raster(&mut state);
+            let (want, filled) = self.resolve_work(&mut state);
             fetch = want;
             changed = filled;
         }
@@ -868,7 +1013,10 @@ impl CueEngine {
     /// ([`PAUSED_CUE_LOOKAHEAD`]). A cue whose start is a few frames away
     /// arrives on its own, on time, and showing it early here would move every
     /// cue boundary in the file.
-    pub fn overlays_for(&self, frame_rt: Option<gst::ClockTime>) -> SmallVec<[Overlay; 1]> {
+    pub fn overlays_for(
+        &self,
+        frame_rt: Option<gst::ClockTime>,
+    ) -> SmallVec<[Overlay; MAX_OVERLAYS]> {
         let mut changed = false;
         let fetch;
         let overlays;
@@ -879,10 +1027,14 @@ impl CueEngine {
                 changed = evaluate(&mut state, rt);
                 changed |= evaluate_bitmap(&mut state, rt);
             }
-            let (want, filled) = self.resolve_raster(&mut state);
+            let (want, filled) = self.resolve_work(&mut state);
             changed |= filled;
             fetch = want;
-            overlays = active_overlays(&state);
+            overlays = active_overlays(
+                &state,
+                &self.shared.pixels,
+                !self.shared.scene_consumer.load(Ordering::Relaxed),
+            );
         }
 
         if let Some(request) = fetch {
@@ -904,7 +1056,7 @@ impl CueEngine {
     /// [`PAUSED_CUE_LOOKAHEAD`] describes, so a playhead frozen in the hole
     /// between two cues shows the one it is about to reach rather than
     /// nothing. The bitmap schedule is read exactly, as it is everywhere.
-    pub fn current_overlays(&self) -> SmallVec<[Overlay; 1]> {
+    pub fn current_overlays(&self) -> SmallVec<[Overlay; MAX_OVERLAYS]> {
         let mut changed = false;
         let fetch;
         let overlays;
@@ -914,10 +1066,14 @@ impl CueEngine {
                 changed = evaluate_paused(&mut state, rt);
                 changed |= evaluate_bitmap(&mut state, rt);
             }
-            let (want, filled) = self.resolve_raster(&mut state);
+            let (want, filled) = self.resolve_work(&mut state);
             changed |= filled;
             fetch = want;
-            overlays = active_overlays(&state);
+            overlays = active_overlays(
+                &state,
+                &self.shared.pixels,
+                !self.shared.scene_consumer.load(Ordering::Relaxed),
+            );
         }
 
         if let Some(request) = fetch {
@@ -927,6 +1083,127 @@ impl CueEngine {
             self.mark_changed();
         }
         overlays
+    }
+
+    /// [`Self::overlays_for`] for a consumer that draws the display lists
+    /// itself: the same schedule advance, the same stacking, no pixels.
+    ///
+    /// Requires [`Self::set_scene_consumer`], or the worker keeps painting
+    /// rasters nothing will ever read.
+    pub fn scenes_for(
+        &self,
+        frame_rt: Option<gst::ClockTime>,
+    ) -> SmallVec<[ShownScene; MAX_ACTIVE_CUES]> {
+        let mut changed = false;
+        let fetch;
+        let shown;
+        {
+            let mut state = self.shared.state.lock();
+            if let Some(rt) = frame_rt {
+                state.last_shown_rt = Some(rt);
+                changed = evaluate(&mut state, rt);
+                changed |= evaluate_bitmap(&mut state, rt);
+            }
+            let (want, filled) = self.resolve_work(&mut state);
+            changed |= filled;
+            fetch = want;
+            shown = active_scenes(&state);
+        }
+
+        if let Some(request) = fetch {
+            self.request_raster(request);
+        }
+        if changed {
+            self.mark_changed();
+        }
+        shown
+    }
+
+    /// [`Self::current_overlays`] for a scene consumer: the paused path, with
+    /// the same gap tolerance, as display lists.
+    pub fn current_scenes(&self) -> SmallVec<[ShownScene; MAX_ACTIVE_CUES]> {
+        let mut changed = false;
+        let fetch;
+        let shown;
+        {
+            let mut state = self.shared.state.lock();
+            if let Some(rt) = state.last_shown_rt {
+                changed = evaluate_paused(&mut state, rt);
+                changed |= evaluate_bitmap(&mut state, rt);
+            }
+            let (want, filled) = self.resolve_work(&mut state);
+            changed |= filled;
+            fetch = want;
+            shown = active_scenes(&state);
+        }
+
+        if let Some(request) = fetch {
+            self.request_raster(request);
+        }
+        if changed {
+            self.mark_changed();
+        }
+        shown
+    }
+
+    /// The display lists on screen right now, evaluating nothing.
+    ///
+    /// For a consumer whose schedule is advanced elsewhere. The desktop GL lane
+    /// is that consumer: its sink still calls [`Self::overlays_for`] per frame
+    /// on the streaming thread, because the bitmap subtitle set has no display
+    /// list and stays on the raster path, and [`Self::current_overlays`] is
+    /// what advances it while paused. Reaching for [`Self::scenes_for`]
+    /// from that lane's repaint would evaluate the schedule a second time,
+    /// at the repaint clock rather than the frame's, and move every cue
+    /// boundary with it.
+    pub fn shown_scenes(&self) -> SmallVec<[ShownScene; MAX_ACTIVE_CUES]> {
+        active_scenes(&self.shared.state.lock())
+    }
+
+    /// The bitmap subtitle set on screen right now, evaluating nothing.
+    ///
+    /// The subpicture twin of [`Self::shown_scenes`], and what a scene consumer
+    /// reads instead of [`Self::current_overlays`]. A display set has no
+    /// display list, so it can never come back on the scene lane; it is
+    /// decoded pixels and the consumer has to composite them itself.
+    ///
+    /// By closure rather than by value because that is the whole point: a
+    /// consumer that only wants to know whether the set moved gets its answer
+    /// without building a `SmallVec` of [`Overlay`]s and cloning an `Arc` per
+    /// region every frame. The closure runs under the engine's state lock, so
+    /// it must stay short. Composite outside it.
+    ///
+    /// The slice is empty when nothing is showing, which is also how a cue end,
+    /// a scheduled clear, [`Self::clear`] and [`Self::flush`] surface here.
+    pub fn with_shown_bitmaps<R>(
+        &self,
+        read: impl FnOnce(&[crate::subpic::BitmapRegion]) -> R,
+    ) -> R {
+        let state = self.shared.state.lock();
+        read(match state.bitmap_active.as_ref() {
+            Some(update) => &update.regions,
+            None => &[],
+        })
+    }
+
+    /// Declare that this engine's consumer reads [`Self::scenes_for`] and never
+    /// [`Self::overlays_for`], which switches the vello_cpu paint lane off.
+    ///
+    /// The paint lane exists for the consumers that still take [`Overlay`]s
+    /// (the wayland subsurface sink, android). For a scene consumer every paint
+    /// is wasted worker time AND a `SceneKey` clone per frame in
+    /// [`Self::resolve_work`], since a paint that is never asked for is a want
+    /// that is never satisfied. Off, a steady cue costs the lane nothing.
+    ///
+    /// [`Self::overlays_for`] and [`Self::current_overlays`] stay callable and
+    /// stay correct: they answer with the bitmap subtitle set and nothing else,
+    /// because [`active_overlays`] refuses to composite a text cue whose pixels
+    /// the consumer is drawing itself. A subpicture has no display list and is
+    /// the one thing a scene consumer cannot draw, so it stays on this path on
+    /// every lane. That is exactly what the desktop GL lane wants of them, and
+    /// it is what lets it keep advancing the schedule where it always did.
+    pub fn set_scene_consumer(&self, on: bool) {
+        self.shared.scene_consumer.store(on, Ordering::Relaxed);
     }
 
     /// Whether the overlay set changed since the last call, and clears the
@@ -947,9 +1224,25 @@ impl CueEngine {
         self.shared.dropped.load(Ordering::Relaxed)
     }
 
-    /// Rasters currently held in the cache.
+    /// Cues currently laid out and held in the scene cache.
     pub fn cached_rasters(&self) -> usize {
-        self.shared.cache.lock().len()
+        self.shared.scenes.lock().len()
+    }
+
+    /// Paints held for the overlay lanes: one per (cue, reveal rank) shown.
+    pub fn cached_pixels(&self) -> usize {
+        self.shared.pixels.lock().len()
+    }
+
+    /// How many cues the worker has LAID OUT, cache hits excluded.
+    ///
+    /// The karaoke gate: a reveal sweep repaints one scene at a rising
+    /// threshold, so this must not move while a syllable fires. Doc-hidden and
+    /// public rather than `cfg(test)` because the suites in `tests/` link this
+    /// crate as any dependent does.
+    #[doc(hidden)]
+    pub fn scene_builds(&self) -> u64 {
+        self.shared.scene_builds.load(Ordering::Relaxed)
     }
 
     /// Times the bitmap decode inbox overflowed and reset the decoder.
@@ -1018,54 +1311,69 @@ impl CueEngine {
         }
     }
 
-    /// Cache lookup for the active cues' rasters. Returns the sequenced key to
-    /// hand to the worker (a miss, or a karaoke prefetch) and whether any
-    /// active raster was filled from cache. Must be called with `state` locked;
-    /// takes the cache lock underneath it, which is the only order this pair is
-    /// ever taken in.
+    /// Cache lookup for what the active cues want. Returns the sequenced job to
+    /// hand to the worker and whether any active cue was filled from cache.
+    /// Must be called with `state` locked; takes the cache locks underneath it,
+    /// which is the only order these are ever taken in.
     ///
-    /// One key per call even when several cues want one. The worker asks for
-    /// the next wanted key after every publish (see [`worker_main`]), so a
-    /// stack of cues fills in one behind the other without the newest-wins
-    /// slot losing any of them. A need always outranks a karaoke prefetch,
-    /// whichever cue each belongs to.
-    fn resolve_raster(&self, state: &mut State) -> (Option<(u64, RasterKey)>, bool) {
+    /// Three kinds of want, in this order, one per call:
+    ///
+    ///  1. a scene a cue on screen does not have yet;
+    ///  2. pixels for a scene a cue on screen HAS, at the rank it is showing.
+    ///     This is what a karaoke step now costs: the scene is a hit, so the
+    ///     worker only paints. The old step-keyed prefetch is gone with it;
+    ///  3. the next cue's scene AND its opening pixels, warmed before its turn
+    ///     comes.
+    ///
+    /// One job per call even when several cues want one. The worker asks for
+    /// the next wanted job after every publish (see [`worker_main`]), so a
+    /// stack of cues fills in one behind the other without the newest-wins slot
+    /// losing any of them.
+    fn resolve_work(&self, state: &mut State) -> (Option<(u64, Job)>, bool) {
         let mut filled = false;
         let mut need = None;
-        let mut prefetch = None;
+        let mut pixels = None;
+        // A scene consumer paints in its own frame, so arms 2 and 3's paint
+        // half are dead work for it. Read once: it is a per frame path.
+        let wants_pixels = !self.shared.scene_consumer.load(Ordering::Relaxed);
         for active in state.active.iter_mut() {
-            match active.raster {
-                RasterState::Pending | RasterState::Stale(_) => {
-                    if let Some(raster) = self.shared.cache.lock().get(&active.key) {
-                        active.raster = RasterState::Ready(raster);
-                        filled = true;
-                    } else if need.is_none() {
-                        need = Some(active.key.clone());
-                    }
-                }
-                // Karaoke: while the current step shows, warm the next one so
-                // crossing a reveal threshold is a cache hit instead of a
-                // raster latency. `publish` files a prefetch under its own key
-                // without touching what is on screen. Once cached this is one
-                // short cache probe per frame, and only for karaoke cues.
-                RasterState::Ready(_)
-                    if prefetch.is_none() && active.key.step < active.steps.len() =>
-                {
-                    let next = RasterKey {
-                        step: active.key.step + 1,
-                        ..active.key.clone()
-                    };
-                    if self.shared.cache.lock().get(&next).is_none() {
-                        prefetch = Some(next);
+            match active.scene {
+                SceneState::Pending | SceneState::Stale(_) => {
+                    match self.shared.scenes.lock().get(&active.key) {
+                        Some(Some(scene)) => {
+                            active.scene = SceneState::Ready(scene);
+                            filled = true;
+                        }
+                        Some(None) => active.scene = SceneState::Failed,
+                        None if need.is_none() => {
+                            need = Some(Job {
+                                key: active.key.clone(),
+                                rank: active.rank,
+                            });
+                        }
+                        None => {}
                     }
                 }
                 _ => {}
             }
+            // The pixel lane, for both Ready and the Stale that is still on
+            // screen: whatever is being drawn needs a paint at the rank it is
+            // drawn at. A karaoke step lands here and nowhere else.
+            if wants_pixels
+                && pixels.is_none()
+                && let Some(scene) = active.scene.showing()
+                && self.shared.pixels.lock().get(scene, active.rank).is_none()
+            {
+                pixels = Some(Job {
+                    key: active.key.clone(),
+                    rank: active.rank,
+                });
+            }
         }
 
-        // The cue boundary, same trick as the karaoke prefetch: while the
-        // current cue shows, warm the cue that comes next, so the frame that
-        // crosses the boundary is a cache hit instead of a raster latency.
+        // The cue boundary: while the current cue shows, warm the cue that
+        // comes next, so the frame that crosses the boundary is a cache hit
+        // instead of a raster latency.
         //
         // Without it, a cue whose predecessor ends exactly where it starts is
         // adopted `Pending` and skipped by `active_overlays`, so the boundary
@@ -1073,39 +1381,54 @@ impl CueEngine {
         // file whose cues are contiguous that is a visible flash at every
         // boundary; a gap between cues merely hides it.
         //
-        // Costs nothing in steady state. The cue is rastered once either way;
-        // this only moves the work earlier, onto an idle worker. Ranked below
-        // both the need and the karaoke prefetch, since anything a visible cue
-        // wants outranks warming one that is not up yet.
-        if need.is_none()
-            && prefetch.is_none()
-            && let Some(next) = state.pending.front()
-        {
-            let rate = state.video_segment.as_ref().map_or(1.0, |s| s.rate());
-            let (_, step) = reveal_plan(next, rate);
-            let key = RasterKey {
-                text: next.text.clone(),
-                format: next.format.clone(),
-                canvas: state.canvas,
-                style: state.style.clone(),
-                video_rect: state.video_rect,
-                step,
-            };
-            if self.shared.cache.lock().get(&key).is_none() {
-                prefetch = Some(key);
-            }
-        }
+        // Costs nothing in steady state. The cue is built once either way; this
+        // only moves the work earlier, onto an idle worker. Ranked below what a
+        // visible cue wants, and warmed at the rank it will ACTIVATE with, so
+        // the boundary frame has pixels and not just a display list.
+        // Nothing here is owned until the warm has decided it wants a job, so
+        // at rest (the next cue is built and, on a scene consumer, that is all
+        // it needs) the whole probe is a cache scan and no allocation at all.
+        let boundary = (need.is_none() && pixels.is_none())
+            .then(|| {
+                let next = state.pending.front()?;
+                let rate = state.video_segment.as_ref().map_or(1.0, |s| s.rate());
+                let rank = opening_rank(next, rate);
+                let key = SceneKeyRef {
+                    text: &next.text,
+                    format: &next.format,
+                    canvas: state.canvas,
+                    style: &state.style,
+                    video_rect: state.video_rect,
+                };
+                // One cache lock at a time: bound, not nested in the match.
+                let built = self.shared.scenes.lock().get_ref(key);
+                let job = || Job {
+                    key: key.to_key(),
+                    rank,
+                };
+                match built {
+                    // Built already: it may still want its opening paint. A
+                    // scene consumer needs nothing more than the layout, so the
+                    // warm is done.
+                    Some(Some(scene)) => (wants_pixels
+                        && self.shared.pixels.lock().get(&scene, rank).is_none())
+                    .then(job),
+                    Some(None) => None,
+                    None => Some(job()),
+                }
+            })
+            .flatten();
 
-        match need.or(prefetch) {
-            Some(key) => {
+        match need.or(pixels).or(boundary) {
+            Some(job) => {
                 state.request_seq += 1;
-                (Some((state.request_seq, key)), filled)
+                (Some((state.request_seq, job)), filled)
             }
             None => (None, filled),
         }
     }
 
-    /// Ask for the next raster the active set wants, if any, and repaint if a
+    /// Ask for the next job the active set wants, if any, and repaint if a
     /// cache hit filled one in. Called by the raster worker after every
     /// publish, so a stack of cues resolves without waiting for the next frame
     /// (while paused, without waiting at all).
@@ -1115,7 +1438,7 @@ impl CueEngine {
     fn pump_rasters(&self) {
         let (fetch, filled) = {
             let mut state = self.shared.state.lock();
-            self.resolve_raster(&mut state)
+            self.resolve_work(&mut state)
         };
         if let Some(request) = fetch {
             self.request_raster(request);
@@ -1125,7 +1448,7 @@ impl CueEngine {
         }
     }
 
-    fn request_raster(&self, (seq, request): (u64, RasterKey)) {
+    fn request_raster(&self, (seq, request): (u64, Job)) {
         self.with_raster_inbox(|inbox, slot| {
             // Newest-wins by *state-lock order*, not thread arrival order. The
             // key was computed under the state lock but is written here after
@@ -1324,19 +1647,35 @@ impl CueEngine {
 ///    if the positioned cue starts later (it has not been placed yet when the
 ///    earlier one is). Fixing that means placing positioned cues first, which
 ///    reorders the stack, and the ordering is worth more.
-fn active_overlays(state: &State) -> SmallVec<[Overlay; 1]> {
+///
+/// `text` is false for a scene consumer, whose text cues are drawn from their
+/// display lists and must not also be composited here. Authoritative rather
+/// than emergent: a cache still holding a paint from before the switch would
+/// otherwise put that cue on screen twice.
+fn active_overlays(
+    state: &State,
+    pixels: &Mutex<PixelCache>,
+    text: bool,
+) -> SmallVec<[Overlay; MAX_OVERLAYS]> {
     let mut overlays = SmallVec::new();
     // What has been placed, in placement order: (x, y, width, height).
-    let mut placed: SmallVec<[(i32, i32, u32, u32); 2]> = SmallVec::new();
-    for active in state.active.iter() {
-        // `Stale` counts: its pixels are a previous step or style of the same
-        // cue in the same place, which beats blanking the line while the
-        // replacement renders.
-        let (RasterState::Ready(raster) | RasterState::Stale(raster)) = &active.raster else {
+    let mut placed: SmallVec<[(i32, i32, u32, u32); MAX_ACTIVE_CUES]> = SmallVec::new();
+    for active in state.active.iter().filter(|_| text) {
+        // `Stale` counts: it is a previous style of the same cue in the same
+        // place, which beats blanking the line while the replacement is built.
+        // So does a paint one rank behind, for the same reason (see
+        // [`PixelCache::best`]).
+        let Some(scene) = active.scene.showing() else {
+            continue;
+        };
+        let Some(raster) = pixels.lock().best(scene, active.rank) else {
             continue;
         };
         let mut overlay = raster.to_overlay();
-        overlay.y = stacked_y(&placed, &overlay);
+        overlay.y = stacked_y(
+            &placed,
+            (overlay.x, overlay.y, overlay.width, overlay.height),
+        );
         placed.push((overlay.x, overlay.y, overlay.width, overlay.height));
         overlays.push(overlay);
     }
@@ -1351,15 +1690,45 @@ fn active_overlays(state: &State) -> SmallVec<[Overlay; 1]> {
     overlays
 }
 
+/// [`active_overlays`] for the scene lanes: the same cues, in the same stacking
+/// order, as display lists rather than pixels.
+///
+/// No [`PixelCache`] lookup, so a cue shows the frame its LAYOUT is ready
+/// rather than the frame its paint is. That is the whole point of the lane: the
+/// consumer paints it itself, in its own frame.
+///
+/// Bitmap subtitle sets are deliberately absent. They are decoded pixels with
+/// no display list behind them, so a scene consumer cannot draw them and
+/// pretending otherwise here would silently drop them.
+fn active_scenes(state: &State) -> SmallVec<[ShownScene; MAX_ACTIVE_CUES]> {
+    let mut shown = SmallVec::new();
+    let mut placed: SmallVec<[(i32, i32, u32, u32); MAX_ACTIVE_CUES]> = SmallVec::new();
+    for active in state.active.iter() {
+        let Some(scene) = active.scene.showing() else {
+            continue;
+        };
+        let (x, w, h) = (scene.origin[0], scene.size[0], scene.size[1]);
+        let y = stacked_y(&placed, (x, scene.origin[1], w, h));
+        placed.push((x, y, w, h));
+        shown.push(ShownScene {
+            scene: Arc::clone(scene),
+            rank: active.rank,
+            x,
+            y,
+        });
+    }
+    shown
+}
+
 /// Where an overlay ends up once it has moved out of the way of the cues
 /// already placed: its own `y`, or far enough above whatever it collided with.
 ///
 /// Rectangles, not lines: two cues at different horizontal positions do not
 /// collide and neither moves. The loop is bounded by the number of cues that
 /// can be placed, since each pass either settles or clears one more rectangle.
-fn stacked_y(placed: &[(i32, i32, u32, u32)], overlay: &Overlay) -> i32 {
-    let (x, w, h) = (overlay.x, overlay.width as i32, overlay.height as i32);
-    let mut y = overlay.y;
+fn stacked_y(placed: &[(i32, i32, u32, u32)], rect: (i32, i32, u32, u32)) -> i32 {
+    let (x, w, h) = (rect.0, rect.2 as i32, rect.3 as i32);
+    let mut y = rect.1;
     for _ in 0..MAX_ACTIVE_CUES {
         let mut moved = false;
         for &(px, py, pw, ph) in placed {
@@ -1926,7 +2295,9 @@ fn evaluate_multi_active(state: &mut State, rt: gst::ClockTime) -> bool {
 
     let canvas = state.canvas;
     let video_rect = state.video_rect;
-    let style = state.style.clone();
+    // Nothing due is the steady state, and the refcount bump is only wanted by
+    // `activate`, so it is hoisted no further than the loop that uses it.
+    let style = (!due.is_empty()).then(|| state.style.clone());
     let rate = state.video_segment.as_ref().map_or(1.0, |s| s.rate());
     for cue in due {
         // The same cue handed back (a redelivery that got past
@@ -1940,9 +2311,10 @@ fn evaluate_multi_active(state: &mut State, rt: gst::ClockTime) -> bool {
         let at = state
             .active
             .partition_point(|active| active.cue.start_rt <= cue.start_rt);
+        let style = style.clone().expect("a due cue means the style was taken");
         state
             .active
-            .insert(at, activate(cue, canvas, video_rect, style.clone(), rate));
+            .insert(at, activate(cue, canvas, video_rect, style, rate));
         changed = true;
     }
 
@@ -1977,13 +2349,14 @@ fn evaluate_single_active(state: &mut State, rt: gst::ClockTime) -> bool {
 
     let canvas = state.canvas;
     let video_rect = state.video_rect;
-    let style = state.style.clone();
     let rate = state.video_segment.as_ref().map_or(1.0, |s| s.rate());
     match candidate {
         Some(cue) => {
             if state.active.first().is_some_and(|act| act.cue == cue) {
                 false
             } else {
+                // Only the arm that activates wants the refcount bump.
+                let style = state.style.clone();
                 state.active.clear();
                 state
                     .active
@@ -2004,8 +2377,8 @@ fn evaluate_single_active(state: &mut State, rt: gst::ClockTime) -> bool {
     }
 }
 
-/// Turn a scheduled cue into an active one: its raster key, plus (for karaoke)
-/// the reveal thresholds it will re-key on.
+/// Turn a scheduled cue into an active one: its scene key, plus (for karaoke)
+/// the reveal thresholds it steps through and the rank it starts at.
 fn activate(
     cue: CueInput,
     canvas: (u32, u32),
@@ -2013,31 +2386,58 @@ fn activate(
     style: Arc<CueStyle>,
     rate: f64,
 ) -> Active {
-    let (steps, step) = reveal_plan(&cue, rate);
+    let (steps, rank) = reveal_plan(&cue, rate);
     Active {
-        key: RasterKey {
+        key: SceneKey {
             text: cue.text.clone(),
             format: cue.format.clone(),
             canvas,
             style,
             video_rect,
-            step,
         },
         steps,
+        rank,
         cue,
-        raster: RasterState::Pending,
+        scene: SceneState::Pending,
     }
 }
 
 /// The reveal schedule a cue activates with: its karaoke step times and the
-/// step it starts on.
+/// rank it starts on.
 ///
-/// Split out of [`activate`] so the boundary prefetch in
-/// [`CueEngine::resolve_raster`] can compute the key a cue WILL activate under
-/// without activating it. The two must not drift: a prefetch filed under a
-/// different key from the one activation asks for warms nothing and the cue
-/// still blinks.
-fn reveal_plan(cue: &CueInput, rate: f64) -> (Vec<gst::ClockTime>, usize) {
+/// Split out of [`activate`] so the boundary warm in
+/// [`CueEngine::resolve_work`] can compute the job a cue WILL activate under
+/// without activating it. The two must not drift: a warm filed under a
+/// different key or rank from the one activation asks for warms nothing and the
+/// cue still blinks.
+/// The rank half of [`reveal_plan`], without building the step list.
+///
+/// The boundary warm runs every frame and wants only the rank, so materializing
+/// the steps cost two `Vec`s per frame on every karaoke cue. `reveal_steps`
+/// comes back empty exactly when there is no usable anchor (no `pts_start`, or
+/// a non-forward rate) or when the cue has no reveals at all, so the rank falls
+/// out of those conditions directly. `reveal_plan` is graded against this in
+/// `the_opening_rank_matches_the_full_reveal_plan`.
+fn opening_rank(cue: &CueInput, rate: f64) -> u16 {
+    let Some(ir) = cue.format.ir() else {
+        return 0;
+    };
+    let anchored = matches!(
+        &cue.format,
+        TextFormat::CueIr {
+            pts_start: Some(_),
+            ..
+        }
+    ) && !rate.is_nan()
+        && rate > 0.0;
+    if !anchored && cue_ir::has_reveals(ir) {
+        ALL_REVEALED
+    } else {
+        0
+    }
+}
+
+fn reveal_plan(cue: &CueInput, rate: f64) -> (Vec<gst::ClockTime>, u16) {
     // Karaoke, cue-IR only: reveal times are absolute on the media timeline and
     // the engine's clock is running time, so they are anchored by the buffer's
     // pts and scaled by the segment rate.
@@ -2050,24 +2450,27 @@ fn reveal_plan(cue: &CueInput, rate: f64) -> (Vec<gst::ClockTime>, usize) {
             let steps = cue_ir::reveal_steps(ir, cue.start_rt, pts_start, rate);
             // Timed spans without a usable anchor (no pts, a non-forward rate):
             // show the whole cue at once, per the documented `pts_start`
-            // contract. A pinned step of 0 would hide every timed span forever
+            // contract. A pinned rank of 0 would hide every timed span forever
             // instead.
-            let step = if steps.is_empty() && cue_ir::has_reveals(ir) {
-                usize::MAX
+            let rank = if steps.is_empty() && cue_ir::has_reveals(ir) {
+                ALL_REVEALED
             } else {
                 0
             };
-            (steps, step)
+            (steps, rank)
         }
         None => (Vec::new(), 0),
     }
 }
 
-/// Karaoke: a raster is keyed on how many reveal steps the clock has passed;
-/// crossing one re-keys it (usually a cache hit thanks to the prefetch in
-/// [`CueEngine::resolve_raster`]). If the replacement is not ready yet, the
-/// previous step keeps showing (`Stale`). Otherwise the whole line blinks off
-/// for a frame at every syllable on the first pass.
+/// Karaoke: how much of a cue is revealed is the number of thresholds the clock
+/// has passed, which is the rank the scene is painted at.
+///
+/// THE WAVE 5 DELETION. This used to re-key the raster, so a syllable meant a
+/// new key, a new parley layout and a new vello render of the whole cue,
+/// several times a second on a fast line. The scene does not change: only the
+/// threshold does, and the scene carries every syllable already
+/// ([`CueScene::glyph_rank`]). So this touches no [`SceneState`] at all.
 ///
 /// Per cue, since each cue on screen carries its own reveal schedule.
 fn advance_karaoke(state: &mut State, rt: gst::ClockTime) -> bool {
@@ -2076,40 +2479,137 @@ fn advance_karaoke(state: &mut State, rt: gst::ClockTime) -> bool {
         if active.steps.is_empty() {
             continue;
         }
-        let step = active.steps.partition_point(|s| *s <= rt);
-        if step != active.key.step {
-            active.key.step = step;
-            let raster = std::mem::replace(&mut active.raster, RasterState::Pending);
-            active.raster = raster.into_stale();
-            // What is on screen only changes if we stopped showing pixels; a
-            // Stale raster is the same image until the replacement lands.
-            changed |= !matches!(active.raster, RasterState::Stale(_));
+        // Saturating, like the ranks it is compared against: a cue with more
+        // thresholds than a u16 can count reveals its tail with its last step.
+        let rank = active
+            .steps
+            .partition_point(|s| *s <= rt)
+            .min(ALL_REVEALED as usize) as u16;
+        if rank != active.rank {
+            active.rank = rank;
+            changed = true;
         }
     }
     changed
 }
 
-/// Most-recently-used-last, capacity [`RASTER_CACHE_LIMIT`].
+/// Most-recently-used-last, capacity [`SCENE_CACHE_LIMIT`]. A `None`
+/// value is a remembered FAILURE: the warm probes treat any recorded
+/// attempt as done, otherwise a cue that cannot lay out (canvas not set
+/// yet, malformed content) is re-built in a hot loop for as long as it
+/// stays pending, which pinned a core on a paused video in the field.
 #[derive(Default)]
-struct RasterCache {
-    entries: Vec<(RasterKey, Arc<Raster>)>,
+struct SceneCache {
+    entries: Vec<(SceneKey, Option<Arc<CueScene>>)>,
 }
 
-impl RasterCache {
-    fn get(&mut self, key: &RasterKey) -> Option<Arc<Raster>> {
-        let idx = self.entries.iter().position(|(k, _)| k == key)?;
-        let entry = self.entries.remove(idx);
-        let raster = entry.1.clone();
-        self.entries.push(entry);
-        Some(raster)
+impl SceneCache {
+    fn get(&mut self, key: &SceneKey) -> Option<Option<Arc<CueScene>>> {
+        self.get_ref(key.as_ref())
     }
 
-    fn insert(&mut self, key: RasterKey, raster: Arc<Raster>) {
+    /// [`SceneCache::get`] without an owned key, for the per frame warm probe.
+    fn get_ref(&mut self, key: SceneKeyRef<'_>) -> Option<Option<Arc<CueScene>>> {
+        let idx = self.entries.iter().position(|(k, _)| key == *k)?;
+        self.touch(idx);
+        Some(self.entries[self.entries.len() - 1].1.clone())
+    }
+
+    /// Move an entry to the most-recently-used end. A hit on the entry that is
+    /// already newest is the steady state (the boundary warm asks about the
+    /// same next cue every frame), and moving it would memmove the whole tail
+    /// for nothing, so that case is a compare.
+    fn touch(&mut self, idx: usize) {
+        if idx + 1 != self.entries.len() {
+            let entry = self.entries.remove(idx);
+            self.entries.push(entry);
+        }
+    }
+
+    /// [`SceneCache::get`] flattened, for callers that treat a remembered
+    /// failure like an absence. The engine itself needs the distinction
+    /// everywhere, so only tests read this.
+    #[cfg(test)]
+    fn get_ok(&mut self, key: &SceneKey) -> Option<Arc<CueScene>> {
+        self.get(key).flatten()
+    }
+
+    fn insert(&mut self, key: SceneKey, scene: Option<Arc<CueScene>>) {
         if let Some(idx) = self.entries.iter().position(|(k, _)| *k == key) {
             self.entries.remove(idx);
         }
-        self.entries.push((key, raster));
-        while self.entries.len() > RASTER_CACHE_LIMIT {
+        self.entries.push((key, scene));
+        while self.entries.len() > SCENE_CACHE_LIMIT {
+            self.entries.remove(0);
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.entries.len()
+    }
+}
+
+/// THE COMPATIBILITY LANE: scenes painted, keyed by (scene, reveal rank).
+///
+/// The engine publishes scenes, but the wayland subsurface sink and android
+/// still take [`Overlay`]s of pixels, and
+/// they read the overlay set per displayed frame. So a paint is memoized here
+/// rather than repeated: the same (scene, rank) always answers the SAME
+/// allocation, which is what keeps `overlays_for` a pointer copy.
+///
+/// The scene is held by `Arc` and compared by pointer. Holding it is what makes
+/// the pointer an identity: a raw address could be recycled by a later scene
+/// and answer for the wrong cue.
+///
+/// A `None` raster is a remembered failure, exactly as in [`SceneCache`], and
+/// for the same hot-loop reason.
+#[derive(Default)]
+struct PixelCache {
+    entries: Vec<(Arc<CueScene>, u16, Option<Arc<Raster>>)>,
+}
+
+impl PixelCache {
+    /// The paint of this scene at exactly this rank, if it has been attempted.
+    fn get(&mut self, scene: &Arc<CueScene>, rank: u16) -> Option<Option<Arc<Raster>>> {
+        let idx = self
+            .entries
+            .iter()
+            .position(|(s, r, _)| *r == rank && Arc::ptr_eq(s, scene))?;
+        // Already newest is the steady state, and moving it would memmove the
+        // tail for nothing. Same argument as `SceneCache::touch`.
+        if idx + 1 != self.entries.len() {
+            let entry = self.entries.remove(idx);
+            self.entries.push(entry);
+        }
+        Some(self.entries[self.entries.len() - 1].2.clone())
+    }
+
+    /// The best paint of this scene that may be shown at `rank`: the exact one,
+    /// or the closest one below it.
+    ///
+    /// The fallback is what a karaoke step costs on this lane. Crossing a
+    /// threshold leaves the new rank unpainted for as long as the worker takes,
+    /// and the syllable before it is the right thing to show meanwhile -- the
+    /// same judgement `Stale` makes for a re-keyed cue, and the difference
+    /// between a line that fills in and a line that strobes.
+    fn best(&self, scene: &Arc<CueScene>, rank: u16) -> Option<Arc<Raster>> {
+        self.entries
+            .iter()
+            .filter(|(s, r, raster)| *r <= rank && raster.is_some() && Arc::ptr_eq(s, scene))
+            .max_by_key(|(_, r, _)| *r)
+            .and_then(|(_, _, raster)| raster.clone())
+    }
+
+    fn insert(&mut self, scene: Arc<CueScene>, rank: u16, raster: Option<Arc<Raster>>) {
+        if let Some(idx) = self
+            .entries
+            .iter()
+            .position(|(s, r, _)| *r == rank && Arc::ptr_eq(s, &scene))
+        {
+            self.entries.remove(idx);
+        }
+        self.entries.push((scene, rank, raster));
+        while self.entries.len() > PIXEL_CACHE_LIMIT {
             self.entries.remove(0);
         }
     }
@@ -2125,7 +2625,7 @@ struct Slot {
     /// [`CueEngine::request_raster`]): older requests are stale by
     /// construction. The instant is when the request was made, so the worker
     /// can report what the wait cost (see [`CueEngine::raster_latencies`]).
-    request: Option<(u64, RasterKey, Instant)>,
+    request: Option<(u64, Job, Instant)>,
     warm: bool,
     quit: bool,
     /// The worker that drained this inbox has retired, so nothing will ever
@@ -2294,64 +2794,110 @@ fn worker_main(shared: Weak<Shared>, inbox: Arc<Inbox>) {
             }
         }
 
-        let Some((_seq, key, requested_at)) = request else {
+        let Some((_seq, job, requested_at)) = request else {
             continue;
         };
         let Some(shared) = shared.upgrade() else {
             break;
         };
 
-        // The engine re-requests a Pending key every frame while a raster is in
+        // TWO STAGES, EITHER OF WHICH MAY BE A HIT. The scene is the layout and
+        // is cached by key; the raster is one paint of that scene at one reveal
+        // rank and is cached by (scene, rank). A karaoke step arrives here as a
+        // scene hit and a pixel miss, which is the whole point of the wave: no
+        // parley layout runs for a syllable.
+        //
+        // The engine also re-requests a Pending job every frame while one is in
         // flight, so after publishing, the slot often holds a stale copy of the
-        // request just completed. Serve it from the cache instead of rendering
-        // the same pixels twice (which halves worker throughput exactly when
-        // rasters are slowest). Cache hits are not recorded in the latency
-        // window: it measures the rasterizer.
-        let cached = shared.cache.lock().get(&key);
-        if let Some(raster) = cached {
-            let changed = publish(&shared, key, Some(raster));
-            let engine = CueEngine { shared };
-            if changed {
-                engine.mark_changed();
+        // request just completed. Both hits absorb that instead of doing the
+        // work twice (which halved worker throughput exactly when it was
+        // slowest). Hits are not recorded in the latency window: it measures
+        // the rasterizer.
+        let cached = shared.scenes.lock().get(&job.key);
+        let mut fresh = false;
+        let scene = match cached {
+            Some(scene) => scene,
+            None => {
+                // A panic inside the layout or render stack (a parley/vello
+                // assert, a geometry guard someone forgets) must not kill this
+                // thread: the handle would still be held, every future request
+                // would go to a dead worker, and subtitles would silently stop
+                // for the process lifetime. Convert panics into a Failed cue
+                // and rebuild the (possibly poisoned) contexts next time.
+                fresh = true;
+                let built = {
+                    let ctx = ctx.get_or_insert_with(RasterCtx::new);
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.build(&job.key)))
+                };
+                shared.scene_builds.fetch_add(1, Ordering::Relaxed);
+                match built {
+                    Ok(scene) => scene.map(Arc::new),
+                    Err(_) => {
+                        warn!("cue layout panicked; rebuilding the raster context");
+                        ctx = None;
+                        None
+                    }
+                }
             }
-            // The rest of the stack, if there is one (see `pump_rasters`).
-            engine.pump_rasters();
-            continue;
-        }
+        };
 
-        // A panic inside the render stack (a parley/vello assert, a geometry
-        // guard someone forgets) must not kill this thread: the handle would
-        // still be held, every future request would go to a dead worker, and
-        // subtitles would silently stop for the process lifetime. Convert
-        // panics into a Failed raster and rebuild the (possibly poisoned)
-        // contexts on the next request.
-        let rendered = {
-            let ctx = ctx.get_or_insert_with(RasterCtx::new);
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.render(&key)))
-        };
-        let raster = match rendered {
-            Ok(raster) => raster.map(Arc::new),
-            Err(_) => {
-                warn!(
-                    step = key.step,
-                    "cue raster panicked; rebuilding the raster context"
-                );
-                ctx = None;
-                None
+        // The compatibility lane: the overlay consumers want pixels, and this
+        // is the only thread that may cost milliseconds, so the paint happens
+        // here rather than under the caller's state lock.
+        //
+        // The cache lock is TAKEN AND DROPPED before the paint, deliberately.
+        // Holding it across a render would make every `overlays_for` on the
+        // streaming thread wait out a vello pass to read a cue it already has,
+        // which is the stall this whole split exists to keep off that thread.
+        //
+        // A scene consumer skips it whole: it draws the display list itself, so
+        // a paint here is milliseconds of worker time and a megabyte of cache
+        // nothing will ever read.
+        let raster = match scene.as_ref() {
+            Some(_) if shared.scene_consumer.load(Ordering::Relaxed) => None,
+            Some(scene) => {
+                let cached = shared.pixels.lock().get(scene, job.rank);
+                match cached {
+                    Some(raster) => raster,
+                    None => {
+                        fresh = true;
+                        let painted = {
+                            let ctx = ctx.get_or_insert_with(RasterCtx::new);
+                            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                ctx.rasterize(scene, job.rank)
+                            }))
+                        };
+                        match painted {
+                            Ok(raster) => raster.map(Arc::new),
+                            Err(_) => {
+                                warn!(
+                                    rank = job.rank,
+                                    "cue raster panicked; rebuilding the raster context"
+                                );
+                                ctx = None;
+                                None
+                            }
+                        }
+                    }
+                }
             }
+            None => None,
         };
-        record_raster_latency(&shared, requested_at.elapsed());
-        let changed = publish(&shared, key, raster);
+
+        if fresh {
+            record_raster_latency(&shared, requested_at.elapsed());
+        }
+        let changed = publish(&shared, job, scene, raster);
         let engine = CueEngine { shared };
         if changed {
             engine.mark_changed();
         }
         // ASK FOR THE NEXT ONE. With several cues on screen the frame path
-        // hands over one key at a time (the inbox is a newest-wins slot), so
+        // hands over one job at a time (the inbox is a newest-wins slot), so
         // the worker feeding itself is what fills a stack in without waiting
         // for the next frame, and while PAUSED there is no next frame. It
-        // cannot spin: a key that has been published is no longer wanted, and a
-        // key that failed is remembered as Failed.
+        // cannot spin: a job that has been published is no longer wanted, and a
+        // key or a rank that failed is remembered as a failure.
         engine.pump_rasters();
     }
 }
@@ -2658,50 +3204,85 @@ fn record_raster_latency(shared: &Arc<Shared>, cost: Duration) {
     latencies.push_back(cost);
 }
 
-/// Hand a finished raster to the engine. Returns whether it changed what is on
-/// screen (a raster for a cue that has since been replaced only warms the
-/// cache). Takes the state lock without holding the inbox lock, since the
-/// worker must never hold both, since the engine takes them in the opposite
-/// order.
-fn publish(shared: &Arc<Shared>, key: RasterKey, raster: Option<Arc<Raster>>) -> bool {
-    if let Some(raster) = raster.as_ref() {
-        shared.cache.lock().insert(key.clone(), raster.clone());
+/// Hand a finished job to the engine: the scene under its key, and the paint of
+/// it under (scene, rank). Returns whether it changed what is on screen (a job
+/// for a cue that has since been replaced only warms the caches). Takes the
+/// state lock without holding the inbox lock, since the worker must never hold
+/// both, since the engine takes them in the opposite order.
+fn publish(
+    shared: &Arc<Shared>,
+    job: Job,
+    scene: Option<Arc<CueScene>>,
+    raster: Option<Arc<Raster>>,
+) -> bool {
+    let painted = raster.is_some();
+    // The scene lane never asked for a paint, so there is no answer to file and
+    // no tombstone to leave behind (which would refuse a paint if the lane were
+    // ever switched back).
+    let scene_lane = shared.scene_consumer.load(Ordering::Relaxed);
+    shared.scenes.lock().insert(job.key.clone(), scene.clone());
+    if let Some(scene) = scene.as_ref()
+        && !scene_lane
+    {
+        shared.pixels.lock().insert(scene.clone(), job.rank, raster);
     }
 
     let mut state = shared.state.lock();
     let mut changed = false;
     // EVERY active cue under this key, not the first: two cues on screen can
-    // legitimately share one (the same line delivered at two times renders to
-    // the same pixels), and serving only one of them would leave the other
+    // legitimately share one (the same line delivered at two times lays out to
+    // the same scene), and serving only one of them would leave the other
     // Pending against a key already answered.
     for active in state.active.iter_mut() {
-        if active.key != key
-            || !matches!(active.raster, RasterState::Pending | RasterState::Stale(_))
-        {
+        if active.key != job.key {
             continue;
         }
-        active.raster = match raster.as_ref() {
-            Some(raster) => RasterState::Ready(raster.clone()),
-            None => RasterState::Failed,
+        let mut became_ready = false;
+        if matches!(active.scene, SceneState::Pending | SceneState::Stale(_)) {
+            active.scene = match scene.as_ref() {
+                Some(scene) => SceneState::Ready(scene.clone()),
+                None => SceneState::Failed,
+            };
+            became_ready = matches!(active.scene, SceneState::Ready(_));
+        }
+        // A repaint is owed whenever this cue's pixels moved: the scene landing
+        // is one way, a paint at the rank it is showing is the other, and a
+        // karaoke step only ever takes the second. On the scene lane the
+        // landing is the ONLY way, because the pixels are the consumer's.
+        changed |= if scene_lane {
+            became_ready
+        } else {
+            painted && active.rank == job.rank && matches!(active.scene, SceneState::Ready(_))
         };
-        changed |= matches!(active.raster, RasterState::Ready(_));
     }
     changed
 }
 
-/// The worker's rasterizer state, on the one raster thread.
+/// The worker's layout and raster state, on the one raster thread.
 ///
-/// One parley/vello rasterizer ([`cue_ir::RasterCtx`]) renders every arm.
-/// parley's contexts cache font data and layouts, so it is built once here
-/// and kept for the thread's lifetime.
+/// One parley layout stack ([`cue_ir::RasterCtx`]) builds every arm's scene,
+/// and one vello_cpu backend paints them for the overlay lanes. parley's
+/// contexts cache font data and layouts, so both are built once here and kept
+/// for the thread's lifetime.
+///
+/// WHAT IS NOT HERE, deliberately: a swash `ScaleContext` and the
+/// coverage-bitmap `misses` that would otherwise belong on this thread. A miss
+/// is defined against the consumer's glyph atlas, and that atlas lives in the
+/// slint fork; a worker with no atlas to ask can only rasterize every glyph of
+/// every cue, which is work nobody reads. The property that actually matters
+/// -- no glyph rasterization on a streaming or event-loop thread -- holds
+/// today, because the only glyph rasterizer in the engine is the vello backend
+/// below and it runs here. The blob path lands with its consumer.
 struct RasterCtx {
     cue_ir: cue_ir::RasterCtx,
+    backend: VelloBackend,
 }
 
 impl RasterCtx {
     fn new() -> Self {
         Self {
             cue_ir: cue_ir::RasterCtx::new(),
+            backend: VelloBackend::new(),
         }
     }
 
@@ -2713,10 +3294,13 @@ impl RasterCtx {
         self.cue_ir.warm();
     }
 
-    fn render(&mut self, key: &RasterKey) -> Option<Raster> {
-        // Every arm renders through parley/vello. Utf8 and pango-markup cues
-        // become an IR right here: plain text wraps as unstyled lines, markup
-        // goes through the tolerant pango-markup reimplementation (pure Rust,
+    /// The display list for a key: THE ONE LAYOUT, and the expensive half of
+    /// the worker. Karaoke does not reach it, since a reveal is a threshold on
+    /// what comes out rather than an input to it.
+    fn build(&mut self, key: &SceneKey) -> Option<CueScene> {
+        // Every arm lays out through parley. Utf8 and pango-markup cues become
+        // an IR right here: plain text wraps as unstyled lines, markup goes
+        // through the tolerant pango-markup reimplementation (pure Rust,
         // nothing links pango), which never rejects a cue, broken markup
         // degrades to its words. That matters because matroskademux emits
         // `format=pango-markup` directly for S_TEXT/UTF8 tracks, so cues
@@ -2733,9 +3317,13 @@ impl RasterCtx {
                 &converted
             }
         };
-        let out = self
-            .cue_ir
-            .render(ir, &key.style, key.canvas, key.video_rect, key.step)?;
+        self.cue_ir
+            .build_scene(ir, &key.style, key.canvas, key.video_rect)
+    }
+
+    /// A scene painted at one reveal rank, for the overlay lanes.
+    fn rasterize(&mut self, scene: &CueScene, rank: u16) -> Option<Raster> {
+        let out = self.backend.rasterize(scene, rank)?;
         Some(Raster {
             pixels: Arc::new(out.pixels),
             width: out.width,
@@ -2743,6 +3331,15 @@ impl RasterCtx {
             x: out.x,
             y: out.y,
         })
+    }
+
+    /// [`RasterCtx::build`] then [`RasterCtx::rasterize`], the two halves the
+    /// worker does separately. Tests that predate the split ask for pixels from
+    /// a key and still do.
+    #[cfg(test)]
+    fn render(&mut self, key: &SceneKey) -> Option<Raster> {
+        let scene = self.build(key)?;
+        self.rasterize(&scene, ALL_REVEALED)
     }
 }
 
@@ -2813,6 +3410,66 @@ mod tests {
     }
 
     // ---- timing, ported from fcasttextoverlay's harness tests ----
+
+    /// A cue that fails must be attempted once, not in a hot loop. The
+    /// field shape: canvas never set, a pending cue, playback paused; the
+    /// boundary warm consulted only successful cache entries, so the
+    /// worker re-rendered the failing key at core speed until unpause.
+    #[test]
+    fn failed_raster_is_not_retried() {
+        let engine = CueEngine::new();
+        let key = SceneKey {
+            text: "spin".into(),
+            format: TextFormat::Utf8,
+            canvas: (0, 0),
+            style: Default::default(),
+            video_rect: None,
+        };
+        let job = Job {
+            key: key.clone(),
+            rank: 0,
+        };
+        publish(&engine.shared, job.clone(), None, None);
+        // the attempt is remembered as a failure, not forgotten
+        assert!(matches!(engine.shared.scenes.lock().get(&key), Some(None)));
+        assert!(engine.shared.scenes.lock().get_ok(&key).is_none());
+        // a success under the same key still replaces the tombstone
+        let scene = Arc::new(CueScene::default());
+        publish(&engine.shared, job, Some(scene.clone()), None);
+        let hit = engine.shared.scenes.lock().get_ok(&key);
+        assert!(hit.is_some_and(|s| Arc::ptr_eq(&s, &scene)));
+    }
+
+    /// The same for a PAINT that fails. The pixel lane has its own tombstone,
+    /// because a scene that builds but cannot be painted (a rank nothing is
+    /// visible at, a surface the backend refuses) would otherwise be asked for
+    /// again by every frame that reads the overlay set.
+    #[test]
+    fn a_failed_paint_is_remembered_too() {
+        let engine = CueEngine::new();
+        let scene = Arc::new(CueScene::default());
+        let job = Job {
+            key: SceneKey {
+                text: "unpaintable".into(),
+                format: TextFormat::Utf8,
+                canvas: (0, 0),
+                style: Default::default(),
+                video_rect: None,
+            },
+            rank: 3,
+        };
+        publish(&engine.shared, job, Some(scene.clone()), None);
+
+        let mut pixels = engine.shared.pixels.lock();
+        assert!(
+            matches!(pixels.get(&scene, 3), Some(None)),
+            "the failed paint was forgotten, so it will be attempted again"
+        );
+        assert!(
+            pixels.best(&scene, 3).is_none(),
+            "a remembered failure must not be shown as pixels"
+        );
+    }
 
     /// `test_basic_passthrough` (`fcasttextoverlay.rs:1036`): a frame with no
     /// cue in flight carries nothing.
@@ -3315,14 +3972,13 @@ mod tests {
 
     // ---- rasterization ----
 
-    fn raster_key(text: &str, format: TextFormat, canvas: (u32, u32)) -> RasterKey {
-        RasterKey {
+    fn raster_key(text: &str, format: TextFormat, canvas: (u32, u32)) -> SceneKey {
+        SceneKey {
             text: text.to_owned(),
             format,
             canvas,
             style: Arc::new(CueStyle::default()),
             video_rect: None,
-            step: 0,
         }
     }
 
@@ -3407,7 +4063,7 @@ mod tests {
         // reject the whole string and the fallback discarded the bold).
         let ir = Arc::new(gstrssubparse::pango_markup::markup_to_cue_ir(broken));
         let styled = ctx
-            .render(&RasterKey {
+            .render(&SceneKey {
                 format: TextFormat::CueIr {
                     ir,
                     pts_start: None,
@@ -3478,6 +4134,227 @@ mod tests {
         assert_ne!(rendered.pixels(), with_tags.pixels());
     }
 
+    // ---- karaoke: one layout, a threshold per step ----
+
+    /// A `\k`-style cue as the cue-IR arm delivers one: three syllables, the
+    /// last two revealing a second apart, each in its own colour so the
+    /// difference is visible in the pixels.
+    fn karaoke_cue() -> (CueInput, Arc<cue_ir::CueIr>) {
+        let mut ir = cue_ir::CueIr::from_plain_text("");
+        let mut spans = Vec::new();
+        for (index, word) in ["first ", "second ", "third"].into_iter().enumerate() {
+            let mut span = cue_ir::ir::Span::plain(word);
+            if index > 0 {
+                span.reveal_ns = Some(index as u64 * 1_000_000_000);
+            }
+            span.style.foreground = Some(cue_ir::ir::Color::rgb(255, (80 * index) as u8, 0));
+            spans.push(span);
+        }
+        ir.lines[0].spans = spans;
+        let ir = Arc::new(ir);
+        (
+            CueInput {
+                format: TextFormat::CueIr {
+                    ir: ir.clone(),
+                    pts_start: Some(gst::ClockTime::ZERO),
+                },
+                text: "first second third".to_owned(),
+                start_rt: gst::ClockTime::ZERO,
+                end_rt: Some(ms(10_000)),
+            },
+            ir,
+        )
+    }
+
+    /// [`opening_rank`] is [`reveal_plan`]'s rank, for every shape of cue.
+    ///
+    /// The boundary warm runs every frame and wants only the rank, so it takes
+    /// the short route and never builds the step list. The two must not be
+    /// allowed to drift, so the short route is graded against the long one over
+    /// the cases that decide it: no IR at all, karaoke with a usable anchor,
+    /// karaoke with no anchor, karaoke at a reversed and at a NaN rate, and IR
+    /// carrying no reveals.
+    #[test]
+    fn the_opening_rank_matches_the_full_reveal_plan() {
+        let (anchored, ir) = karaoke_cue();
+        let unanchored = CueInput {
+            format: TextFormat::CueIr {
+                ir: ir.clone(),
+                pts_start: None,
+            },
+            ..anchored.clone()
+        };
+        let plain = CueInput {
+            format: TextFormat::Utf8,
+            ..anchored.clone()
+        };
+        // Cue-IR that carries no karaoke timing at all.
+        let no_reveals = CueInput {
+            format: TextFormat::CueIr {
+                ir: Arc::new(cue_ir::CueIr::from_plain_text("no syllables here")),
+                pts_start: Some(gst::ClockTime::ZERO),
+            },
+            ..anchored.clone()
+        };
+        let cues = [
+            ("plain utf8", &plain),
+            ("anchored karaoke", &anchored),
+            ("unanchored karaoke", &unanchored),
+            ("cue-ir without reveals", &no_reveals),
+        ];
+        for (name, cue) in cues {
+            for rate in [1.0, 2.0, 0.5, 0.0, -1.0, f64::NAN] {
+                let (_, want) = reveal_plan(cue, rate);
+                assert_eq!(
+                    opening_rank(cue, rate),
+                    want,
+                    "{name} at rate {rate} disagrees with the full plan"
+                );
+            }
+        }
+    }
+
+    /// THE WAVE 5 GATE: a karaoke line lays out exactly ONCE, however many
+    /// syllables fire.
+    ///
+    /// Before this wave a reveal step was part of the raster key, so every
+    /// syllable was a new key, a new parley layout and a new vello render of
+    /// the whole cue -- several times a second on a fast line, at whatever the
+    /// display resolution is. The step is now a threshold over one scene, so
+    /// the layout counter must not move across the sweep and the cue on screen
+    /// must be the same scene allocation throughout.
+    #[test]
+    fn a_karaoke_sweep_lays_the_cue_out_once() {
+        let engine = CueEngine::new();
+        engine.set_canvas(1280, 720);
+        let (cue, _) = karaoke_cue();
+        engine.submit(cue);
+
+        engine.overlays_for(Some(ms(100)));
+        assert!(wait_for(|| !engine.current_overlays().is_empty()));
+
+        // The scene the whole sweep is drawn from, by pointer.
+        let scene = {
+            let state = engine.shared.state.lock();
+            match &state.active.first().expect("a cue is active").scene {
+                SceneState::Ready(scene) => scene.clone(),
+                other => panic!("expected a ready scene, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            scene.max_rank(),
+            2,
+            "two timed syllables are two ranks: {scene:?}"
+        );
+        let builds = engine.scene_builds();
+        assert_eq!(builds, 1, "the cue was laid out {builds} times, not once");
+
+        let opening = engine.current_overlays().remove(0);
+        let ink = |overlay: &Overlay| {
+            overlay
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|px| px[3] > 200 && px[0] > 200)
+                .count()
+        };
+        let mut seen = vec![ink(&opening)];
+
+        // Cross both thresholds.
+        for (rank, rt) in [(1u16, 1_500u64), (2, 2_500)] {
+            engine.overlays_for(Some(ms(rt)));
+            assert!(
+                !engine.current_overlays().is_empty(),
+                "crossing a threshold blanked the line; the rank below it was the \
+                 right thing to keep showing"
+            );
+            assert!(
+                wait_for(|| ink(&engine.current_overlays()[0]) > *seen.last().expect("a sweep")),
+                "syllable {rank} never lit up"
+            );
+
+            let overlay = engine.current_overlays().remove(0);
+            assert_eq!(
+                (overlay.width, overlay.height),
+                (opening.width, opening.height),
+                "revealing a syllable resized the cue"
+            );
+            let live = engine.shared.state.lock();
+            let active = live.active.first().expect("a cue is active");
+            assert_eq!(active.rank, rank, "the reveal rank did not track the clock");
+            match &active.scene {
+                SceneState::Ready(now) => assert!(
+                    Arc::ptr_eq(now, &scene),
+                    "the cue was re-keyed at a syllable, so it laid out again"
+                ),
+                other => panic!("the sweep dropped the scene: {other:?}"),
+            }
+            drop(live);
+            assert_eq!(
+                engine.scene_builds(),
+                builds,
+                "a syllable cost a parley layout, which is the whole thing this wave removed"
+            );
+            seen.push(ink(&overlay));
+        }
+        // One scene, one cache entry, whatever the reveal did; the paints are
+        // where the steps show up, one per rank the clock passed.
+        assert_eq!(
+            engine.cached_rasters(),
+            1,
+            "a step keyed a scene of its own"
+        );
+        assert_eq!(
+            engine.cached_pixels(),
+            seen.len(),
+            "the overlay lane holds one paint per reveal step and nothing else"
+        );
+    }
+
+    /// THE COMPATIBILITY PATH: the pixels the engine hands the overlay lanes at
+    /// reveal step N are the pixels the one-piece rasterizer produces at step
+    /// N, byte for byte.
+    ///
+    /// [`cue_ir::RasterCtx::render`] is untouched by this wave and is what
+    /// every pixel expectation in the tree was written against, so it is the
+    /// pre-surgery oracle. What is under test is the engine's half of the
+    /// step-to-rank mapping: an off-by-one between "thresholds passed" and
+    /// "rank painted" would show a syllable early or late and nothing else
+    /// would catch it.
+    #[test]
+    fn the_overlay_lane_paints_what_the_step_used_to_render() {
+        let engine = CueEngine::new();
+        engine.set_canvas(1280, 720);
+        let (cue, ir) = karaoke_cue();
+        engine.submit(cue);
+
+        let mut oracle = cue_ir::RasterCtx::new();
+        let style = engine.style();
+        // Frame times either side of each threshold, and the step each one
+        // means: 0 before the first, then one and two.
+        for (step, rt) in [(0usize, 100u64), (1, 1_500), (2, 2_500)] {
+            let want = oracle
+                .render(&ir, &style, (1280, 720), None, step)
+                .expect("the karaoke cue rasterizes");
+            engine.overlays_for(Some(ms(rt)));
+            assert!(
+                wait_for(|| engine
+                    .current_overlays()
+                    .first()
+                    .is_some_and(|overlay| *overlay.pixels == want.pixels)),
+                "step {step}: the engine painted something other than the raster this \
+                 step used to produce"
+            );
+            let overlay = engine.current_overlays().remove(0);
+            assert_eq!(
+                (overlay.width, overlay.height, overlay.x),
+                (want.width, want.height, want.x),
+                "step {step}: the surface moved"
+            );
+        }
+    }
+
     // ---- the default readability box ----
 
     /// A pixel of a raster, as straight RGBA.
@@ -3488,19 +4365,13 @@ mod tests {
     }
 
     /// A `CueStyle`-keyed raster key, for the box tests.
-    fn styled_key(
-        text: &str,
-        format: TextFormat,
-        canvas: (u32, u32),
-        style: CueStyle,
-    ) -> RasterKey {
-        RasterKey {
+    fn styled_key(text: &str, format: TextFormat, canvas: (u32, u32), style: CueStyle) -> SceneKey {
+        SceneKey {
             text: text.to_owned(),
             format,
             canvas,
             style: Arc::new(style),
             video_rect: None,
-            step: 0,
         }
     }
 
@@ -3696,24 +4567,16 @@ mod tests {
 
     #[test]
     fn the_raster_cache_is_lru_bounded() {
-        let mut cache = RasterCache::default();
-        let raster = || {
-            Arc::new(Raster {
-                pixels: Arc::new(vec![0; 4]),
-                width: 1,
-                height: 1,
-                x: 0,
-                y: 0,
-            })
-        };
+        let mut cache = SceneCache::default();
+        let scene = || Arc::new(CueScene::default());
 
-        for index in 0..RASTER_CACHE_LIMIT {
+        for index in 0..SCENE_CACHE_LIMIT {
             cache.insert(
                 raster_key(&format!("{index}"), TextFormat::Utf8, (1, 1)),
-                raster(),
+                Some(scene()),
             );
         }
-        assert_eq!(cache.len(), RASTER_CACHE_LIMIT);
+        assert_eq!(cache.len(), SCENE_CACHE_LIMIT);
 
         // Touch the oldest so it is no longer the eviction candidate.
         assert!(
@@ -3721,9 +4584,9 @@ mod tests {
                 .get(&raster_key("0", TextFormat::Utf8, (1, 1)))
                 .is_some()
         );
-        cache.insert(raster_key("new", TextFormat::Utf8, (1, 1)), raster());
+        cache.insert(raster_key("new", TextFormat::Utf8, (1, 1)), Some(scene()));
 
-        assert_eq!(cache.len(), RASTER_CACHE_LIMIT);
+        assert_eq!(cache.len(), SCENE_CACHE_LIMIT);
         assert!(
             cache
                 .get(&raster_key("0", TextFormat::Utf8, (1, 1)))
@@ -3735,6 +4598,51 @@ mod tests {
                 .get(&raster_key("1", TextFormat::Utf8, (1, 1)))
                 .is_none(),
             "the least recently used entry was evicted"
+        );
+    }
+
+    /// The pixel lane's own LRU, plus the two things it does that the scene
+    /// cache does not: it keys on the scene by POINTER (two cues that lay out
+    /// alike are still two scenes) and it answers a rank it has never painted
+    /// with the closest one below it.
+    #[test]
+    fn the_pixel_cache_is_keyed_by_scene_and_rank() {
+        let mut cache = PixelCache::default();
+        let raster = |width| {
+            Arc::new(Raster {
+                pixels: Arc::new(vec![0; 4]),
+                width,
+                height: 1,
+                x: 0,
+                y: 0,
+            })
+        };
+        let (one, two) = (Arc::new(CueScene::default()), Arc::new(CueScene::default()));
+
+        cache.insert(one.clone(), 0, Some(raster(10)));
+        cache.insert(one.clone(), 2, Some(raster(12)));
+        cache.insert(two.clone(), 0, Some(raster(20)));
+
+        assert!(cache.get(&one, 1).is_none(), "rank 1 was never painted");
+        assert_eq!(
+            cache.best(&one, 1).map(|r| r.width),
+            Some(10),
+            "a rank with no paint of its own must fall back to the one below it"
+        );
+        assert_eq!(cache.best(&one, 9).map(|r| r.width), Some(12));
+        assert_eq!(
+            cache.best(&two, 9).map(|r| r.width),
+            Some(20),
+            "two scenes that compare equal are still two entries"
+        );
+
+        for index in 0..PIXEL_CACHE_LIMIT {
+            cache.insert(one.clone(), 100 + index as u16, Some(raster(1)));
+        }
+        assert_eq!(cache.len(), PIXEL_CACHE_LIMIT);
+        assert!(
+            cache.get(&two, 0).is_none(),
+            "the least recently used entry was not evicted"
         );
     }
 
@@ -4375,16 +5283,29 @@ mod tests {
     /// were copied. Bitmap subtitles need it too: a page is the same order of
     /// magnitude as this raster and is composited the same way, so a per-frame
     /// clone at 60 Hz is megabytes a frame of pure memcpy.
+    ///
+    /// It reads the PIXEL LANE now rather than the active cue, because that is
+    /// where the bytes live since the engine's own artifact became the scene.
+    /// The claim is unchanged: what the overlay carries is the allocation the
+    /// engine already had, not a copy made for the caller.
     #[test]
     fn overlay_pixels_are_the_engines_own_buffer_on_every_call() {
         let engine = big_raster_engine();
 
         let engine_pixels = {
             let state = engine.shared.state.lock();
-            match &state.active.first().expect("a cue is active").raster {
-                RasterState::Ready(raster) => raster.pixels.clone(),
-                other => panic!("expected a ready raster, got {other:?}"),
-            }
+            let active = state.active.first().expect("a cue is active");
+            let scene = match &active.scene {
+                SceneState::Ready(scene) => scene.clone(),
+                other => panic!("expected a ready scene, got {other:?}"),
+            };
+            let raster = engine
+                .shared
+                .pixels
+                .lock()
+                .best(&scene, active.rank)
+                .expect("the cue on screen has been painted");
+            raster.pixels.clone()
         };
 
         let first = engine.overlays_for(Some(ms(20)));
@@ -4740,6 +5661,235 @@ mod tests {
             "the regions lost their placement"
         );
         assert!(bitmap.iter().all(|overlay| overlay.pixels[0] == 7));
+    }
+
+    /// WAVE 7's bitmap preservation, on the seam the desktop GL lane runs on.
+    ///
+    /// A scene consumer draws the display lists itself, so the text cue has to
+    /// leave the overlay list; a subpicture is decoded pixels with no display
+    /// list, so it has to stay in it. Both halves are asserted, because getting
+    /// one of them without the other is how the lane loses PGS, DVB or VobSub
+    /// subtitles silently.
+    #[test]
+    fn a_scene_consumer_keeps_the_bitmap_overlays_and_drops_the_text_raster() {
+        gst::init().unwrap();
+        let engine = CueEngine::new();
+        engine.set_canvas(1280, 720);
+        engine.set_video_size(1920, 1080);
+        DecoderRig::default().install(&engine);
+
+        engine.submit(cue("A text cue", 0, 10_000));
+        engine.submit_bitmap(bitmap_packet(7, 0, None));
+        engine.overlays_for(Some(ms(10)));
+        assert!(
+            wait_for(|| engine.current_overlays().len() == 2),
+            "the raster lane never put both on screen, so the switch below proves nothing"
+        );
+
+        engine.set_scene_consumer(true);
+        // Give the worker every chance to answer with a paint anyway: it feeds
+        // itself the next wanted job after every publish.
+        for _ in 0..30 {
+            engine.overlays_for(Some(ms(10)));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let overlays = engine.current_overlays();
+        assert_eq!(
+            overlays
+                .iter()
+                .filter(|overlay| overlay.space == OverlaySpace::Window)
+                .count(),
+            0,
+            "the text cue is still an overlay on a scene consumer, so the lane would draw it \
+             twice, once composited into the video and once in the scene"
+        );
+        let bitmap: Vec<_> = overlays
+            .iter()
+            .filter(|overlay| overlay.space == OverlaySpace::SrcFrame)
+            .collect();
+        assert_eq!(
+            bitmap.len(),
+            1,
+            "the subpicture went away with the text raster, and nothing on this lane can \
+             draw it back: a display list is exactly what it does not have"
+        );
+        assert_eq!(bitmap[0].pixels[0], 7, "the region lost its pixels");
+
+        assert_eq!(
+            engine.shown_scenes().len(),
+            1,
+            "the text cue must still be on the scene lane's own read"
+        );
+        assert!(
+            engine
+                .shown_scenes()
+                .iter()
+                .all(|shown| shown.scene.glyph_count() > 0),
+            "the display list the lane would draw carries no glyphs"
+        );
+    }
+
+    /// The read a scene consumer composites bitmap sets from: the same regions
+    /// [`CueEngine::current_overlays`] would answer with, without building the
+    /// overlay list to get at them.
+    ///
+    /// The desktop wgpu lane reads this once per frame and compares it against
+    /// what it last composited, so the two answers have to agree region for
+    /// region or the lane would rebuild for nothing (or, worse, not rebuild
+    /// when it should).
+    #[test]
+    fn the_bitmap_read_matches_the_overlays_the_raster_lane_would_build() {
+        gst::init().unwrap();
+        let engine = CueEngine::new();
+        engine.set_canvas(1280, 720);
+        engine.set_video_size(1920, 1080);
+        DecoderRig::default().install(&engine);
+        engine.set_scene_consumer(true);
+
+        assert_eq!(
+            engine.with_shown_bitmaps(|regions| regions.len()),
+            0,
+            "an engine with nothing on screen answered with regions"
+        );
+
+        engine.submit_bitmap(bitmap_packet(9, 0, None));
+        // The decode is asynchronous and the schedule only moves when someone
+        // reads it, which `with_shown_bitmaps` deliberately does not do.
+        engine.overlays_for(Some(ms(10)));
+        assert!(
+            wait_for(|| engine.current_overlays().len() == 1),
+            "the set never reached the screen"
+        );
+
+        let overlays = engine.current_overlays();
+        let (tags, rects) = engine.with_shown_bitmaps(|regions| {
+            (
+                regions.iter().map(|r| r.pixels[0]).collect::<Vec<_>>(),
+                regions
+                    .iter()
+                    .map(|r| (r.x, r.y, r.render_width, r.render_height))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(
+            tags,
+            overlays
+                .iter()
+                .map(|overlay| overlay.pixels[0])
+                .collect::<Vec<_>>(),
+            "the two reads disagree about which pixels are on screen"
+        );
+        assert_eq!(
+            rects,
+            overlays
+                .iter()
+                .map(|o| (o.x, o.y, o.render_width, o.render_height))
+                .collect::<Vec<_>>(),
+            "the two reads disagree about where the regions land"
+        );
+
+        // The Arc is the identity the consumer caches on, so it has to be the
+        // one the overlay carries and it has to survive a second read.
+        engine.with_shown_bitmaps(|regions| {
+            assert!(
+                Arc::ptr_eq(&regions[0].pixels, &overlays[0].pixels),
+                "the read copied the pixels instead of sharing them"
+            );
+        });
+
+        engine.clear();
+        assert_eq!(
+            engine.with_shown_bitmaps(|regions| regions.len()),
+            0,
+            "a cleared engine still shows a bitmap set, so the lane would never take it down"
+        );
+    }
+
+    /// A RESIZE MUST NOT BLANK THE LINE.
+    ///
+    /// `set_canvas` and `set_video_rect` re-key every active cue, and they used
+    /// to drop what was on screen with it (`Pending`). On the scene lanes that
+    /// is one or two frames of nothing while the worker re-lays-out, and a
+    /// window drag is a continuous stream of those, which is the "resizing
+    /// while playing makes them flash" report.
+    ///
+    /// Asserted at both ends: the same allocation is still showing on the read
+    /// immediately after the re-key, and a NEW one replaces it once the worker
+    /// answers, so this is a hold and not a leak.
+    #[test]
+    fn a_resize_keeps_the_cue_up_until_the_new_layout_lands() {
+        let engine = CueEngine::new();
+        engine.set_scene_consumer(true);
+        engine.set_canvas(1280, 720);
+        engine.submit(cue("It's a little after 12", 1_000, 20_000));
+        engine.scenes_for(Some(ms(2_000)));
+        assert!(
+            wait_for(|| engine.shown_scenes().len() == 1),
+            "the cue never made it on screen, so the resize below proves nothing"
+        );
+        let before = Arc::clone(&engine.shown_scenes()[0].scene);
+
+        engine.set_canvas(1920, 1080);
+        let during = engine.shown_scenes();
+        assert_eq!(during.len(), 1, "the resize blanked the line");
+        assert!(
+            Arc::ptr_eq(&during[0].scene, &before),
+            "the resize swapped the display list before the new one existed"
+        );
+
+        // A video rect change is the other half of a resize and re-keys the
+        // same way, so it must hold the same.
+        engine.set_video_rect(Some(VideoRect {
+            x: 0,
+            y: 60,
+            width: 1920,
+            height: 960,
+        }));
+        assert_eq!(
+            engine.shown_scenes().len(),
+            1,
+            "the picture rect change blanked the line"
+        );
+
+        assert!(
+            wait_for(|| {
+                let shown = engine.shown_scenes();
+                shown.len() == 1 && !Arc::ptr_eq(&shown[0].scene, &before)
+            }),
+            "the stale display list was never replaced, so the hold is a leak"
+        );
+    }
+
+    /// The other side of the hold: a cue that ENDS still goes away at once.
+    ///
+    /// [`SceneState::Stale`] keeps a re-keyed cue up. An expiry is not a re-key
+    /// (the cue leaves `active` entirely), so nothing about the hold may reach
+    /// it, or every line would linger past its end time.
+    #[test]
+    fn a_cue_that_ends_clears_even_after_a_resize() {
+        let engine = CueEngine::new();
+        engine.set_scene_consumer(true);
+        engine.set_canvas(1280, 720);
+        engine.submit(cue("It's a little after 12", 1_000, 1_000));
+        engine.scenes_for(Some(ms(1_500)));
+        assert!(
+            wait_for(|| engine.shown_scenes().len() == 1),
+            "the cue never made it on screen"
+        );
+
+        engine.set_canvas(1920, 1080);
+        assert_eq!(
+            engine.shown_scenes().len(),
+            1,
+            "the resize blanked the line"
+        );
+        // Past the end, with the replacement still unbuilt.
+        engine.scenes_for(Some(ms(2_500)));
+        assert!(
+            engine.shown_scenes().is_empty(),
+            "the expired cue is still on screen, so the stale hold outlived its cue"
+        );
     }
 
     /// The scheduled clear happens at its own running time, and the

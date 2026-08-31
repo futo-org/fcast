@@ -16,3 +16,8 @@
 /thirdparty
 /test_corpus
 /.dir-locals.el
+
+# Working notes, internal to the machine they were written on
+/*-plan.md
+/*-PLAN.md
+/*-SPIKE.md

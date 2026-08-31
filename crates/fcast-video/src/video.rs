@@ -736,6 +736,14 @@ pub mod imp {
             // carried. The two coexist by design: text comes from the engine,
             // and the meta path is kept for a bitmap renderer that no current
             // pipeline autoplugs.
+            //
+            // This call is also the schedule's clock, on every lane. A scene
+            // consumer (the desktop GL lane, wave 7) still makes it and still
+            // needs to: it advances the timeline at the frame's own running
+            // time, and it answers with the engine's BITMAP subtitle set, which
+            // has no display list and is composited here on every lane. Its
+            // text cues fall out of the answer and are drawn from the display
+            // lists instead. See `CueEngine::set_scene_consumer`.
             overlays.extend(self.engine.overlays_for(frame_running_time));
 
             let config = self.config.lock();

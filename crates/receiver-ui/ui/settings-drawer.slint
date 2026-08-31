@@ -440,7 +440,8 @@ export component SettingsDrawer inherits Rectangle {
                         setting-key: "interface.show_window";
                         value <=> Bridge.cfg-interface-show-window;
                     }
-                    ToggleRow {
+                    // no tray on touch platforms
+                    if !Bridge.touch-mode: ToggleRow {
                         label: @tr("System tray icon");
                         setting-key: "interface.tray";
                         value <=> Bridge.cfg-interface-tray;

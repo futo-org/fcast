@@ -44,6 +44,16 @@ export struct CompoundImage {
     rotation: angle,
 }
 
+// One rendered subtitle cue, placed in window coordinates. Android only,
+// desktop composites cues into the video frames instead.
+export struct SubtitleOverlay {
+    img: image,
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+}
+
 export enum UiMode {
     Minimal,
     Full,
@@ -102,6 +112,38 @@ export global Bridge {
     in property <string> artist-name;
     in property <bool> is-fullscreen;
     in property <image> qr-code;
+    // touch screens have no hover: controls toggle on tap and auto-hide
+    in property <bool> touch-mode;
+    // The window's safe-area insets, mirrored here by MainWindow so views
+    // can pad by them (the Window element is out of their scope). Zero
+    // without a notch/system bars. Video stays full-bleed, chrome pads.
+    in-out property <length> safe-area-left;
+    in-out property <length> safe-area-top;
+    in-out property <length> safe-area-right;
+    in-out property <length> safe-area-bottom;
+    // Video frames pushed into the scene: android's software bridge, and
+    // the desktop wgpu lane, whose image is the rendered texture itself
+    // when slint shares its device and a readback otherwise. Empty on the
+    // desktop libplacebo path, which paints video behind the window.
+    in property <image> sw-video-frame;
+    // a sw frame is being presented, the view paints black behind it
+    in property <bool> sw-video-active;
+    // The picture inside that image, in source pixels. Zero width or height
+    // means the whole image, which is every path but android's zero-copy
+    // one: a gralloc frame's texture also covers the decoder's trailing
+    // padding and the display window a crop meta asked for.
+    in property <int> sw-video-clip-x;
+    in property <int> sw-video-clip-y;
+    in property <int> sw-video-clip-width;
+    in property <int> sw-video-clip-height;
+    // android subtitle cues, drawn over the video; empty on desktop
+    in property <[SubtitleOverlay]> subtitle-overlays;
+    // Bitmap subtitles (PGS, VobSub, DVB) on the desktop wgpu lane. They are
+    // decoded pixels with no display list, so they cannot ride the renderer's
+    // cue overlay slot the way text cues do. The active regions are composited
+    // into one image covering their joint bounding box and placed over the
+    // letterboxed picture. Zero width means nothing is showing.
+    in property <SubtitleOverlay> bitmap-subtitle;
     in property <CompoundImage> image-preview;
     in property <CompoundImage> audio-track-cover;
     in property <CompoundImage> blured-audio-track-cover;
@@ -209,9 +251,21 @@ export global Bridge {
     in-out property <string> cfg-log-level: "Default";
 
     out property <brush> controls-bg-gradient: @linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.2) 50%, rgba(0, 0, 0, 0.60) 100%, rgba(0, 0, 0, 0));
+    // A subtitle cue is drawn over the video area by the renderer's overlay
+    // slot (desktop wgpu lane). Set by the lane, and it counts as an
+    // obstruction: a video surface stacked above the GUI would hide a
+    // scene-layer overlay entirely.
+    in property <bool> cue-overlay-visible;
+    // The z order seam the cue overlay is drawn at: the renderer draws it right
+    // after the one pixel marker rectangle painted with this exact color, which
+    // is what puts a cue above the video and below the controls. Defined here
+    // so the marker in video-player.slint and the Rust side that names it to
+    // the renderer cannot drift apart. Nothing else may use this color.
+    out property <color> cue-anchor: #01020304;
     // Whether any GUI element is (potentially) drawn over the video area.
     out property <bool> video-obstructed:
-        app-state != AppState.Playing
+        cue-overlay-visible
+        || app-state != AppState.Playing
         || player-variant != UiPlayerVariant.Video
         || playback-state != GuiPlaybackState.Playing
         || controls-overlay-visible

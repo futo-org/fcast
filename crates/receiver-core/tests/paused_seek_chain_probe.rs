@@ -142,7 +142,6 @@ struct Probe {
     events: mpsc::Receiver<PlayerEvent>,
     log: Mutex<Vec<PlayerEvent>>,
     paused: std::cell::Cell<bool>,
-    parked: std::cell::Cell<Option<Seek>>,
 }
 
 impl Probe {
@@ -165,6 +164,7 @@ impl Probe {
                     .property("sync", true)
                     .build()?)
             })),
+            subtitle: flapjack::SubtitleSink::None,
         })
         .expect("building flapjack");
 
@@ -213,24 +213,15 @@ impl Probe {
             events,
             log: Mutex::new(Vec::new()),
             paused: std::cell::Cell::new(true),
-            parked: std::cell::Cell::new(None),
         }
     }
 
-    /// One settle-point pass: absorb events, put back a seek the driver parked
-    /// (`Job::Seek` refuses one that did not arrive at a settled PAUSED), and
-    /// give the link policy its chance, what the receiver does on every edge.
+    /// One settle-point pass: absorb events and give the link policy its
+    /// chance, what the receiver does on every edge. Seeks park inside
+    /// flapjack now, there is nothing to put back.
     fn pump(&self) {
         while let Ok(event) = self.events.try_recv() {
-            if let PlayerEvent::QueueSeek(seek) = &event {
-                self.parked.set(Some(*seek));
-            }
             self.log.lock().push(event);
-        }
-        if self.player.is_settled()
-            && let Some(seek) = self.parked.take()
-        {
-            self.player.seek_async(seek);
         }
         self.player.pump_selection(SelectionGate {
             quiet: true,
@@ -263,8 +254,8 @@ impl Probe {
                 PlayerEvent::StreamCollection(collection) => Some(
                     collection
                         .iter()
-                        .filter(|s| s.stream_type().contains(gst::StreamType::TEXT))
-                        .filter_map(|s| s.stream_id().map(|id| id.to_string()))
+                        .filter(|s| s.slot == flapjack::TrackSlot::Subtitle)
+                        .map(|s| s.id.to_string())
                         .collect::<Vec<_>>(),
                 ),
                 _ => None,
@@ -307,16 +298,13 @@ fn probe_the_paused_seek_chain() {
 
     let t0 = Instant::now();
     let p = Probe::new(t0);
-    if let Err(error) = p.player.load(
+    p.player.load(
         MediaInput::Uri(uri),
         StartPoint::Seek {
             position: gst::ClockTime::ZERO,
             rate: 1.0,
         },
-    ) {
-        println!("!! the load failed: {error}");
-        return;
-    }
+    );
     if !p.wait_for("a text stream to be advertised", |p| {
         !p.text_sids().is_empty()
     }) {
@@ -327,7 +315,7 @@ fn probe_the_paused_seek_chain() {
     println!("text sids: {sids:?}");
     p.player.request_track(
         TrackSlot::Subtitle,
-        TrackTarget::Stream(Some(sids[0].clone())),
+        TrackTarget::Stream(sids[0].strip_prefix("stream#").and_then(|n| n.parse().ok()).map(flapjack::StreamId)),
     );
     // `FCAST_PROBE_NO_PLAY=1`: never leave PAUSED at all. The field gesture
     // "open the file and drag the scrubber" seeks from a pipeline that has only
@@ -356,14 +344,14 @@ fn probe_the_paused_seek_chain() {
             p.cue_count()
         );
     } else {
-        p.player.play().expect("play");
+        p.player.play();
         p.paused.set(false);
         p.wait_for("the first cue", |p| p.cue_count() > 0);
         p.wait_for("playback to reach the pause point", |p| {
             p.player.position().is_some_and(|pos| pos > play_to)
         });
 
-        p.player.pause().expect("pause");
+        p.player.pause();
     }
     p.paused.set(true);
     p.wait_for("a settled PAUSED", |p| {
@@ -378,7 +366,7 @@ fn probe_the_paused_seek_chain() {
     let repaints_before = p.repaints.load(Ordering::Acquire);
 
     println!("\n--- the PAUSED seek ---");
-    p.player.seek_async(Seek::new(Some(seek_to), None));
+    let _ = p.player.seek(Seek::new(Some(seek_to), None));
     let deadline = Instant::now() + Duration::from_secs(12);
     while Instant::now() < deadline {
         p.pump();

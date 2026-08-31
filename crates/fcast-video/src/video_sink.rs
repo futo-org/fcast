@@ -39,6 +39,21 @@ pub trait VideoSink {
     /// is only safe on a player-scene buffer.
     fn set_gui_scene_is_player(&mut self, _player: bool) {}
 
+    /// Whether text cues may be drawn by the GUI scene, on top of this sink's
+    /// picture, instead of being composited into it as overlay rasters.
+    ///
+    /// False by default, which is the safe answer: a sink that can stack its
+    /// surface ABOVE the GUI makes a scene layer overlay invisible, so the
+    /// wayland subsurface lane keeps the rasters. Static per sink, not per
+    /// frame: switching lanes mid playback would swap the cue engine's paint
+    /// lane under a live cue.
+    ///
+    /// Bitmap subtitles are unaffected either way. They are decoded pixels
+    /// with no display list, so every lane composites them.
+    fn scene_cues(&self) -> bool {
+        false
+    }
+
     /// Whether the sink currently presents independently of the GUI render loop
     /// (e.g. its subsurface is stacked above the GUI, whose redraw cycle
     /// may therefore be parked). When true, new frames are delivered via
@@ -106,6 +121,12 @@ impl VideoSink for SwapchainSink {
             .map_err(|err| anyhow!("placebo swapchain render failed: {err}"))?;
         placebo.submit_frame();
         Ok(())
+    }
+
+    /// The swapchain draws under the GUI, always, so the scene overlay is on
+    /// top of the picture and libplacebo never has to see a text cue.
+    fn scene_cues(&self) -> bool {
+        true
     }
 
     fn get_clear_color(&self) -> [f32; 4] {
