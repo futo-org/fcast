@@ -220,6 +220,11 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         log_if_err!(slint::quit_event_loop());
     });
 
+    bridge.on_background_app(move || {
+        #[cfg(target_os = "android")]
+        crate::android_immersive::move_task_to_back();
+    });
+
     bridge.on_port_conflict_retry({
         let msg_tx = msg_tx.clone();
         move || {

@@ -282,6 +282,8 @@ export global Bridge {
     callback toggle-fullscreen();
     callback set-volume(float);
     callback force-quit();
+    // Android Back at the top level: background the task, do not finish.
+    callback background-app();
     // Port-conflict dialog actions.
     callback port-conflict-retry();
     callback port-conflict-use-different-port();
@@ -363,6 +365,19 @@ export global Bridge {
         // own scope and never lets Escape get this far.
         if event.text == Key.Escape && show-settings {
             show-settings = false;
+            return accept;
+        }
+        // Android Back must never reach the system default, which finishes
+        // the activity and takes the receiver process with it. Peel one
+        // layer of UI per press, then background the task.
+        if event.text == Key.Back {
+            if show-settings {
+                show-settings = false;
+            } else if Bridge.is-fullscreen {
+                toggle-fullscreen();
+            } else {
+                background-app();
+            }
             return accept;
         }
         // Reaching here means no widget took the tab, so focus is about to move.

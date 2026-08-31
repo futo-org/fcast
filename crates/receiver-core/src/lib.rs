@@ -120,6 +120,22 @@ pub fn fcast_txt_records() -> Option<&'static [(String, String)]> {
     FCAST_TXT_RECORDS.get().map(|v| v.as_slice())
 }
 
+/// The fcast port actually bound, set when the listeners are committed. The
+/// activity gates its NSD registration on this, so an advertisement never
+/// points at a port nobody is listening on yet.
+#[cfg(target_os = "android")]
+static FCAST_COMMITTED_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
+pub(crate) fn publish_fcast_port(port: u16) {
+    let _ = FCAST_COMMITTED_PORT.set(port);
+}
+
+#[cfg(target_os = "android")]
+pub fn fcast_committed_port() -> Option<u16> {
+    FCAST_COMMITTED_PORT.get().copied()
+}
+
 /// Install ring as the process-wide rustls crypto provider, before any TLS
 /// work. Idempotent enough for one call per process entry.
 pub fn install_default_crypto_provider() {

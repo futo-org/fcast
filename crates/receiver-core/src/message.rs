@@ -71,6 +71,23 @@ pub enum Mdns {
     SetIps(Vec<IpAddr>),
 }
 
+/// Audio focus and routing events from the activity. The policy (what pauses,
+/// what resumes) lives in the application, which knows the playback state;
+/// the activity only forwards what the system told it.
+#[cfg(target_os = "android")]
+#[derive(Debug)]
+pub enum AndroidAudio {
+    /// Permanent focus loss. Pause and stay paused.
+    Loss,
+    /// Transient loss (call, alarm, navigation prompt), ducking folded in.
+    /// Pause, and remember to resume on regain.
+    TransientLoss,
+    /// Focus regained after a transient loss.
+    Gain,
+    /// The output route is about to get loud (headphones unplugged).
+    BecomingNoisy,
+}
+
 #[cfg(feature = "airplay")]
 #[derive(Debug)]
 pub enum AirPlay {
@@ -156,6 +173,8 @@ pub enum Message {
     Image(crate::image::Event),
     QueueCache(crate::queue_cache::Event),
     Mdns(Mdns),
+    #[cfg(target_os = "android")]
+    AndroidAudio(AndroidAudio),
     PlaylistDataResult {
         play_message: Option<fcast_protocol::v3::PlayMessage>,
     },

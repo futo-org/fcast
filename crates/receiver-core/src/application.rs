@@ -639,9 +639,22 @@ impl FCastSenderHandle {
 
 pub struct Application {
     // (vm, activity) jobject ptrs captured once at startup so playback code
-    // never touches android-activity's RwLock, see set_keep_screen_on
+    // never touches android-activity's RwLock, see set_playback_active
     #[cfg(target_os = "android")]
     android_jni: (usize, usize),
+    /// The (active, visual) pair last sent to the activity, so state
+    /// transitions that resolve to the same answer cost no JNI round trip.
+    #[cfg(target_os = "android")]
+    android_playback: (bool, bool),
+    /// Whether the current item has something to show. Defaults to true per
+    /// load (video and images want the screen awake from the start); flapjack
+    /// flips it false when the item turns out to be audio only.
+    #[cfg(target_os = "android")]
+    android_visual: bool,
+    /// A transient focus loss (call, alarm) paused playback, so the matching
+    /// regain resumes it. A user pause never sets this.
+    #[cfg(target_os = "android")]
+    android_transient_pause: bool,
     msg_tx: MessageSender,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
     // start of the current load, drives the load-latency marks
@@ -970,6 +983,12 @@ impl Application {
                 android_app.vm_as_ptr() as usize,
                 android_app.activity_as_ptr() as usize,
             ),
+            #[cfg(target_os = "android")]
+            android_playback: (false, false),
+            #[cfg(target_os = "android")]
+            android_visual: true,
+            #[cfg(target_os = "android")]
+            android_transient_pause: false,
             msg_tx,
             updates_tx,
             load_t0: None,
@@ -1417,7 +1436,7 @@ impl Application {
             self.gui.set_artist_name("".to_owned());
             self.gui.clear_images();
             self.gui.update_playback_progress(0.0, 0.0);
-            self.gui.set_app_state(AppState::Idle);
+            self.transition_app_state(AppState::Idle);
             self.gui.set_playback_state(GuiPlaybackState::Idle);
             self.gui.clear_tracks();
             self.gui.set_track_ids(-1, -1, -1);
@@ -1469,9 +1488,6 @@ impl Application {
 
         info!("Media loaded successfully");
         self.load_mark("loaded");
-
-        #[cfg(target_os = "android")]
-        self.set_keep_screen_on(true);
 
         let Some(current_media) = self.current_media.as_ref() else {
             return;
@@ -1643,12 +1659,22 @@ impl Application {
         }
     }
 
-    /// Toggles FLAG_KEEP_SCREEN_ON through the activity over JNI.
-    /// android-activity's set_window_flags takes its process-wide RwLock as
-    /// a writer, which deadlocks against the slint event loop holding the
-    /// read side across every callback dispatch.
+    /// The single edge every device resource hangs off: tells the activity
+    /// whether playback is active and whether it is visual. The Java side
+    /// owns wake lock, wifi lock, FLAG_KEEP_SCREEN_ON (visual only) and
+    /// audio focus against exactly this signal, so nothing can leak past a
+    /// stop, an error, or an item that turns out to be an image.
+    ///
+    /// Over JNI rather than android-activity's set_window_flags, whose
+    /// process-wide RwLock deadlocks against the slint event loop holding
+    /// the read side across every callback dispatch.
     #[cfg(target_os = "android")]
-    fn set_keep_screen_on(&self, on: bool) {
+    fn set_playback_active(&mut self, active: bool) {
+        let state = (active, active && self.android_visual);
+        if self.android_playback == state {
+            return;
+        }
+        self.android_playback = state;
         let (vm, activity) = self.android_jni;
         let Ok(vm) = (unsafe { jni::JavaVM::from_raw(vm as *mut _) }) else {
             return;
@@ -1659,20 +1685,42 @@ impl Application {
         let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
         if let Err(err) = env.call_method(
             &activity,
-            "setKeepScreenOn",
-            "(Z)V",
-            &[jni::objects::JValue::Bool(on as u8)],
+            "setPlaybackActive",
+            "(ZZ)V",
+            &[
+                jni::objects::JValue::Bool(state.0 as u8),
+                jni::objects::JValue::Bool(state.1 as u8),
+            ],
         ) {
             let _ = env.exception_clear();
-            warn!(?err, "setKeepScreenOn call into the activity failed");
+            warn!(?err, "setPlaybackActive call into the activity failed");
         }
+    }
+
+    /// The one gate for GUI app-state changes: the android resource edge
+    /// rides on the same transition, so every path out of playback (stop,
+    /// error, playlist end, image finish) releases what playback held.
+    fn transition_app_state(&mut self, state: AppState) {
+        #[cfg(target_os = "android")]
+        {
+            let active = !matches!(state, AppState::Idle);
+            if matches!(state, AppState::LoadingMedia) {
+                // A new item is visual until flapjack says otherwise.
+                self.android_visual = true;
+            }
+            if !active {
+                self.android_transient_pause = false;
+            }
+            self.set_playback_active(active);
+        }
+        self.gui.set_app_state(state);
     }
 
     fn media_ended(&mut self) {
         info!("Media finished");
 
         #[cfg(target_os = "android")]
-        self.set_keep_screen_on(false);
+        self.set_playback_active(false);
 
         // An autoplay queue with a next item is exempt: the receiver-side advance must
         // keep working after the last sender disconnects.
@@ -2007,7 +2055,7 @@ impl Application {
 
         self.gui.set_player_type(player_variant);
         if !is_image {
-            self.gui.set_app_state(AppState::LoadingMedia);
+            self.transition_app_state(AppState::LoadingMedia);
         }
         if let Some(title) = media_title {
             self.gui.set_media_title(title);
@@ -2089,7 +2137,7 @@ impl Application {
         }
     }
 
-    fn video_stream_available(&self) -> Result<()> {
+    fn video_stream_available(&mut self) -> Result<()> {
         if !self.is_playing() {
             debug!("Ignoring old video stream available event");
             return Ok(());
@@ -2103,12 +2151,18 @@ impl Application {
 
         debug!("Video stream available");
 
+        #[cfg(target_os = "android")]
+        {
+            self.android_visual = true;
+            self.set_playback_active(self.android_playback.0);
+        }
+
         self.gui.set_player_type(UiPlayerVariant::Video);
 
         Ok(())
     }
 
-    fn video_stream_unavailable(&self) {
+    fn video_stream_unavailable(&mut self) {
         if !self.is_playing() {
             debug!("Ignoring old video stream unavailable event");
             return;
@@ -2120,6 +2174,12 @@ impl Application {
 
         debug!("Video stream unavailable");
 
+        #[cfg(target_os = "android")]
+        {
+            self.android_visual = false;
+            self.set_playback_active(self.android_playback.0);
+        }
+
         self.gui.set_player_type(UiPlayerVariant::Audio);
     }
 
@@ -2127,7 +2187,7 @@ impl Application {
         tracing::info!(is_playing = self.is_playing());
         if self.is_playing() {
             self.player.stop();
-            self.gui.set_app_state(AppState::Idle);
+            self.transition_app_state(AppState::Idle);
             self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
             self.current_media = None;
             self.queue_cache.clear();
@@ -2964,6 +3024,12 @@ impl Application {
     }
 
     fn resume(&mut self) {
+        // Any resume ends a focus-loss hold; a stale one must not re-fire on
+        // the next focus gain.
+        #[cfg(target_os = "android")]
+        {
+            self.android_transient_pause = false;
+        }
         if self.is_playing() {
             self.player.play();
         }
@@ -3981,7 +4047,7 @@ impl Application {
                 self.player.update_media_info();
                 self.on_media_info_updated();
 
-                self.gui.set_app_state(AppState::Playing);
+                self.transition_app_state(AppState::Playing);
 
                 // NO transport driving here: `Player::uri_loaded` is the one post-load
                 // transport driver, or a mid-load pause gets stomped and a live subtitle
@@ -4526,13 +4592,13 @@ impl Application {
                 self.current_media =
                     Some(MediaSourceState::new(PacketOrigin::Raop, MediaSource::Raop));
 
-                self.gui.set_app_state(AppState::Playing);
+                self.transition_app_state(AppState::Playing);
                 self.gui.set_player_type(UiPlayerVariant::Raop);
             }
             Raop::SenderDisconnected => {
                 debug!("Session ended");
                 self.current_media = None;
-                self.gui.set_app_state(AppState::Idle);
+                self.transition_app_state(AppState::Idle);
                 self.gui.set_player_type(UiPlayerVariant::Unknown);
                 self.gui.clear_common_playback_state();
             }
@@ -4675,7 +4741,7 @@ impl Application {
                         stream_connection_id,
                     },
                 ));
-                self.gui.set_app_state(AppState::Playing);
+                self.transition_app_state(AppState::Playing);
                 self.gui.set_player_type(UiPlayerVariant::Video);
             }
             AirPlay::MirrorPaused {
@@ -4897,7 +4963,7 @@ impl Application {
                 );
 
                 self.gui.set_image_preview(img);
-                self.gui.set_app_state(AppState::Playing);
+                self.transition_app_state(AppState::Playing);
 
                 self.media_loaded_successfully();
             }
@@ -5220,6 +5286,31 @@ impl Application {
                 debug!(?event, "mDNS event");
                 self.handle_mdns_event(event)?;
             }
+            #[cfg(target_os = "android")]
+            Message::AndroidAudio(event) => {
+                use crate::message::AndroidAudio;
+                let playing = matches!(self.player.player_state(), PlayerState::Playing);
+                debug!(?event, playing, "android audio event");
+                match event {
+                    AndroidAudio::Loss | AndroidAudio::BecomingNoisy => {
+                        self.android_transient_pause = false;
+                        if playing {
+                            self.pause();
+                        }
+                    }
+                    AndroidAudio::TransientLoss => {
+                        if playing {
+                            self.pause();
+                            self.android_transient_pause = true;
+                        }
+                    }
+                    AndroidAudio::Gain => {
+                        if std::mem::take(&mut self.android_transient_pause) {
+                            self.resume();
+                        }
+                    }
+                }
+            }
             Message::PlaylistDataResult { play_message } => {
                 let Some(play_message) = play_message else {
                     error!("Playlist failed to laod");
@@ -5316,7 +5407,7 @@ impl Application {
             }
             Message::ShouldSetLoadingStatus(id) => {
                 if id == self.current_media_item_id && self.is_loading_media {
-                    self.gui.set_app_state(AppState::LoadingMedia);
+                    self.transition_app_state(AppState::LoadingMedia);
                 }
             }
             Message::PendingSubtitleAddCheck { item, epoch } => {
@@ -5640,6 +5731,8 @@ impl Application {
         };
         if let Some(listeners) = listeners {
             self.port_committed = true;
+            #[cfg(target_os = "android")]
+            crate::publish_fcast_port(self.fcast_port);
             // Advertise only now, at the port actually bound, so a second instance never
             // publishes a duplicate record.
             #[cfg(not(target_os = "android"))]

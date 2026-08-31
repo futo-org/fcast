@@ -135,6 +135,31 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getRaopTxtAttri
     }
 }
 
+/// Audio focus and routing events. Codes match MainActivity: 0 permanent
+/// loss, 1 transient loss (ducking folded in), 2 gain, 3 becoming noisy.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeAudioEvent<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    code: jni::sys::jint,
+) {
+    use rcore::message::AndroidAudio;
+    let event = match code {
+        0 => AndroidAudio::Loss,
+        1 => AndroidAudio::TransientLoss,
+        2 => AndroidAudio::Gain,
+        3 => AndroidAudio::BecomingNoisy,
+        other => {
+            error!(other, "unknown audio event code");
+            return;
+        }
+    };
+    let _ = EVENT_CHANNEL
+        .0
+        .send(rcore::message::Message::AndroidAudio(event));
+}
+
 /// Activity start/stop. The video surface dies with the activity, the
 /// player must let go of it first and re-adopt a fresh one on return.
 #[allow(non_snake_case)]
@@ -147,15 +172,27 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeAppVisibi
     rcore::android_app_visibility(visible != 0);
 }
 
+/// The committed fcast listen port, 0 while the listeners are not bound yet.
+/// The activity polls this alongside the TXT records before advertising.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeNetworkEvent<'local>(
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getFCastPort<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+) -> jni::sys::jint {
+    rcore::fcast_committed_port().map_or(0, i32::from)
+}
+
+/// The full current address set, replacing whatever was known. The activity
+/// sweeps interfaces on every network change, so removals need no per-network
+/// bookkeeping on either side.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeSetAddresses<'local>(
     mut env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
-    available: jni::sys::jboolean,
     addrs: jni::objects::JObject,
 ) {
-    let available = available != 0;
     let addrs = match jni::objects::JList::from_env(&mut env, &addrs) {
         Ok(addrs) => addrs,
         Err(err) => {
@@ -170,6 +207,7 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeNetworkEv
             return;
         }
     };
+    let mut ips = Vec::with_capacity(n_addrs as usize);
     for i in 0..n_addrs {
         let Ok(Some(addr)) = addrs.get(&mut env, i) else {
             continue;
@@ -217,16 +255,13 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeNetworkEv
                 continue;
             }
         };
+        ips.push(addr);
+    }
 
-        let event = if available {
-            Mdns::IpAdded(addr)
-        } else {
-            Mdns::IpRemoved(addr)
-        };
-
-        if let Err(err) = EVENT_CHANNEL.0.send(rcore::message::Message::Mdns(event)) {
-            error!(?err, "Failed to send mDNS event");
-            return;
-        }
+    if let Err(err) = EVENT_CHANNEL
+        .0
+        .send(rcore::message::Message::Mdns(Mdns::SetIps(ips)))
+    {
+        error!(?err, "Failed to send mDNS event");
     }
 }

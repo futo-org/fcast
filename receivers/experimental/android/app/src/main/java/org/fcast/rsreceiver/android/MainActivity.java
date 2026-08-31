@@ -2,8 +2,8 @@ package org.fcast.rsreceiver.android;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.media.AudioManager;
 import android.net.ConnectivityManager;
-import android.net.LinkAddress;
 import android.net.LinkProperties;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -16,78 +16,167 @@ import android.app.NativeActivity;
 import android.os.PowerManager;
 import android.util.Log;
 import androidx.annotation.NonNull;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
+import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 
-class DummyNsdRegistrationListener implements NsdManager.RegistrationListener {
-
-    @Override
-    public void onRegistrationFailed(NsdServiceInfo serviceInfo, int errorCode) { }
-
-    @Override
-    public void onUnregistrationFailed(NsdServiceInfo serviceInfo, int errorCode) { }
-
-    @Override
-    public void onServiceRegistered(NsdServiceInfo serviceInfo) { }
-
-    @Override
-    public void onServiceUnregistered(NsdServiceInfo serviceInfo) { }
-}
-
 public class MainActivity extends NativeActivity {
+    private static final String TAG = "FCastMainActivity";
+
     NsdManager nsdManager = null;
     WifiManager wifiManager = null;
     WifiManager.WifiLock wifiLock = null;
     PowerManager powerManager = null;
     PowerManager.WakeLock cpuWakeLock = null;
     ConnectivityManager connectivityManager = null;
-    DummyNsdRegistrationListener fcastNsdReg = new DummyNsdRegistrationListener();
-    private boolean fcastNsdRegistered = false;
-    private final android.os.Handler fcastNsdHandler =
+    ConnectivityManager.NetworkCallback networkCallback = null;
+
+    private final android.os.Handler handler =
             new android.os.Handler(android.os.Looper.getMainLooper());
-    DummyNsdRegistrationListener raopNsdReg = new DummyNsdRegistrationListener();
 
-    void networkEvent(boolean available, @NonNull Network network) {
-        if (connectivityManager == null) {
-            return;
+    private String serviceName;
+    // The listener instance IS the registration handle: one fresh instance per
+    // register call, never reused, so re-registration cycles cannot trip
+    // NsdManager's listener-in-use checks.
+    private NsdListener fcastReg = null;
+    private NsdListener raopReg = null;
+    private boolean destroyed = false;
+
+    // Re-sweep even without a callback: tethering/hotspot interfaces never
+    // surface as Networks, so their addresses are only found by polling.
+    private static final long SWEEP_INTERVAL_MS = 30_000;
+    private static final long NETWORK_SETTLE_MS = 500;
+
+    /// Registration outcomes matter: a swallowed failure means the receiver
+    /// shows its QR while nobody can discover it, and a collision rename
+    /// means the UI shows a name the network does not have.
+    class NsdListener implements NsdManager.RegistrationListener {
+        final String label;
+        final boolean isFcast;
+
+        NsdListener(String label, boolean isFcast) {
+            this.label = label;
+            this.isFcast = isFcast;
         }
 
-        LinkProperties props = connectivityManager.getLinkProperties(network);
-        if (props != null) {
-            // props.getLinkAddresses().stream().map(addrConvert);
+        @Override
+        public void onRegistrationFailed(NsdServiceInfo info, int errorCode) {
+            Log.e(TAG, label + " registration failed: " + errorCode + ", retrying");
+            handler.postDelayed(() -> {
+                if (!destroyed) {
+                    registerServices();
+                }
+            }, 3_000);
+        }
 
-            ArrayList<ByteBuffer> addrs = new ArrayList();
+        @Override
+        public void onUnregistrationFailed(NsdServiceInfo info, int errorCode) {
+            Log.e(TAG, label + " unregistration failed: " + errorCode);
+        }
 
-            for (LinkAddress linkAddr: props.getLinkAddresses()) {
-                byte[] addressBytes = linkAddr.getAddress().getAddress();
-                ByteBuffer buf = ByteBuffer.allocateDirect(addressBytes.length);
-                buf.put(addressBytes);
-                addrs.add(buf);
+        @Override
+        public void onServiceRegistered(NsdServiceInfo info) {
+            Log.i(TAG, label + " registered as " + info.getServiceName());
+            // The daemon renames on collision. Adopt the effective name so
+            // the UI and the network agree.
+            if (isFcast && !info.getServiceName().equals(serviceName)) {
+                serviceName = info.getServiceName();
+                setMdnsDeviceName(serviceName);
             }
-
-            Log.d("networkEvent", "available=" + available + " addrs=" + addrs);
-            nativeNetworkEvent(available, addrs);
         }
+
+        @Override
+        public void onServiceUnregistered(NsdServiceInfo info) { }
     }
 
-    native void nativeNetworkEvent(boolean available, List<ByteBuffer> addrs);
+    native void nativeSetAddresses(List<ByteBuffer> addrs);
     native void setMdnsDeviceName(String name);
     native String getDeviceNameRaopHash(String name);
     native void getRaopTxtAttribs(Map<String, String> attrs);
     native boolean getFCastTxtAttribs(Map<String, String> attrs);
+    native int getFCastPort();
+
+    /// One authoritative sweep instead of per-Network bookkeeping: every
+    /// interface's current addresses, as the full replacement set. Covers
+    /// hotspot/tethering interfaces the ConnectivityManager never reports.
+    void sweepAddresses() {
+        ArrayList<ByteBuffer> addrs = new ArrayList<>();
+        try {
+            Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
+            while (ifaces != null && ifaces.hasMoreElements()) {
+                NetworkInterface iface = ifaces.nextElement();
+                if (!iface.isUp() || iface.isLoopback()) {
+                    continue;
+                }
+                Enumeration<InetAddress> ifaceAddrs = iface.getInetAddresses();
+                while (ifaceAddrs.hasMoreElements()) {
+                    InetAddress addr = ifaceAddrs.nextElement();
+                    if (addr.isLoopbackAddress()) {
+                        continue;
+                    }
+                    byte[] addressBytes = addr.getAddress();
+                    ByteBuffer buf = ByteBuffer.allocateDirect(addressBytes.length);
+                    buf.put(addressBytes);
+                    addrs.add(buf);
+                }
+            }
+        } catch (java.net.SocketException e) {
+            Log.e(TAG, "interface sweep failed", e);
+            return;
+        }
+        Log.d(TAG, "address sweep: " + addrs.size() + " addresses");
+        nativeSetAddresses(addrs);
+    }
+
+    /// Debounced reaction to any connectivity signal: re-sweep addresses and
+    /// re-register NSD, since the platform responder's registrations go
+    /// stale across interface changes.
+    private final Runnable networkSettled = () -> {
+        if (destroyed) {
+            return;
+        }
+        sweepAddresses();
+        registerServices();
+    };
+
+    void onNetworkChanged() {
+        handler.removeCallbacks(networkSettled);
+        handler.postDelayed(networkSettled, NETWORK_SETTLE_MS);
+    }
+
+    private final Runnable periodicSweep = new Runnable() {
+        @Override
+        public void run() {
+            if (destroyed) {
+                return;
+            }
+            sweepAddresses();
+            handler.postDelayed(this, SWEEP_INTERVAL_MS);
+        }
+    };
 
     class NetworkCallbackHandler extends ConnectivityManager.NetworkCallback {
         @Override
         public void onAvailable(@NonNull Network network) {
-            networkEvent(true, network);
+            onNetworkChanged();
         }
 
         @Override
         public void onLost(@NonNull Network network) {
-            networkEvent(true, network);
+            onNetworkChanged();
+        }
+
+        @Override
+        public void onLinkPropertiesChanged(@NonNull Network network,
+                @NonNull LinkProperties props) {
+            // AP roams, DHCP renews and IPv6 prefix changes keep the same
+            // Network and only fire this.
+            onNetworkChanged();
         }
     }
 
@@ -110,6 +199,10 @@ public class MainActivity extends NativeActivity {
         // the live window it would paint over the video hole punch
         getWindow().setBackgroundDrawable(null);
 
+        // Hardware volume keys drive the media stream; without this they hit
+        // the ring stream whenever nothing is actively playing.
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
+
         // A cast receiver is a full-bleed surface: immersive sticky, video
         // may extend into a display cutout, the chrome pads by the reported
         // safe area.
@@ -124,7 +217,6 @@ public class MainActivity extends NativeActivity {
         // Window.safe-area-insets, no bridge needed.
 
         nsdManager = (NsdManager) this.getSystemService(Context.NSD_SERVICE);
-        NsdServiceInfo raopServiceInfo = new NsdServiceInfo();
 
         String modelName;
         if (android.os.Build.MODEL.contains(android.os.Build.MANUFACTURER)) {
@@ -132,14 +224,53 @@ public class MainActivity extends NativeActivity {
         } else {
             modelName = android.os.Build.MODEL;
         }
-        String serviceName = "FCast-" + android.os.Build.MANUFACTURER + "-" + modelName;
+        serviceName = "FCast-" + android.os.Build.MANUFACTURER + "-" + modelName;
 
         setMdnsDeviceName(serviceName);
-        // Registration waits for the TXT records (TLS fingerprint + protocol
-        // version): v4 senders key their secure connect on them, so an
-        // advertisement without them is worse than a briefly delayed one.
-        registerFCastWhenReady(serviceName);
+        registerServices();
 
+        connectivityManager = (ConnectivityManager) this.getSystemService(Context.CONNECTIVITY_SERVICE);
+        NetworkRequest networkRequest = new NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
+                .build();
+        networkCallback = new NetworkCallbackHandler();
+        connectivityManager.registerNetworkCallback(networkRequest, networkCallback);
+
+        sweepAddresses();
+        handler.postDelayed(periodicSweep, SWEEP_INTERVAL_MS);
+
+        // Created here, acquired only while playback is active, see
+        // setPlaybackActive. Non ref-counted so repeated acquires are
+        // idempotent and one release always drops the lock.
+        wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
+        int wifiMode = android.os.Build.VERSION.SDK_INT >= 29
+                ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+        wifiLock = wifiManager.createWifiLock(wifiMode, "FCastRsReceiver:WifiLock");
+        wifiLock.setReferenceCounted(false);
+
+        powerManager = (PowerManager) this.getSystemService(Context.POWER_SERVICE);
+        cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FCastRsReceiver:WakeLock");
+        cpuWakeLock.setReferenceCounted(false);
+    }
+
+    /// (Re-)register both services, dropping any prior registrations first.
+    /// The fcast one waits for the TXT records (TLS fingerprint + protocol
+    /// version) AND the committed listen port: v4 senders key their secure
+    /// connect on the records, and an advertisement pointing at an unbound
+    /// port hands early senders a connection refuse.
+    private void registerServices() {
+        if (fcastReg != null) {
+            nsdManager.unregisterService(fcastReg);
+            fcastReg = null;
+        }
+        if (raopReg != null) {
+            nsdManager.unregisterService(raopReg);
+            raopReg = null;
+        }
+
+        NsdServiceInfo raopServiceInfo = new NsdServiceInfo();
         String raopHash = getDeviceNameRaopHash(serviceName);
         raopServiceInfo.setServiceName(raopHash + "@" + serviceName);
         raopServiceInfo.setServiceType("_raop._tcp");
@@ -149,50 +280,115 @@ public class MainActivity extends NativeActivity {
         for (Map.Entry<String, String> a : raopAttrs.entrySet()) {
             raopServiceInfo.setAttribute(a.getKey(), a.getValue());
         }
-        nsdManager.registerService(raopServiceInfo, NsdManager.PROTOCOL_DNS_SD, raopNsdReg);
+        raopReg = new NsdListener("_raop", false);
+        nsdManager.registerService(raopServiceInfo, NsdManager.PROTOCOL_DNS_SD, raopReg);
 
-        connectivityManager = (ConnectivityManager) this.getSystemService(Context.CONNECTIVITY_SERVICE);
-        NetworkRequest networkRequest = new NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
-                .build();
-        connectivityManager.registerNetworkCallback(networkRequest, new NetworkCallbackHandler());
-
-        wifiManager = (WifiManager) this.getSystemService(Context.WIFI_SERVICE);
-        wifiLock = wifiManager.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "FCastRsReceiver:WifiLock");
-        wifiLock.acquire();
-
-        powerManager = (PowerManager) this.getSystemService(Context.POWER_SERVICE);
-        cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FCastRsReceiver:WakeLock");
-        cpuWakeLock.acquire();
+        registerFCastWhenReady();
     }
 
-    private void registerFCastWhenReady(String serviceName) {
+    private void registerFCastWhenReady() {
         Map<String, String> attrs = new HashMap<>();
-        if (!getFCastTxtAttribs(attrs)) {
-            fcastNsdHandler.postDelayed(() -> registerFCastWhenReady(serviceName), 200);
+        int port = getFCastPort();
+        if (port == 0 || !getFCastTxtAttribs(attrs)) {
+            handler.postDelayed(() -> {
+                if (!destroyed) {
+                    registerFCastWhenReady();
+                }
+            }, 200);
             return;
         }
         NsdServiceInfo info = new NsdServiceInfo();
         info.setServiceName(serviceName);
         info.setServiceType("_fcast._tcp");
-        info.setPort(46899);
+        info.setPort(port);
         for (Map.Entry<String, String> a : attrs.entrySet()) {
             info.setAttribute(a.getKey(), a.getValue());
         }
-        nsdManager.registerService(info, NsdManager.PROTOCOL_DNS_SD, fcastNsdReg);
-        fcastNsdRegistered = true;
+        fcastReg = new NsdListener("_fcast", true);
+        nsdManager.registerService(info, NsdManager.PROTOCOL_DNS_SD, fcastReg);
     }
 
-    /// Called from native code around playback. Any thread. Replaces
-    /// android-activity's set_window_flags, whose process-wide RwLock
-    /// deadlocks against the slint event loop's long-held read guard.
-    public void setKeepScreenOn(boolean on) {
+    private android.media.AudioFocusRequest focusRequest = null;
+    private android.content.BroadcastReceiver noisyReceiver = null;
+
+    private final AudioManager.OnAudioFocusChangeListener focusListener = change -> {
+        switch (change) {
+            case AudioManager.AUDIOFOCUS_LOSS:
+                nativeAudioEvent(0);
+                break;
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                nativeAudioEvent(1);
+                break;
+            case AudioManager.AUDIOFOCUS_GAIN:
+                nativeAudioEvent(2);
+                break;
+        }
+    };
+
+    /// Codes: 0 loss, 1 transient loss, 2 gain, 3 becoming noisy. The pause
+    /// and resume policy lives in native code, which knows the player state.
+    native void nativeAudioEvent(int code);
+
+    /// The single owner of every playback-scoped device resource, called
+    /// from native code on the playback active/idle edge. Any thread.
+    /// Ordering is preserved by posting to the main looper.
+    ///
+    /// Direct window-flag manipulation rather than android-activity's
+    /// set_window_flags, whose process-wide RwLock deadlocks against the
+    /// slint event loop's long-held read guard.
+    @SuppressLint("WakelockTimeout")
+    public void setPlaybackActive(boolean active, boolean visual) {
         runOnUiThread(() -> {
-            if (on) {
+            // The screen only pins for content someone is looking at; an
+            // audio cast relies on the wake lock instead.
+            if (active && visual) {
                 getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             } else {
                 getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+            }
+
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            if (active) {
+                cpuWakeLock.acquire();
+                wifiLock.acquire();
+                if (focusRequest == null) {
+                    focusRequest = new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                            .setAudioAttributes(new android.media.AudioAttributes.Builder()
+                                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
+                                    .build())
+                            .setOnAudioFocusChangeListener(focusListener)
+                            .build();
+                    am.requestAudioFocus(focusRequest);
+                }
+                if (noisyReceiver == null) {
+                    noisyReceiver = new android.content.BroadcastReceiver() {
+                        @Override
+                        public void onReceive(Context context, android.content.Intent intent) {
+                            nativeAudioEvent(3);
+                        }
+                    };
+                    registerReceiver(noisyReceiver,
+                            new android.content.IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
+                }
+            } else {
+                // release() on an unheld lock throws, and the idle edge can
+                // fire without a preceding active one (teardown).
+                if (cpuWakeLock.isHeld()) {
+                    cpuWakeLock.release();
+                }
+                if (wifiLock.isHeld()) {
+                    wifiLock.release();
+                }
+                if (focusRequest != null) {
+                    am.abandonAudioFocusRequest(focusRequest);
+                    focusRequest = null;
+                }
+                if (noisyReceiver != null) {
+                    unregisterReceiver(noisyReceiver);
+                    noisyReceiver = null;
+                }
             }
         });
     }
@@ -200,7 +396,8 @@ public class MainActivity extends NativeActivity {
     private boolean immersiveWanted = false;
 
     /// Called from native code (the player's fullscreen toggle). Any thread.
-    public void setImmersive(boolean on) {
+    /// Not named setImmersive: that would shadow Activity.setImmersive.
+    public void setImmersiveUi(boolean on) {
         immersiveWanted = on;
         runOnUiThread(() -> {
             if (on) {
@@ -247,27 +444,25 @@ public class MainActivity extends NativeActivity {
         super.onStop();
     }
 
-    @SuppressLint("WakelockTimeout")
-    @Override
-    protected void onResume() {
-        super.onResume();
-        cpuWakeLock.acquire();
-    }
-
-    @Override
-    protected void onPause() {
-        super.onPause();
-        cpuWakeLock.release();
-    }
-
     @Override
     protected void onDestroy() {
-        super.onDestroy();
-        fcastNsdHandler.removeCallbacksAndMessages(null);
-        if (fcastNsdRegistered) {
-            nsdManager.unregisterService(fcastNsdReg);
+        // Before super: NativeActivity's onDestroy blocks on the native
+        // thread, which exits the process, so anything after it never runs.
+        destroyed = true;
+        handler.removeCallbacksAndMessages(null);
+        if (fcastReg != null) {
+            nsdManager.unregisterService(fcastReg);
+            fcastReg = null;
         }
-        nsdManager.unregisterService(raopNsdReg);
-        wifiLock.release();
+        if (raopReg != null) {
+            nsdManager.unregisterService(raopReg);
+            raopReg = null;
+        }
+        if (networkCallback != null) {
+            connectivityManager.unregisterNetworkCallback(networkCallback);
+            networkCallback = null;
+        }
+        setPlaybackActive(false, false);
+        super.onDestroy();
     }
 }
