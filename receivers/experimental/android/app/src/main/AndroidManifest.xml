@@ -6,7 +6,6 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
-    <uses-permission android:name="android.permission.CHANGE_WIFI_STATE"/>
 
     <!-- The wifi permissions above imply required wifi hardware on Play and
          touchscreen is required by default; both would filter set-top and TV
@@ -20,7 +19,8 @@
         android:roundIcon="@mipmap/ic_launcher_round"
         android:supportsRtl="true"
         android:hardwareAccelerated="true"
-        tools:targetApi="31"
+        android:allowBackup="false"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.FCastReceiver">
 
         <activity

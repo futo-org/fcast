@@ -208,8 +208,12 @@ public class MainActivity extends NativeActivity {
         // safe area.
         if (android.os.Build.VERSION.SDK_INT >= 28) {
             android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
-            lp.layoutInDisplayCutoutMode =
-                    android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+            // ALWAYS on 30+: SHORT_EDGES letterboxes away from a long-edge
+            // notch in landscape, which is where video wants the pixels.
+            // The safe-area insets keep the chrome clear of it either way.
+            lp.layoutInDisplayCutoutMode = android.os.Build.VERSION.SDK_INT >= 30
+                    ? android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                    : android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
             getWindow().setAttributes(lp);
         }
         // Not immersive at start: the player's fullscreen toggle drives

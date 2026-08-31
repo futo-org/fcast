@@ -2,6 +2,16 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+// Release signing comes from an untracked keystore.properties next to the
+// root build.gradle (storeFile/storePassword/keyAlias/keyPassword). Absent,
+// release stays debug-signed so adb install keeps working locally; Play
+// uploads need the real keystore.
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file('keystore.properties')
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
 android {
     namespace 'org.fcast.rsreceiver.android'
     compileSdk 34
@@ -32,12 +42,23 @@ android {
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        release {
+            if (keystoreProps.getProperty('storeFile')) {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
+    }
+
     buildTypes {
         release {
             minifyEnabled false
-            // debug-signed so adb install keeps working locally; a real
-            // release keystore replaces this for distribution
-            signingConfig signingConfigs.debug
+            signingConfig keystoreProps.getProperty('storeFile') != null
+                    ? signingConfigs.release
+                    : signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
@@ -55,3 +76,44 @@ dependencies {
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core
 }
+
+// Play requires 16KB-page-size support (ELF LOAD segments aligned to
+// 0x4000) for targetSdk 35+ uploads. The alignment comes from linker flags
+// in .cargo/config.toml; this assert catches a toolchain regression before
+// it ships. Reads the ELF program headers directly, no NDK tools needed.
+tasks.register('check16kAlignment') {
+    doLast {
+        def so = file('src/main/jniLibs/arm64-v8a/libfcastreceiver.so')
+        if (!so.exists()) {
+            throw new GradleException("missing ${so}")
+        }
+        def bytes = so.newInputStream().withCloseable { s ->
+            def head = new byte[64]
+            if (s.read(head) != 64) throw new GradleException('short ELF header')
+            head
+        }
+        def buf = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        if (buf.getInt(0) != 0x464c457f) throw new GradleException('not an ELF file')
+        long phoff = buf.getLong(0x20)
+        int phentsize = buf.getShort(0x36) & 0xffff
+        int phnum = buf.getShort(0x38) & 0xffff
+        def raf = new RandomAccessFile(so, 'r')
+        raf.withCloseable {
+            for (int i = 0; i < phnum; i++) {
+                def ph = new byte[phentsize]
+                it.seek(phoff + (long) i * phentsize)
+                it.readFully(ph)
+                def pb = java.nio.ByteBuffer.wrap(ph).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                if (pb.getInt(0) == 1) { // PT_LOAD
+                    long align = pb.getLong(0x30)
+                    if (align < 0x4000) {
+                        throw new GradleException(
+                            "LOAD segment align 0x${Long.toHexString(align)} < 0x4000, " +
+                            'the .so lost 16KB page-size compliance')
+                    }
+                }
+            }
+        }
+    }
+}
+preBuild.dependsOn check16kAlignment

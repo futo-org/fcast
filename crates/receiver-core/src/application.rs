@@ -915,8 +915,11 @@ impl Application {
 
         #[cfg(not(target_os = "android"))]
         let run_gcast = settings.google_cast_enabled();
+        // Off on android until the activity registers _googlecast._tcp with
+        // NsdManager: senders discover by mDNS only, so the server was a
+        // bound port with zero reachable users.
         #[cfg(target_os = "android")]
-        let run_gcast = true;
+        let run_gcast = false;
 
         let gcast_tx = if run_gcast {
             let (gcast_tx, gcast_rx) = mpsc::unbounded_channel::<gcast::StatusUpdate>();

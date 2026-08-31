@@ -36,11 +36,20 @@ AR_x86_64-linux-android = { value = "android-ar", relative = true }
 # with separators in config are config-relative since cargo 1.73). The
 # wrappers resolve the NDK like gstreamer-src's build.rs does.
 # packed dynamic relocations save ~2.2MB in the .so; APS2 needs API 23+,
-# our minSdk is 25 (RELR would need 30)
+# our minSdk is 28 (RELR would need 30)
+# 16KB LOAD alignment is a Play requirement (mandatory for targetSdk 35+
+# uploads). NDK r28+ defaults to it, but an NDK downgrade would silently
+# revert to 4KB, so it is pinned here and asserted at APK packaging.
 [target.aarch64-linux-android]
 linker = "./android-linker-aarch64"
-rustflags = ["-Clink-arg=-Wl,--pack-dyn-relocs=android"]
+rustflags = [
+    "-Clink-arg=-Wl,--pack-dyn-relocs=android",
+    "-Clink-arg=-Wl,-z,max-page-size=16384",
+]
 
 [target.x86_64-linux-android]
 linker = "./android-linker-x86_64"
-rustflags = ["-Clink-arg=-Wl,--pack-dyn-relocs=android"]
+rustflags = [
+    "-Clink-arg=-Wl,--pack-dyn-relocs=android",
+    "-Clink-arg=-Wl,-z,max-page-size=16384",
+]
