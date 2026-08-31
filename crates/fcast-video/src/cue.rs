@@ -474,7 +474,7 @@ struct State {
     /// Cues waiting for their window, ordered by `start_rt`.
     pending: VecDeque<CueInput>,
     /// The cues on screen right now, ordered by `start_rt`, earliest first,
-    /// which is also bottom-first on screen (see [`active_overlays`]). Bounded
+    /// which is also top-first on screen (see [`active_overlays`]). Bounded
     /// by [`MAX_ACTIVE_CUES`]; holds at most one entry under
     /// [`single_active_cues`].
     active: SmallVec<[Active; 2]>,
@@ -1632,11 +1632,12 @@ impl CueEngine {
 /// for (bottom-centre of the picture by house policy, or wherever the file put
 /// it on the cue-IR arm: `line:`/`position:`, SSA `\pos`, an `{\an8}` anchor).
 /// That placement is honoured as the cue's first choice, and cues are placed
-/// in start order, so the earliest-starting cue keeps the spot it asked for
-/// and a later one that would land on top of it moves up until it does not.
-/// That is bottom-up stacking for the ordinary case and browser-like for the
-/// positioned case: the WebVTT rendering algorithm also moves a cue box that
-/// would overlap an existing one.
+/// newest first, so the latest-starting cue keeps the spot it asked for and an
+/// earlier one still showing moves up out of its way. Read top to bottom the
+/// stack is start order, the roll-up rule: new text enters at the bottom and
+/// old text climbs. Files split one sentence across two overlapping cues
+/// expecting exactly that, and the seniority rule (earliest keeps the bottom,
+/// which is what libass does) renders those sentences in reverse.
 ///
 /// Two known limits, both deliberate:
 ///
@@ -1644,8 +1645,8 @@ impl CueEngine {
 ///    cues there do overlap. [`MAX_ACTIVE_CUES`] keeps that out of reach for
 ///    real files.
 ///  * an unpositioned cue moving up may still land in a positioned cue's space
-///    if the positioned cue starts later (it has not been placed yet when the
-///    earlier one is). Fixing that means placing positioned cues first, which
+///    if the positioned cue starts earlier (it has not been placed yet when the
+///    later one is). Fixing that means placing positioned cues first, which
 ///    reorders the stack, and the ordering is worth more.
 ///
 /// `text` is false for a scene consumer, whose text cues are drawn from their
@@ -1657,9 +1658,7 @@ fn active_overlays(
     pixels: &Mutex<PixelCache>,
     text: bool,
 ) -> SmallVec<[Overlay; MAX_OVERLAYS]> {
-    let mut overlays = SmallVec::new();
-    // What has been placed, in placement order: (x, y, width, height).
-    let mut placed: SmallVec<[(i32, i32, u32, u32); MAX_ACTIVE_CUES]> = SmallVec::new();
+    let mut overlays: SmallVec<[Overlay; MAX_OVERLAYS]> = SmallVec::new();
     for active in state.active.iter().filter(|_| text) {
         // `Stale` counts: it is a previous style of the same cue in the same
         // place, which beats blanking the line while the replacement is built.
@@ -1671,13 +1670,17 @@ fn active_overlays(
         let Some(raster) = pixels.lock().best(scene, active.rank) else {
             continue;
         };
-        let mut overlay = raster.to_overlay();
+        overlays.push(raster.to_overlay());
+    }
+    // Placement runs newest first so the latest cue keeps the spot it asked
+    // for; the list itself stays in start order for the consumer.
+    let mut placed: SmallVec<[(i32, i32, u32, u32); MAX_ACTIVE_CUES]> = SmallVec::new();
+    for overlay in overlays.iter_mut().rev() {
         overlay.y = stacked_y(
             &placed,
             (overlay.x, overlay.y, overlay.width, overlay.height),
         );
         placed.push((overlay.x, overlay.y, overlay.width, overlay.height));
-        overlays.push(overlay);
     }
     // The bitmap set rides beside the text cue, not instead of it: a source
     // can carry a subpicture track and a text track at once, and the
@@ -1701,21 +1704,26 @@ fn active_overlays(
 /// no display list behind them, so a scene consumer cannot draw them and
 /// pretending otherwise here would silently drop them.
 fn active_scenes(state: &State) -> SmallVec<[ShownScene; MAX_ACTIVE_CUES]> {
-    let mut shown = SmallVec::new();
-    let mut placed: SmallVec<[(i32, i32, u32, u32); MAX_ACTIVE_CUES]> = SmallVec::new();
+    let mut shown: SmallVec<[ShownScene; MAX_ACTIVE_CUES]> = SmallVec::new();
     for active in state.active.iter() {
         let Some(scene) = active.scene.showing() else {
             continue;
         };
-        let (x, w, h) = (scene.origin[0], scene.size[0], scene.size[1]);
-        let y = stacked_y(&placed, (x, scene.origin[1], w, h));
-        placed.push((x, y, w, h));
+        let (x, y) = (scene.origin[0], scene.origin[1]);
         shown.push(ShownScene {
             scene: Arc::clone(scene),
             rank: active.rank,
             x,
             y,
         });
+    }
+    // Newest first, as in [`active_overlays`]. The scene sizes live on the
+    // entries just pushed, so the pass runs over the finished list.
+    let mut placed: SmallVec<[(i32, i32, u32, u32); MAX_ACTIVE_CUES]> = SmallVec::new();
+    for entry in shown.iter_mut().rev() {
+        let (w, h) = (entry.scene.size[0], entry.scene.size[1]);
+        entry.y = stacked_y(&placed, (entry.x, entry.y, w, h));
+        placed.push((entry.x, entry.y, w, h));
     }
     shown
 }
@@ -2307,7 +2315,8 @@ fn evaluate_multi_active(state: &mut State, rt: gst::ClockTime) -> bool {
             continue;
         }
         // Start order, not arrival order. An out-of-order delivery whose start
-        // is behind a cue already showing belongs BELOW it, not on top.
+        // is behind a cue already showing belongs ABOVE it on screen, since
+        // the stack reads top-to-bottom in start order.
         let at = state
             .active
             .partition_point(|active| active.cue.start_rt <= cue.start_rt);
@@ -3557,11 +3566,12 @@ mod tests {
     /// inherited limitation: the newer cue REPLACED the older one, so a file
     /// with two overlapping cues showed one of them at a time.
     ///
-    /// Latest-start-wins survives as ORDERING (the later cue is above the
-    /// earlier one) and `showing()` still answers with the topmost cue, which
-    /// is why every test that predates this one reads the same as it did.
+    /// Latest-start-wins survives as ORDERING (the later cue takes the bottom
+    /// slot, the earlier one climbs above it) and `showing()` still answers
+    /// with the latest cue, which is why every test that predates this one
+    /// reads the same as it did.
     #[test]
-    fn two_cues_covering_the_frame_both_show_earliest_at_the_bottom() {
+    fn two_cues_covering_the_frame_both_show_latest_at_the_bottom() {
         let engine = CueEngine::new();
         engine.submit(cue("First", 0, 1000));
         engine.submit(cue("Second", 500, 1000));
@@ -3575,7 +3585,7 @@ mod tests {
         assert_eq!(
             showing(&engine).as_deref(),
             Some("Second"),
-            "the latest start is the top of the stack"
+            "the latest start is the newest entry of the stack"
         );
 
         // Each leaves on its OWN end -- the half the single-active rule could
@@ -3590,10 +3600,10 @@ mod tests {
     }
 
     /// An out-of-order delivery whose start is BEHIND a cue already showing
-    /// belongs below it, not on top: the stack is ordered by start time, not by
-    /// arrival.
+    /// slots in front of it, above it on screen: the stack is ordered by start
+    /// time, not by arrival.
     #[test]
-    fn a_late_delivered_earlier_cue_joins_the_stack_underneath() {
+    fn a_late_delivered_earlier_cue_slots_by_its_start() {
         let engine = CueEngine::new();
         engine.submit(cue("Later start", 500, 1000));
         engine.overlays_for(Some(ms(600)));
@@ -4795,20 +4805,26 @@ mod tests {
     }
 
     /// THE STACK, IN PIXELS: two overlapping cues reach the screen as two
-    /// overlays at two heights, and neither covers the other.
+    /// overlays at two heights, neither covers the other, and they read
+    /// top-to-bottom in start order.
     ///
     /// Both rasters are laid out bottom-centre by the house policy, so they ask
     /// for the SAME strip; what separates them is `active_overlays`, and the
     /// separation has to be visible in the numbers a compositor uploads rather
     /// than in engine state.
+    ///
+    /// The cue pair is a real one, a converted stream splitting one sentence
+    /// across two cues 41 ms apart. The seniority rule kept the earlier cue at
+    /// the bottom and the sentence read "something to live for. / It helps if
+    /// they have"; the later start must take the bottom slot.
     #[test]
     fn two_cues_on_screen_are_two_overlays_at_two_heights() {
         let engine = CueEngine::new();
         engine.set_canvas(1280, 720);
-        engine.submit(cue("The bottom line", 0, 8_000));
-        engine.submit(cue("The line above it", 1_000, 2_000));
+        engine.submit(cue("It helps if they have", 0, 8_000));
+        engine.submit(cue("something to live for.", 41, 2_000));
 
-        engine.overlays_for(Some(ms(2_000)));
+        engine.overlays_for(Some(ms(1_000)));
         assert!(
             wait_for(|| engine.current_overlays().len() == 2),
             "two cues cover this frame and {} overlay(s) reached the screen",
@@ -4816,26 +4832,26 @@ mod tests {
         );
 
         let overlays = engine.current_overlays();
-        let (bottom, top) = (&overlays[0], &overlays[1]);
+        let (first, second) = (&overlays[0], &overlays[1]);
         assert!(
             overlays.iter().all(|o| o.space == OverlaySpace::Window),
             "text cues are laid out at display resolution and stay in window space"
         );
         assert!(
-            bottom.y > top.y,
-            "the earlier-starting cue must be the LOWER one: bottom at y={}, top at y={}",
-            bottom.y,
-            top.y
+            second.y > first.y,
+            "the later-starting cue must be the LOWER one: first at y={}, second at y={}",
+            first.y,
+            second.y
         );
         assert!(
-            top.y + top.height as i32 <= bottom.y,
-            "the two cues overlap vertically: top spans {}..{}, bottom starts at {}",
-            top.y,
-            top.y + top.height as i32,
-            bottom.y
+            first.y + first.height as i32 <= second.y,
+            "the two cues overlap vertically: first spans {}..{}, second starts at {}",
+            first.y,
+            first.y + first.height as i32,
+            second.y
         );
         assert!(
-            bottom.y + bottom.height as i32 <= 720,
+            second.y + second.height as i32 <= 720,
             "the bottom cue hangs off the canvas"
         );
         // Both are real pictures, not empty strips.
@@ -4846,12 +4862,12 @@ mod tests {
             );
         }
 
-        // The one on top ends first. THE OTHER STAYS -- under the single-active
-        // rule the top cue's arrival ended the bottom one, so this frame showed
-        // nothing at all -- and it stays without re-rastering, in the same
-        // allocation and at the same height.
-        let bottom_pixels = bottom.pixels.clone();
-        let bottom_y = bottom.y;
+        // The one at the BOTTOM ends first. THE OTHER STAYS -- under the
+        // single-active rule the second cue's arrival ended the first, so this
+        // frame showed nothing at all -- without re-rastering, in the same
+        // allocation, and it drops back into the freed bottom slot.
+        let first_pixels = first.pixels.clone();
+        let first_y = first.y;
         engine.overlays_for(Some(ms(4_000)));
         let after = engine.current_overlays();
         assert_eq!(
@@ -4860,12 +4876,14 @@ mod tests {
             "the surviving cue went with the expired one"
         );
         assert!(
-            Arc::ptr_eq(&after[0].pixels, &bottom_pixels),
+            Arc::ptr_eq(&after[0].pixels, &first_pixels),
             "the surviving cue was re-rastered rather than left alone"
         );
-        assert_eq!(
-            after[0].y, bottom_y,
-            "the surviving cue moved when the one above it left"
+        assert!(
+            after[0].y > first_y,
+            "the surviving cue did not reclaim the bottom slot: y={} was {}",
+            after[0].y,
+            first_y
         );
     }
 

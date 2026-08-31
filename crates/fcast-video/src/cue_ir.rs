@@ -116,8 +116,23 @@ pub struct CueStyle {
     /// does not get subtitles sized for the whole screen (mpv's
     /// `sub-scale-with-window=no` default).
     pub font_height_fraction: f32,
-    /// Never smaller than this, however small the window gets.
-    pub min_font_px: f32,
+    /// Never smaller than this, however small the PICTURE gets, in
+    /// density-independent pixels: the floor is `min_font_dp * px_per_dp`.
+    ///
+    /// Density matters because the fraction above is of the picture, and on a
+    /// phone held in portrait the picture is a thin band across a tall screen.
+    /// A widescreen video fills the width and a small part of the height, so
+    /// the fraction lands on a value that is fine against the picture and far
+    /// too small against the display: single-digit dp on a dense panel, below
+    /// the platform floor for any readable text. Expressing the floor in
+    /// physical pixels, as this once did, makes it shrink with density and so
+    /// never bind on exactly the screens that need it.
+    pub min_font_dp: f32,
+    /// Physical pixels per density-independent pixel, i.e. the display's scale
+    /// factor. 1.0 on a desktop, 4.0 on a 640dpi phone. Only [`min_font_dp`]
+    /// reads it; everything else here is a fraction and so is already
+    /// resolution independent.
+    pub px_per_dp: f32,
     /// Wrap width as a fraction of the band the cue lays out in, which is the
     /// picture, or the window when `use_window_margins` applies. Only used when
     /// the file says nothing: SSA margins and WebVTT `size` both override it.
@@ -211,7 +226,8 @@ impl Default for CueStyle {
             font_family: None,
             font_weight: 700.0,
             font_height_fraction: 0.045,
-            min_font_px: 12.0,
+            min_font_dp: 20.0,
+            px_per_dp: 1.0,
             wrap_width_fraction: 0.90,
             bottom_margin_fraction: 0.04,
             use_window_margins: true,
@@ -450,8 +466,13 @@ impl Default for RasterCtx {
 
 impl RasterCtx {
     pub fn new() -> Self {
+        let mut font_cx = FontContext::new();
+        let blob = parley::fontique::Blob::new(std::sync::Arc::new(SYMBOLS_FONT));
+        if font_cx.collection.register_fonts(blob, None).is_empty() {
+            warn!("the embedded symbols font failed to register");
+        }
         Self {
-            font_cx: FontContext::new(),
+            font_cx,
             layout_cx: LayoutContext::new(),
             backend: VelloBackend::new(),
             scratch: CueScene::default(),
@@ -485,9 +506,7 @@ impl RasterCtx {
         b.push_default(LineHeight::FontSizeRelative(LINE_HEIGHT));
         b.push_default(StyleProperty::FontSize(px));
         b.push_default(FontWeight::new(weight));
-        if let Some(family) = family {
-            b.push_default(family_stack(family));
-        }
+        b.push_default(family_stack(family.unwrap_or("")));
         let mut layout = b.build(text);
         layout.break_all_lines(Some(wrap));
         layout.align(Alignment::Center, AlignmentOptions::default());
@@ -603,7 +622,8 @@ impl RasterCtx {
 
         // Text scales with the picture, not the window: a pillarboxed video
         // should not get subtitles sized for the full screen.
-        let base_px = (frame.h * house.font_height_fraction).max(house.min_font_px);
+        let base_px =
+            (frame.h * house.font_height_fraction).max(house.min_font_dp * house.px_per_dp);
         // Where the cue may lay out: the picture inset by the file's own
         // margins, or the whole window for a cue nothing positioned (see
         // [`Band`]).
@@ -762,12 +782,14 @@ impl RasterCtx {
             base_px,
             frame.h,
         )));
-        match (base.font_family.as_deref(), house.font_family.as_deref()) {
-            (Some(family), _) | (None, Some(family)) => {
-                b.push_default(family_stack(family));
-            }
-            (None, None) => {}
-        }
+        // Always a stack, even with no family named anywhere: an empty name
+        // still resolves to the generic plus the symbols tail.
+        let family = base
+            .font_family
+            .as_deref()
+            .or(house.font_family.as_deref())
+            .unwrap_or("");
+        b.push_default(family_stack(family));
         if let Some(style) = base.font_style {
             b.push_default(font_style(style));
         }
@@ -1399,6 +1421,10 @@ fn font_px(size: Option<ir::FontSize>, base_px: f32, frame_h: f32) -> f32 {
 /// text face and the digits as emoji. Ending the stack in a generic keeps the
 /// line on one real face and leaves fallback to the characters that genuinely
 /// need it.
+///
+/// [`SYMBOLS_FAMILY`] rides behind the generic on every stack: coverage is
+/// checked in stack order, so it only ever catches characters the faces in
+/// front of it lack (see [`SYMBOLS_FONT`] for why fallback cannot).
 fn family_stack(family: &str) -> FontFamily<'static> {
     const SANS: FontFamilyName<'static> = FontFamilyName::Generic(GenericFamily::SansSerif);
     let mut names: Vec<FontFamilyName<'static>> = FontFamilyName::parse_css_list(family)
@@ -1407,11 +1433,28 @@ fn family_stack(family: &str) -> FontFamily<'static> {
     if names.last() != Some(&SANS) {
         names.push(SANS);
     }
-    if names.len() == 1 {
-        return FontFamily::Single(names.pop().expect("one name"));
-    }
+    names.push(FontFamilyName::Named(Cow::Borrowed(SYMBOLS_FAMILY)));
     FontFamily::List(Cow::Owned(names))
 }
+
+/// A compact symbols face, registered at [`RasterCtx::new`] and appended to
+/// every [`family_stack`].
+///
+/// Subtitle files bracket lyric lines in eighth notes (U+2669..U+266F), and
+/// no platform promises a fallback face for them. The android fallback map is
+/// keyed by script, a music note inherits the script of the lyrics around it,
+/// and the platform sans has no note glyphs, so the line rendered its notes
+/// as tofu boxes. Naming a shipped face in the stack sidesteps per-platform
+/// fallback behaviour entirely.
+///
+/// The bytes are Noto Sans Symbols subset to the blocks subtitles use
+/// (arrows, geometric shapes, miscellaneous symbols, dingbats, musical
+/// notation) and renamed, as the OFL requires of a modified font ("Noto" is a
+/// reserved font name). License in `assets/OFL-FCast-Symbols.txt`.
+const SYMBOLS_FONT: &[u8] = include_bytes!("../assets/fcast-symbols.ttf");
+
+/// The family name in [`SYMBOLS_FONT`]'s name table.
+const SYMBOLS_FAMILY: &str = "FCast Symbols";
 
 fn font_style(style: ir::FontStyle) -> parley::FontStyle {
     match style {
@@ -2172,34 +2215,96 @@ mod tests {
 
     // ---- font stacks ----
 
-    /// Every stack ends in a generic, and a generic name is one rather than a
-    /// family to look up.
+    /// Every stack ends in the generic then the symbols tail, and a generic
+    /// name is one rather than a family to look up.
     #[test]
-    fn a_family_name_resolves_to_a_stack_that_ends_in_a_generic() {
+    fn a_family_name_resolves_to_a_stack_ending_in_generic_then_symbols() {
         let sans = FontFamilyName::Generic(GenericFamily::SansSerif);
-        let generic_only = FontFamily::Single(sans.clone());
+        let symbols = FontFamilyName::Named(Cow::Borrowed(SYMBOLS_FAMILY));
+        let tail_only = FontFamily::List(Cow::Owned(vec![sans.clone(), symbols.clone()]));
         // What SSA files carry: `Style: Default,sans-serif,53`.
-        assert_eq!(family_stack("sans-serif"), generic_only);
+        assert_eq!(family_stack("sans-serif"), tail_only);
         // Nothing to parse is the platform sans too.
-        assert_eq!(family_stack(""), generic_only);
-        // A real name keeps its place and gains the generic behind it.
+        assert_eq!(family_stack(""), tail_only);
+        // A real name keeps its place and gains the tail behind it.
         assert_eq!(
             family_stack("Arial"),
             FontFamily::List(Cow::Owned(vec![
                 FontFamilyName::Named(Cow::Owned("Arial".to_owned())),
                 sans.clone(),
+                symbols.clone(),
             ]))
         );
         // A WebVTT CSS list keeps every entry and does not grow a second
         // generic on the end.
         assert_eq!(family_stack("Arial, sans-serif"), family_stack("Arial"));
-        // Another generic is honoured as itself, with sans behind it.
+        // Another generic is honoured as itself, with the tail behind it.
         assert_eq!(
             family_stack("monospace"),
             FontFamily::List(Cow::Owned(vec![
                 FontFamilyName::Generic(GenericFamily::Monospace),
                 sans,
+                symbols,
             ]))
+        );
+    }
+
+    /// The embedded symbols face registers and covers the music notes: a cue
+    /// naming it shapes ♪ to a real glyph, never `.notdef`.
+    ///
+    /// Named directly rather than reached through the tail, because the host
+    /// sans covers ♪ on its own here; on android it does not, which is what
+    /// put tofu boxes around every lyric line. Registration plus the tail
+    /// (pinned above) is what makes the android path work.
+    #[test]
+    fn the_embedded_symbols_face_shapes_music_notes() {
+        let mut ctx = RasterCtx::new();
+        let house = CueStyle {
+            font_family: Some(SYMBOLS_FAMILY.to_owned()),
+            ..CueStyle::default()
+        };
+        let scene = ctx
+            .build_scene(
+                &CueIr::from_plain_text("\u{266a}\u{266b}\u{2669}"),
+                &house,
+                (1280, 720),
+                None,
+            )
+            .expect("the cue rasterizes");
+        assert!(!scene.glyph_id.is_empty(), "the notes produced no glyphs");
+        assert!(
+            scene.glyph_id.iter().all(|&id| id != 0),
+            "a music note shaped to .notdef: {:?}",
+            scene.glyph_id
+        );
+        // From the embedded bytes, not a host face that happens to cover the
+        // notes; this is the half that fails when registration breaks.
+        assert!(
+            scene
+                .runs
+                .iter()
+                .all(|run| run.font.data.data() == SYMBOLS_FONT),
+            "the notes shaped on a face other than the embedded one"
+        );
+    }
+
+    /// The default stack end to end: music notes in an unstyled cue shape to
+    /// real glyphs on every platform.
+    #[test]
+    fn music_notes_in_a_plain_cue_shape_to_real_glyphs() {
+        let mut ctx = RasterCtx::new();
+        let scene = ctx
+            .build_scene(
+                &CueIr::from_plain_text("\u{266a} Sun's up \u{266a}"),
+                &CueStyle::default(),
+                (1280, 720),
+                None,
+            )
+            .expect("the cue rasterizes");
+        assert!(
+            scene.glyph_id.iter().all(|&id| id != 0),
+            "a glyph shaped to .notdef: {:?}",
+            scene.glyph_id
         );
     }
 
