@@ -1804,6 +1804,12 @@ impl Application {
             }
             if !active {
                 self.android_transient_pause = false;
+                // back to the display's default mode between items
+                self.call_activity(
+                    "setContentFrameRate",
+                    "(F)V",
+                    &[jni::objects::JValue::Float(0.0)],
+                );
             }
             self.set_playback_active(active);
         }
@@ -2249,6 +2255,19 @@ impl Application {
         {
             self.android_visual = true;
             self.set_playback_active(self.android_playback.0);
+            let fps = self
+                .player
+                .streams
+                .iter()
+                .filter(|s| s.info.slot == flapjack::TrackSlot::Video)
+                .filter_map(|s| s.info.caps.as_ref()?.structure(0)?.get::<gst::Fraction>("framerate").ok())
+                .find(|fr| fr.numer() > 0 && fr.denom() > 0)
+                .map_or(0.0, |fr| fr.numer() as f32 / fr.denom() as f32);
+            self.call_activity(
+                "setContentFrameRate",
+                "(F)V",
+                &[jni::objects::JValue::Float(fps)],
+            );
         }
 
         self.gui.set_player_type(UiPlayerVariant::Video);

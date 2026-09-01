@@ -44,6 +44,40 @@ pub fn set(on: bool) {
     });
 }
 
+/// Whether this device is a television (leanback). Read from UiModeManager
+/// through the application context, so it works before the activity is
+/// captured.
+pub fn is_television() -> bool {
+    let ctx = ndk_context::android_context();
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
+        return false;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return false;
+    };
+    let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+    let result = (|| -> jni::errors::Result<bool> {
+        let name = env.new_string("uimode")?;
+        let manager = env
+            .call_method(
+                &context,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[jni::objects::JValue::Object(&name)],
+            )?
+            .l()?;
+        if manager.is_null() {
+            return Ok(false);
+        }
+        // Configuration.UI_MODE_TYPE_TELEVISION
+        Ok(env.call_method(&manager, "getCurrentModeType", "()I", &[])?.i()? == 4)
+    })();
+    result.unwrap_or_else(|_| {
+        let _ = env.exception_clear();
+        false
+    })
+}
+
 /// Send the task to the back instead of finishing the activity: a finish
 /// takes the whole process (and the cast) with it, see the entry crate's
 /// exit-on-destroy.

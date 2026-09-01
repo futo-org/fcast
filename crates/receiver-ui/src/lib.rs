@@ -1331,7 +1331,10 @@ pub fn run(
     });
 
     let ui = MainWindow::new()?;
-    ui.global::<Bridge>().set_touch_mode(true);
+    // TV means dpad-first: controls must not auto-hide away from a focused
+    // remote, so touch mode stays off there.
+    ui.global::<Bridge>()
+        .set_touch_mode(!android_immersive::is_television());
     android_immersive::init(&android_app);
     // starts with system bars, the player's toggle enters immersive
     ui.global::<Bridge>().set_is_fullscreen(false);

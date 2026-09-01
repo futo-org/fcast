@@ -406,6 +406,42 @@ public class MainActivity extends NativeActivity {
         mediaSession.setPlaybackState(b.build());
     }
 
+    /// Refresh-rate matching: prefer the lowest display mode at the current
+    /// resolution whose rate is a near-integer multiple of the content fps
+    /// (23.976 picks 24 or 120, never 60). 0 restores no-preference. Called
+    /// from native code when a video stream starts and at idle.
+    public void setContentFrameRate(float fps) {
+        runOnUiThread(() -> {
+            android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+            int modeId = 0;
+            if (fps > 0) {
+                android.view.Display display = getWindowManager().getDefaultDisplay();
+                android.view.Display.Mode current = display.getMode();
+                float best = Float.MAX_VALUE;
+                for (android.view.Display.Mode mode : display.getSupportedModes()) {
+                    if (mode.getPhysicalWidth() != current.getPhysicalWidth()
+                            || mode.getPhysicalHeight() != current.getPhysicalHeight()) {
+                        continue;
+                    }
+                    float rate = mode.getRefreshRate();
+                    int multiple = Math.round(rate / fps);
+                    if (multiple < 1) {
+                        continue;
+                    }
+                    if (Math.abs(rate / fps - multiple) <= 0.02f * multiple && rate < best) {
+                        best = rate;
+                        modeId = mode.getModeId();
+                    }
+                }
+            }
+            if (lp.preferredDisplayModeId != modeId) {
+                Log.i(TAG, "preferred display mode " + modeId + " for " + fps + " fps");
+                lp.preferredDisplayModeId = modeId;
+                getWindow().setAttributes(lp);
+            }
+        });
+    }
+
     /// Called from native code when the item's title or duration changes.
     public void updateMediaMetadata(String title, long durationMs) {
         if (mediaSession != null) {
