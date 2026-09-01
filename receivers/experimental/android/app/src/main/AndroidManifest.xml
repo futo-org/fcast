@@ -7,6 +7,7 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
 
     <!-- The wifi permissions above imply required wifi hardware on Play and
@@ -32,7 +33,7 @@
             android:name=".MainActivity"
             android:launchMode="singleTask"
             android:supportsPictureInPicture="true"
-            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection|density|fontScale|colorMode"
+            android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection|density|fontScale|colorMode|fontWeightAdjustment|grammaticalGender"
             android:resizeableActivity="true"
             android:exported="true">
             <intent-filter>
@@ -46,10 +47,18 @@
                 android:value="fcastreceiver" />
         </activity>
 
+        <!-- specialUse while idle-discoverable, promoted to mediaPlayback
+             while casting: a mediaPlayback FGS with nothing playing is a
+             Play policy flag, and the honest split is what the platform
+             asks for. -->
         <service
             android:name=".ReceiverService"
             android:exported="false"
-            android:foregroundServiceType="mediaPlayback" />
+            android:foregroundServiceType="mediaPlayback|specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Network cast receiver staying reachable for local-network senders while backgrounded" />
+        </service>
     </application>
 
 </manifest>

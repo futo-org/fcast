@@ -78,6 +78,29 @@ pub fn is_television() -> bool {
     })
 }
 
+/// The current video aspect for the PiP window, deduped here so the
+/// per-relayout call costs a JNI trip only when the shape changes.
+pub fn set_video_aspect(w: u32, h: u32) {
+    use std::sync::atomic::AtomicU64;
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let key = ((w as u64) << 32) | h as u64;
+    if LAST.swap(key, Ordering::Relaxed) == key {
+        return;
+    }
+    with_activity("setVideoAspect", |env, activity| {
+        env.call_method(
+            activity,
+            "setVideoAspect",
+            "(II)V",
+            &[
+                jni::objects::JValue::Int(w as i32),
+                jni::objects::JValue::Int(h as i32),
+            ],
+        )
+        .map(drop)
+    });
+}
+
 /// Send the task to the back instead of finishing the activity: a finish
 /// takes the whole process (and the cast) with it, see the entry crate's
 /// exit-on-destroy.

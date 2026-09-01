@@ -44,8 +44,9 @@ public class ReceiverService extends Service {
         mainHandler.post(() -> {
             ReceiverService service = running;
             if (service != null) {
-                NotificationManager nm = service.getSystemService(NotificationManager.class);
-                nm.notify(NOTIFICATION_ID, service.buildNotification());
+                // re-asserting foreground also switches the declared type
+                // between specialUse (idle) and mediaPlayback (casting)
+                service.goForeground();
             }
         });
     }
@@ -117,14 +118,24 @@ public class ReceiverService extends Service {
             return START_NOT_STICKY;
         }
         ensureChannel(this);
-        if (android.os.Build.VERSION.SDK_INT >= 29) {
+        goForeground();
+        running = this;
+        return START_NOT_STICKY;
+    }
+
+    private void goForeground() {
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            // the honest split: specialUse exists from 34, which is also
+            // where the per-type policy enforcement lives
+            startForeground(NOTIFICATION_ID, buildNotification(), castActive
+                    ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                    : ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE);
+        } else if (android.os.Build.VERSION.SDK_INT >= 29) {
             startForeground(NOTIFICATION_ID, buildNotification(),
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
         } else {
             startForeground(NOTIFICATION_ID, buildNotification());
         }
-        running = this;
-        return START_NOT_STICKY;
     }
 
     @Override

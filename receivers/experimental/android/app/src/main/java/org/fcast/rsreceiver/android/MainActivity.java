@@ -359,11 +359,7 @@ public class MainActivity extends NativeActivity {
         // setPlaybackActive. Non ref-counted so repeated acquires are
         // idempotent and one release always drops the lock.
         wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        int wifiMode = android.os.Build.VERSION.SDK_INT >= 29
-                ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
-        wifiLock = wifiManager.createWifiLock(wifiMode, "FCastRsReceiver:WifiLock");
-        wifiLock.setReferenceCounted(false);
+        updateWifiLockMode(true);
 
         powerManager = (PowerManager) this.getSystemService(Context.POWER_SERVICE);
         cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FCastRsReceiver:WakeLock");
@@ -774,6 +770,23 @@ public class MainActivity extends NativeActivity {
     }
 
     private boolean castVisual = false;
+    private volatile android.util.Rational videoAspect = new android.util.Rational(16, 9);
+
+    /// The current video's aspect, from native code at relayout. Clamped to
+    /// PiP's accepted 0.418..2.39 range.
+    public void setVideoAspect(int w, int h) {
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+        float r = (float) w / h;
+        if (r < 0.42f) {
+            videoAspect = new android.util.Rational(42, 100);
+        } else if (r > 2.38f) {
+            videoAspect = new android.util.Rational(238, 100);
+        } else {
+            videoAspect = new android.util.Rational(w, h);
+        }
+    }
 
     /// Home during visual playback shrinks to picture-in-picture instead of
     /// hiding the video. PiP resizes without onStop, so the surface and the
@@ -785,7 +798,7 @@ public class MainActivity extends NativeActivity {
             try {
                 enterPictureInPictureMode(
                         new android.app.PictureInPictureParams.Builder()
-                                .setAspectRatio(new android.util.Rational(16, 9))
+                                .setAspectRatio(videoAspect)
                                 .build());
             } catch (IllegalStateException e) {
                 Log.w(TAG, "PiP refused", e);
@@ -818,16 +831,42 @@ public class MainActivity extends NativeActivity {
     /// one on return, otherwise a running codec errors out mid-video.
     native void nativeAppVisibility(boolean visible);
 
+    /// LOW_LATENCY only bites while foreground with the screen on and
+    /// silently degrades in the background, exactly where a backgrounded
+    /// cast needs wifi kept awake: swap modes on the visibility edge.
+    private void updateWifiLockMode(boolean foreground) {
+        int mode = (foreground && android.os.Build.VERSION.SDK_INT >= 29)
+                ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
+                : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
+        if (wifiLock != null && mode == wifiLockMode) {
+            return;
+        }
+        boolean held = wifiLock != null && wifiLock.isHeld();
+        if (held) {
+            wifiLock.release();
+        }
+        wifiLock = wifiManager.createWifiLock(mode, "FCastRsReceiver:WifiLock");
+        wifiLock.setReferenceCounted(false);
+        wifiLockMode = mode;
+        if (held) {
+            wifiLock.acquire();
+        }
+    }
+
+    private int wifiLockMode = -1;
+
     @Override
     protected void onStart() {
         super.onStart();
         // The activity is back; its own lifecycle keeps the process warm.
         stopService(new Intent(this, ReceiverService.class));
+        updateWifiLockMode(true);
         nativeAppVisibility(true);
     }
 
     @Override
     protected void onStop() {
+        updateWifiLockMode(false);
         nativeAppVisibility(false);
         // Backgrounded: without foreground priority the process is a cached
         // kill candidate and the NSD registration dies with it. Started

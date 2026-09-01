@@ -56,6 +56,7 @@ pub fn attach(engine: CueEngine, sink: &gst::Element, ui: &crate::MainWindow) ->
     {
         let mut style = engine.style();
         style.px_per_dp = ui.window().scale_factor();
+        apply_system_captioning(&mut style);
         engine.set_style(style);
     }
 
@@ -193,4 +194,79 @@ fn push(state: &Arc<State>) {
         ui.global::<crate::Bridge>()
             .set_subtitle_overlays(slint::ModelRc::new(VecModel::from(rows)));
     });
+}
+
+/// Fold the system's accessibility caption preferences into the house
+/// style: font scale always, colors and edge only where the user actually
+/// chose them (CaptionStyle's has-checks). Read once at attach; a change
+/// applies from the next item.
+fn apply_system_captioning(style: &mut fcast_video::cue_ir::CueStyle) {
+    let ctx = ndk_context::android_context();
+    let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
+        return;
+    };
+    let Ok(mut env) = vm.attach_current_thread() else {
+        return;
+    };
+    let context = unsafe { jni::objects::JObject::from_raw(ctx.context().cast()) };
+    let result = (|| -> jni::errors::Result<()> {
+        let name = env.new_string("captioning")?;
+        let manager = env
+            .call_method(
+                &context,
+                "getSystemService",
+                "(Ljava/lang/String;)Ljava/lang/Object;",
+                &[jni::objects::JValue::Object(&name)],
+            )?
+            .l()?;
+        if manager.is_null() {
+            return Ok(());
+        }
+        let scale = env.call_method(&manager, "getFontScale", "()F", &[])?.f()?;
+        if scale.is_finite() && scale > 0.0 && (scale - 1.0).abs() > 0.01 {
+            style.font_height_fraction *= scale;
+            style.min_font_dp *= scale;
+            tracing::info!(scale, "caption font scale applied");
+        }
+        let user = env
+            .call_method(
+                &manager,
+                "getUserStyle",
+                "()Landroid/view/accessibility/CaptioningManager$CaptionStyle;",
+                &[],
+            )?
+            .l()?;
+        if user.is_null() {
+            return Ok(());
+        }
+        let argb = |v: i32| -> fcast_video::cue_ir::Rgba {
+            [(v >> 16) as u8, (v >> 8) as u8, v as u8, (v >> 24) as u8]
+        };
+        if env.call_method(&user, "hasBackgroundColor", "()Z", &[])?.z()? {
+            let color = env.get_field(&user, "backgroundColor", "I")?.i()?;
+            if let Some(bg) = style.background.as_mut() {
+                bg.color = argb(color);
+            }
+        }
+        if env.call_method(&user, "hasEdgeType", "()Z", &[])?.z()? {
+            // CaptionStyle: 0 none, 1 outline, 2 drop shadow
+            match env.get_field(&user, "edgeType", "I")?.i()? {
+                0 => style.outline = None,
+                1 | 2 => {
+                    let mut outline =
+                        style.outline.unwrap_or(fcast_video::cue_ir::DEFAULT_OUTLINE);
+                    if env.call_method(&user, "hasEdgeColor", "()Z", &[])?.z()? {
+                        outline.color = argb(env.get_field(&user, "edgeColor", "I")?.i()?);
+                    }
+                    style.outline = Some(outline);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = env.exception_clear();
+        tracing::warn!("caption preference read failed, house style stands");
+    }
 }

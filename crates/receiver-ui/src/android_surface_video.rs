@@ -262,6 +262,7 @@ impl SurfaceVideo {
             }
             let (x, y, w, h) = letterbox(vw, vh, win.width, win.height);
             info!(vw, vh, x, y, w, h, "surface video: rect");
+            crate::android_immersive::set_video_aspect(vw, vh);
             let _ = this.surface.set_rect(x, y, w, h);
             let _ = this.surface.set_visible(true);
             // The hole only exists in a frame slint actually painted after
