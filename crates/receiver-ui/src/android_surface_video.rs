@@ -82,6 +82,16 @@ pub(crate) fn safe_bottom_inset() -> u32 {
     }
 }
 
+/// The content frame's origin inside the window. Slint overlays draw from
+/// the window origin, the video view is positioned in the content frame;
+/// content-space coordinates need this shift to land on the picture.
+pub(crate) fn content_offset_in_window() -> (i32, i32) {
+    match CURRENT.get() {
+        Some((this, _)) => this.surface.content_offset(),
+        None => (0, 0),
+    }
+}
+
 /// The space every video-anchored overlay must share with the SurfaceView:
 /// the content frame's size when it is laid out, the slint window as the
 /// pre-layout fallback. The slint size alone is wrong, see `relayout`.

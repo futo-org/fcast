@@ -107,6 +107,12 @@ pub fn resync(subs: &Subtitles, ui: &crate::MainWindow) {
     let size = crate::android_surface_video::effective_canvas(ui);
     let picture = *subs.0.video_size.lock().unwrap();
     sync_geometry(&subs.0, size, picture);
+    // A fullscreen toggle can move the letterbox and the content offset
+    // without changing the engine's canvas or its raster set at all
+    // (overlay bars keep the sizes), so the signature dedup in push would
+    // keep the shown cues at their old spot. Invalidate and re-place.
+    subs.0.last.lock().unwrap().clear();
+    push(&subs.0);
 }
 
 /// Push canvas and picture rect. The canvas stops above a persistent
@@ -164,6 +170,11 @@ fn push(state: &Arc<State>) {
 
         let scale = ui.window().scale_factor();
         let (vw, vh) = picture;
+        // Both overlay spaces below produce content-frame coordinates (the
+        // engine canvas and the letterbox both live there), but slint draws
+        // from the window origin. Shift by the content frame's position or
+        // every cue sits high/left by the system bar insets.
+        let (off_x, off_y) = crate::android_surface_video::content_offset_in_window();
         let mut rows = Vec::with_capacity(overlays.len());
         for o in &overlays {
             if o.width == 0 || o.height == 0 {
@@ -198,8 +209,8 @@ fn push(state: &Arc<State>) {
                 .copy_from_slice(&o.pixels[..(o.width * o.height * 4) as usize]);
             rows.push(crate::SubtitleOverlay {
                 img: slint::Image::from_rgba8(pix),
-                x: x / scale,
-                y: y / scale,
+                x: (x + off_x as f32) / scale,
+                y: (y + off_y as f32) / scale,
                 w: w / scale,
                 h: h / scale,
             });
