@@ -1725,29 +1725,32 @@ impl Application {
         }
     }
 
-    /// One JNI call into the activity, the shared shape of the android
-    /// bridges below.
-    /// One JNI call into the activity. Permanently attached: these run on
-    /// tokio workers ten times a second during playback, and a fresh
-    /// attach/detach pair per call allocates a Java thread peer each time.
+    /// One JNI call into the activity, reporting success. Permanently
+    /// attached: these run on tokio workers several times a second during
+    /// playback, and a fresh attach/detach pair per call allocates a Java
+    /// thread peer each time.
     #[cfg(target_os = "android")]
     fn call_activity(
         &self,
         what: &str,
         sig: &str,
         args: &[jni::objects::JValue<'_, '_>],
-    ) {
+    ) -> bool {
         let (vm, activity) = self.android_jni;
         let Ok(vm) = (unsafe { jni::JavaVM::from_raw(vm as *mut _) }) else {
-            return;
+            return false;
         };
         let Ok(mut env) = vm.attach_current_thread_permanently() else {
-            return;
+            return false;
         };
         let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
-        if let Err(err) = env.call_method(&activity, what, sig, args) {
-            let _ = env.exception_clear();
-            warn!(?err, what, "activity call failed");
+        match env.call_method(&activity, what, sig, args) {
+            Ok(_) => true,
+            Err(err) => {
+                let _ = env.exception_clear();
+                warn!(?err, what, "activity call failed");
+                false
+            }
         }
     }
 
@@ -1785,8 +1788,9 @@ impl Application {
                             )?;
                             Ok(true)
                         })
-                        .unwrap_or_else(|_| {
+                        .unwrap_or_else(|err| {
                             let _ = env.exception_clear();
+                            warn!(?err, "updateMediaMetadata call failed");
                             false
                         });
                     if pushed {
@@ -1805,8 +1809,9 @@ impl Application {
         if !stale {
             return;
         }
-        self.android_session_pushed = Some((edge, Instant::now()));
-        self.call_activity(
+        // cached on success only: a failed playing=false push would leave
+        // the Java side holding the wake lock until the next edge
+        if self.call_activity(
             "updateMediaSession",
             "(ZJF)V",
             &[
@@ -1814,7 +1819,9 @@ impl Application {
                 jni::objects::JValue::Long((position_secs * 1000.0) as i64),
                 jni::objects::JValue::Float(speed),
             ],
-        );
+        ) {
+            self.android_session_pushed = Some((edge, Instant::now()));
+        }
     }
 
     /// The GUI title, mirrored into the android MediaSession metadata on
@@ -5150,6 +5157,21 @@ impl Application {
                 self.transition_app_state(AppState::Playing);
 
                 self.media_loaded_successfully();
+
+                // An image is not PLAYING: without this the optimistic
+                // wake-lock acquire from the active edge stays held for the
+                // whole display (a photo left up overnight is exactly the
+                // Play battery case). FLAG_KEEP_SCREEN_ON carries the screen.
+                #[cfg(target_os = "android")]
+                self.call_activity(
+                    "updateMediaSession",
+                    "(ZJF)V",
+                    &[
+                        jni::objects::JValue::Bool(0),
+                        jni::objects::JValue::Long(0),
+                        jni::objects::JValue::Float(0.0),
+                    ],
+                );
             }
         }
 
@@ -5473,20 +5495,20 @@ impl Application {
             #[cfg(target_os = "android")]
             Message::AndroidAudio(event) => {
                 use crate::message::AndroidAudio;
-                let playing = matches!(self.player.player_state(), PlayerState::Playing);
-                debug!(?event, playing, "android audio event");
+                debug!(?event, "android audio event");
+                // Unconditional pauses: a focus refusal can arrive while the
+                // item is still LOADING (a cast placed during a phone call),
+                // where pause() records the desired transport and the item
+                // prerolls paused instead of playing over the call.
                 match event {
                     AndroidAudio::Loss | AndroidAudio::BecomingNoisy => {
+                        self.pause();
                         self.android_transient_pause = false;
-                        if playing {
-                            self.pause();
-                        }
                     }
                     AndroidAudio::TransientLoss => {
-                        if playing {
-                            self.pause();
-                            self.android_transient_pause = true;
-                        }
+                        // pause() clears the flag, so set it after
+                        self.pause();
+                        self.android_transient_pause = true;
                     }
                     AndroidAudio::Gain => {
                         if std::mem::take(&mut self.android_transient_pause) {

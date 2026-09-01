@@ -62,7 +62,14 @@ public class MainActivity extends NativeActivity {
     /// registerServices() bumps it and in-flight lambdas holding an older
     /// value stop, so two overlapping chains cannot both register.
     private int fcastPollGen = 0;
-    private int nsdRetries = 0;
+    /// Per-service backoff and single-retry-pending flags: a failure retries
+    /// only ITS OWN service (re-registering the healthy one would flap it),
+    /// and only one retry is ever queued per service, or two both-fail
+    /// rounds would fan out exponentially.
+    private int fcastRetries = 0;
+    private int raopRetries = 0;
+    private boolean fcastRetryPending = false;
+    private boolean raopRetryPending = false;
 
     // Re-sweep even without a callback: tethering/hotspot interfaces never
     // surface as Networks, so their addresses are only found by polling.
@@ -86,20 +93,44 @@ public class MainActivity extends NativeActivity {
         public void onRegistrationFailed(NsdServiceInfo info, int errorCode) {
             handler.post(() -> {
                 // the platform already dropped this listener
-                if (fcastReg == this) {
-                    fcastReg = null;
-                } else if (raopReg == this) {
-                    raopReg = null;
-                }
-                nsdRetries += 1;
-                long delay = Math.min(3_000L << Math.min(nsdRetries - 1, 4), 60_000L);
-                Log.e(TAG, label + " registration failed: " + errorCode
-                        + ", retry " + nsdRetries + " in " + delay + "ms");
-                handler.postDelayed(() -> {
-                    if (!destroyed) {
-                        registerServices();
+                if (isFcast) {
+                    if (fcastReg == this) {
+                        fcastReg = null;
                     }
-                }, delay);
+                    if (fcastRetryPending) {
+                        return;
+                    }
+                    fcastRetryPending = true;
+                    fcastRetries += 1;
+                    long delay = 3_000L << Math.min(fcastRetries - 1, 4);
+                    Log.e(TAG, label + " registration failed: " + errorCode
+                            + ", retry " + fcastRetries + " in " + delay + "ms");
+                    handler.postDelayed(() -> {
+                        fcastRetryPending = false;
+                        if (!destroyed && fcastReg == null) {
+                            fcastPollGen += 1;
+                            registerFCastWhenReady(fcastPollGen);
+                        }
+                    }, delay);
+                } else {
+                    if (raopReg == this) {
+                        raopReg = null;
+                    }
+                    if (raopRetryPending) {
+                        return;
+                    }
+                    raopRetryPending = true;
+                    raopRetries += 1;
+                    long delay = 3_000L << Math.min(raopRetries - 1, 4);
+                    Log.e(TAG, label + " registration failed: " + errorCode
+                            + ", retry " + raopRetries + " in " + delay + "ms");
+                    handler.postDelayed(() -> {
+                        raopRetryPending = false;
+                        if (!destroyed && raopReg == null) {
+                            registerRaop();
+                        }
+                    }, delay);
+                }
             });
         }
 
@@ -112,12 +143,16 @@ public class MainActivity extends NativeActivity {
         public void onServiceRegistered(NsdServiceInfo info) {
             Log.i(TAG, label + " registered as " + info.getServiceName());
             handler.post(() -> {
-                nsdRetries = 0;
-                // The daemon renames on collision. The DISPLAYED name
-                // follows the network's truth; the registration base never
-                // moves, or renames would compound.
+                // per service: raop succeeding must not defeat fcast's
+                // backoff or vice versa
                 if (isFcast) {
+                    fcastRetries = 0;
+                    // The daemon renames on collision. The DISPLAYED name
+                    // follows the network's truth; the registration base
+                    // never moves, or renames would compound.
                     setMdnsDeviceName(info.getServiceName());
+                } else {
+                    raopRetries = 0;
                 }
             });
         }
@@ -359,8 +394,17 @@ public class MainActivity extends NativeActivity {
         quietUnregister(raopReg);
         raopReg = null;
 
-        NsdServiceInfo raopServiceInfo = new NsdServiceInfo();
+        registerRaop();
+        registerFCastWhenReady(fcastPollGen);
+    }
+
+    private void registerRaop() {
         String raopHash = getDeviceNameRaopHash(baseServiceName);
+        if (raopHash == null) {
+            Log.e(TAG, "raop hash unavailable, skipping raop registration");
+            return;
+        }
+        NsdServiceInfo raopServiceInfo = new NsdServiceInfo();
         raopServiceInfo.setServiceName(raopHash + "@" + baseServiceName);
         raopServiceInfo.setServiceType("_raop._tcp");
         raopServiceInfo.setPort(33505);
@@ -371,8 +415,6 @@ public class MainActivity extends NativeActivity {
         }
         raopReg = new NsdListener("_raop", false);
         nsdManager.registerService(raopServiceInfo, NsdManager.PROTOCOL_DNS_SD, raopReg);
-
-        registerFCastWhenReady(fcastPollGen);
     }
 
     private void registerFCastWhenReady(int gen) {
