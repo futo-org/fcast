@@ -1914,6 +1914,19 @@ impl Application {
         }
     }
 
+    /// Whether playback should enter fullscreen (immersive on android) on
+    /// its own. Android has no config store yet, so the default stands.
+    fn fullscreen_player_wanted(&self) -> bool {
+        #[cfg(not(target_os = "android"))]
+        {
+            !self.settings.no_fullscreen_player()
+        }
+        #[cfg(target_os = "android")]
+        {
+            true
+        }
+    }
+
     fn queue_mut(&mut self) -> Option<&mut QueueState> {
         match &mut self.current_media.as_mut()?.source {
             MediaSource::Queue(queue) => Some(queue),
@@ -2133,9 +2146,11 @@ impl Application {
         }
 
         self.window_visible_before_playing = Some(self.gui.set_window_visibility(true));
-        #[cfg(not(target_os = "android"))]
-        if !self.settings.no_fullscreen_player() {
-            // If the window was hidden, it takes some time before it can be fullscreened.
+        if self.fullscreen_player_wanted() {
+            // If the window was hidden, it takes some time before it can be
+            // fullscreened. Android has no hidden-window state to wait out,
+            // fullscreen there is the immersive toggle.
+            #[cfg(not(target_os = "android"))]
             self.gui.wait_for_is_visible();
             self.window_fullscreen_before_playing = Some(self.gui.set_fullscreen(true));
         }

@@ -198,26 +198,16 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
             // (system bars hidden); the bridge tracks it since the slint
             // window knows nothing about it
             #[cfg(target_os = "android")]
-            let is_fullscreen = !ui.global::<Bridge>().get_is_fullscreen();
-            #[cfg(target_os = "android")]
             {
-                crate::android_immersive::set(is_fullscreen);
-                // Overlay bars do not resize the window, so the geometry
-                // hook never fires on its own; the safe-area inset still
-                // changed. Once now, once after the bars settle.
-                ui.global::<Bridge>().invoke_window_geometry_changed();
-                let ui_weak = ui.as_weak();
-                slint::Timer::single_shot(std::time::Duration::from_millis(400), move || {
-                    if let Some(ui) = ui_weak.upgrade() {
-                        ui.global::<Bridge>().invoke_window_geometry_changed();
-                    }
-                });
+                let fullscreen = !ui.global::<Bridge>().get_is_fullscreen();
+                set_android_fullscreen(&ui, fullscreen);
             }
             #[cfg(not(target_os = "android"))]
-            let is_fullscreen = !ui.window().is_fullscreen();
-            #[cfg(not(target_os = "android"))]
-            ui.window().set_fullscreen(is_fullscreen);
-            ui.global::<Bridge>().set_is_fullscreen(is_fullscreen);
+            {
+                let is_fullscreen = !ui.window().is_fullscreen();
+                ui.window().set_fullscreen(is_fullscreen);
+                ui.global::<Bridge>().set_is_fullscreen(is_fullscreen);
+            }
         }
     });
 
@@ -416,6 +406,28 @@ pub struct TickDamper {
     last_ranges: Vec<(f32, f32)>,
 }
 
+/// Fullscreen on android means immersive (system bars hidden); the slint
+/// window knows nothing about it, the Bridge tracks the state. Overlay bars
+/// do not resize the window, so the geometry hook never fires on its own;
+/// the safe-area insets still changed. Invoked once now, once after the
+/// bars settle.
+#[cfg(target_os = "android")]
+fn set_android_fullscreen(ui: &MainWindow, fullscreen: bool) {
+    let bridge = ui.global::<Bridge>();
+    if bridge.get_is_fullscreen() == fullscreen {
+        return;
+    }
+    crate::android_immersive::set(fullscreen);
+    bridge.set_is_fullscreen(fullscreen);
+    bridge.invoke_window_geometry_changed();
+    let ui_weak = ui.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(400), move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.global::<Bridge>().invoke_window_geometry_changed();
+        }
+    });
+}
+
 fn video_osd_hidden(bridge: &Bridge) -> bool {
     bridge.get_player_variant() == UiPlayerVariant::Video
         && !bridge.get_controls_overlay_visible()
@@ -516,9 +528,17 @@ fn handle_command(
             fullscreen,
             prev_tx,
         } => {
-            let window = ui.window();
-            let _ = prev_tx.send(window.is_fullscreen());
-            window.set_fullscreen(fullscreen);
+            #[cfg(target_os = "android")]
+            {
+                let _ = prev_tx.send(bridge.get_is_fullscreen());
+                set_android_fullscreen(&ui, fullscreen);
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                let window = ui.window();
+                let _ = prev_tx.send(window.is_fullscreen());
+                window.set_fullscreen(fullscreen);
+            }
         }
         UpdateGuiCommand::SetAppState(state) => {
             // A load is coming: get the video surface up before the codec
