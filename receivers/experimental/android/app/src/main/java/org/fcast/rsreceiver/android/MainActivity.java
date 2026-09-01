@@ -1,6 +1,7 @@
 package org.fcast.rsreceiver.android;
 
 import android.annotation.SuppressLint;
+import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioManager;
@@ -277,9 +278,10 @@ public class MainActivity extends NativeActivity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
-        // Translucent from the first frame. The video hole punch needs it
-        // anyway, and switching later recreates the window surface mid
-        // launch, which flashes the launcher through an empty window.
+        // Translucent from the first frame. The video hole punch is real
+        // per-pixel alpha (the scene clears the hole), and switching later
+        // recreates the window surface mid launch, which flashes the
+        // launcher through an empty window.
         getWindow().setFormat(android.graphics.PixelFormat.TRANSLUCENT);
         // the theme's windowBackground is only for the starting window, on
         // the live window it would paint over the video hole punch
@@ -562,6 +564,30 @@ public class MainActivity extends NativeActivity {
     }
 
     private boolean castActiveLocal = false;
+    private boolean visible = false;
+
+    /// A cast arriving while the activity is backgrounded should put the
+    /// receiver on screen, the whole point of a TV cast target. Background
+    /// activity starts need the overlay permission (the Kotlin receiver
+    /// ships the same way); without it the FGS notification's tap-to-open
+    /// stays the only route and the attempt is just skipped.
+    private void bringToFront() {
+        Intent i = new Intent(this, MainActivity.class);
+        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        try {
+            if (android.provider.Settings.canDrawOverlays(this)) {
+                PendingIntent.getActivity(this, 2, i,
+                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE)
+                        .send();
+            } else {
+                // blocked from the background on 10+, works when the app is
+                // merely covered rather than stopped
+                startActivity(i);
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "bring-to-front refused", e);
+        }
+    }
 
     /// Called from native code on state edges and a 1 Hz keepalive.
     /// Any thread; MediaSession is thread-safe.
@@ -650,6 +676,9 @@ public class MainActivity extends NativeActivity {
     @SuppressLint("WakelockTimeout")
     public void setPlaybackActive(boolean active, boolean visual) {
         runOnUiThread(() -> {
+            if (active && !visible) {
+                bringToFront();
+            }
             // The screen only pins for content someone is looking at; an
             // audio cast relies on the wake lock instead.
             if (active && visual) {
@@ -840,18 +869,24 @@ public class MainActivity extends NativeActivity {
         int mode = (foreground && android.os.Build.VERSION.SDK_INT >= 29)
                 ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
                 : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
-        if (wifiLock != null && mode == wifiLockMode) {
-            return;
+        // An idle receiver must answer the moment a sender connects, so the
+        // lock is held whenever the activity is up, not only while casting.
+        // Without it the radio power saves and LAN round trips balloon to
+        // ~500ms, blowing sender handshake deadlines (seen on the LEAP-S1).
+        // Backgrounded, only a running cast justifies keeping it.
+        boolean want = foreground || castActiveLocal;
+        if (wifiLock == null || mode != wifiLockMode) {
+            if (wifiLock != null && wifiLock.isHeld()) {
+                wifiLock.release();
+            }
+            wifiLock = wifiManager.createWifiLock(mode, "FCastRsReceiver:WifiLock");
+            wifiLock.setReferenceCounted(false);
+            wifiLockMode = mode;
         }
-        boolean held = wifiLock != null && wifiLock.isHeld();
-        if (held) {
-            wifiLock.release();
-        }
-        wifiLock = wifiManager.createWifiLock(mode, "FCastRsReceiver:WifiLock");
-        wifiLock.setReferenceCounted(false);
-        wifiLockMode = mode;
-        if (held) {
+        if (want && !wifiLock.isHeld()) {
             wifiLock.acquire();
+        } else if (!want && wifiLock.isHeld()) {
+            wifiLock.release();
         }
     }
 
@@ -860,6 +895,7 @@ public class MainActivity extends NativeActivity {
     @Override
     protected void onStart() {
         super.onStart();
+        visible = true;
         // The activity is back; its own lifecycle keeps the process warm.
         stopService(new Intent(this, ReceiverService.class));
         updateWifiLockMode(true);
@@ -868,6 +904,7 @@ public class MainActivity extends NativeActivity {
 
     @Override
     protected void onStop() {
+        visible = false;
         updateWifiLockMode(false);
         nativeAppVisibility(false);
         // Backgrounded: without foreground priority the process is a cached

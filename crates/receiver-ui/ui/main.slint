@@ -40,10 +40,12 @@ export {
 export component MainWindow inherits Window {
     title: @tr("FCast Receiver");
 
-    // On touch (android) the video surface lives BEHIND this window and a
+    // On android the video surface lives BEHIND this window and a
     // transparent scene region is a real hole onto it. Every non-video
     // scene paints its own full-bleed background, so nothing else leaks.
-    background: Bridge.touch-mode ? transparent : Palette.background;
+    // Opaque background pixels in the hole read as a gray screen wherever
+    // the compositor blends the window per pixel (Amlogic TV boxes).
+    background: Bridge.behind-window-video || Bridge.touch-mode ? transparent : Palette.background;
 
     default-font-family: "Outfit";
     default-font-size: 15px;
@@ -114,6 +116,8 @@ export component MainWindow inherits Window {
     property <bool> settings-open: Bridge.show-settings;
     changed settings-open => {
         if (!self.settings-open) {
+            // a field destroyed with the drawer never reports losing focus
+            Bridge.text-edit-focused = false;
             fs.focus();
         }
     }
@@ -155,6 +159,20 @@ export component MainWindow inherits Window {
 
     fs := FocusScope {
         key-pressed(event) => Bridge.global-key-pressed(event);
+
+        // A focused text field consumes arrows as cursor movement before
+        // they can bubble. On TV, Up/Down must stay navigation or the
+        // remote has no way out of the field, so take them in the capture
+        // phase. Left/Right keep moving the cursor.
+        capture-key-pressed(event) => {
+            if Bridge.tv-mode && Bridge.text-edit-focused
+                && (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                Bridge.tab-nav-serial += 1;
+                Bridge.remote-nav(event.text == Key.DownArrow);
+                return accept;
+            }
+            reject
+        }
 
         if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Video: VideoPlayerView { }
 

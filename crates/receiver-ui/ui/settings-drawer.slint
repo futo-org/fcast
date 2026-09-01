@@ -110,6 +110,7 @@ component TextRow inherits HorizontalLayout {
                 Bridge.set-string-setting(root.setting-key, self.text);
             }
             changed has-focus => {
+                Bridge.text-edit-focused = self.has-focus;
                 if !self.has-focus {
                     Bridge.set-string-setting(root.setting-key, self.text);
                 }
@@ -435,28 +436,32 @@ export component SettingsDrawer inherits Rectangle {
                         title: @tr("Interface");
                         icon: Icons.tv-outline;
                     }
-                    ToggleRow {
+                    // Window management is a desktop concept: no tray, no
+                    // start-fullscreen, no headless on android, and its
+                    // fullscreen player is hardwired on rather than a
+                    // setting (no config store there yet).
+                    if !Bridge.android: ToggleRow {
                         label: @tr("Show window on start");
                         setting-key: "interface.show_window";
                         value <=> Bridge.cfg-interface-show-window;
                     }
-                    // no tray on touch platforms
-                    if !Bridge.touch-mode: ToggleRow {
+                    // no tray on touch platforms either
+                    if !Bridge.touch-mode && !Bridge.android: ToggleRow {
                         label: @tr("System tray icon");
                         setting-key: "interface.tray";
                         value <=> Bridge.cfg-interface-tray;
                     }
-                    ToggleRow {
+                    if !Bridge.android: ToggleRow {
                         label: @tr("Start fullscreen");
                         setting-key: "interface.start_fullscreen";
                         value <=> Bridge.cfg-interface-start-fullscreen;
                     }
-                    ToggleRow {
+                    if !Bridge.android: ToggleRow {
                         label: @tr("Fullscreen player");
                         setting-key: "interface.fullscreen_player";
                         value <=> Bridge.cfg-interface-fullscreen-player;
                     }
-                    ToggleRow {
+                    if !Bridge.android: ToggleRow {
                         label: @tr("Headless (no window)");
                         setting-key: "interface.headless";
                         value <=> Bridge.cfg-interface-headless;

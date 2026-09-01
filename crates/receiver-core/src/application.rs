@@ -982,6 +982,9 @@ impl Application {
         let receiver_info = Arc::new(crate::ReceiverInfo {
             device_info: fcast_protocol::v4::DeviceInfo {
                 display_name: None,
+                #[cfg(target_os = "android")]
+                app_name: Some("FCast Receiver Android".to_owned()),
+                #[cfg(not(target_os = "android"))]
                 app_name: Some("FCast Receiver Desktop".to_owned()),
                 app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
             },

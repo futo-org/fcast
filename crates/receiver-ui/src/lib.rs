@@ -1335,6 +1335,11 @@ pub fn run(
     // remote, so touch mode stays off there.
     ui.global::<Bridge>()
         .set_touch_mode(!android_immersive::is_television());
+    ui.global::<Bridge>()
+        .set_tv_mode(android_immersive::is_television());
+    // the hole punch is an android constant, whatever the input style
+    ui.global::<Bridge>().set_behind_window_video(true);
+    ui.global::<Bridge>().set_android(true);
     android_immersive::init(&android_app);
     // starts with system bars, the player's toggle enters immersive
     ui.global::<Bridge>().set_is_fullscreen(false);

@@ -106,6 +106,16 @@ pub(crate) fn effective_canvas(ui: &crate::MainWindow) -> (u32, u32) {
     (size.width, size.height)
 }
 
+/// Idle, nothing loading: drop any pending pre-open and zero the surface,
+/// so an empty punch can never outlive the video and cull the UI.
+pub(crate) fn park_current() {
+    let Some((this, _)) = CURRENT.get() else {
+        return;
+    };
+    this.handoff.lock().unwrap().preopen_pending = false;
+    let _ = this.surface.set_visible(false);
+}
+
 pub(crate) fn preopen_current() {
     let Some((this, ui)) = CURRENT.get() else {
         return;
@@ -246,8 +256,25 @@ impl SurfaceVideo {
                     // A load racing this teardown pre-opened the surface for
                     // its codec; give it a fresh one instead of leaving it
                     // windowless (that costs a rebuild and a keyframe wait).
+                    // Deferred one layout beat: the zero-size park must
+                    // actually destroy the old surface first, or the re-open
+                    // coalesces into the same layout pass, the surface
+                    // survives, and the previous item's last frame flashes
+                    // under the next one.
                     if this.handoff.lock().unwrap().preopen_pending {
-                        preopen_current();
+                        let _ = ui.upgrade_in_event_loop(move |_| {
+                            slint::Timer::single_shot(
+                                std::time::Duration::from_millis(80),
+                                || {
+                                    let pending = CURRENT.get().is_some_and(|(t, _)| {
+                                        t.handoff.lock().unwrap().preopen_pending
+                                    });
+                                    if pending {
+                                        preopen_current();
+                                    }
+                                },
+                            );
+                        });
                     }
                     return;
                 };

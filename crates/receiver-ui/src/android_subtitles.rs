@@ -40,6 +40,20 @@ struct State {
 #[derive(Clone)]
 pub struct Subtitles(Arc<State>);
 
+/// The attach-time handle, for item-boundary cleanup from the gui thread.
+static CURRENT: std::sync::OnceLock<Subtitles> = std::sync::OnceLock::new();
+
+/// Item boundary (a load is coming, or playback ended): the old item's cues
+/// must not survive into the next one, on screen or in engine memory.
+pub fn clear_current() {
+    let Some(subs) = CURRENT.get() else {
+        return;
+    };
+    subs.0.engine.clear();
+    subs.0.last.lock().unwrap().clear();
+    push(&subs.0);
+}
+
 pub fn attach(engine: CueEngine, sink: &gst::Element, ui: &crate::MainWindow) -> Subtitles {
     let state = Arc::new(State {
         engine: engine.clone(),
@@ -67,9 +81,12 @@ pub fn attach(engine: CueEngine, sink: &gst::Element, ui: &crate::MainWindow) ->
     }
 
     let Some(pad) = sink.static_pad("sink") else {
-        return Subtitles(state);
+        let handle = Subtitles(state);
+        let _ = CURRENT.set(handle.clone());
+        return handle;
     };
     let handle = Subtitles(state.clone());
+    let _ = CURRENT.set(handle.clone());
     pad.add_probe(
         gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM,
         move |_, info| {
@@ -252,6 +269,12 @@ fn apply_system_captioning(style: &mut fcast_video::cue_ir::CueStyle) {
             style.font_height_fraction *= scale;
             style.min_font_dp *= scale;
             tracing::info!(scale, "caption font scale applied");
+        }
+        // Colors only for users who turned system captions on: TV vendors
+        // ship an opaque-black CaptionStyle whose has-checks pass, and
+        // adopting it silently replaces the translucent house box.
+        if !env.call_method(&manager, "isEnabled", "()Z", &[])?.z()? {
+            return Ok(());
         }
         let user = env
             .call_method(

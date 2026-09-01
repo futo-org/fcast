@@ -114,6 +114,10 @@ export global Bridge {
     in property <image> qr-code;
     // touch screens have no hover: controls toggle on tap and auto-hide
     in property <bool> touch-mode;
+    // android: the video surface is a separate layer BEHIND the window, the
+    // scene must stay transparent so the hole is real. Independent of
+    // touch-mode, which is off on TV while the surface still sits behind.
+    in property <bool> behind-window-video;
     // The window's safe-area insets, mirrored here by MainWindow so views
     // can pad by them (the Window element is out of their scope). Zero
     // without a notch/system bars. Video stays full-bleed, chrome pads.
@@ -221,6 +225,26 @@ export global Bridge {
     // moves the keyboard focus. Views with auto-hiding chrome watch it to stay
     // awake while the keyboard walks them.
     in-out property <int> tab-nav-serial: 0;
+
+    // TV: d-pad first input, no pointer and no Tab key on the remote. Arrows
+    // walk the focus chain instead of seeking, a press wakes hidden chrome.
+    in property <bool> tv-mode;
+    // The platform, not an input style: desktop-only settings hide on it.
+    in property <bool> android;
+    // Mirrored by the player scrubber so the remote branch below can keep
+    // Left/Right as the 10s seek while the scrubber is the focused widget.
+    in-out property <bool> scrubber-focused;
+    // Mirrored by every text field. A focused TextInput consumes arrows as
+    // cursor movement, so the window scope captures Up/Down while one is
+    // focused and keeps them as navigation, the only way OUT of a field
+    // with a remote.
+    in-out property <bool> text-edit-focused;
+    // Walks the window's tab chain (rust dispatches a synthetic Tab/Backtab
+    // after the arrow event unwinds).
+    callback remote-nav(/* forward */ bool);
+    // Bumped to close the player chrome from the global Back handling; the
+    // player controls watch it.
+    in-out property <int> osd-close-serial: 0;
 
     // Settings drawer. `show-settings` toggles the slide-in panel. The `cfg-*`
     // properties mirror the persisted config, seeded once at startup by
@@ -369,11 +393,19 @@ export global Bridge {
         }
         // Android Back must never reach the system default, which finishes
         // the activity and takes the receiver process with it. Peel one
-        // layer of UI per press, then background the task.
+        // layer of UI per press, then background the task. On TV the player
+        // chrome is a layer of its own, and fullscreen is tied to playback
+        // rather than being a peelable state.
         if event.text == Key.Back {
             if show-settings {
                 show-settings = false;
-            } else if Bridge.is-fullscreen {
+            } else if tv-mode && is-playing() && player-variant == UiPlayerVariant.Video && controls-overlay-visible {
+                osd-close-serial += 1;
+            } else if tv-mode && is-playing() {
+                // leaving the player means stopping the cast, like the
+                // Kotlin receiver's player finish, not hiding the app
+                stop-playback();
+            } else if !tv-mode && Bridge.is-fullscreen {
                 toggle-fullscreen();
             } else {
                 background-app();
@@ -386,11 +418,32 @@ export global Bridge {
             tab-nav-serial += 1;
             return reject;
         }
-        // Reaching here means no widget took the tab, so focus is about to move.
-        // Rejecting keeps that traversal; the bump is only a notification.
-        if event.text == Key.Tab || event.text == Key.Backtab {
+        // TV remote: arrows drive focus, not seek/volume. A press with the
+        // video chrome hidden only reveals it (the serial bump wakes it),
+        // matching the Kotlin receiver. Left/Right keep the 10s seek while
+        // the scrubber is focused, its own row in the Kotlin model.
+        if tv-mode && (event.text == Key.UpArrow || event.text == Key.DownArrow
+            || event.text == Key.LeftArrow || event.text == Key.RightArrow) {
             tab-nav-serial += 1;
-            return reject;
+            if is-playing() && player-variant == UiPlayerVariant.Video && !controls-overlay-visible {
+                return accept;
+            }
+            if scrubber-focused && is-playing() && duration-secs > 0
+                && (event.text == Key.LeftArrow || event.text == Key.RightArrow) {
+                seek-to-percent((progress-secs + (event.text == Key.RightArrow ? 10 : -10)) / duration-secs);
+                return accept;
+            }
+            remote-nav(event.text == Key.DownArrow || event.text == Key.RightArrow);
+            return accept;
+        }
+        if tv-mode && event.text == Key.Return && is-playing() && player-variant == UiPlayerVariant.Video {
+            if !controls-overlay-visible {
+                tab-nav-serial += 1;
+                return accept;
+            }
+            // chrome visible with nothing focused: center toggles play/pause
+            resume-or-pause();
+            return accept;
         }
         if event.text == "q" {
             force-quit();

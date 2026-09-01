@@ -9,6 +9,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Launch the player when a cast arrives while backgrounded, the
+         Kotlin receiver precedent. User-granted, checked at runtime. -->
+    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
 
     <!-- The wifi permissions above imply required wifi hardware on Play and
          touchscreen is required by default; both would filter set-top and TV
@@ -25,12 +28,16 @@
         android:hardwareAccelerated="true"
         android:allowBackup="false"
         android:enableOnBackInvokedCallback="false"
-        android:banner="@drawable/tv_banner"
+        android:banner="@mipmap/ic_banner"
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.FCastReceiver">
 
+        <!-- The slint input view reports itself a text editor, and on TV the
+             window-focus path auto-shows the IME at launch. Explicit
+             show_keyboard() is unaffected. -->
         <activity
             android:name=".MainActivity"
+            android:windowSoftInputMode="stateAlwaysHidden"
             android:launchMode="singleTask"
             android:supportsPictureInPicture="true"
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection|density|fontScale|colorMode|fontWeightAdjustment|grammaticalGender"

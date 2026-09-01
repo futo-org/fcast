@@ -642,6 +642,10 @@ component PlaybackControls inherits Rectangle {
         background-height = 20%;
         elems-opacity = 100%;
         tim.running = true;
+        // the remote lands on the seek bar first, like the Kotlin receiver
+        if Bridge.tv-mode {
+            scrub.focus-scrubber();
+        }
         if unhide-cursor {
             suggested-cursor = MouseCursor.default;
             Bridge.set-cursor-hidden(false);
@@ -664,6 +668,13 @@ component PlaybackControls inherits Rectangle {
     property <int> keyboard-nav: Bridge.tab-nav-serial;
     changed keyboard-nav => {
         root.wake-controls();
+    }
+
+    // The global Back handling peels the chrome as its own layer on TV.
+    property <int> osd-close: Bridge.osd-close-serial;
+    changed osd-close => {
+        root.close-settings();
+        root.close();
     }
 
     public function close() {
@@ -823,7 +834,7 @@ component PlaybackControls inherits Rectangle {
                     }
                 }
 
-                ScrubbyMcScrub {
+                scrub := ScrubbyMcScrub {
                     fade: elems-opacity;
                     visible: is-visible;
                     height: is-visible ? self.preferred-height : 0px;
@@ -880,6 +891,16 @@ component PlaybackControls inherits Rectangle {
                 key-pressed(event) => {
                     if event.text == Key.Escape {
                         root.close-settings();
+                        return accept;
+                    }
+                    // The remote's back button peels one page, then closes.
+                    if event.text == Key.Back {
+                        if current-settings-page != SettingsPage.Start {
+                            root.settings-kb-nav = true;
+                            root.open-page(SettingsPage.Start);
+                        } else {
+                            root.close-settings();
+                        }
                         return accept;
                     }
                     if event.text == Key.Tab {
@@ -1169,7 +1190,8 @@ component PlaybackControls inherits Rectangle {
     }
 
     tim := Timer {
-        interval: Bridge.touch-mode ? 4s : 2s;
+        // remote walking is slower than a hovering pointer, give it air
+        interval: Bridge.touch-mode || Bridge.tv-mode ? 4s : 2s;
         running: true;
         triggered => {
             // The scene condition mirrors main.slint's mount condition: once

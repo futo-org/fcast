@@ -222,6 +222,29 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         log_if_err!(slint::quit_event_loop());
     });
 
+    bridge.on_remote_nav({
+        let ui_weak = ui.as_weak();
+        move |forward| {
+            let ui_weak = ui_weak.clone();
+            // A synthetic Tab walks the same focus chain a keyboard would.
+            // Deferred a tick so it never re-enters the key dispatch the
+            // arrow is still unwinding through.
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                let key = if forward {
+                    slint::platform::Key::Tab
+                } else {
+                    slint::platform::Key::Backtab
+                };
+                let text: slint::SharedString = key.into();
+                ui.window()
+                    .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.clone() });
+                ui.window()
+                    .dispatch_event(slint::platform::WindowEvent::KeyReleased { text });
+            });
+        }
+    });
+
     bridge.on_background_app(move || {
         #[cfg(target_os = "android")]
         crate::android_immersive::move_task_to_back();
@@ -548,6 +571,14 @@ fn handle_command(
             if matches!(state, ui_types::AppState::LoadingMedia) {
                 crate::android_surface_video::preopen_current();
             }
+            // Idle means no load in flight: a pre-open left pending (a stop
+            // or failed load that beat the caps) would re-open a fullscreen
+            // EMPTY surface at teardown, whose punch culls the whole UI
+            // (black screen). Park it.
+            #[cfg(target_os = "android")]
+            if matches!(state, ui_types::AppState::Idle) {
+                crate::android_surface_video::park_current();
+            }
             // the sw frame belongs to the leaving item, a retained image
             // would flash it when the next video starts
             if matches!(
@@ -563,6 +594,9 @@ fn handle_command(
                 crate::android_video::release_frames();
                 // and so does its bitmap subtitle
                 bridge.set_bitmap_subtitle(crate::SubtitleOverlay::default());
+                // and the text cues, engine memory included
+                #[cfg(target_os = "android")]
+                crate::android_subtitles::clear_current();
             }
             bridge.set_app_state(state.into());
             unhide_cursor_outside_video_scene(&ui);
