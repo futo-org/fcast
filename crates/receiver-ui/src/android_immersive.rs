@@ -12,23 +12,30 @@ pub(crate) fn init(app: &slint::android::AndroidApp) {
     ACTIVITY.store(app.activity_as_ptr() as usize, Ordering::Release);
 }
 
-fn with_activity(what: &str, f: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<()>) {
+fn with_activity(
+    what: &str,
+    f: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<()>,
+) -> bool {
     let activity_ptr = ACTIVITY.load(Ordering::Acquire);
     if activity_ptr == 0 {
         tracing::warn!(what, "activity call before the activity was captured");
-        return;
+        return false;
     }
     let ctx = ndk_context::android_context();
     let Ok(vm) = (unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) }) else {
-        return;
+        return false;
     };
     let Ok(mut env) = vm.attach_current_thread() else {
-        return;
+        return false;
     };
     let activity = unsafe { jni::objects::JObject::from_raw(activity_ptr as jni::sys::jobject) };
-    if let Err(err) = f(&mut env, &activity) {
-        let _ = env.exception_clear();
-        tracing::warn!(?err, what, "activity call failed");
+    match f(&mut env, &activity) {
+        Ok(()) => true,
+        Err(err) => {
+            let _ = env.exception_clear();
+            tracing::warn!(?err, what, "activity call failed");
+            false
+        }
     }
 }
 
@@ -84,10 +91,10 @@ pub fn set_video_aspect(w: u32, h: u32) {
     use std::sync::atomic::AtomicU64;
     static LAST: AtomicU64 = AtomicU64::new(0);
     let key = ((w as u64) << 32) | h as u64;
-    if LAST.swap(key, Ordering::Relaxed) == key {
+    if LAST.load(Ordering::Relaxed) == key {
         return;
     }
-    with_activity("setVideoAspect", |env, activity| {
+    let ok = with_activity("setVideoAspect", |env, activity| {
         env.call_method(
             activity,
             "setVideoAspect",
@@ -99,6 +106,11 @@ pub fn set_video_aspect(w: u32, h: u32) {
         )
         .map(drop)
     });
+    if ok {
+        // committed only on success, or one failed call would suppress
+        // retries for this shape forever
+        LAST.store(key, Ordering::Relaxed);
+    }
 }
 
 /// Send the task to the back instead of finishing the activity: a finish

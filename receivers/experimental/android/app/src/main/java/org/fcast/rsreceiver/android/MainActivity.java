@@ -801,7 +801,8 @@ public class MainActivity extends NativeActivity {
                         new android.app.PictureInPictureParams.Builder()
                                 .setAspectRatio(videoAspect)
                                 .build());
-            } catch (IllegalStateException e) {
+            } catch (IllegalStateException | IllegalArgumentException e) {
+                // devices can configure tighter aspect limits than AOSP's
                 Log.w(TAG, "PiP refused", e);
             }
         }

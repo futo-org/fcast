@@ -43,9 +43,14 @@ public class ReceiverService extends Service {
     static void refreshIfRunning() {
         mainHandler.post(() -> {
             ReceiverService service = running;
-            if (service != null) {
-                // re-asserting foreground also switches the declared type
-                // between specialUse (idle) and mediaPlayback (casting)
+            if (service == null) {
+                return;
+            }
+            if (service.foregroundType == service.wantedType()) {
+                // plain notification refresh, no ActivityManager round trip
+                NotificationManager nm = service.getSystemService(NotificationManager.class);
+                nm.notify(NOTIFICATION_ID, service.buildNotification());
+            } else {
                 service.goForeground();
             }
         });
@@ -123,7 +128,18 @@ public class ReceiverService extends Service {
         return START_NOT_STICKY;
     }
 
-    private void goForeground() {
+    private int foregroundType = -1;
+
+    private int wantedType() {
+        if (android.os.Build.VERSION.SDK_INT >= 34) {
+            return castActive
+                    ? ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+                    : ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE;
+        }
+        return ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK;
+    }
+
+    private void goForegroundInner() {
         if (android.os.Build.VERSION.SDK_INT >= 34) {
             // the honest split: specialUse exists from 34, which is also
             // where the per-type policy enforcement lives
@@ -135,6 +151,17 @@ public class ReceiverService extends Service {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK);
         } else {
             startForeground(NOTIFICATION_ID, buildNotification());
+        }
+        foregroundType = wantedType();
+    }
+
+    private void goForeground() {
+        // startForeground throws for a handful of policy reasons and this
+        // runs on metadata pushes mid-cast; a throw must not kill the cast
+        try {
+            goForegroundInner();
+        } catch (Exception e) {
+            android.util.Log.w("FCastReceiverService", "startForeground refused", e);
         }
     }
 
