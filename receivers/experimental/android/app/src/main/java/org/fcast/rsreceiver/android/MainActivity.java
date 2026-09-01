@@ -15,17 +15,20 @@ import android.net.nsd.NsdServiceInfo;
 import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.app.NativeActivity;
+import android.os.HandlerThread;
 import android.os.PowerManager;
 import android.util.Log;
 import androidx.annotation.NonNull;
 import java.net.InetAddress;
 import java.net.NetworkInterface;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.regex.Pattern;
 
 public class MainActivity extends NativeActivity {
     private static final String TAG = "FCastMainActivity";
@@ -40,23 +43,36 @@ public class MainActivity extends NativeActivity {
 
     private final android.os.Handler handler =
             new android.os.Handler(android.os.Looper.getMainLooper());
+    // Interface sweeps walk /proc/net and issue an ioctl per interface,
+    // tens of ms on some devices: off the main looper.
+    private HandlerThread netThread = null;
+    private android.os.Handler netHandler = null;
 
-    private String serviceName;
+    /// The name registrations always use. Never reassigned: adopting a
+    /// collision-renamed value as the new base compounds " (2)" suffixes on
+    /// every re-registration cycle.
+    private String baseServiceName;
     // The listener instance IS the registration handle: one fresh instance per
     // register call, never reused, so re-registration cycles cannot trip
     // NsdManager's listener-in-use checks.
     private NsdListener fcastReg = null;
     private NsdListener raopReg = null;
     private boolean destroyed = false;
+    /// Cancels stale registerFCastWhenReady poll chains: each
+    /// registerServices() bumps it and in-flight lambdas holding an older
+    /// value stop, so two overlapping chains cannot both register.
+    private int fcastPollGen = 0;
+    private int nsdRetries = 0;
 
     // Re-sweep even without a callback: tethering/hotspot interfaces never
     // surface as Networks, so their addresses are only found by polling.
     private static final long SWEEP_INTERVAL_MS = 30_000;
     private static final long NETWORK_SETTLE_MS = 500;
 
-    /// Registration outcomes matter: a swallowed failure means the receiver
-    /// shows its QR while nobody can discover it, and a collision rename
-    /// means the UI shows a name the network does not have.
+    /// NsdManager removes a listener BEFORE delivering onRegistrationFailed,
+    /// so unregistering it afterwards throws; every outcome is handled on
+    /// the main handler because the callbacks arrive on the connectivity
+    /// thread.
     class NsdListener implements NsdManager.RegistrationListener {
         final String label;
         final boolean isFcast;
@@ -68,12 +84,23 @@ public class MainActivity extends NativeActivity {
 
         @Override
         public void onRegistrationFailed(NsdServiceInfo info, int errorCode) {
-            Log.e(TAG, label + " registration failed: " + errorCode + ", retrying");
-            handler.postDelayed(() -> {
-                if (!destroyed) {
-                    registerServices();
+            handler.post(() -> {
+                // the platform already dropped this listener
+                if (fcastReg == this) {
+                    fcastReg = null;
+                } else if (raopReg == this) {
+                    raopReg = null;
                 }
-            }, 3_000);
+                nsdRetries += 1;
+                long delay = Math.min(3_000L << Math.min(nsdRetries - 1, 4), 60_000L);
+                Log.e(TAG, label + " registration failed: " + errorCode
+                        + ", retry " + nsdRetries + " in " + delay + "ms");
+                handler.postDelayed(() -> {
+                    if (!destroyed) {
+                        registerServices();
+                    }
+                }, delay);
+            });
         }
 
         @Override
@@ -84,16 +111,30 @@ public class MainActivity extends NativeActivity {
         @Override
         public void onServiceRegistered(NsdServiceInfo info) {
             Log.i(TAG, label + " registered as " + info.getServiceName());
-            // The daemon renames on collision. Adopt the effective name so
-            // the UI and the network agree.
-            if (isFcast && !info.getServiceName().equals(serviceName)) {
-                serviceName = info.getServiceName();
-                setMdnsDeviceName(serviceName);
-            }
+            handler.post(() -> {
+                nsdRetries = 0;
+                // The daemon renames on collision. The DISPLAYED name
+                // follows the network's truth; the registration base never
+                // moves, or renames would compound.
+                if (isFcast) {
+                    setMdnsDeviceName(info.getServiceName());
+                }
+            });
         }
 
         @Override
         public void onServiceUnregistered(NsdServiceInfo info) { }
+    }
+
+    private void quietUnregister(NsdListener listener) {
+        if (listener == null) {
+            return;
+        }
+        try {
+            nsdManager.unregisterService(listener);
+        } catch (IllegalArgumentException e) {
+            // already removed by a failure callback
+        }
     }
 
     native void nativeSetAddresses(List<ByteBuffer> addrs);
@@ -106,6 +147,7 @@ public class MainActivity extends NativeActivity {
     /// One authoritative sweep instead of per-Network bookkeeping: every
     /// interface's current addresses, as the full replacement set. Covers
     /// hotspot/tethering interfaces the ConnectivityManager never reports.
+    /// Runs on the net thread.
     void sweepAddresses() {
         ArrayList<ByteBuffer> addrs = new ArrayList<>();
         try {
@@ -142,7 +184,7 @@ public class MainActivity extends NativeActivity {
         if (destroyed) {
             return;
         }
-        sweepAddresses();
+        netHandler.post(this::sweepAddresses);
         registerServices();
     };
 
@@ -157,7 +199,7 @@ public class MainActivity extends NativeActivity {
             if (destroyed) {
                 return;
             }
-            sweepAddresses();
+            netHandler.post(MainActivity.this::sweepAddresses);
             handler.postDelayed(this, SWEEP_INTERVAL_MS);
         }
     };
@@ -165,12 +207,12 @@ public class MainActivity extends NativeActivity {
     class NetworkCallbackHandler extends ConnectivityManager.NetworkCallback {
         @Override
         public void onAvailable(@NonNull Network network) {
-            onNetworkChanged();
+            handler.post(MainActivity.this::onNetworkChanged);
         }
 
         @Override
         public void onLost(@NonNull Network network) {
-            onNetworkChanged();
+            handler.post(MainActivity.this::onNetworkChanged);
         }
 
         @Override
@@ -178,7 +220,7 @@ public class MainActivity extends NativeActivity {
                 @NonNull LinkProperties props) {
             // AP roams, DHCP renews and IPv6 prefix changes keep the same
             // Network and only fire this.
-            onNetworkChanged();
+            handler.post(MainActivity.this::onNetworkChanged);
         }
     }
 
@@ -186,6 +228,13 @@ public class MainActivity extends NativeActivity {
         // One self-contained library: GStreamer is statically linked inside
         // and initialized by the native side, no java glue involved.
         System.loadLibrary("fcastreceiver");
+    }
+
+    private boolean isTelevision() {
+        android.app.UiModeManager ui =
+                (android.app.UiModeManager) getSystemService(Context.UI_MODE_SERVICE);
+        return ui != null && ui.getCurrentModeType()
+                == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION;
     }
 
     @SuppressLint("WakelockTimeout")
@@ -201,13 +250,21 @@ public class MainActivity extends NativeActivity {
         // the live window it would paint over the video hole punch
         getWindow().setBackgroundDrawable(null);
 
+        // Edge-to-edge always: the video rect and slint both measure in
+        // full-window pixels, so decor fitting would shift and clip them.
+        // Set once and never turned back on.
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+        }
+
         // Hardware volume keys drive the media stream; without this they hit
         // the ring stream whenever nothing is actively playing.
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
 
         createMediaSession();
         ReceiverService.ensureChannel(this);
-        if (android.os.Build.VERSION.SDK_INT >= 33
+        // No prompt on TV: no notification shade worth the dialog there.
+        if (android.os.Build.VERSION.SDK_INT >= 33 && !isTelevision()
                 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
                         != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             requestPermissions(
@@ -231,17 +288,25 @@ public class MainActivity extends NativeActivity {
         // it. Insets flow through slint's own android backend into
         // Window.safe-area-insets, no bridge needed.
 
+        netThread = new HandlerThread("fcast-net");
+        netThread.start();
+        netHandler = new android.os.Handler(netThread.getLooper());
+
         nsdManager = (NsdManager) this.getSystemService(Context.NSD_SERVICE);
 
         String modelName;
         if (android.os.Build.MODEL.contains(android.os.Build.MANUFACTURER)) {
-            modelName = android.os.Build.MODEL.replaceFirst("^" + android.os.Build.MANUFACTURER, "").trim();
+            // quoted: a manufacturer string with regex metacharacters would
+            // throw out of onCreate on that device
+            modelName = android.os.Build.MODEL
+                    .replaceFirst("^" + Pattern.quote(android.os.Build.MANUFACTURER), "")
+                    .trim();
         } else {
             modelName = android.os.Build.MODEL;
         }
-        serviceName = "FCast-" + android.os.Build.MANUFACTURER + "-" + modelName;
+        baseServiceName = truncateUtf8("FCast-" + android.os.Build.MANUFACTURER + "-" + modelName, 63);
 
-        setMdnsDeviceName(serviceName);
+        setMdnsDeviceName(baseServiceName);
         registerServices();
 
         connectivityManager = (ConnectivityManager) this.getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -252,7 +317,7 @@ public class MainActivity extends NativeActivity {
         networkCallback = new NetworkCallbackHandler();
         connectivityManager.registerNetworkCallback(networkRequest, networkCallback);
 
-        sweepAddresses();
+        netHandler.post(this::sweepAddresses);
         handler.postDelayed(periodicSweep, SWEEP_INTERVAL_MS);
 
         // Created here, acquired only while playback is active, see
@@ -270,24 +335,33 @@ public class MainActivity extends NativeActivity {
         cpuWakeLock.setReferenceCounted(false);
     }
 
+    /// DNS-SD instance names cap at 63 bytes of utf8.
+    private static String truncateUtf8(String s, int maxBytes) {
+        byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
+        if (bytes.length <= maxBytes) {
+            return s;
+        }
+        while (maxBytes > 0 && (bytes[maxBytes] & 0xC0) == 0x80) {
+            maxBytes--;
+        }
+        return new String(bytes, 0, maxBytes, StandardCharsets.UTF_8);
+    }
+
     /// (Re-)register both services, dropping any prior registrations first.
     /// The fcast one waits for the TXT records (TLS fingerprint + protocol
     /// version) AND the committed listen port: v4 senders key their secure
     /// connect on the records, and an advertisement pointing at an unbound
     /// port hands early senders a connection refuse.
     private void registerServices() {
-        if (fcastReg != null) {
-            nsdManager.unregisterService(fcastReg);
-            fcastReg = null;
-        }
-        if (raopReg != null) {
-            nsdManager.unregisterService(raopReg);
-            raopReg = null;
-        }
+        fcastPollGen += 1;
+        quietUnregister(fcastReg);
+        fcastReg = null;
+        quietUnregister(raopReg);
+        raopReg = null;
 
         NsdServiceInfo raopServiceInfo = new NsdServiceInfo();
-        String raopHash = getDeviceNameRaopHash(serviceName);
-        raopServiceInfo.setServiceName(raopHash + "@" + serviceName);
+        String raopHash = getDeviceNameRaopHash(baseServiceName);
+        raopServiceInfo.setServiceName(raopHash + "@" + baseServiceName);
         raopServiceInfo.setServiceType("_raop._tcp");
         raopServiceInfo.setPort(33505);
         Map<String, String> raopAttrs = new HashMap<>();
@@ -298,22 +372,22 @@ public class MainActivity extends NativeActivity {
         raopReg = new NsdListener("_raop", false);
         nsdManager.registerService(raopServiceInfo, NsdManager.PROTOCOL_DNS_SD, raopReg);
 
-        registerFCastWhenReady();
+        registerFCastWhenReady(fcastPollGen);
     }
 
-    private void registerFCastWhenReady() {
+    private void registerFCastWhenReady(int gen) {
+        if (gen != fcastPollGen || destroyed) {
+            // a newer registration cycle owns the field now
+            return;
+        }
         Map<String, String> attrs = new HashMap<>();
         int port = getFCastPort();
         if (port == 0 || !getFCastTxtAttribs(attrs)) {
-            handler.postDelayed(() -> {
-                if (!destroyed) {
-                    registerFCastWhenReady();
-                }
-            }, 200);
+            handler.postDelayed(() -> registerFCastWhenReady(gen), 200);
             return;
         }
         NsdServiceInfo info = new NsdServiceInfo();
-        info.setServiceName(serviceName);
+        info.setServiceName(baseServiceName);
         info.setServiceType("_fcast._tcp");
         info.setPort(port);
         for (Map.Entry<String, String> a : attrs.entrySet()) {
@@ -329,6 +403,16 @@ public class MainActivity extends NativeActivity {
     private final AudioManager.OnAudioFocusChangeListener focusListener = change -> {
         switch (change) {
             case AudioManager.AUDIOFOCUS_LOSS:
+                // The system already removed this app from the focus stack;
+                // dropping the request here is what makes the next resume
+                // re-request instead of playing focusless over another app.
+                runOnUiThread(() -> {
+                    if (focusRequest != null) {
+                        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+                        am.abandonAudioFocusRequest(focusRequest);
+                        focusRequest = null;
+                    }
+                });
                 nativeAudioEvent(0);
                 break;
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
@@ -340,6 +424,36 @@ public class MainActivity extends NativeActivity {
                 break;
         }
     };
+
+    /// Request focus if none is held. Called from native code on every
+    /// play/load edge: a cast arriving during a phone call must not play
+    /// over it, and after a permanent loss the request is gone and needs
+    /// remaking. A refusal comes back as a transient-loss event, which
+    /// pauses and resumes on the eventual gain.
+    public void ensureAudioFocus() {
+        runOnUiThread(() -> {
+            if (focusRequest != null) {
+                return;
+            }
+            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            android.media.AudioFocusRequest req =
+                    new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+                            .setAudioAttributes(new android.media.AudioAttributes.Builder()
+                                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
+                                    .build())
+                            .setOnAudioFocusChangeListener(focusListener)
+                            .setWillPauseWhenDucked(true)
+                            .build();
+            int result = am.requestAudioFocus(req);
+            if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
+                focusRequest = req;
+            } else {
+                Log.i(TAG, "audio focus refused (" + result + ")");
+                nativeAudioEvent(1);
+            }
+        });
+    }
 
     /// Codes: 0 loss, 1 transient loss, 2 gain, 3 becoming noisy. The pause
     /// and resume policy lives in native code, which knows the player state.
@@ -383,13 +497,43 @@ public class MainActivity extends NativeActivity {
                 .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
                 .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
                 .build());
+        // lock-screen/QS media card tap opens the app
+        Intent open = new Intent(this, MainActivity.class);
+        open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        mediaSession.setSessionActivity(android.app.PendingIntent.getActivity(
+                this, 0, open, android.app.PendingIntent.FLAG_IMMUTABLE));
         ReceiverService.sessionToken = mediaSession.getSessionToken();
     }
 
-    /// Called from native code on every progress tick and state change.
+    private boolean castPlaying = false;
+
+    /// The CPU wake lock follows actually-playing, not merely
+    /// session-active: a cast paused overnight with the screen off would
+    /// otherwise hold a partial wake lock for hours, which is exactly what
+    /// Play's excessive-wake-lock quality threshold flags. Playing audio
+    /// under the mediaPlayback FGS is the policy's exempt case.
+    @SuppressLint("WakelockTimeout")
+    private void syncWakeLock() {
+        boolean want = castActiveLocal && castPlaying;
+        if (want && !cpuWakeLock.isHeld()) {
+            cpuWakeLock.acquire();
+        } else if (!want && cpuWakeLock.isHeld()) {
+            cpuWakeLock.release();
+        }
+    }
+
+    private boolean castActiveLocal = false;
+
+    /// Called from native code on state edges and a 1 Hz keepalive.
     /// Any thread; MediaSession is thread-safe.
+    @SuppressLint("WakelockTimeout")
     public void updateMediaSession(boolean playing, long positionMs, float speed) {
-        if (mediaSession == null) {
+        runOnUiThread(() -> {
+            castPlaying = playing;
+            syncWakeLock();
+        });
+        MediaSession session = mediaSession;
+        if (session == null) {
             return;
         }
         android.media.session.PlaybackState.Builder b =
@@ -399,11 +543,13 @@ public class MainActivity extends NativeActivity {
                                 | android.media.session.PlaybackState.ACTION_PLAY_PAUSE
                                 | android.media.session.PlaybackState.ACTION_STOP
                                 | android.media.session.PlaybackState.ACTION_SEEK_TO)
+                        // paused state must not extrapolate: the platform
+                        // advances position at the given speed
                         .setState(playing
                                         ? android.media.session.PlaybackState.STATE_PLAYING
                                         : android.media.session.PlaybackState.STATE_PAUSED,
-                                positionMs, speed);
-        mediaSession.setPlaybackState(b.build());
+                                positionMs, playing ? speed : 0f);
+        session.setPlaybackState(b.build());
     }
 
     /// Refresh-rate matching: prefer the lowest display mode at the current
@@ -444,8 +590,9 @@ public class MainActivity extends NativeActivity {
 
     /// Called from native code when the item's title or duration changes.
     public void updateMediaMetadata(String title, long durationMs) {
-        if (mediaSession != null) {
-            mediaSession.setMetadata(new android.media.MediaMetadata.Builder()
+        MediaSession session = mediaSession;
+        if (session != null) {
+            session.setMetadata(new android.media.MediaMetadata.Builder()
                     .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, title)
                     .putLong(android.media.MediaMetadata.METADATA_KEY_DURATION, durationMs)
                     .build());
@@ -480,19 +627,14 @@ public class MainActivity extends NativeActivity {
             castVisual = active && visual;
 
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            castActiveLocal = active;
             if (active) {
-                cpuWakeLock.acquire();
+                // playing usually follows within a tick; acquiring here too
+                // covers the load window, syncWakeLock drops it on pause
+                castPlaying = true;
+                syncWakeLock();
                 wifiLock.acquire();
-                if (focusRequest == null) {
-                    focusRequest = new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                            .setAudioAttributes(new android.media.AudioAttributes.Builder()
-                                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
-                                    .build())
-                            .setOnAudioFocusChangeListener(focusListener)
-                            .build();
-                    am.requestAudioFocus(focusRequest);
-                }
+                ensureAudioFocus();
                 if (noisyReceiver == null) {
                     noisyReceiver = new android.content.BroadcastReceiver() {
                         @Override
@@ -500,15 +642,20 @@ public class MainActivity extends NativeActivity {
                             nativeAudioEvent(3);
                         }
                     };
-                    registerReceiver(noisyReceiver,
-                            new android.content.IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
+                    if (android.os.Build.VERSION.SDK_INT >= 33) {
+                        registerReceiver(noisyReceiver,
+                                new android.content.IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
+                                Context.RECEIVER_NOT_EXPORTED);
+                    } else {
+                        registerReceiver(noisyReceiver,
+                                new android.content.IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
+                    }
                 }
             } else {
+                castPlaying = false;
+                syncWakeLock();
                 // release() on an unheld lock throws, and the idle edge can
                 // fire without a preceding active one (teardown).
-                if (cpuWakeLock.isHeld()) {
-                    cpuWakeLock.release();
-                }
                 if (wifiLock.isHeld()) {
                     wifiLock.release();
                 }
@@ -524,7 +671,7 @@ public class MainActivity extends NativeActivity {
         });
     }
 
-    private boolean immersiveWanted = false;
+    private volatile boolean immersiveWanted = false;
 
     /// Called from native code (the player's fullscreen toggle). Any thread.
     /// Not named setImmersive: that would shadow Activity.setImmersive.
@@ -545,7 +692,6 @@ public class MainActivity extends NativeActivity {
     /// its android backend, so the chrome pads itself.
     private void enterImmersive() {
         if (android.os.Build.VERSION.SDK_INT >= 30) {
-            getWindow().setDecorFitsSystemWindows(false);
             android.view.WindowInsetsController c = getWindow().getInsetsController();
             if (c != null) {
                 c.setSystemBarsBehavior(
@@ -569,7 +715,8 @@ public class MainActivity extends NativeActivity {
             if (c != null) {
                 c.show(android.view.WindowInsets.Type.systemBars());
             }
-            getWindow().setDecorFitsSystemWindows(true);
+            // decor fitting stays OFF: turning it back on shifts the video
+            // rect and slint's coordinate space by the bar insets
         } else {
             getWindow().getDecorView().setSystemUiVisibility(0);
         }
@@ -604,6 +751,26 @@ public class MainActivity extends NativeActivity {
         }
     }
 
+    @Override
+    public void onPictureInPictureModeChanged(boolean inPip,
+            android.content.res.Configuration newConfig) {
+        super.onPictureInPictureModeChanged(inPip, newConfig);
+        // Swiping the PiP window away finishes the activity, which takes
+        // the whole process with it (exit-on-destroy); at least end the
+        // cast cleanly so senders learn instead of timing out.
+        if (!inPip && isFinishing()) {
+            nativeMediaCommand(0);
+        }
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        // singleTask: notification and session taps land here instead of
+        // spawning a second activity, which the singleton native main
+        // could not serve.
+        super.onNewIntent(intent);
+    }
+
     /// The video SurfaceView's surface dies with the activity; the native
     /// side detaches it from the player before that and re-adopts a fresh
     /// one on return, otherwise a running codec errors out mid-video.
@@ -622,9 +789,15 @@ public class MainActivity extends NativeActivity {
         nativeAppVisibility(false);
         // Backgrounded: without foreground priority the process is a cached
         // kill candidate and the NSD registration dies with it. Started
-        // here, inside the background-start grace window.
+        // here, inside the background-start grace window; the system can
+        // still refuse (doze, restricted bucket), which must not crash a
+        // running cast.
         if (!destroyed && !isFinishing()) {
-            startForegroundService(new Intent(this, ReceiverService.class));
+            try {
+                startForegroundService(new Intent(this, ReceiverService.class));
+            } catch (Exception e) {
+                Log.w(TAG, "foreground service refused", e);
+            }
         }
         super.onStop();
     }
@@ -635,17 +808,16 @@ public class MainActivity extends NativeActivity {
         // thread, which exits the process, so anything after it never runs.
         destroyed = true;
         handler.removeCallbacksAndMessages(null);
-        if (fcastReg != null) {
-            nsdManager.unregisterService(fcastReg);
-            fcastReg = null;
-        }
-        if (raopReg != null) {
-            nsdManager.unregisterService(raopReg);
-            raopReg = null;
-        }
+        quietUnregister(fcastReg);
+        fcastReg = null;
+        quietUnregister(raopReg);
+        raopReg = null;
         if (networkCallback != null) {
             connectivityManager.unregisterNetworkCallback(networkCallback);
             networkCallback = null;
+        }
+        if (netThread != null) {
+            netThread.quitSafely();
         }
         setPlaybackActive(false, false);
         stopService(new Intent(this, ReceiverService.class));

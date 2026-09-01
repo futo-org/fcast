@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -24,12 +23,14 @@
         android:supportsRtl="true"
         android:hardwareAccelerated="true"
         android:allowBackup="false"
+        android:enableOnBackInvokedCallback="false"
         android:banner="@drawable/tv_banner"
         android:networkSecurityConfig="@xml/network_security_config"
         android:theme="@style/Theme.FCastReceiver">
 
         <activity
             android:name=".MainActivity"
+            android:launchMode="singleTask"
             android:supportsPictureInPicture="true"
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection|density|fontScale|colorMode"
             android:resizeableActivity="true"

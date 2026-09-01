@@ -60,6 +60,8 @@ static CURRENT: OnceLock<(Arc<SurfaceVideo>, slint::Weak<crate::MainWindow>)> = 
 /// the dead surface. On return the relayout adopts the fresh surface (its
 /// zero-size retry covers a window that is not up yet).
 pub(crate) fn app_visibility(visible: bool) {
+    // The decode throttle keys on this globally, before any surface exists.
+    crate::set_app_visible(visible);
     let Some((this, ui)) = CURRENT.get() else {
         return;
     };
@@ -297,6 +299,11 @@ impl SurfaceVideo {
                     if let Some(window) = this.surface.acquire_native_window() {
                         info!(seq, "video surface live, handing it to the player");
                         crate::set_video_window(window.as_ptr().cast());
+                        // acquire_native_window acquired a reference for US
+                        // and set_video_window took its own; without this
+                        // release every item leaks a window (and its
+                        // BufferQueue, tens of MB at 4K)
+                        unsafe { ndk_sys::ANativeWindow_release(window.as_ptr().cast()) };
                         let mut st = this.handoff.lock().unwrap();
                         st.handed_seq = seq;
                         st.polling = false;

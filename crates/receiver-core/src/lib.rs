@@ -114,6 +114,8 @@ pub(crate) fn publish_fcast_txt_records(records: Vec<(String, String)>) {
 /// the codec its window without its own flapjack dependency.
 #[cfg(target_os = "android")]
 pub use flapjack::android::set_video_window;
+#[cfg(target_os = "android")]
+pub use flapjack::android::set_app_visible;
 
 #[cfg(target_os = "android")]
 pub fn fcast_txt_records() -> Option<&'static [(String, String)]> {

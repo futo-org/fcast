@@ -83,10 +83,11 @@ dependencies {
 // it ships. Reads the ELF program headers directly, no NDK tools needed.
 tasks.register('check16kAlignment') {
     doLast {
-        def so = file('src/main/jniLibs/arm64-v8a/libfcastreceiver.so')
-        if (!so.exists()) {
-            throw new GradleException("missing ${so}")
+        def sos = fileTree('src/main/jniLibs') { include '*/libfcastreceiver.so' }.files
+        if (sos.isEmpty()) {
+            throw new GradleException('no jniLibs to check')
         }
+        sos.each { so ->
         def bytes = so.newInputStream().withCloseable { s ->
             def head = new byte[64]
             if (s.read(head) != 64) throw new GradleException('short ELF header')
@@ -108,11 +109,12 @@ tasks.register('check16kAlignment') {
                     long align = pb.getLong(0x30)
                     if (align < 0x4000) {
                         throw new GradleException(
-                            "LOAD segment align 0x${Long.toHexString(align)} < 0x4000, " +
+                            "${so}: LOAD align 0x${Long.toHexString(align)} < 0x4000, " +
                             'the .so lost 16KB page-size compliance')
                     }
                 }
             }
+        }
         }
     }
 }

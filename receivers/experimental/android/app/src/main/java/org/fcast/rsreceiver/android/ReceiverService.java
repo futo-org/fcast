@@ -8,8 +8,11 @@ import android.app.Service;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ServiceInfo;
+import android.graphics.drawable.Icon;
 import android.media.session.MediaSession;
+import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 
 /// Keeps the receiver's process at foreground priority while the activity
 /// is backgrounded, so the OS neither kills the cast nor reaps the NSD
@@ -32,13 +35,19 @@ public class ReceiverService extends Service {
     static volatile boolean castActive = false;
 
     private static volatile ReceiverService running = null;
+    // Rebuilds are posted: callers include rust worker threads, and a post
+    // serializes against onDestroy on the same looper, so a refresh can
+    // never notify past a dead service and orphan the ongoing notification.
+    private static final Handler mainHandler = new Handler(Looper.getMainLooper());
 
     static void refreshIfRunning() {
-        ReceiverService service = running;
-        if (service != null) {
-            NotificationManager nm = service.getSystemService(NotificationManager.class);
-            nm.notify(NOTIFICATION_ID, service.buildNotification());
-        }
+        mainHandler.post(() -> {
+            ReceiverService service = running;
+            if (service != null) {
+                NotificationManager nm = service.getSystemService(NotificationManager.class);
+                nm.notify(NOTIFICATION_ID, service.buildNotification());
+            }
+        });
     }
 
     static void ensureChannel(Context ctx) {
@@ -53,14 +62,21 @@ public class ReceiverService extends Service {
 
     private Notification buildNotification() {
         Intent open = new Intent(this, MainActivity.class);
-        open.setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         PendingIntent openPi = PendingIntent.getActivity(
                 this, 0, open, PendingIntent.FLAG_IMMUTABLE);
 
         Notification.Builder b = new Notification.Builder(this, CHANNEL_ID)
-                .setSmallIcon(R.mipmap.ic_launcher)
+                .setSmallIcon(R.drawable.ic_stat_cast)
                 .setContentIntent(openPi)
+                .setCategory(Notification.CATEGORY_TRANSPORT)
+                .setVisibility(Notification.VISIBILITY_PUBLIC)
                 .setOngoing(true);
+        if (android.os.Build.VERSION.SDK_INT >= 31) {
+            // otherwise the system defers FGS notifications ~10s and the
+            // Stop control is invisible right when the user backgrounds
+            b.setForegroundServiceBehavior(Notification.FOREGROUND_SERVICE_IMMEDIATE);
+        }
 
         String title = castTitle;
         if (castActive) {
@@ -73,8 +89,12 @@ public class ReceiverService extends Service {
             PendingIntent stopPi = PendingIntent.getService(
                     this, 1, stop, PendingIntent.FLAG_IMMUTABLE);
             b.addAction(new Notification.Action.Builder(
-                    null, getString(R.string.notification_stop), stopPi).build());
-            Notification.MediaStyle style = new Notification.MediaStyle();
+                    Icon.createWithResource(this, R.drawable.ic_stat_stop),
+                    getString(R.string.notification_stop), stopPi).build());
+            Notification.MediaStyle style = new Notification.MediaStyle()
+                    // the collapsed row is where most users look; without
+                    // this the Stop action only exists expanded
+                    .setShowActionsInCompactView(0);
             MediaSession.Token token = sessionToken;
             if (token != null) {
                 style.setMediaSession(token);
@@ -90,6 +110,10 @@ public class ReceiverService extends Service {
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP_CAST.equals(intent.getAction())) {
             MainActivity.nativeMediaCommand(0);
+            if (running == null) {
+                // started only to carry the action; do not linger
+                stopSelf(startId);
+            }
             return START_NOT_STICKY;
         }
         ensureChannel(this);
@@ -101,6 +125,14 @@ public class ReceiverService extends Service {
         }
         running = this;
         return START_NOT_STICKY;
+    }
+
+    @Override
+    public void onTaskRemoved(Intent rootIntent) {
+        // Recents swipe: the process is going down with the task; take the
+        // notification along instead of leaving an orphan.
+        stopSelf();
+        super.onTaskRemoved(rootIntent);
     }
 
     @Override

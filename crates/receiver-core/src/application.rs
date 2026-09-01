@@ -661,6 +661,10 @@ pub struct Application {
     android_media_title: String,
     #[cfg(target_os = "android")]
     android_meta_pushed: Option<(String, i64)>,
+    /// Last pushed (playing, speed-milli) edge and when, the session-update
+    /// throttle.
+    #[cfg(target_os = "android")]
+    android_session_pushed: Option<((bool, i32), Instant)>,
     msg_tx: MessageSender,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
     // start of the current load, drives the load-latency marks
@@ -1002,6 +1006,8 @@ impl Application {
             android_media_title: String::new(),
             #[cfg(target_os = "android")]
             android_meta_pushed: None,
+            #[cfg(target_os = "android")]
+            android_session_pushed: None,
             msg_tx,
             updates_tx,
             load_t0: None,
@@ -1691,16 +1697,15 @@ impl Application {
         if self.android_playback == state {
             return;
         }
-        self.android_playback = state;
         let (vm, activity) = self.android_jni;
         let Ok(vm) = (unsafe { jni::JavaVM::from_raw(vm as *mut _) }) else {
             return;
         };
-        let Ok(mut env) = vm.attach_current_thread() else {
+        let Ok(mut env) = vm.attach_current_thread_permanently() else {
             return;
         };
         let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
-        if let Err(err) = env.call_method(
+        match env.call_method(
             &activity,
             "setPlaybackActive",
             "(ZZ)V",
@@ -1709,13 +1714,22 @@ impl Application {
                 jni::objects::JValue::Bool(state.1 as u8),
             ],
         ) {
-            let _ = env.exception_clear();
-            warn!(?err, "setPlaybackActive call into the activity failed");
+            // cached only on success: a failed release cached as released
+            // would suppress every retry and leak the locks and focus for
+            // the life of the process
+            Ok(_) => self.android_playback = state,
+            Err(err) => {
+                let _ = env.exception_clear();
+                warn!(?err, "setPlaybackActive call into the activity failed");
+            }
         }
     }
 
     /// One JNI call into the activity, the shared shape of the android
     /// bridges below.
+    /// One JNI call into the activity. Permanently attached: these run on
+    /// tokio workers ten times a second during playback, and a fresh
+    /// attach/detach pair per call allocates a Java thread peer each time.
     #[cfg(target_os = "android")]
     fn call_activity(
         &self,
@@ -1727,7 +1741,7 @@ impl Application {
         let Ok(vm) = (unsafe { jni::JavaVM::from_raw(vm as *mut _) }) else {
             return;
         };
-        let Ok(mut env) = vm.attach_current_thread() else {
+        let Ok(mut env) = vm.attach_current_thread_permanently() else {
             return;
         };
         let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
@@ -1738,7 +1752,11 @@ impl Application {
     }
 
     /// MediaSession state and metadata, from the progress tick. Metadata
-    /// pushes only when the (title, duration) pair actually changed.
+    /// pushes only when the (title, duration) pair actually changed, and
+    /// the playback state only on a state/speed edge plus a 1 Hz keepalive:
+    /// the platform extrapolates position from (position, speed) itself, so
+    /// a 10 Hz setPlaybackState is pure binder churn fanned out to every
+    /// controller.
     #[cfg(target_os = "android")]
     fn android_media_progress(&mut self, position_secs: f64, duration_secs: f64) {
         let playing = matches!(self.player.player_state(), PlayerState::Playing);
@@ -1748,28 +1766,46 @@ impl Application {
         if self.android_meta_pushed.as_ref() != Some(&meta) {
             let (vm, activity) = self.android_jni;
             if let Ok(vm) = unsafe { jni::JavaVM::from_raw(vm as *mut _) } {
-                if let Ok(mut env) = vm.attach_current_thread() {
+                if let Ok(mut env) = vm.attach_current_thread_permanently() {
                     let activity =
                         unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
-                    if let Ok(title) = env.new_string(&meta.0) {
-                        if let Err(err) = env.call_method(
-                            &activity,
-                            "updateMediaMetadata",
-                            "(Ljava/lang/String;J)V",
-                            &[
-                                jni::objects::JValue::Object(&title),
-                                jni::objects::JValue::Long(dur_ms),
-                            ],
-                        ) {
+                    // a local frame so the string ref cannot pile up on a
+                    // permanently attached thread
+                    let pushed = env
+                        .with_local_frame(4, |env| -> jni::errors::Result<bool> {
+                            let title = env.new_string(&meta.0)?;
+                            env.call_method(
+                                &activity,
+                                "updateMediaMetadata",
+                                "(Ljava/lang/String;J)V",
+                                &[
+                                    jni::objects::JValue::Object(&title),
+                                    jni::objects::JValue::Long(dur_ms),
+                                ],
+                            )?;
+                            Ok(true)
+                        })
+                        .unwrap_or_else(|_| {
                             let _ = env.exception_clear();
-                            warn!(?err, "updateMediaMetadata call failed");
-                        } else {
-                            self.android_meta_pushed = Some(meta);
-                        }
+                            false
+                        });
+                    if pushed {
+                        self.android_meta_pushed = Some(meta);
                     }
                 }
             }
         }
+
+        let edge = (playing, (speed * 1000.0) as i32);
+        let stale = self
+            .android_session_pushed
+            .map_or(true, |(last_edge, at)| {
+                last_edge != edge || at.elapsed() >= Duration::from_secs(1)
+            });
+        if !stale {
+            return;
+        }
+        self.android_session_pushed = Some((edge, Instant::now()));
         self.call_activity(
             "updateMediaSession",
             "(ZJF)V",
@@ -1799,17 +1835,25 @@ impl Application {
         {
             let active = !matches!(state, AppState::Idle);
             if matches!(state, AppState::LoadingMedia) {
-                // A new item is visual until flapjack says otherwise.
+                // A new item is visual until flapjack says otherwise, and it
+                // must not inherit the previous item's focus-loss hold.
                 self.android_visual = true;
+                self.android_transient_pause = false;
+                // The dedup below can absorb this transition entirely (stop
+                // then immediate re-cast), but focus still needs a re-check:
+                // a cast arriving during a phone call must not play over it.
+                self.call_activity("ensureAudioFocus", "()V", &[]);
             }
             if !active {
                 self.android_transient_pause = false;
-                // back to the display's default mode between items
-                self.call_activity(
-                    "setContentFrameRate",
-                    "(F)V",
-                    &[jni::objects::JValue::Float(0.0)],
-                );
+                if self.android_playback.0 {
+                    // back to the display's default mode between items
+                    self.call_activity(
+                        "setContentFrameRate",
+                        "(F)V",
+                        &[jni::objects::JValue::Float(0.0)],
+                    );
+                }
             }
             self.set_playback_active(active);
         }
@@ -1819,8 +1863,13 @@ impl Application {
     fn media_ended(&mut self) {
         info!("Media finished");
 
+        // With an advance pending the release would immediately re-acquire:
+        // audio focus abandoned and re-requested, both locks cycled, and the
+        // notification blinking Casting-Ready-Casting at every EOS boundary.
         #[cfg(target_os = "android")]
-        self.set_playback_active(false);
+        if self.autoplay_next_index().is_none() {
+            self.set_playback_active(false);
+        }
 
         // An autoplay queue with a next item is exempt: the receiver-side advance must
         // keep working after the last sender disconnects.
@@ -2291,6 +2340,12 @@ impl Application {
         {
             self.android_visual = false;
             self.set_playback_active(self.android_playback.0);
+            // an audio item must not inherit the previous video's mode
+            self.call_activity(
+                "setContentFrameRate",
+                "(F)V",
+                &[jni::objects::JValue::Float(0.0)],
+            );
         }
 
         self.gui.set_player_type(UiPlayerVariant::Audio);
@@ -3129,6 +3184,12 @@ impl Application {
     }
 
     fn pause(&mut self) {
+        // An explicit pause overrides a focus-loss hold: the next focus gain
+        // must not resume against the user's intent.
+        #[cfg(target_os = "android")]
+        {
+            self.android_transient_pause = false;
+        }
         // A pause landing mid-load is recorded as desired transport and committed at
         // preroll.
         if self.is_playing() {
@@ -3138,10 +3199,13 @@ impl Application {
 
     fn resume(&mut self) {
         // Any resume ends a focus-loss hold; a stale one must not re-fire on
-        // the next focus gain.
+        // the next focus gain. And a resume needs focus it may have lost
+        // permanently (the request self-clears on LOSS): re-request, with a
+        // refusal coming back as a transient-loss event that pauses again.
         #[cfg(target_os = "android")]
         {
             self.android_transient_pause = false;
+            self.call_activity("ensureAudioFocus", "()V", &[]);
         }
         if self.is_playing() {
             self.player.play();
@@ -5076,6 +5140,13 @@ impl Application {
                 );
 
                 self.gui.set_image_preview(img);
+                // the image lane skips LoadingMedia, so the visual default
+                // set there must be re-asserted or a picture after an
+                // audio-only item lets the screen sleep on it
+                #[cfg(target_os = "android")]
+                {
+                    self.android_visual = true;
+                }
                 self.transition_app_state(AppState::Playing);
 
                 self.media_loaded_successfully();

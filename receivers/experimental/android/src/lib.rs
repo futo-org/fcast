@@ -109,15 +109,21 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getDeviceNameRa
     _class: jni::objects::JClass<'local>,
     name: jni::objects::JString,
 ) -> jni::sys::jstring {
-    let name = env.get_string(&name).unwrap();
-    let name = name.to_str().unwrap();
+    // no unwraps in extern "C": a panic here aborts the process
+    let Ok(name) = env.get_string(&name) else {
+        return std::ptr::null_mut();
+    };
+    let name = name.to_string_lossy();
     let hash = rcore::device_name_hash(&name);
     let hash_str = rcore::hash_to_string(&hash);
     let _ = EVENT_CHANNEL.0.send(rcore::message::Message::Raop(
         rcore::message::Raop::ConfigAvailable(rcore::Configuration { hw_addr: hash }),
     ));
 
-    env.new_string(hash_str).unwrap().into_raw()
+    match env.new_string(hash_str) {
+        Ok(s) => s.into_raw(),
+        Err(_) => std::ptr::null_mut(),
+    }
 }
 
 #[allow(non_snake_case)]
@@ -127,11 +133,16 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getRaopTxtAttri
     _class: jni::objects::JClass<'local>,
     attrs: jni::objects::JObject,
 ) {
-    let attrs = env.get_map(&attrs).unwrap();
+    let Ok(attrs) = env.get_map(&attrs) else {
+        return;
+    };
     for (k, v) in rcore::txt_properties() {
-        let k = env.new_string(k).unwrap();
-        let v = env.new_string(v).unwrap();
-        attrs.put(&mut env, &k, &v).unwrap();
+        let (Ok(k), Ok(v)) = (env.new_string(k), env.new_string(v)) else {
+            return;
+        };
+        if attrs.put(&mut env, &k, &v).is_err() {
+            return;
+        }
     }
 }
 

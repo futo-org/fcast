@@ -1,5 +1,5 @@
 <resources>
-    <string name="app_name">FCast Receiver</string>
+    <string name="app_name" translatable="false">FCast Receiver</string>
     <string name="notification_ready">Ready to cast</string>
     <string name="notification_casting">Casting</string>
     <string name="notification_stop">Stop</string>
