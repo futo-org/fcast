@@ -95,9 +95,10 @@ tasks.register('check16kAlignment') {
         }
         def buf = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
         if (buf.getInt(0) != 0x464c457f) throw new GradleException('not an ELF file')
-        long phoff = buf.getLong(0x20)
-        int phentsize = buf.getShort(0x36) & 0xffff
-        int phnum = buf.getShort(0x38) & 0xffff
+        boolean elf64 = (bytes[4] & 0xff) == 2 // EI_CLASS
+        long phoff = elf64 ? buf.getLong(0x20) : (buf.getInt(0x1c) & 0xffffffffL)
+        int phentsize = buf.getShort(elf64 ? 0x36 : 0x2a) & 0xffff
+        int phnum = buf.getShort(elf64 ? 0x38 : 0x2c) & 0xffff
         def raf = new RandomAccessFile(so, 'r')
         raf.withCloseable {
             for (int i = 0; i < phnum; i++) {
@@ -106,7 +107,7 @@ tasks.register('check16kAlignment') {
                 it.readFully(ph)
                 def pb = java.nio.ByteBuffer.wrap(ph).order(java.nio.ByteOrder.LITTLE_ENDIAN)
                 if (pb.getInt(0) == 1) { // PT_LOAD
-                    long align = pb.getLong(0x30)
+                    long align = elf64 ? pb.getLong(0x30) : (pb.getInt(0x1c) & 0xffffffffL)
                     if (align < 0x4000) {
                         throw new GradleException(
                             "${so}: LOAD align 0x${Long.toHexString(align)} < 0x4000, " +

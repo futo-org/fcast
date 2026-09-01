@@ -31,6 +31,9 @@ AR_aarch64-linux-android = { value = "android-ar", relative = true }
 CC_x86_64-linux-android = { value = "android-linker-x86_64", relative = true }
 CXX_x86_64-linux-android = { value = "android-cxx-x86_64", relative = true }
 AR_x86_64-linux-android = { value = "android-ar", relative = true }
+CC_armv7-linux-androideabi = { value = "android-linker-armv7", relative = true }
+CXX_armv7-linux-androideabi = { value = "android-cxx-armv7", relative = true }
+AR_armv7-linux-androideabi = { value = "android-ar", relative = true }
 
 # NDK clang as the final-link linker for android targets (executable paths
 # with separators in config are config-relative since cargo 1.73). The
@@ -49,6 +52,15 @@ rustflags = [
 
 [target.x86_64-linux-android]
 linker = "./android-linker-x86_64"
+rustflags = [
+    "-Clink-arg=-Wl,--pack-dyn-relocs=android",
+    "-Clink-arg=-Wl,-z,max-page-size=16384",
+]
+
+# 32-bit userspace TV boxes (Amlogic). Pages are 4KB there, the 16KB
+# alignment just keeps the packaging assert uniform across ABIs.
+[target.armv7-linux-androideabi]
+linker = "./android-linker-armv7"
 rustflags = [
     "-Clink-arg=-Wl,--pack-dyn-relocs=android",
     "-Clink-arg=-Wl,-z,max-page-size=16384",
