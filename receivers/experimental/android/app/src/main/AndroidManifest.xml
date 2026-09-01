@@ -30,6 +30,7 @@
 
         <activity
             android:name=".MainActivity"
+            android:supportsPictureInPicture="true"
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection|density|fontScale|colorMode"
             android:resizeableActivity="true"
             android:exported="true">

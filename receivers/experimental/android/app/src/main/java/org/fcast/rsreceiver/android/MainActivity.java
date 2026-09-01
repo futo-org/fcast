@@ -477,6 +477,7 @@ public class MainActivity extends NativeActivity {
             }
             ReceiverService.castActive = active;
             ReceiverService.refreshIfRunning();
+            castVisual = active && visual;
 
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             if (active) {
@@ -580,6 +581,26 @@ public class MainActivity extends NativeActivity {
         // sticky immersive drops on some focus transitions, re-assert
         if (hasFocus && immersiveWanted) {
             enterImmersive();
+        }
+    }
+
+    private boolean castVisual = false;
+
+    /// Home during visual playback shrinks to picture-in-picture instead of
+    /// hiding the video. PiP resizes without onStop, so the surface and the
+    /// direct codec session survive; the relayout refits on the new bounds.
+    @Override
+    protected void onUserLeaveHint() {
+        super.onUserLeaveHint();
+        if (castVisual && !isInPictureInPictureMode()) {
+            try {
+                enterPictureInPictureMode(
+                        new android.app.PictureInPictureParams.Builder()
+                                .setAspectRatio(new android.util.Rational(16, 9))
+                                .build());
+            } catch (IllegalStateException e) {
+                Log.w(TAG, "PiP refused", e);
+            }
         }
     }
 
