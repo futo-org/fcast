@@ -200,7 +200,19 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
             #[cfg(target_os = "android")]
             let is_fullscreen = !ui.global::<Bridge>().get_is_fullscreen();
             #[cfg(target_os = "android")]
-            crate::android_immersive::set(is_fullscreen);
+            {
+                crate::android_immersive::set(is_fullscreen);
+                // Overlay bars do not resize the window, so the geometry
+                // hook never fires on its own; the safe-area inset still
+                // changed. Once now, once after the bars settle.
+                ui.global::<Bridge>().invoke_window_geometry_changed();
+                let ui_weak = ui.as_weak();
+                slint::Timer::single_shot(std::time::Duration::from_millis(400), move || {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        ui.global::<Bridge>().invoke_window_geometry_changed();
+                    }
+                });
+            }
             #[cfg(not(target_os = "android"))]
             let is_fullscreen = !ui.window().is_fullscreen();
             #[cfg(not(target_os = "android"))]
@@ -391,14 +403,73 @@ pub enum RendererMessage {
 
 type RendererMsgSender = std::sync::mpsc::Sender<RendererMessage>;
 
-fn set_playback_progress(bridge: &Bridge, prog_sec: Seconds, dur_sec: Seconds) {
-    if !bridge.get_is_scrubbing_position() && !bridge.get_seek_pending() {
-        bridge.set_progress_secs(prog_sec);
-    }
-    bridge.set_duration_secs(dur_sec);
+/// Damper for the 5 Hz player tick. Every slint property write schedules a
+/// frame even when nothing visible depends on it, which kept the renderer
+/// producing ~10 fps of full-window passes over a parked player UI (progress
+/// and buffered ranges land as two commands per tick). Progress quantizes to
+/// whole seconds, the finest granularity anything on screen shows, and both
+/// skip entirely while the video OSD is hidden; the next tick after a reveal
+/// refreshes within 200 ms.
+#[derive(Default)]
+pub struct TickDamper {
+    last_progress: f32,
+    last_ranges: Vec<(f32, f32)>,
 }
 
-fn set_buffered_ranges(bridge: &Bridge, ranges: Vec<(f32, f32)>) {
+fn video_osd_hidden(bridge: &Bridge) -> bool {
+    bridge.get_player_variant() == UiPlayerVariant::Video
+        && !bridge.get_controls_overlay_visible()
+}
+
+fn set_playback_progress(
+    bridge: &Bridge,
+    damper: &mut TickDamper,
+    prog_sec: Seconds,
+    dur_sec: Seconds,
+    forced: bool,
+) {
+    if bridge.get_duration_secs() != dur_sec {
+        bridge.set_duration_secs(dur_sec);
+    }
+    if !forced {
+        if bridge.get_is_scrubbing_position() || bridge.get_seek_pending() {
+            return;
+        }
+        if video_osd_hidden(bridge) {
+            // Not fully parked: a reveal renders one frame with the stale
+            // property before the next tick corrects it, so cap the drift
+            // that frame can show. One write per 5s is render noise.
+            if (prog_sec - damper.last_progress).abs() < 5.0 {
+                return;
+            }
+        } else {
+            let same_second = prog_sec.floor() == damper.last_progress.floor();
+            if same_second && prog_sec >= damper.last_progress {
+                return;
+            }
+        }
+    }
+    damper.last_progress = prog_sec;
+    bridge.set_progress_secs(prog_sec);
+}
+
+fn set_buffered_ranges(
+    bridge: &Bridge,
+    damper: &mut TickDamper,
+    ranges: Vec<(f32, f32)>,
+    forced: bool,
+) {
+    if !forced {
+        if damper.last_ranges == ranges {
+            return;
+        }
+        // last_ranges stays untouched here, so the compare above pushes
+        // the fresh state on the first visible tick after a reveal
+        if video_osd_hidden(bridge) {
+            return;
+        }
+    }
+    damper.last_ranges = ranges.clone();
     let model: Vec<crate::UiBufferedRange> = ranges
         .into_iter()
         .map(|(start, stop)| crate::UiBufferedRange { start, stop })
@@ -430,7 +501,12 @@ fn unhide_cursor_outside_video_scene(ui: &MainWindow) {
     }
 }
 
-fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererMsgSender) {
+fn handle_command(
+    ui: MainWindow,
+    cmd: UpdateGuiCommand,
+    renderer_tx: &RendererMsgSender,
+    damper: &mut TickDamper,
+) {
     let bridge = ui.global::<Bridge>();
 
     match cmd {
@@ -486,16 +562,18 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             progress_s,
             duration_s,
         } => {
-            set_playback_progress(&bridge, progress_s, duration_s);
+            set_playback_progress(&bridge, damper, progress_s, duration_s, false);
         }
-        UpdateGuiCommand::SetBufferedRanges(ranges) => set_buffered_ranges(&bridge, ranges),
+        UpdateGuiCommand::SetBufferedRanges(ranges) => {
+            set_buffered_ranges(&bridge, damper, ranges, false)
+        }
         UpdateGuiCommand::SetMediaTitle(title) => bridge.set_media_title(title.to_shared_string()),
         UpdateGuiCommand::SetArtistName(name) => bridge.set_artist_name(name.to_shared_string()),
         UpdateGuiCommand::ClearAudioCovers => clear_audio_covers(&bridge, renderer_tx),
         UpdateGuiCommand::ClearCommonPlaybackState => {
             clear_audio_covers(&bridge, renderer_tx);
-            set_playback_progress(&bridge, 0.0, 0.0);
-            set_buffered_ranges(&bridge, Vec::new());
+            set_playback_progress(&bridge, damper, 0.0, 0.0, true);
+            set_buffered_ranges(&bridge, damper, Vec::new(), true);
         }
         UpdateGuiCommand::SetPlayerType(typ) => {
             bridge.set_player_variant(typ.into());
@@ -875,6 +953,7 @@ pub fn spawn_command_handler(
 ) {
     slint::spawn_local(async move {
         let mut on_show_tray = Some(on_show_tray);
+        let mut damper = TickDamper::default();
         loop {
             if let Some(cmd) = cmd_rx.recv().await
                 && let Some(ui) = ui_weak.upgrade()
@@ -892,7 +971,7 @@ pub fn spawn_command_handler(
                     }
                     continue;
                 }
-                handle_command(ui, cmd, &renderer_tx);
+                handle_command(ui, cmd, &renderer_tx, &mut damper);
             } else {
                 debug!("Stopping");
                 break;

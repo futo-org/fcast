@@ -103,18 +103,34 @@ pub fn attach(engine: CueEngine, sink: &gst::Element, ui: &crate::MainWindow) ->
 /// Re-key the layout after a window geometry change. A canvas change marks
 /// the engine dirty, so the repaint arrives through on_change.
 pub fn resync(subs: &Subtitles, ui: &crate::MainWindow) {
-    let size = ui.window().size();
+    // content-frame size, the space the video rect itself is laid out in
+    let size = crate::android_surface_video::effective_canvas(ui);
     let picture = *subs.0.video_size.lock().unwrap();
-    subs.0
-        .geometry
-        .sync(&subs.0.engine, (size.width, size.height), picture);
+    sync_geometry(&subs.0, size, picture);
+}
+
+/// Push canvas and picture rect. The canvas stops above a persistent
+/// navigation bar so bottom-anchored cues stay readable, but positioned
+/// cues must still anchor to the REAL picture, which is letterboxed into
+/// the full content frame, so the rect the sync derived from the shrunk
+/// canvas is overridden with the real one.
+fn sync_geometry(state: &State, size: (u32, u32), picture: (u32, u32)) {
+    let safe_bottom = crate::android_surface_video::safe_bottom_inset();
+    let canvas = (size.0, size.1.saturating_sub(safe_bottom));
+    if state.geometry.sync(&state.engine, canvas, picture).is_some() && safe_bottom > 0 {
+        if let Some(rect) = crate::video_math::video_rect(picture, size) {
+            state.engine.set_video_rect(Some(rect));
+        }
+    }
 }
 
 fn push(state: &Arc<State>) {
     let state = state.clone();
     let _ = state.ui.clone().upgrade_in_event_loop(move |ui| {
-        let size = ui.window().size();
-        if size.width == 0 || size.height == 0 {
+        // Same space as the SurfaceView's rect, or cues drift off the picture
+        // (the raw slint window size includes surface insets).
+        let size = crate::android_surface_video::effective_canvas(&ui);
+        if size.0 == 0 || size.1 == 0 {
             return;
         }
         let engine = &state.engine;
@@ -123,9 +139,7 @@ fn push(state: &Arc<State>) {
         // geometry. The rect is what anchors positioned cues to the picture
         // instead of the window.
         let picture = *state.video_size.lock().unwrap();
-        state
-            .geometry
-            .sync(engine, (size.width, size.height), picture);
+        sync_geometry(&state, size, picture);
         let overlays = engine.current_overlays();
 
         let sig: Signature = overlays
@@ -168,7 +182,7 @@ fn push(state: &Arc<State>) {
                     if vw == 0 || vh == 0 {
                         continue;
                     }
-                    let (rx, ry, rw, rh) = letterbox(vw, vh, size.width, size.height);
+                    let (rx, ry, rw, rh) = letterbox(vw, vh, size.0, size.1);
                     let sx = rw as f32 / vw as f32;
                     let sy = rh as f32 / vh as f32;
                     (

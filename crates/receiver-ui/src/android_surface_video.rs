@@ -73,6 +73,29 @@ pub(crate) fn app_visibility(visible: bool) {
     }
 }
 
+/// Bottom system inset over the content frame, 0 while immersive or before
+/// the surface exists. Subtitles keep clear of it.
+pub(crate) fn safe_bottom_inset() -> u32 {
+    match CURRENT.get() {
+        Some((this, _)) => this.surface.safe_bottom().max(0) as u32,
+        None => 0,
+    }
+}
+
+/// The space every video-anchored overlay must share with the SurfaceView:
+/// the content frame's size when it is laid out, the slint window as the
+/// pre-layout fallback. The slint size alone is wrong, see `relayout`.
+pub(crate) fn effective_canvas(ui: &crate::MainWindow) -> (u32, u32) {
+    if let Some((this, _)) = CURRENT.get() {
+        let (cw, ch) = this.surface.content_size();
+        if cw > 0 && ch > 0 {
+            return (cw as u32, ch as u32);
+        }
+    }
+    let size = ui.window().size();
+    (size.width, size.height)
+}
+
 pub(crate) fn preopen_current() {
     let Some((this, ui)) = CURRENT.get() else {
         return;
@@ -80,7 +103,15 @@ pub(crate) fn preopen_current() {
     let this = this.clone();
     this.handoff.lock().unwrap().preopen_pending = true;
     let _ = ui.upgrade_in_event_loop(move |ui| {
-        let win = ui.window().size();
+        // same space note as in relayout
+        let win = {
+            let (cw, ch) = this.surface.content_size();
+            if cw > 0 && ch > 0 {
+                slint::PhysicalSize::new(cw as u32, ch as u32)
+            } else {
+                ui.window().size()
+            }
+        };
         if win.width == 0 || win.height == 0 {
             // backgrounded; the caps-time relayout retry recovers later
             return;
@@ -229,7 +260,20 @@ impl SurfaceVideo {
     pub fn relayout(self: &Arc<Self>, ui: &slint::Weak<crate::MainWindow>) {
         let this = self.clone();
         let _ = ui.upgrade_in_event_loop(move |ui| {
-            let win = ui.window().size();
+            // The view is margin-positioned inside android.R.id.content, so
+            // the letterbox must fit THAT frame. The slint window size is
+            // the window surface, which carries shadow insets (a 1440x2960
+            // screen reports 1520x3040) and made every rect oversized and
+            // off-center. Fall back to the window only before the content
+            // frame's first layout.
+            let win = {
+                let (cw, ch) = this.surface.content_size();
+                if cw > 0 && ch > 0 {
+                    slint::PhysicalSize::new(cw as u32, ch as u32)
+                } else {
+                    ui.window().size()
+                }
+            };
             let (vw, vh) = *this.video_size.lock().unwrap();
             if vw == 0 {
                 return;
