@@ -655,6 +655,12 @@ pub struct Application {
     /// regain resumes it. A user pause never sets this.
     #[cfg(target_os = "android")]
     android_transient_pause: bool,
+    /// Current item title for the MediaSession metadata, pushed with the
+    /// duration on the progress tick whenever either changes.
+    #[cfg(target_os = "android")]
+    android_media_title: String,
+    #[cfg(target_os = "android")]
+    android_meta_pushed: Option<(String, i64)>,
     msg_tx: MessageSender,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
     // start of the current load, drives the load-latency marks
@@ -992,6 +998,10 @@ impl Application {
             android_visual: true,
             #[cfg(target_os = "android")]
             android_transient_pause: false,
+            #[cfg(target_os = "android")]
+            android_media_title: String::new(),
+            #[cfg(target_os = "android")]
+            android_meta_pushed: None,
             msg_tx,
             updates_tx,
             load_t0: None,
@@ -1202,6 +1212,8 @@ impl Application {
         self.release_seek_hold_if_landed(position.seconds_f64());
         self.gui
             .update_playback_progress(position.seconds_f64() as f32, duration.seconds_f64() as f32);
+        #[cfg(target_os = "android")]
+        self.android_media_progress(position.seconds_f64(), duration.seconds_f64());
         self.push_buffered_ranges();
 
         // Bypasses per-sender intervals on purpose; debounced because the start/seek
@@ -1368,6 +1380,8 @@ impl Application {
         self.gui.set_playback_rate(playback_rate as f32);
         self.gui
             .update_playback_progress(position as f32, duration as f32);
+        #[cfg(target_os = "android")]
+        self.android_media_progress(position, duration);
         self.push_buffered_ranges();
 
         if self.should_broadcast()
@@ -1435,7 +1449,7 @@ impl Application {
         self.clear_source_backoff();
 
         if continue_to_play == ContinueToPlay::No {
-            self.gui.set_media_title("".to_owned());
+            self.set_media_title("".to_owned());
             self.gui.set_artist_name("".to_owned());
             self.gui.clear_images();
             self.gui.update_playback_progress(0.0, 0.0);
@@ -1698,6 +1712,83 @@ impl Application {
             let _ = env.exception_clear();
             warn!(?err, "setPlaybackActive call into the activity failed");
         }
+    }
+
+    /// One JNI call into the activity, the shared shape of the android
+    /// bridges below.
+    #[cfg(target_os = "android")]
+    fn call_activity(
+        &self,
+        what: &str,
+        sig: &str,
+        args: &[jni::objects::JValue<'_, '_>],
+    ) {
+        let (vm, activity) = self.android_jni;
+        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(vm as *mut _) }) else {
+            return;
+        };
+        let Ok(mut env) = vm.attach_current_thread() else {
+            return;
+        };
+        let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
+        if let Err(err) = env.call_method(&activity, what, sig, args) {
+            let _ = env.exception_clear();
+            warn!(?err, what, "activity call failed");
+        }
+    }
+
+    /// MediaSession state and metadata, from the progress tick. Metadata
+    /// pushes only when the (title, duration) pair actually changed.
+    #[cfg(target_os = "android")]
+    fn android_media_progress(&mut self, position_secs: f64, duration_secs: f64) {
+        let playing = matches!(self.player.player_state(), PlayerState::Playing);
+        let speed = self.player.rate() as f32;
+        let dur_ms = (duration_secs * 1000.0) as i64;
+        let meta = (self.android_media_title.clone(), dur_ms);
+        if self.android_meta_pushed.as_ref() != Some(&meta) {
+            let (vm, activity) = self.android_jni;
+            if let Ok(vm) = unsafe { jni::JavaVM::from_raw(vm as *mut _) } {
+                if let Ok(mut env) = vm.attach_current_thread() {
+                    let activity =
+                        unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
+                    if let Ok(title) = env.new_string(&meta.0) {
+                        if let Err(err) = env.call_method(
+                            &activity,
+                            "updateMediaMetadata",
+                            "(Ljava/lang/String;J)V",
+                            &[
+                                jni::objects::JValue::Object(&title),
+                                jni::objects::JValue::Long(dur_ms),
+                            ],
+                        ) {
+                            let _ = env.exception_clear();
+                            warn!(?err, "updateMediaMetadata call failed");
+                        } else {
+                            self.android_meta_pushed = Some(meta);
+                        }
+                    }
+                }
+            }
+        }
+        self.call_activity(
+            "updateMediaSession",
+            "(ZJF)V",
+            &[
+                jni::objects::JValue::Bool(playing as u8),
+                jni::objects::JValue::Long((position_secs * 1000.0) as i64),
+                jni::objects::JValue::Float(speed),
+            ],
+        );
+    }
+
+    /// The GUI title, mirrored into the android MediaSession metadata on
+    /// the next progress tick.
+    fn set_media_title(&mut self, title: String) {
+        #[cfg(target_os = "android")]
+        {
+            self.android_media_title = title.clone();
+        }
+        self.gui.set_media_title(title);
     }
 
     /// The one gate for GUI app-state changes: the android resource edge
@@ -2061,7 +2152,7 @@ impl Application {
             self.transition_app_state(AppState::LoadingMedia);
         }
         if let Some(title) = media_title {
-            self.gui.set_media_title(title);
+            self.set_media_title(title);
         }
 
         self.current_media_item_id += 1;
@@ -2823,7 +2914,7 @@ impl Application {
         // here too: a titleless item must not keep the retired item's title,
         // and the artist only ever comes from Tags, so it clears either way
         // and refreshes if the new item carries any.
-        self.gui.set_media_title(title.unwrap_or_default());
+        self.set_media_title(title.unwrap_or_default());
         self.last_artist_name = None;
         self.gui.set_artist_name(String::new());
 
@@ -4022,7 +4113,7 @@ impl Application {
                     && let Some(title) = tags.get::<gst::tags::Title>()
                 {
                     self.have_media_title = true;
-                    self.gui.set_media_title(title.get().to_owned());
+                    self.set_media_title(title.get().to_owned());
                 }
 
                 if let Some(artist) = tags.get::<gst::tags::Artist>()
@@ -4625,7 +4716,7 @@ impl Application {
             Raop::CoverArtRemoved => self.gui.clear_audio_covers(),
             Raop::MetadataSet(metadata) => {
                 if let Some(title) = metadata.title {
-                    self.gui.set_media_title(title);
+                    self.set_media_title(title);
                 }
                 if let Some(name) = metadata.artist {
                     self.gui.set_artist_name(name);

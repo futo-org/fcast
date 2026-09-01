@@ -135,6 +135,49 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getRaopTxtAttri
     }
 }
 
+/// Transport commands from the MediaSession and the notification Stop
+/// action: 0 stop, 1 pause, 2 resume.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeMediaCommand<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    code: jni::sys::jint,
+) {
+    let op = match code {
+        0 => rcore::fcast::Operation::Stop,
+        1 => rcore::fcast::Operation::Pause,
+        2 => rcore::fcast::Operation::Resume,
+        other => {
+            error!(other, "unknown media command code");
+            return;
+        }
+    };
+    let _ = EVENT_CHANNEL.0.send(rcore::message::Message::Op {
+        origin: rcore::application::PacketOrigin::Gui,
+        op,
+    });
+}
+
+/// Absolute seek from the session (lock screen scrubber, BT remote).
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeMediaSeek<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    seconds: jni::sys::jdouble,
+) {
+    if !seconds.is_finite() || seconds < 0.0 {
+        return;
+    }
+    let _ = EVENT_CHANNEL.0.send(rcore::message::Message::Op {
+        origin: rcore::application::PacketOrigin::Gui,
+        op: rcore::fcast::Operation::Seek(rcore::gst::ClockTime::from_nseconds(
+            (seconds * 1_000_000_000.0) as u64,
+        )),
+    });
+}
+
 /// Audio focus and routing events. Codes match MainActivity: 0 permanent
 /// loss, 1 transient loss (ducking folded in), 2 gain, 3 becoming noisy.
 #[allow(non_snake_case)]

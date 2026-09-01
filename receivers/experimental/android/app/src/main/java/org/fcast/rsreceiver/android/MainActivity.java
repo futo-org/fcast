@@ -2,7 +2,9 @@ package org.fcast.rsreceiver.android;
 
 import android.annotation.SuppressLint;
 import android.content.Context;
+import android.content.Intent;
 import android.media.AudioManager;
+import android.media.session.MediaSession;
 import android.net.ConnectivityManager;
 import android.net.LinkProperties;
 import android.net.Network;
@@ -203,6 +205,15 @@ public class MainActivity extends NativeActivity {
         // the ring stream whenever nothing is actively playing.
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
 
+        createMediaSession();
+        ReceiverService.ensureChannel(this);
+        if (android.os.Build.VERSION.SDK_INT >= 33
+                && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
+                        != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[] { android.Manifest.permission.POST_NOTIFICATIONS }, 1);
+        }
+
         // A cast receiver is a full-bleed surface: immersive sticky, video
         // may extend into a display cutout, the chrome pads by the reported
         // safe area.
@@ -334,6 +345,79 @@ public class MainActivity extends NativeActivity {
     /// and resume policy lives in native code, which knows the player state.
     native void nativeAudioEvent(int code);
 
+    /// Transport commands from the MediaSession and the notification:
+    /// 0 stop, 1 pause, 2 resume. Static so ReceiverService can send too.
+    static native void nativeMediaCommand(int code);
+
+    /// Absolute seek from the session (lock screen, BT remote), seconds.
+    static native void nativeMediaSeek(double seconds);
+
+    private MediaSession mediaSession = null;
+
+    /// The session: what routes media buttons, drives the lock-screen and
+    /// BT transport surfaces, and feeds the notification's MediaStyle.
+    private void createMediaSession() {
+        mediaSession = new MediaSession(this, "FCastReceiver");
+        mediaSession.setCallback(new MediaSession.Callback() {
+            @Override
+            public void onPlay() {
+                nativeMediaCommand(2);
+            }
+
+            @Override
+            public void onPause() {
+                nativeMediaCommand(1);
+            }
+
+            @Override
+            public void onStop() {
+                nativeMediaCommand(0);
+            }
+
+            @Override
+            public void onSeekTo(long posMs) {
+                nativeMediaSeek(posMs / 1000.0);
+            }
+        });
+        mediaSession.setPlaybackToLocal(new android.media.AudioAttributes.Builder()
+                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
+                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
+                .build());
+        ReceiverService.sessionToken = mediaSession.getSessionToken();
+    }
+
+    /// Called from native code on every progress tick and state change.
+    /// Any thread; MediaSession is thread-safe.
+    public void updateMediaSession(boolean playing, long positionMs, float speed) {
+        if (mediaSession == null) {
+            return;
+        }
+        android.media.session.PlaybackState.Builder b =
+                new android.media.session.PlaybackState.Builder()
+                        .setActions(android.media.session.PlaybackState.ACTION_PLAY
+                                | android.media.session.PlaybackState.ACTION_PAUSE
+                                | android.media.session.PlaybackState.ACTION_PLAY_PAUSE
+                                | android.media.session.PlaybackState.ACTION_STOP
+                                | android.media.session.PlaybackState.ACTION_SEEK_TO)
+                        .setState(playing
+                                        ? android.media.session.PlaybackState.STATE_PLAYING
+                                        : android.media.session.PlaybackState.STATE_PAUSED,
+                                positionMs, speed);
+        mediaSession.setPlaybackState(b.build());
+    }
+
+    /// Called from native code when the item's title or duration changes.
+    public void updateMediaMetadata(String title, long durationMs) {
+        if (mediaSession != null) {
+            mediaSession.setMetadata(new android.media.MediaMetadata.Builder()
+                    .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, title)
+                    .putLong(android.media.MediaMetadata.METADATA_KEY_DURATION, durationMs)
+                    .build());
+        }
+        ReceiverService.castTitle = title;
+        ReceiverService.refreshIfRunning();
+    }
+
     /// The single owner of every playback-scoped device resource, called
     /// from native code on the playback active/idle edge. Any thread.
     /// Ordering is preserved by posting to the main looper.
@@ -351,6 +435,12 @@ public class MainActivity extends NativeActivity {
             } else {
                 getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             }
+
+            if (mediaSession != null) {
+                mediaSession.setActive(active);
+            }
+            ReceiverService.castActive = active;
+            ReceiverService.refreshIfRunning();
 
             AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             if (active) {
@@ -465,12 +555,20 @@ public class MainActivity extends NativeActivity {
     @Override
     protected void onStart() {
         super.onStart();
+        // The activity is back; its own lifecycle keeps the process warm.
+        stopService(new Intent(this, ReceiverService.class));
         nativeAppVisibility(true);
     }
 
     @Override
     protected void onStop() {
         nativeAppVisibility(false);
+        // Backgrounded: without foreground priority the process is a cached
+        // kill candidate and the NSD registration dies with it. Started
+        // here, inside the background-start grace window.
+        if (!destroyed && !isFinishing()) {
+            startForegroundService(new Intent(this, ReceiverService.class));
+        }
         super.onStop();
     }
 
@@ -493,6 +591,12 @@ public class MainActivity extends NativeActivity {
             networkCallback = null;
         }
         setPlaybackActive(false, false);
+        stopService(new Intent(this, ReceiverService.class));
+        if (mediaSession != null) {
+            mediaSession.release();
+            mediaSession = null;
+            ReceiverService.sessionToken = null;
+        }
         super.onDestroy();
     }
 }
