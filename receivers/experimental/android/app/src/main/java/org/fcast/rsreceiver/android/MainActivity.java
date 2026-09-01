@@ -401,7 +401,8 @@ public class MainActivity extends NativeActivity {
             return;
         }
         NsdServiceInfo raopServiceInfo = new NsdServiceInfo();
-        raopServiceInfo.setServiceName(raopHash + "@" + baseServiceName);
+        // the combined instance name also lives under DNS-SD's 63 bytes
+        raopServiceInfo.setServiceName(truncateUtf8(raopHash + "@" + baseServiceName, 63));
         raopServiceInfo.setServiceType("_raop._tcp");
         raopServiceInfo.setPort(33505);
         Map<String, String> raopAttrs = new HashMap<>();
