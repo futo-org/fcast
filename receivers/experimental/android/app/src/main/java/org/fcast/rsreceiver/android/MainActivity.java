@@ -407,19 +407,45 @@ public class MainActivity extends NativeActivity {
             if (on) {
                 enterImmersive();
             } else {
-                getWindow().getDecorView().setSystemUiVisibility(0);
+                exitImmersive();
             }
         });
     }
 
+    /// WindowInsetsController on 30+: the setSystemUiVisibility flags are
+    /// disabled by edge-to-edge enforcement at targetSdk 35+. The legacy
+    /// path stays for 28/29. Slint consumes the insets either way through
+    /// its android backend, so the chrome pads itself.
     private void enterImmersive() {
-        getWindow().getDecorView().setSystemUiVisibility(
-                android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
-                        | android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
-                        | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
-                        | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
-                        | android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
-                        | android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            getWindow().setDecorFitsSystemWindows(false);
+            android.view.WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                c.setSystemBarsBehavior(
+                        android.view.WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+                c.hide(android.view.WindowInsets.Type.systemBars());
+            }
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(
+                    android.view.View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                            | android.view.View.SYSTEM_UI_FLAG_FULLSCREEN
+                            | android.view.View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                            | android.view.View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                            | android.view.View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                            | android.view.View.SYSTEM_UI_FLAG_LAYOUT_STABLE);
+        }
+    }
+
+    private void exitImmersive() {
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            android.view.WindowInsetsController c = getWindow().getInsetsController();
+            if (c != null) {
+                c.show(android.view.WindowInsets.Type.systemBars());
+            }
+            getWindow().setDecorFitsSystemWindows(true);
+        } else {
+            getWindow().getDecorView().setSystemUiVisibility(0);
+        }
     }
 
     @Override

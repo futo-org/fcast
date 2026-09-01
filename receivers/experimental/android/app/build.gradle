@@ -14,7 +14,7 @@ if (keystorePropsFile.exists()) {
 
 android {
     namespace 'org.fcast.rsreceiver.android'
-    compileSdk 34
+    compileSdk 36
 
     sourceSets {
         main {
@@ -35,7 +35,7 @@ android {
         // install the apk and then fail to load the .so. Move the two
         // together or not at all.
         minSdk 28
-        targetSdk 34
+        targetSdk 36
         versionCode 1
         versionName "1.0"
 
