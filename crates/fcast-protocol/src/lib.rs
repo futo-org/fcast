@@ -11,7 +11,29 @@ use base64::{
 };
 use bytes::{Buf as _, Bytes, BytesMut};
 use serde::{Deserialize, Serialize};
-use serde_repr::{Deserialize_repr, Serialize_repr};
+
+// Serializes a fieldless u8 repr enum as its discriminant, replaces serde_repr
+macro_rules! impl_serde_u8_repr {
+    ($ty:ident { $($variant:ident = $value:literal),+ $(,)? }) => {
+        impl serde::Serialize for $ty {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_u8(*self as u8)
+            }
+        }
+
+        impl<'de> serde::Deserialize<'de> for $ty {
+            fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+                match u8::deserialize(deserializer)? {
+                    $($value => Ok(Self::$variant),)+
+                    other => Err(serde::de::Error::custom(format_args!(
+                        concat!("invalid ", stringify!($ty), " value {}"),
+                        other
+                    ))),
+                }
+            }
+        }
+    };
+}
 
 /// Re-exported so consumers can name the types this crate hands out
 /// ([`ReadResult::Read`], [`companion::GetResourceResult::Success`]) without
@@ -143,13 +165,19 @@ impl TryFrom<u8> for Opcode {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize_repr, Deserialize_repr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum PlaybackState {
     Idle = 0,
     Playing = 1,
     Paused = 2,
 }
+
+impl_serde_u8_repr!(PlaybackState {
+    Idle = 0,
+    Playing = 1,
+    Paused = 2,
+});
 
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
@@ -1064,6 +1092,22 @@ mod tests {
                 "randomized reassembly mismatch (chunk={chunk})"
             );
             assert_eq!(reader.buffered(), 0);
+        }
+    }
+
+    // Locks the wire format of the hand-rolled impl that replaced serde_repr
+    #[test]
+    fn playback_state_serde_repr() {
+        for (state, repr) in [
+            (PlaybackState::Idle, "0"),
+            (PlaybackState::Playing, "1"),
+            (PlaybackState::Paused, "2"),
+        ] {
+            assert_eq!(serde_json::to_string(&state).unwrap(), repr);
+            assert_eq!(serde_json::from_str::<PlaybackState>(repr).unwrap(), state);
+        }
+        for bad in ["3", "-1", "256", "1.5", "\"Playing\"", "null"] {
+            assert!(serde_json::from_str::<PlaybackState>(bad).is_err(), "{bad}");
         }
     }
 }

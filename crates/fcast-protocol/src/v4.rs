@@ -46,21 +46,18 @@ pub struct MessageBuilder<'a> {
     builder: flatbuffers::FlatBufferBuilder<'a>,
 }
 
-use paste::paste;
 use smol_str::SmolStr;
 
 macro_rules! create_msg {
-    ($self:expr, $name:expr, $($field:ident $(: $value:expr)? ),* $(,)?) => {{
-        paste! {
-            let value = flat::[<$name>]::create(
-                &mut $self.builder,
-                &flat:: [<$name Args>] {
-                    $($field: create_msg!(@value $field $(: $value)?)),*
-                }
+    ($self:expr, $name:ident / $args:ident, $($field:ident $(: $value:expr)? ),* $(,)?) => {{
+        let value = flat::$name::create(
+            &mut $self.builder,
+            &flat::$args {
+                $($field: create_msg!(@value $field $(: $value)?)),*
+            }
 
-            ).as_union_value();
-            $self.create_and_finish_envelope(flat::Message::[<$name>], value)
-        }
+        ).as_union_value();
+        $self.create_and_finish_envelope(flat::Message::$name, value)
     }};
     (@value $field:ident : $value:expr) => { $value };
     (@value $field:ident) => { $field };
@@ -127,7 +124,12 @@ impl<'a> MessageBuilder<'a> {
         position: Option<&flat::Time>,
         duration: Option<&flat::Time>,
     ) -> ConstructedMessage<'a> {
-        create_msg!(self, ProgressChanged, position, duration)
+        create_msg!(
+            self,
+            ProgressChanged / ProgressChangedArgs,
+            position,
+            duration
+        )
     }
 
     pub fn progress_changed(
@@ -142,7 +144,11 @@ impl<'a> MessageBuilder<'a> {
         mut self,
         interval: Option<&flat::Time>,
     ) -> ConstructedMessage<'a> {
-        create_msg!(self, SetProgressUpdateInterval, interval)
+        create_msg!(
+            self,
+            SetProgressUpdateInterval / SetProgressUpdateIntervalArgs,
+            interval
+        )
     }
 
     pub fn set_progress_update_interval(self, interval: flat::Time) -> ConstructedMessage<'a> {
@@ -150,15 +156,15 @@ impl<'a> MessageBuilder<'a> {
     }
 
     pub fn volume_changed(mut self, volume: f32) -> ConstructedMessage<'a> {
-        create_msg!(self, VolumeChanged, volume)
+        create_msg!(self, VolumeChanged / VolumeChangedArgs, volume)
     }
 
     pub fn speed_changed(mut self, speed: f32) -> ConstructedMessage<'a> {
-        create_msg!(self, SpeedChanged, speed)
+        create_msg!(self, SpeedChanged / SpeedChangedArgs, speed)
     }
 
     pub fn playback_state_changed(mut self, state: flat::PlaybackState) -> ConstructedMessage<'a> {
-        create_msg!(self, PlaybackStateChanged, state)
+        create_msg!(self, PlaybackStateChanged / PlaybackStateChangedArgs, state)
     }
 
     pub fn change_track(
@@ -166,7 +172,7 @@ impl<'a> MessageBuilder<'a> {
         id: Option<u32>,
         typ: flat::MediaTrackType,
     ) -> ConstructedMessage<'a> {
-        create_msg!(self, ChangeTrack, id, track_type: typ)
+        create_msg!(self, ChangeTrack / ChangeTrackArgs, id, track_type: typ)
     }
 
     pub fn add_subtitle_source(
@@ -179,7 +185,7 @@ impl<'a> MessageBuilder<'a> {
         let name = name.map(|n| self.builder.create_string(n));
         create_msg!(
             self,
-            AddSubtitleSource,
+            AddSubtitleSource / AddSubtitleSourceArgs,
             url: Some(url),
             select,
             name,
@@ -188,11 +194,15 @@ impl<'a> MessageBuilder<'a> {
     }
 
     pub fn companion_hello_request(mut self) -> ConstructedMessage<'a> {
-        create_msg!(self, CompanionHelloRequest,)
+        create_msg!(self, CompanionHelloRequest / CompanionHelloRequestArgs,)
     }
 
     pub fn companion_hello_response(mut self, provider_id: u16) -> ConstructedMessage<'a> {
-        create_msg!(self, CompanionHelloResponse, provider_id)
+        create_msg!(
+            self,
+            CompanionHelloResponse / CompanionHelloResponseArgs,
+            provider_id
+        )
     }
 
     pub fn companion_resource_info_request(
@@ -200,7 +210,12 @@ impl<'a> MessageBuilder<'a> {
         request_id: u32,
         resource_id: u32,
     ) -> ConstructedMessage<'a> {
-        create_msg!(self, CompanionResourceInfoRequest, request_id, resource_id)
+        create_msg!(
+            self,
+            CompanionResourceInfoRequest / CompanionResourceInfoRequestArgs,
+            request_id,
+            resource_id
+        )
     }
 
     pub fn companion_resource_info_response(
@@ -230,7 +245,7 @@ impl<'a> MessageBuilder<'a> {
         };
         create_msg!(
             self,
-            CompanionResourceInfoResponse,
+            CompanionResourceInfoResponse / CompanionResourceInfoResponseArgs,
             request_id,
             content_type: Some(content_type),
             resource_size_type: resource_size_type,
@@ -240,11 +255,15 @@ impl<'a> MessageBuilder<'a> {
 
     pub fn sender_introduction(mut self, device_info: &DeviceInfo) -> ConstructedMessage<'a> {
         let device_info = create_device_info!(self, device_info);
-        create_msg!(self, SenderIntroduction, device_info: Some(device_info))
+        create_msg!(self, SenderIntroduction / SenderIntroductionArgs, device_info: Some(device_info))
     }
 
     pub fn start_mirroring_session(mut self, session_id: u16) -> ConstructedMessage<'a> {
-        create_msg!(self, StartMirroringSession, session_id)
+        create_msg!(
+            self,
+            StartMirroringSession / StartMirroringSessionArgs,
+            session_id
+        )
     }
 
     pub fn mirroring_session_description(
@@ -253,11 +272,11 @@ impl<'a> MessageBuilder<'a> {
         sdp: &str,
     ) -> ConstructedMessage<'a> {
         let sdp = self.builder.create_string(sdp);
-        create_msg!(self, MirroringSessionDescription, session_id, sdp: Some(sdp))
+        create_msg!(self, MirroringSessionDescription / MirroringSessionDescriptionArgs, session_id, sdp: Some(sdp))
     }
 
     pub fn stop_playback(mut self) -> ConstructedMessage<'a> {
-        create_msg!(self, StopPlayback,)
+        create_msg!(self, StopPlayback / StopPlaybackArgs,)
     }
 
     fn strip_flat_media_item(
@@ -325,7 +344,7 @@ impl<'a> MessageBuilder<'a> {
             _ => return None,
         };
 
-        Some(create_msg!(self, Load, source_type, source: Some(source)))
+        Some(create_msg!(self, Load / LoadArgs, source_type, source: Some(source)))
     }
 
     pub fn from_queue_insert_stripped(
@@ -348,7 +367,7 @@ impl<'a> MessageBuilder<'a> {
             },
         );
         Some(
-            create_msg!(self, QueueInsert, item: Some(q_item), position_type: pos_type, position: Some(pos)),
+            create_msg!(self, QueueInsert / QueueInsertArgs, item: Some(q_item), position_type: pos_type, position: Some(pos)),
         )
     }
 
@@ -521,7 +540,7 @@ impl<'a> MessageBuilder<'a> {
 
     pub fn load_single(mut self, item: MediaItem) -> ConstructedMessage<'a> {
         let item = self.construct_media_item(item).as_union_value();
-        create_msg!(self, Load, source_type: flat::MediaSource::Single, source: Some(item))
+        create_msg!(self, Load / LoadArgs, source_type: flat::MediaSource::Single, source: Some(item))
     }
 
     /// Build a `Load` carrying a queue. Each item is paired with an optional
@@ -558,7 +577,7 @@ impl<'a> MessageBuilder<'a> {
         )
         .as_union_value();
 
-        create_msg!(self, Load, source_type: flat::MediaSource::Queue, source: Some(queue))
+        create_msg!(self, Load / LoadArgs, source_type: flat::MediaSource::Queue, source: Some(queue))
     }
 
     fn queue_position(
@@ -589,7 +608,7 @@ impl<'a> MessageBuilder<'a> {
 
     pub fn queue_remove(mut self, position: QueuePosition) -> ConstructedMessage<'a> {
         let (typ, position) = self.queue_position(position);
-        create_msg!(self, QueueRemove, position_type: typ, position: Some(position))
+        create_msg!(self, QueueRemove / QueueRemoveArgs, position_type: typ, position: Some(position))
     }
 
     pub fn queue_insert(
@@ -608,12 +627,12 @@ impl<'a> MessageBuilder<'a> {
                 playback_duration: playback_duration.as_ref(),
             },
         );
-        create_msg!(self, QueueInsert, item: Some(q_item), position_type: pos_type, position: Some(position))
+        create_msg!(self, QueueInsert / QueueInsertArgs, item: Some(q_item), position_type: pos_type, position: Some(position))
     }
 
     pub fn queue_select(mut self, position: QueuePosition) -> ConstructedMessage<'a> {
         let (position_type, position) = self.queue_position(position);
-        create_msg!(self, QueueItemSelected, position_type, position: Some(position))
+        create_msg!(self, QueueItemSelected / QueueItemSelectedArgs, position_type, position: Some(position))
     }
 
     pub fn tracks_available(
@@ -675,7 +694,7 @@ impl<'a> MessageBuilder<'a> {
             .collect::<Vec<_>>();
         let tracks = self.builder.create_vector(&tracks_vec);
 
-        create_msg!(self, TracksAvailable, tracks: Some(tracks))
+        create_msg!(self, TracksAvailable / TracksAvailableArgs, tracks: Some(tracks))
     }
 
     fn create_str_vector(
@@ -746,7 +765,12 @@ impl<'a> MessageBuilder<'a> {
             },
         ));
 
-        create_msg!(self, ReceiverIntroduction, device_info, capabilities)
+        create_msg!(
+            self,
+            ReceiverIntroduction / ReceiverIntroductionArgs,
+            device_info,
+            capabilities
+        )
     }
 
     pub fn error(
@@ -754,7 +778,7 @@ impl<'a> MessageBuilder<'a> {
         packet_num: Option<u32>,
         kind: flat::ErrorKind,
     ) -> ConstructedMessage<'a> {
-        create_msg!(self, Error, kind, packet_num)
+        create_msg!(self, Error / ErrorArgs, kind, packet_num)
     }
 
     pub fn companion_resource_request(
@@ -763,7 +787,7 @@ impl<'a> MessageBuilder<'a> {
         resource_id: u32,
         read_head: Option<flat::ResourceReadHead>,
     ) -> ConstructedMessage<'a> {
-        create_msg!(self, CompanionResourceRequest, request_id, resource_id, read_head: read_head.as_ref())
+        create_msg!(self, CompanionResourceRequest / CompanionResourceRequestArgs, request_id, resource_id, read_head: read_head.as_ref())
     }
 }
 
@@ -1003,5 +1027,214 @@ mod tests {
         );
         // Headers are still deliberately dropped on relay.
         assert!(single.headers().is_none());
+    }
+
+    /// Every create_msg based builder method must produce a packet whose union
+    /// tag matches its payload and whose fields read back intact.
+    #[test]
+    fn builder_messages_round_trip() {
+        let msg = MessageBuilder::new().progress_changed(flat::Time::new(1), flat::Time::new(2));
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::ProgressChanged);
+        let pc = p.payload_as_progress_changed().unwrap();
+        assert_eq!(pc.position().unwrap().micros(), 1);
+        assert_eq!(pc.duration().unwrap().micros(), 2);
+
+        let msg = MessageBuilder::new().set_progress_update_interval(flat::Time::new(500));
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::SetProgressUpdateInterval);
+        let interval = p.payload_as_set_progress_update_interval().unwrap();
+        assert_eq!(interval.interval().unwrap().micros(), 500);
+
+        let msg = MessageBuilder::new().volume_changed(0.25);
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::VolumeChanged);
+        assert_eq!(p.payload_as_volume_changed().unwrap().volume(), 0.25);
+
+        let msg = MessageBuilder::new().speed_changed(2.0);
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::SpeedChanged);
+        assert_eq!(p.payload_as_speed_changed().unwrap().speed(), 2.0);
+
+        let msg = MessageBuilder::new().playback_state_changed(flat::PlaybackState::Buffering);
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::PlaybackStateChanged);
+        assert_eq!(
+            p.payload_as_playback_state_changed().unwrap().state(),
+            flat::PlaybackState::Buffering
+        );
+
+        let msg = MessageBuilder::new().change_track(Some(3), flat::MediaTrackType::Subtitle);
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::ChangeTrack);
+        let ct = p.payload_as_change_track().unwrap();
+        assert_eq!(ct.id(), Some(3));
+        assert_eq!(ct.track_type(), flat::MediaTrackType::Subtitle);
+        let msg = MessageBuilder::new().change_track(None, flat::MediaTrackType::Audio);
+        let ct = flat::root_as_packet(&msg)
+            .unwrap()
+            .payload_as_change_track()
+            .unwrap();
+        assert_eq!(ct.id(), None);
+
+        let msg = MessageBuilder::new().add_subtitle_source("http://s/subs.vtt", true, Some("En"));
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::AddSubtitleSource);
+        let sub = p.payload_as_add_subtitle_source().unwrap();
+        assert_eq!(sub.url(), "http://s/subs.vtt");
+        assert!(sub.select());
+        assert_eq!(sub.name(), Some("En"));
+
+        let msg = MessageBuilder::new().companion_hello_request();
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::CompanionHelloRequest);
+        assert!(p.payload_as_companion_hello_request().is_some());
+
+        let msg = MessageBuilder::new().companion_hello_response(7);
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::CompanionHelloResponse);
+        assert_eq!(
+            p.payload_as_companion_hello_response()
+                .unwrap()
+                .provider_id(),
+            7
+        );
+
+        let msg = MessageBuilder::new().companion_resource_info_request(1, 2);
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(
+            p.payload_type(),
+            flat::Message::CompanionResourceInfoRequest
+        );
+        let req = p.payload_as_companion_resource_info_request().unwrap();
+        assert_eq!(req.request_id(), 1);
+        assert_eq!(req.resource_id(), 2);
+
+        let msg = MessageBuilder::new().companion_resource_info_response(9, "text/vtt", Some(42));
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(
+            p.payload_type(),
+            flat::Message::CompanionResourceInfoResponse
+        );
+        let resp = p.payload_as_companion_resource_info_response().unwrap();
+        assert_eq!(resp.request_id(), 9);
+        assert_eq!(resp.content_type(), "text/vtt");
+        assert_eq!(resp.resource_size_as_known().unwrap().size(), 42);
+        let msg = MessageBuilder::new().companion_resource_info_response(9, "text/vtt", None);
+        let resp = flat::root_as_packet(&msg)
+            .unwrap()
+            .payload_as_companion_resource_info_response()
+            .unwrap();
+        assert!(resp.resource_size_as_unknown().is_some());
+
+        let msg = MessageBuilder::new().companion_resource_request(
+            4,
+            5,
+            Some(flat::ResourceReadHead::new(10, 20)),
+        );
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::CompanionResourceRequest);
+        let req = p.payload_as_companion_resource_request().unwrap();
+        assert_eq!(req.request_id(), 4);
+        assert_eq!(req.resource_id(), 5);
+        let head = req.read_head().unwrap();
+        assert_eq!((head.start(), head.stop_inclusive()), (10, 20));
+
+        let msg = MessageBuilder::new().sender_introduction(&DeviceInfo {
+            display_name: Some("TV".to_owned()),
+            app_name: None,
+            app_version: Some("2.0".to_owned()),
+        });
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::SenderIntroduction);
+        let info = p.payload_as_sender_introduction().unwrap().device_info();
+        assert_eq!(info.display_name(), Some("TV"));
+        assert_eq!(info.app_name(), None);
+        assert_eq!(info.app_version(), Some("2.0"));
+
+        let msg = MessageBuilder::new().start_mirroring_session(5);
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::StartMirroringSession);
+        assert_eq!(
+            p.payload_as_start_mirroring_session().unwrap().session_id(),
+            5
+        );
+
+        let msg = MessageBuilder::new().mirroring_session_description(6, "sdp-blob");
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::MirroringSessionDescription);
+        let desc = p.payload_as_mirroring_session_description().unwrap();
+        assert_eq!(desc.session_id(), 6);
+        assert_eq!(desc.sdp(), "sdp-blob");
+
+        let msg = MessageBuilder::new().stop_playback();
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::StopPlayback);
+        assert!(p.payload_as_stop_playback().is_some());
+
+        let msg = MessageBuilder::new().queue_remove(QueuePosition::Index(4));
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::QueueRemove);
+        let rm = p.payload_as_queue_remove().unwrap();
+        assert_eq!(rm.position_type(), flat::QueuePosition::Index);
+        assert_eq!(rm.position_as_index().unwrap().index(), 4);
+
+        let msg = MessageBuilder::new().queue_select(QueuePosition::Back);
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::QueueItemSelected);
+        let sel = p.payload_as_queue_item_selected().unwrap();
+        assert_eq!(sel.position_type(), flat::QueuePosition::Back);
+        assert!(sel.position_as_back().is_some());
+
+        let msg = MessageBuilder::new().tracks_available(std::iter::once(MediaTrack {
+            id: 8,
+            title: Some("English".into()),
+            iso_639: "eng".into(),
+            metadata: Some(MediaTrackMetadata::Subtitle),
+        }));
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::TracksAvailable);
+        let tracks = p.payload_as_tracks_available().unwrap().tracks().unwrap();
+        assert_eq!(tracks.len(), 1);
+        let track = tracks.get(0);
+        assert_eq!(track.id(), 8);
+        assert_eq!(track.title(), Some("English"));
+        assert_eq!(track.iso_639(), "eng");
+        assert_eq!(track.metadata_type(), flat::MediaTrackMetadata::Subtitle);
+
+        let msg = MessageBuilder::new().error(Some(11), flat::ErrorKind::SeekOutOfRange);
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::Error);
+        let err = p.payload_as_error().unwrap();
+        assert_eq!(err.kind(), flat::ErrorKind::SeekOutOfRange);
+        assert_eq!(err.packet_num(), Some(11));
+
+        let msg = MessageBuilder::new().receiver_introduction(
+            &DeviceInfo {
+                display_name: Some("TV".to_owned()),
+                app_name: Some("app".to_owned()),
+                app_version: None,
+            },
+            std::iter::once("http"),
+            std::iter::once("video/mp4"),
+            std::iter::once("h264"),
+            std::iter::once("aac"),
+            std::iter::once("vtt"),
+            std::iter::once("hdr10"),
+            std::iter::once("png"),
+            true,
+            false,
+            0.05,
+        );
+        let p = flat::root_as_packet(&msg).unwrap();
+        assert_eq!(p.payload_type(), flat::Message::ReceiverIntroduction);
+        let intro = p.payload_as_receiver_introduction().unwrap();
+        assert_eq!(intro.device_info().display_name(), Some("TV"));
+        let caps = intro.capabilities().unwrap();
+        let media = caps.media().unwrap();
+        assert!(media.external_subtitles());
+        assert!(!media.mirroring());
+        assert_eq!(media.containers().unwrap().get(0), "video/mp4");
+        assert_eq!(caps.audio().unwrap().volume_step_interval(), 0.05);
     }
 }

@@ -2,8 +2,6 @@ use std::collections::HashMap;
 
 use serde::{de, ser, Deserialize, Serialize};
 use serde_json::{json, Value};
-use serde_repr::{Deserialize_repr, Serialize_repr};
-use serde_with::skip_serializing_none;
 
 macro_rules! get_from_map {
     ($map:expr, $key:expr) => {
@@ -99,55 +97,70 @@ impl<'de> Deserialize<'de> for MetadataObject {
     }
 }
 
-#[skip_serializing_none]
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PlayMessage {
     /// The MIME type (video/mp4)
     pub container: String,
     // The URL to load (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     // The content to load (i.e. a DASH manifest, json content, optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     // The time to start playing in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<f64>,
     // The desired volume (0-1)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<f64>,
     // The factor to multiply playback speed by (defaults to 1.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
     // HTTP request headers to add to the play request Map<string, string>
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<MetadataObject>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize_repr, Serialize_repr)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
 pub enum ContentType {
     #[default]
     Playlist = 0,
 }
 
-#[skip_serializing_none]
+impl_serde_u8_repr!(ContentType { Playlist = 0 });
+
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct MediaItem {
     /// The MIME type (video/mp4)
     pub container: String,
     /// The URL to load (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
     /// The content to load (i.e. a DASH manifest, json content, optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub content: Option<String>,
     /// The time to start playing in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<f64>,
     /// The desired volume (0-1)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<f64>,
     /// The factor to multiply playback speed by (defaults to 1.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
     /// Indicates if the receiver should preload the media item
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub cache: Option<bool>,
     /// Indicates how long the item content is presented on screen in seconds
-    #[serde(rename = "showDuration")]
+    #[serde(rename = "showDuration", skip_serializing_if = "Option::is_none")]
     pub show_duration: Option<f64>,
     /// HTTP request headers to add to the play request Map<string, string>
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub headers: Option<HashMap<String, String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<MetadataObject>,
 }
 
@@ -167,30 +180,32 @@ impl From<PlayMessage> for MediaItem {
     }
 }
 
-#[skip_serializing_none]
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct PlaylistContent {
     #[serde(rename = "contentType")]
     pub variant: ContentType,
     pub items: Vec<MediaItem>,
     /// Start position of the first item to play from the playlist
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub offset: Option<u64>,
     /// The desired volume (0-1)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub volume: Option<f64>,
     /// The factor to multiply playback speed by (defaults to 1.0)
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
     /// Count of media items should be pre-loaded forward from the current view
     /// index
-    #[serde(rename = "forwardCache")]
+    #[serde(rename = "forwardCache", skip_serializing_if = "Option::is_none")]
     pub forward_cache: Option<u64>,
     /// Count of media items should be pre-loaded backward from the current view
     /// index
-    #[serde(rename = "backwardCache")]
+    #[serde(rename = "backwardCache", skip_serializing_if = "Option::is_none")]
     pub backward_cache: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub metadata: Option<MetadataObject>,
 }
 
-#[skip_serializing_none]
 #[derive(Debug, PartialEq, Clone, Serialize, Deserialize)]
 pub struct PlaybackUpdateMessage {
     // The time the packet was generated (unix time milliseconds)
@@ -199,69 +214,72 @@ pub struct PlaybackUpdateMessage {
     // The playback state
     pub state: crate::PlaybackState,
     // The current time playing in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub time: Option<f64>,
     // The duration in seconds
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
     // The playback speed factor
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub speed: Option<f64>,
     // The playlist item index currently being played on receiver
-    #[serde(rename = "itemIndex")]
+    #[serde(rename = "itemIndex", skip_serializing_if = "Option::is_none")]
     pub item_index: Option<u64>,
 }
 
-#[skip_serializing_none]
 #[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
 pub struct InitialSenderMessage {
-    #[serde(rename = "displayName")]
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    #[serde(rename = "appName")]
+    #[serde(rename = "appName", skip_serializing_if = "Option::is_none")]
     pub app_name: Option<String>,
-    #[serde(rename = "appVersion")]
+    #[serde(rename = "appVersion", skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
 }
 
-#[skip_serializing_none]
 #[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
 pub struct LivestreamCapabilities {
     /// https://datatracker.ietf.org/doc/draft-murillo-whep/
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub whep: Option<bool>,
 }
 
-#[skip_serializing_none]
 #[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
 pub struct AVCapabilities {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub livestream: Option<LivestreamCapabilities>,
 }
 
-#[skip_serializing_none]
 #[derive(Debug, PartialEq, Eq, Clone, Default, Serialize, Deserialize)]
 pub struct ReceiverCapabilities {
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub av: Option<AVCapabilities>,
 }
 
-#[skip_serializing_none]
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct InitialReceiverMessage {
-    #[serde(rename = "displayName")]
+    #[serde(rename = "displayName", skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
-    #[serde(rename = "appName")]
+    #[serde(rename = "appName", skip_serializing_if = "Option::is_none")]
     pub app_name: Option<String>,
-    #[serde(rename = "appVersion")]
+    #[serde(rename = "appVersion", skip_serializing_if = "Option::is_none")]
     pub app_version: Option<String>,
-    #[serde(rename = "playData")]
+    #[serde(rename = "playData", skip_serializing_if = "Option::is_none")]
     pub play_data: Option<PlayMessage>,
-    #[serde(rename = "experimentalCapabilities")]
+    #[serde(
+        rename = "experimentalCapabilities",
+        skip_serializing_if = "Option::is_none"
+    )]
     pub experimental_capabilities: Option<ReceiverCapabilities>,
 }
 
-#[skip_serializing_none]
 #[allow(dead_code)]
 #[derive(Debug, PartialEq, Clone, Default, Serialize, Deserialize)]
 pub struct PlayUpdateMessage {
-    #[serde(rename = "generationTime")]
+    #[serde(rename = "generationTime", skip_serializing_if = "Option::is_none")]
     pub generation_time: Option<u64>,
-    #[serde(rename = "playData")]
+    #[serde(rename = "playData", skip_serializing_if = "Option::is_none")]
     pub play_data: Option<PlayMessage>,
 }
 
@@ -886,5 +904,204 @@ mod tests {
             .unwrap(),
             r#"{"contentType":0,"items":[{"container":"video/mp4","url":"abc"}],"volume":1.0,"speed":1.0,"metadata":{"thumbnailUrl":null,"title":null,"type":0}}"#,
         );
+    }
+
+    // Locks the wire format of the hand-rolled impl that replaced serde_repr
+    #[test]
+    fn content_type_serde_repr() {
+        assert_eq!(serde_json::to_string(&ContentType::Playlist).unwrap(), "0");
+        assert_eq!(
+            serde_json::from_str::<ContentType>("0").unwrap(),
+            ContentType::Playlist
+        );
+        for bad in ["1", "-1", "256", "\"Playlist\"", "null"] {
+            assert!(serde_json::from_str::<ContentType>(bad).is_err(), "{bad}");
+        }
+    }
+
+    // The tests below lock the None omission that replaced serde_with
+    // skip_serializing_none
+
+    #[test]
+    fn play_message_skips_none_fields() {
+        let empty = PlayMessage {
+            container: "video/mp4".to_string(),
+            url: None,
+            content: None,
+            time: None,
+            volume: None,
+            speed: None,
+            headers: None,
+            metadata: None,
+        };
+        assert_eq!(
+            serde_json::to_string(&empty).unwrap(),
+            r#"{"container":"video/mp4"}"#
+        );
+        assert_eq!(
+            serde_json::from_str::<PlayMessage>(r#"{"container":"video/mp4"}"#).unwrap(),
+            empty
+        );
+
+        let full = PlayMessage {
+            container: "video/mp4".to_string(),
+            url: Some(s!("http://a")),
+            content: Some(s!("c")),
+            time: Some(1.5),
+            volume: Some(0.5),
+            speed: Some(2.0),
+            headers: Some(HashMap::from([(s!("k"), s!("v"))])),
+            metadata: Some(MetadataObject::Generic {
+                title: None,
+                thumbnail_url: None,
+                custom: None,
+            }),
+        };
+        let json = r#"{"container":"video/mp4","url":"http://a","content":"c","time":1.5,"volume":0.5,"speed":2.0,"headers":{"k":"v"},"metadata":{"thumbnailUrl":null,"title":null,"type":0}}"#;
+        assert_eq!(serde_json::to_string(&full).unwrap(), json);
+        assert_eq!(serde_json::from_str::<PlayMessage>(json).unwrap(), full);
+    }
+
+    #[test]
+    fn playback_update_message_skips_none_fields() {
+        let empty = PlaybackUpdateMessage {
+            generation_time: 7,
+            state: crate::PlaybackState::Playing,
+            time: None,
+            duration: None,
+            speed: None,
+            item_index: None,
+        };
+        let json = r#"{"generationTime":7,"state":1}"#;
+        assert_eq!(serde_json::to_string(&empty).unwrap(), json);
+        assert_eq!(
+            serde_json::from_str::<PlaybackUpdateMessage>(json).unwrap(),
+            empty
+        );
+
+        let full = PlaybackUpdateMessage {
+            generation_time: 7,
+            state: crate::PlaybackState::Paused,
+            time: Some(1.0),
+            duration: Some(2.0),
+            speed: Some(1.5),
+            item_index: Some(3),
+        };
+        let json =
+            r#"{"generationTime":7,"state":2,"time":1.0,"duration":2.0,"speed":1.5,"itemIndex":3}"#;
+        assert_eq!(serde_json::to_string(&full).unwrap(), json);
+        assert_eq!(
+            serde_json::from_str::<PlaybackUpdateMessage>(json).unwrap(),
+            full
+        );
+    }
+
+    #[test]
+    fn introduction_messages_skip_none_fields() {
+        assert_eq!(
+            serde_json::to_string(&InitialSenderMessage::default()).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            serde_json::from_str::<InitialSenderMessage>("{}").unwrap(),
+            InitialSenderMessage::default()
+        );
+        let sender = InitialSenderMessage {
+            display_name: Some(s!("TV")),
+            app_name: Some(s!("app")),
+            app_version: Some(s!("1.0")),
+        };
+        let json = r#"{"displayName":"TV","appName":"app","appVersion":"1.0"}"#;
+        assert_eq!(serde_json::to_string(&sender).unwrap(), json);
+        assert_eq!(
+            serde_json::from_str::<InitialSenderMessage>(json).unwrap(),
+            sender
+        );
+
+        assert_eq!(
+            serde_json::to_string(&InitialReceiverMessage::default()).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            serde_json::from_str::<InitialReceiverMessage>("{}").unwrap(),
+            InitialReceiverMessage::default()
+        );
+        let receiver = InitialReceiverMessage {
+            display_name: Some(s!("TV")),
+            experimental_capabilities: Some(ReceiverCapabilities {
+                av: Some(AVCapabilities {
+                    livestream: Some(LivestreamCapabilities { whep: Some(true) }),
+                }),
+            }),
+            ..Default::default()
+        };
+        let json = r#"{"displayName":"TV","experimentalCapabilities":{"av":{"livestream":{"whep":true}}}}"#;
+        assert_eq!(serde_json::to_string(&receiver).unwrap(), json);
+        assert_eq!(
+            serde_json::from_str::<InitialReceiverMessage>(json).unwrap(),
+            receiver
+        );
+        // Empty capability objects stay empty instead of emitting null members
+        assert_eq!(
+            serde_json::to_string(&ReceiverCapabilities::default()).unwrap(),
+            "{}"
+        );
+    }
+
+    #[test]
+    fn play_update_message_skips_none_fields() {
+        assert_eq!(
+            serde_json::to_string(&PlayUpdateMessage::default()).unwrap(),
+            "{}"
+        );
+        assert_eq!(
+            serde_json::from_str::<PlayUpdateMessage>("{}").unwrap(),
+            PlayUpdateMessage::default()
+        );
+        let msg = PlayUpdateMessage {
+            generation_time: Some(9),
+            play_data: Some(PlayMessage {
+                container: s!("video/mp4"),
+                url: None,
+                content: None,
+                time: None,
+                volume: None,
+                speed: None,
+                headers: None,
+                metadata: None,
+            }),
+        };
+        let json = r#"{"generationTime":9,"playData":{"container":"video/mp4"}}"#;
+        assert_eq!(serde_json::to_string(&msg).unwrap(), json);
+        assert_eq!(
+            serde_json::from_str::<PlayUpdateMessage>(json).unwrap(),
+            msg
+        );
+    }
+
+    #[test]
+    fn media_item_skips_none_fields() {
+        let item = MediaItem {
+            container: s!("video/mp4"),
+            cache: Some(true),
+            show_duration: Some(4.0),
+            ..Default::default()
+        };
+        let json = r#"{"container":"video/mp4","cache":true,"showDuration":4.0}"#;
+        assert_eq!(serde_json::to_string(&item).unwrap(), json);
+        assert_eq!(serde_json::from_str::<MediaItem>(json).unwrap(), item);
+    }
+
+    #[test]
+    fn playlist_content_deserializes_missing_optionals() {
+        let content =
+            serde_json::from_str::<PlaylistContent>(r#"{"contentType":0,"items":[]}"#).unwrap();
+        assert_eq!(content, PlaylistContent::default());
+        let json = r#"{"contentType":0,"items":[],"offset":1,"forwardCache":2,"backwardCache":3}"#;
+        let content = serde_json::from_str::<PlaylistContent>(json).unwrap();
+        assert_eq!(content.offset, Some(1));
+        assert_eq!(content.forward_cache, Some(2));
+        assert_eq!(content.backward_cache, Some(3));
+        assert_eq!(serde_json::to_string(&content).unwrap(), json);
     }
 }
