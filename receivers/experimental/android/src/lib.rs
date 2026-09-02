@@ -277,10 +277,11 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeSetAddres
         };
 
         let buffer_ptr = match env.get_direct_buffer_address(&buffer) {
-            Ok(ptr) => {
-                assert!(!ptr.is_null());
-                ptr
+            Ok(ptr) if ptr.is_null() => {
+                error!("Null address for the byte buffer");
+                continue;
             }
+            Ok(ptr) => ptr,
             Err(err) => {
                 error!(?err, "Failed to get buffer address");
                 continue;

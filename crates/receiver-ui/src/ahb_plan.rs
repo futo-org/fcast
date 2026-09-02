@@ -213,11 +213,13 @@ pub fn alignment_is_supported(pad_left: u32, pad_top: u32) -> bool {
 /// The extent of a gralloc allocation, from the plane pointers it reported.
 ///
 /// gralloc reports where each plane starts, never how big the whole thing is,
-/// so the size has to be derived: the distance from the first plane to the end
-/// of the last one. A 420 layout's last plane is half height, every
-/// single-plane one is full height. `None` when the planes are not in
-/// ascending order, which no gralloc produces and which would mean the
-/// arithmetic below is describing something else entirely.
+/// so the size has to be derived: the distance from the first plane to the
+/// furthest plane end. Which plane that is cannot be assumed, because a plane
+/// index is the component and not its position in memory. A cr_first layout
+/// puts the last-indexed plane (Cr) before Cb, so taking the last index would
+/// miss a whole chroma plane on YV12 and a byte on NV21. A 420 layout's chroma
+/// planes are half height, every single-plane one is full height. `None` on a
+/// plane count no lock produces or on arithmetic that would wrap.
 pub fn frame_size(
     format: AhbFormat,
     height: u32,
@@ -228,25 +230,37 @@ pub fn frame_size(
     if n_planes == 0 || n_planes > 4 {
         return None;
     }
-    let last = n_planes as usize - 1;
-    let rows = if format == AhbFormat::Yuv420 && last > 0 {
-        height.div_ceil(2) as usize
-    } else {
-        height as usize
-    };
-    let end = plane_data[last].checked_add(row_stride[last] as usize * rows)?;
+    let mut end = 0usize;
+    for i in 0..n_planes as usize {
+        let rows = if format == AhbFormat::Yuv420 && i > 0 {
+            height.div_ceil(2) as usize
+        } else {
+            height as usize
+        };
+        let plane_end = plane_data[i].checked_add((row_stride[i] as usize).checked_mul(rows)?)?;
+        end = end.max(plane_end);
+    }
     end.checked_sub(plane_data[0])
 }
 
 /// Where each plane starts inside the allocation and how wide its rows are.
 ///
-/// The picture sits at the allocation's origin, so this is only the
-/// plane-to-plane distances gralloc reported, rebased on the first plane.
+/// The picture sits at the allocation's origin, so this is the plane-to-plane
+/// distances gralloc reported, rebased on the first plane and then reordered
+/// into gst's planes.
 ///
-/// The one adjustment is the semi-planar case. gralloc reports three planes
-/// for `Y8Cb8Cr8_420` whatever the layout is, and for NV12 or NV21 the third
-/// is the odd byte of the interleaved chroma plane. gst describes those as two
-/// planes and a decoder that sees a third writes somewhere nothing reads.
+/// The reordering is the whole subtlety. A `lockPlanes` index is the
+/// COMPONENT, always Y then Cb then Cr, never the position in memory, and
+/// gralloc reports three of them for `Y8Cb8Cr8_420` whatever the layout is.
+///
+/// * NV12 and NV21 are one interleaved chroma plane to gst, starting at its
+///   first byte. That is Cb on NV12 and Cr on NV21, so plane 1 is whichever of
+///   the two is the lower address, and the third gralloc plane has no gst plane
+///   at all. A decoder handed the wrong one writes the sample pairs a byte in,
+///   which is chroma shifted by a sample and swapped.
+/// * YV12 is I420 with planes 1 and 2 swapped, so gst wants Cr in plane 1 and
+///   Cb in plane 2 while the lock reports them the other way round. Unswapped,
+///   the decoder's U and V land in each other's gralloc planes.
 pub fn plane_geometry(
     video_format: VideoFormat,
     n_planes: u32,
@@ -256,13 +270,24 @@ pub fn plane_geometry(
     let mut offsets = [0usize; 4];
     let mut strides = [0i32; 4];
     let base = plane_data[0];
-    for i in 0..(n_planes as usize).min(4) {
+    let n = (n_planes as usize).min(4);
+    for i in 0..n {
         offsets[i] = plane_data[i].saturating_sub(base);
         strides[i] = row_stride[i] as i32;
     }
-    if matches!(video_format, VideoFormat::Nv12 | VideoFormat::Nv21) {
-        offsets[2] = 0;
-        strides[2] = 0;
+    match video_format {
+        VideoFormat::Nv12 | VideoFormat::Nv21 => {
+            if n >= 3 {
+                offsets[1] = plane_data[1].min(plane_data[2]).saturating_sub(base);
+            }
+            offsets[2] = 0;
+            strides[2] = 0;
+        }
+        VideoFormat::Yv12 if n >= 3 => {
+            offsets.swap(1, 2);
+            strides.swap(1, 2);
+        }
+        _ => {}
     }
     (offsets, strides)
 }
@@ -522,22 +547,46 @@ mod tests {
     #[test]
     fn a_semi_planar_layout_becomes_two_gst_planes() {
         let base = 0x4000_0000usize;
-        let data = [base, base + 2048 * 1080, base + 2048 * 1080 + 1, 0];
+        let chroma = 2048 * 1080;
         let stride = [2048, 2048, 2048, 0];
-        let (offsets, strides) = plane_geometry(VideoFormat::Nv12, 3, &data, &stride);
-        assert_eq!(offsets, [0, 2048 * 1080, 0, 0]);
-        assert_eq!(strides, [2048, 2048, 0, 0]);
-        // the same layout named NV21 keeps the same shape, only the sample
-        // order inside the plane differs and that is the decoder's business
-        assert_eq!(
-            plane_geometry(VideoFormat::Nv21, 3, &data, &stride),
-            (offsets, strides)
-        );
 
-        // the whole allocation, from the first plane to the end of the last
+        // NV12: Cb is the interleave start, Cr the odd byte after it
+        let data = [base, base + chroma, base + chroma + 1, 0];
+        let (offsets, strides) = plane_geometry(VideoFormat::Nv12, 3, &data, &stride);
+        assert_eq!(offsets, [0, chroma, 0, 0]);
+        assert_eq!(strides, [2048, 2048, 0, 0]);
         let size = frame_size(AhbFormat::Yuv420, 1080, 3, &data, &stride).unwrap();
-        assert_eq!(size, 2048 * 1080 + 1 + 2048 * 540);
+        assert_eq!(size, chroma + 1 + 2048 * 540);
         assert!(size >= 1920 * 1080 * 3 / 2, "a frame must fit in it");
+    }
+
+    /// The same device, laid out the other way round. A plane index is the
+    /// component, so a real NV21 gralloc reports Cb one byte past Cr, and that
+    /// lower Cr address is exactly what the probe reads as cr_first. gst's
+    /// plane 1 is the interleaved plane from its first byte, so it is Cr's
+    /// address here, and pointing it at Cb would shift the chroma by a sample
+    /// and swap it.
+    #[test]
+    fn a_cr_first_semi_planar_layout_starts_at_the_interleave() {
+        let base = 0x4000_0000usize;
+        let chroma = 2048 * 1080;
+        let stride = [2048, 2048, 2048, 0];
+        let data = [base, base + chroma + 1, base + chroma, 0];
+
+        let (offsets, strides) = plane_geometry(VideoFormat::Nv21, 3, &data, &stride);
+        assert_eq!(
+            offsets,
+            [0, chroma, 0, 0],
+            "plane 1 is the interleave start"
+        );
+        assert_eq!(strides, [2048, 2048, 0, 0]);
+
+        // the odd byte is past the last-indexed plane's end, so the size has
+        // to come from the furthest plane rather than from index order
+        assert_eq!(
+            frame_size(AhbFormat::Yuv420, 1080, 3, &data, &stride),
+            Some(chroma + 1 + 2048 * 540)
+        );
     }
 
     /// The fully planar case keeps all three, and the RGBA case is one plane
@@ -545,15 +594,15 @@ mod tests {
     #[test]
     fn planar_and_packed_layouts_keep_their_planes() {
         let base = 0x5000_0000usize;
-        let (y, u) = (2048 * 1088, 1024 * 544);
-        let data = [base, base + y, base + y + u, 0];
+        let (y, c) = (2048 * 1088, 1024 * 544);
+        let data = [base, base + y, base + y + c, 0];
         let stride = [2048, 1024, 1024, 0];
         let (offsets, strides) = plane_geometry(VideoFormat::I420, 3, &data, &stride);
-        assert_eq!(offsets, [0, y, y + u, 0]);
+        assert_eq!(offsets, [0, y, y + c, 0]);
         assert_eq!(strides, [2048, 1024, 1024, 0]);
         assert_eq!(
             frame_size(AhbFormat::Yuv420, 1088, 3, &data, &stride),
-            Some(y + u + 1024 * 544)
+            Some(y + 2 * c)
         );
 
         let rgba = [base, 0, 0, 0];
@@ -570,6 +619,30 @@ mod tests {
         assert_eq!(
             frame_size(AhbFormat::Yuv420, 1080, 0, &rgba, &rgba_stride),
             None
+        );
+    }
+
+    /// The cr_first planar layout. gralloc still reports Cb at index 1, but
+    /// its address is the higher one, and gst YV12 is I420 with planes 1 and 2
+    /// swapped, so the two chroma planes trade places. Unswapped, the decoder
+    /// writes U where the sampler reads V.
+    #[test]
+    fn a_cr_first_planar_layout_swaps_the_chroma_planes() {
+        let base = 0x6000_0000usize;
+        let (y, c) = (2048 * 1088, 1024 * 544);
+        // Cr at base + y, Cb after it, reported as Y, Cb, Cr
+        let data = [base, base + y + c, base + y, 0];
+        let stride = [2048, 1024, 1024, 0];
+
+        let (offsets, strides) = plane_geometry(VideoFormat::Yv12, 3, &data, &stride);
+        assert_eq!(offsets, [0, y, y + c, 0], "plane 1 is Cr, plane 2 is Cb");
+        assert_eq!(strides, [2048, 1024, 1024, 0]);
+
+        // the trailing Cb plane is past the last-indexed one, so index order
+        // would size the allocation a whole chroma plane short
+        assert_eq!(
+            frame_size(AhbFormat::Yuv420, 1088, 3, &data, &stride),
+            Some(y + 2 * c)
         );
     }
 

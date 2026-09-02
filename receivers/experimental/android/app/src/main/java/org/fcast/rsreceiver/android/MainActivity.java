@@ -357,9 +357,9 @@ public class MainActivity extends NativeActivity {
         netHandler.post(this::sweepAddresses);
         handler.postDelayed(periodicSweep, SWEEP_INTERVAL_MS);
 
-        // Created here, acquired only while playback is active, see
-        // setPlaybackActive. Non ref-counted so repeated acquires are
-        // idempotent and one release always drops the lock.
+        // Created here; updateWifiLockMode owns hold and mode from now on.
+        // Non ref-counted so repeated acquires are idempotent and one
+        // release always drops the lock.
         wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         updateWifiLockMode(true);
 
@@ -701,7 +701,7 @@ public class MainActivity extends NativeActivity {
                 // covers the load window, syncWakeLock drops it on pause
                 castPlaying = true;
                 syncWakeLock();
-                wifiLock.acquire();
+                updateWifiLockMode(visible);
                 ensureAudioFocus();
                 if (noisyReceiver == null) {
                     noisyReceiver = new android.content.BroadcastReceiver() {
@@ -722,11 +722,9 @@ public class MainActivity extends NativeActivity {
             } else {
                 castPlaying = false;
                 syncWakeLock();
-                // release() on an unheld lock throws, and the idle edge can
-                // fire without a preceding active one (teardown).
-                if (wifiLock.isHeld()) {
-                    wifiLock.release();
-                }
+                // Not a plain release: a visible idle receiver keeps the lock
+                // so the next sender's handshake still lands fast.
+                updateWifiLockMode(visible);
                 if (focusRequest != null) {
                     am.abandonAudioFocusRequest(focusRequest);
                     focusRequest = null;

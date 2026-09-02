@@ -30,7 +30,7 @@
 //!
 //! Tagging the buffer would fix it: `AHardwareBuffer_setDataSpace` takes a
 //! full colour description and the driver would honour it. It is API 34, and
-//! this receiver's minimum is 25, so it is a conditional improvement rather
+//! this receiver's minimum is 28, so it is a conditional improvement rather
 //! than the design. Wiring it in when the device is new enough is the first
 //! follow-up, and it is cheap: one call per pooled buffer, at allocation.
 //!
