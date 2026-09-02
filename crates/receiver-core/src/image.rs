@@ -57,6 +57,28 @@ pub fn orientation_to_degs(orientation: metadata::Orientation) -> f32 {
     }
 }
 
+/// Cover-art blur for the audio player background, on the CPU so every
+/// renderer lane gets it. The retired GL chain worked out to sigma ~8% of
+/// the image dimension; blurring a small thumbnail at the same fraction and
+/// letting the scene's bilinear upscale spread it reads the same at a
+/// fraction of the cost.
+pub fn blur_cover(img: &RgbaImage) -> RgbaImage {
+    const THUMB_DIM: u32 = 96;
+    const SIGMA_FRAC: f32 = 0.08;
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 {
+        return img.clone();
+    }
+    let long = w.max(h);
+    let (tw, th) = if long > THUMB_DIM {
+        ((w * THUMB_DIM / long).max(1), (h * THUMB_DIM / long).max(1))
+    } else {
+        (w, h)
+    };
+    let thumb = imagelib::imageops::thumbnail(img, tw, th);
+    imagelib::imageops::fast_blur(&thumb, SIGMA_FRAC * tw.max(th) as f32)
+}
+
 #[derive(Debug)]
 pub struct DecodedImage {
     pub id: ImageId,
@@ -501,6 +523,40 @@ pub fn find_formats() -> HashSet<media_formats::Image> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn blur_cover_downscales_and_keeps_aspect() {
+        let img = RgbaImage::from_pixel(960, 480, imagelib::Rgba([10, 200, 30, 255]));
+        let out = blur_cover(&img);
+        assert_eq!(out.dimensions(), (96, 48));
+        // constant input must stay constant through downscale + blur
+        for p in out.pixels() {
+            assert_eq!(p.0, [10, 200, 30, 255]);
+        }
+    }
+
+    #[test]
+    fn blur_cover_small_input_not_upscaled() {
+        let img = RgbaImage::from_pixel(40, 20, imagelib::Rgba([255, 0, 0, 255]));
+        assert_eq!(blur_cover(&img).dimensions(), (40, 20));
+    }
+
+    #[test]
+    fn blur_cover_mixes_regions() {
+        // left black, right white; the seam must become a wide gradient
+        let img = RgbaImage::from_fn(200, 200, |x, _| {
+            imagelib::Rgba(if x < 100 {
+                [0, 0, 0, 255]
+            } else {
+                [255, 255, 255, 255]
+            })
+        });
+        let out = blur_cover(&img);
+        let mid = out.get_pixel(out.width() / 2, out.height() / 2).0[0];
+        assert!((60..=195).contains(&mid), "seam not blurred, mid {mid}");
+        let far_left = out.get_pixel(2, out.height() / 2).0[0];
+        assert!(far_left < mid, "gradient not monotonic");
+    }
+
     type Events = tokio::sync::mpsc::UnboundedReceiver<crate::message::Message>;
 
     fn downloader() -> (Downloader, Events) {
@@ -553,5 +609,23 @@ mod tests {
             matches!(&err, DownloadImageError::UnsupportedScheme(s) if s == "ftp"),
             "unexpected error: {err:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod blur_bench {
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn blur_cover_timing() {
+        for (w, h) in [(600u32, 600u32), (1400, 1400), (3000, 3000), (4096, 4096)] {
+            let img = RgbaImage::from_fn(w, h, |x, y| {
+                imagelib::Rgba([(x % 256) as u8, (y % 256) as u8, ((x + y) % 256) as u8, 255])
+            });
+            let t = std::time::Instant::now();
+            let out = blur_cover(&img);
+            println!("{}x{} -> {:?} in {:?}", w, h, out.dimensions(), t.elapsed());
+        }
     }
 }

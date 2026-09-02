@@ -850,6 +850,89 @@ pub fn adopt_shared_device(shared: SharedDevice) {
     }
 }
 
+/// Whether the shared-device lane is live, which is what makes the gpu
+/// cover downscale below possible.
+pub fn has_shared_device() -> bool {
+    SHARED.get().is_some()
+}
+
+/// Renderer and staging buffer for [`downscale_cover`], kept so a track
+/// change after the first pays no pipeline compile and no staging alloc.
+static COVER_GPU: parking_lot::Mutex<Option<(Renderer, i_slint_video_wgpu::Readback)>> =
+    parking_lot::Mutex::new(None);
+
+/// Antialiased downscale of a decoded cover on the shared device, feeding
+/// the audio-cover blur. The full-res upload and lanczos reduction are the
+/// part that costs real time at 4K+; the caller blurs the small result on
+/// the cpu in microseconds. None when the lane has no device or the render
+/// fails, and the caller falls back to the cpu downscale.
+pub fn downscale_cover(
+    img: &receiver_core::image::RgbaImage,
+    thumb_dim: u32,
+) -> Option<receiver_core::image::RgbaImage> {
+    let shared = SHARED.get()?;
+    let mut cache = COVER_GPU.lock();
+    downscale_cover_on(&shared.device, &shared.queue, &mut cache, img, thumb_dim)
+        .map_err(|err| warn!(?err, "gpu cover downscale failed, cpu fallback"))
+        .ok()
+}
+
+fn downscale_cover_on(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    cache: &mut Option<(Renderer, i_slint_video_wgpu::Readback)>,
+    img: &receiver_core::image::RgbaImage,
+    thumb_dim: u32,
+) -> Result<receiver_core::image::RgbaImage, i_slint_video_wgpu::VideoError> {
+    let (w, h) = img.dimensions();
+    let long = w.max(h).max(1);
+    let (tw, th) = if long > thumb_dim {
+        ((w * thumb_dim / long).max(1), (h * thumb_dim / long).max(1))
+    } else {
+        (w.max(1), h.max(1))
+    };
+    let desc = FrameDesc {
+        // Rgbx sidesteps the chain's straight-in premultiplied-out alpha
+        // contract, the blurred background is opaque either way
+        format: PixelFormat::Rgbx,
+        matrix: Matrix::Identity,
+        range: Range::Full,
+        transfer: Transfer::Sdr,
+        tonemap: TonemapCurve::default(),
+        primaries: Primaries::Bt709,
+        chroma_location: ChromaLocation::default(),
+        width: w,
+        height: h,
+        hdr: HdrMetadata::default(),
+    };
+    let out = i_slint_video_wgpu::OutputDesc {
+        width: tw,
+        height: th,
+        filter: ScaleFilter::Lanczos3,
+        dither: false,
+        rotation: i_slint_video_wgpu::Rotation::Rotate0,
+        deband: None,
+    };
+    let (renderer, readback) =
+        cache.get_or_insert_with(|| (Renderer::new(device), Default::default()));
+    let mut bytes = vec![0u8; tw as usize * 4 * th as usize];
+    let res = (|| {
+        let frame = renderer.upload(device, queue, desc, &[img.as_raw()], &[w * 4])?;
+        let tex = renderer.render(device, queue, &frame, out)?;
+        i_slint_video_wgpu::gpu::read_rgba8_into(device, queue, &tex, tw, th, readback, &mut bytes)
+    })();
+    // A cover renders once, so drop the bind groups now or the renderer's
+    // 48-entry bind cache pins this full-res texture through the next 47
+    // covers, and drop the chain's source-sized Rgba16Float scratch or it
+    // stays resident until a differently-sized cover swaps it (134MB after
+    // a 4096px cover). Unconditional so an error path cannot pin either.
+    renderer.forget_binds();
+    renderer.forget_scratch();
+    res?;
+    Ok(receiver_core::image::RgbaImage::from_raw(tw, th, bytes)
+        .expect("buffer sized to tw*4*th above"))
+}
+
 // ---------------------------------------------------------------------------
 // the frame handed to slint
 // ---------------------------------------------------------------------------
@@ -2639,6 +2722,59 @@ mod tests {
             profile: RenderProfile::Fast,
             visualize_lut: false,
             show_clipping: false,
+        }
+    }
+
+    #[test]
+    fn cover_downscale_matches_geometry_and_holds_flat_color() {
+        let Some(shared) = create_shared_device() else {
+            return;
+        };
+        let mut cache = None;
+        let flat: Vec<u8> = [10, 200, 30, 255].repeat(1000 * 500);
+        let img = receiver_core::image::RgbaImage::from_raw(1000, 500, flat).unwrap();
+        let out = downscale_cover_on(&shared.device, &shared.queue, &mut cache, &img, 96)
+            .expect("downscale renders");
+        assert_eq!(out.dimensions(), (96, 48));
+        // lanczos of a flat field is the flat field, and Rgbx must pin alpha
+        for p in out.pixels() {
+            assert_eq!(p.0, [10, 200, 30, 255]);
+        }
+
+        // a smooth horizontal ramp survives as a monotonic ramp
+        let px: Vec<u8> = (0..1000u32)
+            .flat_map(|_| (0..2000u32).flat_map(|x| [(x / 8) as u8, 0, 0, 255]))
+            .collect();
+        let ramp = receiver_core::image::RgbaImage::from_raw(2000, 1000, px).unwrap();
+        let out = downscale_cover_on(&shared.device, &shared.queue, &mut cache, &ramp, 96)
+            .expect("cache reuse renders");
+        assert_eq!(out.dimensions(), (96, 48));
+        let row: Vec<u8> = (0..96).map(|x| out.get_pixel(x, 24).0[0]).collect();
+        assert!(
+            row.windows(2).all(|w| w[0] <= w[1]),
+            "ramp not monotonic: {row:?}"
+        );
+        assert!(row[95] > row[0] + 100, "ramp lost its range: {row:?}");
+    }
+
+    #[test]
+    #[ignore]
+    fn cover_downscale_timing() {
+        let Some(shared) = create_shared_device() else {
+            return;
+        };
+        let mut cache = None;
+        for (w, h) in [(600u32, 600u32), (1400, 1400), (3000, 3000), (4096, 4096)] {
+            let img = receiver_core::image::RgbaImage::from_raw(
+                w,
+                h,
+                [10u8, 200, 30, 255].repeat((w * h) as usize),
+            )
+            .unwrap();
+            let t = std::time::Instant::now();
+            let out = downscale_cover_on(&shared.device, &shared.queue, &mut cache, &img, 96)
+                .expect("downscale renders");
+            println!("{}x{} -> {:?} in {:?}", w, h, out.dimensions(), t.elapsed());
         }
     }
 

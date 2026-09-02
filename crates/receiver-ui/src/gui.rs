@@ -512,9 +512,55 @@ fn set_buffered_ranges(
     bridge.set_buffered_ranges(Rc::new(VecModel::from(model)).into());
 }
 
+/// Stamps cover-blur jobs so a worker finishing after the track changed
+/// cannot overwrite the newer cover (or a clear) with a stale one.
+static COVER_BLUR_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 fn clear_audio_covers(bridge: &Bridge, renderer_tx: &RendererMsgSender) {
+    COVER_BLUR_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     bridge.set_audio_track_cover(CompoundImage::default());
+    bridge.set_blured_audio_track_cover(CompoundImage::default());
     let _ = renderer_tx.send(RendererMessage::ClearBluredAudioTrackCover);
+}
+
+/// One blur per lane. The wgpu lane downscales on the shared device (a 4K+
+/// cover costs real cpu time to shrink) and cpu-blurs the 96px result,
+/// android does both on the cpu, the GL lane keeps its renderer-thread blur
+/// passes. The worker lands its result only if still current.
+fn spawn_cover_blur(ui: &MainWindow, img: DecodedImage, renderer_tx: &RendererMsgSender) {
+    use std::sync::atomic::Ordering;
+    #[cfg(all(not(target_os = "android"), feature = "video-wgpu"))]
+    let gpu = crate::desktop_wgpu_video::has_shared_device();
+    #[cfg(not(all(not(target_os = "android"), feature = "video-wgpu")))]
+    let gpu = false;
+    if !gpu && !cfg!(target_os = "android") {
+        let _ = renderer_tx.send(RendererMessage::CreateBluredAudioTrackCover(img));
+        return;
+    }
+    let generation = COVER_BLUR_GEN.fetch_add(1, Ordering::Relaxed) + 1;
+    let ui_weak = ui.as_weak();
+    std::thread::spawn(move || {
+        #[cfg(all(not(target_os = "android"), feature = "video-wgpu"))]
+        let small = gpu
+            .then(|| crate::desktop_wgpu_video::downscale_cover(&img.image, 96))
+            .flatten();
+        #[cfg(not(all(not(target_os = "android"), feature = "video-wgpu")))]
+        let small: Option<receiver_core::image::RgbaImage> = None;
+        // blur_cover skips its own downscale when the input is already small
+        let blurred = receiver_core::image::blur_cover(small.as_ref().unwrap_or(&img.image));
+        let pixbuf = to_slint_pixbuf(&blurred);
+        let rotation = receiver_core::image::orientation_to_degs(img.orientation);
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            if COVER_BLUR_GEN.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            ui.global::<Bridge>()
+                .set_blured_audio_track_cover(CompoundImage {
+                    img: slint::Image::from_rgba8(pixbuf),
+                    rotation,
+                });
+        });
+    });
 }
 
 /// Re-assert a visible cursor whenever the video scene is NOT up.
@@ -603,13 +649,13 @@ fn handle_command(
         }
         UpdateGuiCommand::UpdatePlaylist { start_idx, length } => {
             bridge.set_playlist_idx(start_idx);
-            bridge.set_playlist_idx(length);
+            bridge.set_playlist_length(length);
         }
         UpdateGuiCommand::SetImage { typ, img } => match typ {
             ImageType::Preview => bridge.set_image_preview(as_compound(&img.0)),
             ImageType::AudioTrackCover => {
                 bridge.set_audio_track_cover(as_compound(&img.0));
-                let _ = renderer_tx.send(RendererMessage::CreateBluredAudioTrackCover(img.0));
+                spawn_cover_blur(&ui, img.0, renderer_tx);
             }
         },
         UpdateGuiCommand::UpdatePlaybackProgress {
