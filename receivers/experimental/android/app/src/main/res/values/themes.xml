@@ -1,9 +1,11 @@
 <resources>
-    <!-- The starting window inherits windowBackground; the app's own
-         background art makes splash and first frame indistinguishable. -->
+    <!-- The starting window shows windowBackground (splash_window: gradient +
+         centered mark) before onCreate turns the live window translucent for
+         the video hole. windowDisablePreview stays OFF: it suppressed the
+         starting window and left cold start black on the translucent
+         NativeActivity, which reads as a crash on slow TV hardware. -->
     <style name="Theme.FCastReceiver" parent="android:Theme.Material.NoActionBar">
         <item name="android:windowBackground">@drawable/splash_window</item>
-        <item name="android:windowDisablePreview">true</item>
         <item name="android:statusBarColor">#0E0F10</item>
         <item name="android:navigationBarColor">#0E0F10</item>
     </style>
