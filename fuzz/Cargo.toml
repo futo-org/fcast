@@ -9,12 +9,19 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-fcast-protocol.path = "../crates/fcast-protocol"
+fcast-protocol = { path = "../crates/fcast-protocol", features = ["__fuzz"] }
 arbitrary = { version = "1", features = ["derive"] }
 
 [[bin]]
 name = "fcast_packet_reader"
 path = "fuzz_targets/fcast_packet_reader.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fcast_spki"
+path = "fuzz_targets/fcast_spki.rs"
 test = false
 doc = false
 bench = false

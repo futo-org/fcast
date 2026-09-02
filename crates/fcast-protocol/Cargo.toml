@@ -25,7 +25,6 @@ tracing = { workspace = true, optional = true }
 
 # Tokio sender
 rustls-pki-types = { workspace = true, optional = true }
-x509-parser = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
@@ -34,8 +33,12 @@ tokio-rustls = { workspace = true, default-features = false, features = ["loggin
 rustls-pki-types.workspace = true
 sha2.workspace = true
 rcgen.workspace = true
+# Differential oracle for the spki module tests
+x509-parser.workspace = true
 
 [features]
 default = []
-tokio-sender = ["dep:tokio-rustls", "dep:tokio", "dep:tracing", "dep:x509-parser", "dep:sha2", "dep:rustls-pki-types"]
+tokio-sender = ["dep:tokio-rustls", "dep:tokio", "dep:tracing", "dep:sha2", "dep:rustls-pki-types"]
 tokio-receiver= ["dep:tokio-rustls", "dep:tokio", "dep:tracing"]
+# Exposes the spki module for the fuzz harness, not part of the public API
+__fuzz = []

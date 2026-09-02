@@ -23,6 +23,11 @@ pub mod companion;
 pub mod receiver;
 #[cfg(feature = "tokio-sender")]
 pub mod sender;
+// Public only for the fuzz harness, crate internal otherwise
+#[cfg(feature = "__fuzz")]
+pub mod spki;
+#[cfg(all(not(feature = "__fuzz"), any(test, feature = "tokio-sender")))]
+pub(crate) mod spki;
 pub mod v1;
 pub mod v2;
 pub mod v3;

@@ -6,7 +6,6 @@ use tokio::{
 };
 use tokio_rustls::{client::TlsStream, rustls, TlsConnector};
 use tracing::error;
-use x509_parser::prelude::FromDer;
 
 #[derive(Default)]
 pub enum NetworkStream {
@@ -130,10 +129,10 @@ impl rustls::client::danger::ServerCertVerifier for CertVerifier {
             return Ok(rustls::client::danger::ServerCertVerified::assertion());
         }
 
-        match x509_parser::prelude::X509Certificate::from_der(end_entity) {
-            Ok(cert) => {
+        match crate::spki::extract_spki(end_entity) {
+            Ok(spki) => {
                 use sha2::Digest;
-                let fingerprint = sha2::Sha256::digest(cert.1.subject_pki.raw);
+                let fingerprint = sha2::Sha256::digest(spki);
                 if fingerprint.as_slice() == self.fingerprint.as_slice() {
                     Ok(rustls::client::danger::ServerCertVerified::assertion())
                 } else {
@@ -144,7 +143,7 @@ impl rustls::client::danger::ServerCertVerifier for CertVerifier {
                 }
             }
             Err(err) => Err(rustls::Error::General(format!(
-                "Failed to parse X509 cert: {err:?}"
+                "Failed to parse X509 cert: {err}"
             ))),
         }
     }
