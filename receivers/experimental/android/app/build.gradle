@@ -12,6 +12,13 @@ if (keystorePropsFile.exists()) {
     keystorePropsFile.withInputStream { keystoreProps.load(it) }
 }
 
+// CI injects -PversionCode/-PversionName at upload time, same scheme as the
+// kotlin receiver. A Play update must exceed the listing's current code.
+def currentVersionCode = project.hasProperty('versionCode')
+        ? Integer.parseInt(project.property('versionCode')) : 1
+def currentVersionName = project.hasProperty('versionName')
+        ? project.property('versionName') : '1.0'
+
 android {
     namespace 'org.fcast.rsreceiver.android'
     compileSdk 36
@@ -26,7 +33,11 @@ android {
     }
 
     defaultConfig {
-        applicationId "org.fcast.rsreceiver.android"
+        // Kotlin receiver's id, so this ships as an update to the existing
+        // Play listing. The live listing is the .playstore-suffixed flavor,
+        // the base id is the sideload build. Java package and namespace stay
+        // org.fcast.rsreceiver.android, JNI symbol names depend on them.
+        applicationId "com.futo.fcast.receiver"
         // Tied to the level the native library links against, which is
         // GSTREAMER_SRC_ANDROID_API in android-linker-aarch64, default 28.
         // This said 25, which the library can never satisfy: it needs
@@ -36,10 +47,22 @@ android {
         // together or not at all.
         minSdk 28
         targetSdk 36
-        versionCode 1
-        versionName "1.0"
+        versionCode currentVersionCode
+        versionName currentVersionName
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    flavorDimensions "type"
+    productFlavors {
+        playstore {
+            dimension "type"
+            applicationIdSuffix ".playstore"
+            versionNameSuffix "-playstore"
+        }
+        defaultFlavor {
+            dimension "type"
+        }
     }
 
     signingConfigs {
