@@ -115,6 +115,8 @@ pub(crate) fn publish_fcast_txt_records(records: Vec<(String, String)>) {
 #[cfg(target_os = "android")]
 pub use flapjack::android::set_video_window;
 #[cfg(target_os = "android")]
+pub use flapjack::android::set_video_window_pending;
+#[cfg(target_os = "android")]
 pub use flapjack::android::set_app_visible;
 
 #[cfg(target_os = "android")]

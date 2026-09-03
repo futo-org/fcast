@@ -43,11 +43,15 @@ AR_armv7-linux-androideabi = { value = "android-ar", relative = true }
 # 16KB LOAD alignment is a Play requirement (mandatory for targetSdk 35+
 # uploads). NDK r28+ defaults to it, but an NDK downgrade would silently
 # revert to 4KB, so it is pinned here and asserted at APK packaging.
+# A build-id is what lets simpleperf match a stripped on-device library to
+# the unstripped one on the host (report --symdir), without it the report
+# shows raw offsets. Twenty bytes of note section.
 [target.aarch64-linux-android]
 linker = "./android-linker-aarch64"
 rustflags = [
     "-Clink-arg=-Wl,--pack-dyn-relocs=android",
     "-Clink-arg=-Wl,-z,max-page-size=16384",
+    "-Clink-arg=-Wl,--build-id=sha1",
 ]
 
 [target.x86_64-linux-android]
@@ -64,4 +68,5 @@ linker = "./android-linker-armv7"
 rustflags = [
     "-Clink-arg=-Wl,--pack-dyn-relocs=android",
     "-Clink-arg=-Wl,-z,max-page-size=16384",
+    "-Clink-arg=-Wl,--build-id=sha1",
 ]

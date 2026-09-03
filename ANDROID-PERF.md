@@ -189,3 +189,68 @@ signature and re-pushes.
 - Debuggable build + /data/local/tmp/simpleperf for callgraphs.
 - Test samples: prof-vp9p2.webm (profile2 360p), prof-h264-interlaced.mp4
   (MBAFF field-coded, must STAY software), both in ~/Videos.
+
+## Time-to-first-frame round (2026-09-03, S8, release build)
+
+Two field reports, one cause. Hiding the video SurfaceView by a 0x0 VISIBLE
+layout does not destroy its surface on API 28 (creation seq stayed at 1
+across every item): the previous item's last frame stayed in the buffer
+queue and showed under the next item, and after any software-decoded item
+(raw blit = ANativeWindow_lock, a CPU producer connection that never sheds)
+every later MediaCodec configure failed with -10000, retried 60/250/600 ms
+and fell back to cpu copy. Fix: INVISIBLE on hide (slint fork Java). That
+exposed the cold-start race on every item: the fresh surface lands ~100 ms
+after a fast load, the codec built cpu-copy, rebuilt direct, and dropped
+frames until the next keyframe (4.94 s on the VP9 4K sample). Fix: window
+promise (`set_video_window_pending`), the decoder waits up to 400 ms for a
+promised surface before building headless.
+
+Measured on 4K_sample_video.webm (VP9 3840x2160 29.97, opus): loaded 135 ms,
+surface handed +10 ms, direct on first build, prerolled 453 ms, playing
+463 ms. Before: 4.9 s to steady video.
+
+## Profiling round (2026-09-03, S8, 4K VP9 30 fps over the v4 session)
+
+release-prof library (thin LTO, unstripped) in the debuggable apk, simpleperf
+dwarf call graphs, 10 s steady-state windows. pct = of one core.
+
+| process | pass 1 | pass 2 |
+|---|---|---|
+| app | 48.4 | 45.6 |
+| hwcomposer | 30.4 | 29.8 |
+| surfaceflinger | 24.7 | 25.1 |
+| audioserver (AudioOut_D) | 23.1 | 22.6 |
+| media.codec | 18.2 | 19.7 |
+
+App samples by thread: multiqueue1:src 26% (two threads: video input into
+MediaCodec, and opusdec), NDK MediaCodec_ 17% + CodecLooper 14% (the codec
+client loopers: binder, futex, cfi checks), tokio workers 23% (renamed
+Thread-N by the unnamed JNI attach; TLS media ingest over the fcast session:
+rustls AES-GCM 6% of them, recvfrom, memcpy), fj-vqueue 5%, multiqueue2 4%,
+fcompsrc 4% (matroska demux + vp9 parser), fj-aqueue 2% (audiostretch
+submit_input_buffer is a third of it), android_main 0.7%.
+
+Video input chain: 59% of handle_frame_android is drain_outputs ->
+AMediaCodec_dequeueOutputBuffer -> AMessage::postAndAwaitResponse (futex
+signal + wait). The NDK sync API turns every codec call into a looper round
+trip: ~4 per frame (dequeue_input, queue_input, dequeue_output x2 until
+TRY_AGAIN) plus the release on the sink thread, ~150 round trips/s. Largest
+candidate: AMediaCodec_setAsyncNotifyCallback (API 28) to drop the dequeue
+polls, est. 10-15% of app samples. Top kernel address ffffff8008ce7c94 is
+10.7% of all app samples (kptr hidden on the user build; context-switch
+tail of the same messaging).
+
+Opus decode ~12% of its thread: NEON intrinsics are on
+(celt_pitch_xcorr_float_neon present), the FFT has no NEON path in libopus's
+float build. No action. Audioserver 22% for one 48 kHz stream is the deep
+buffer mixer plus vendor effects, unchanged from 09-01.
+
+Tooling: `cargo ndk --target aarch64-linux-android -o <dir> build --package
+receiver-android --profile release-prof` with the xtask env; AGP strips
+jniLibs on packaging, so symbolize on the host by splicing the unstripped
+.so into a mirror of the installed base.apk at its device path under
+`simpleperf report --symfs` (the build had no build-id; rustflags now add
+--build-id=sha1 so --symdir works next time). `setprop security.perf_harden
+0`, record via `run-as <pkg> ./simpleperf record -p <pid> --call-graph
+dwarf`, pull with `adb exec-out run-as <pkg> cat perf.data` (plain adb shell
+corrupts binaries). Per-thread ticks from /proc/<pid>/task/*/stat deltas.

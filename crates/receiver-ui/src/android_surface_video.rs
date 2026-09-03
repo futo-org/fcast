@@ -113,6 +113,8 @@ pub(crate) fn park_current() {
         return;
     };
     this.handoff.lock().unwrap().preopen_pending = false;
+    // nothing is coming, a decoder must not wait for it
+    crate::set_video_window_pending(false);
     let _ = this.surface.set_visible(false);
 }
 
@@ -367,6 +369,11 @@ impl SurfaceVideo {
             }
             st.polling = true;
         }
+        // The view is up, so a window is on its way: a codec that builds in
+        // the meantime waits for it (bounded) instead of starting headless
+        // and losing video until the next keyframe. The handoff below clears
+        // the promise, as does giving up.
+        crate::set_video_window_pending(true);
         let this = self.clone();
         std::thread::spawn(move || {
             for _ in 0..200 {
@@ -375,6 +382,7 @@ impl SurfaceVideo {
                     let handed = this.handoff.lock().unwrap().handed_seq;
                     if seq == handed {
                         // the surface flapjack holds is still the live one
+                        crate::set_video_window_pending(false);
                         this.handoff.lock().unwrap().polling = false;
                         return;
                     }
@@ -395,6 +403,7 @@ impl SurfaceVideo {
                 std::thread::sleep(std::time::Duration::from_millis(25));
             }
             warn!("video surface never materialized, video stays headless");
+            crate::set_video_window_pending(false);
             this.handoff.lock().unwrap().polling = false;
         });
     }
