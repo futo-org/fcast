@@ -51,13 +51,29 @@
 //! current, which in practice means from inside a slint rendering notifier.
 //! Nothing here has a `Drop` that touches GL, precisely so a cache entry
 //! cannot be freed on a thread with no context.
+//!
+//! # Whether there is a GL context at all
+//!
+//! The android backend renders with dodvg on wgpu, and that lane is Vulkan:
+//! no EGL context is ever current on its render thread, `eglGetCurrentDisplay`
+//! answers `EGL_NO_DISPLAY`, and an import cannot happen.
+//! [`probe_render_thread`] learns that on the first rendered frame and the
+//! proposal side asks [`import_available`] before offering a pool, so the
+//! decoder keeps its own memory and the bridge draws the frame. Without that
+//! gate a pooled frame would be parked for an import that fails, and the video
+//! would be black. On top of it, dodvg declares no `samplerExternalOES` and
+//! refuses the external target outright (it draws nothing), see
+//! [`EXTERNAL_SAMPLING`].
 
 #![allow(non_snake_case)]
 
 use std::{
     ffi::{CString, c_char, c_void},
     ptr,
-    sync::{Mutex, OnceLock},
+    sync::{
+        Mutex, OnceLock,
+        atomic::{AtomicU8, Ordering},
+    },
 };
 
 use tracing::{info, warn};
@@ -151,6 +167,48 @@ fn ext() -> Option<&'static Ext> {
         })
     })
     .as_ref()
+}
+
+/// Whether a renderer in the tree samples `GL_TEXTURE_EXTERNAL_OES`. Every
+/// YUV AHardwareBuffer binds as one. dodvg, the renderer the android backend
+/// carries, refuses the target in its image import and draws nothing, and
+/// no other renderer is built for android, so the YUV half of the lane is
+/// not proposed. RGBA binds as an ordinary 2D texture and is gated only by
+/// the runtime probe. Flip this when a renderer that samples external
+/// textures lands.
+pub const EXTERNAL_SAMPLING: bool = false;
+
+/// What the render thread found on its first frame: 0 not yet asked, 1 no
+/// GL context (or no import entry points), 2 importable.
+static RENDER_IMPORT: AtomicU8 = AtomicU8::new(0);
+
+/// Learns, once, whether this thread can import at all. Call from the
+/// rendering notifier, the one place the renderer's context would be
+/// current if it had one. Cheap after the first call.
+pub fn probe_render_thread() {
+    if RENDER_IMPORT.load(Ordering::Acquire) != 0 {
+        return;
+    }
+    let display = unsafe { eglGetCurrentDisplay() };
+    let ok = !display.is_null() && ext().is_some();
+    if ok {
+        info!("android ahb lane: GL import available on the render thread");
+    } else {
+        info!("android ahb lane: no GL context on the render thread, nothing is proposed");
+    }
+    RENDER_IMPORT.store(if ok { 2 } else { 1 }, Ordering::Release);
+}
+
+/// A renderer that takes no rendering notifier has no moment to import in.
+pub fn mark_render_unavailable() {
+    RENDER_IMPORT.store(1, Ordering::Release);
+}
+
+/// Whether the render thread has confirmed it can import. False until it
+/// has been asked, so a proposal before the first frame is refused rather
+/// than guessed at.
+pub fn import_available() -> bool {
+    RENDER_IMPORT.load(Ordering::Acquire) == 2
 }
 
 /// A GL texture that borrows a gralloc allocation's pixels.

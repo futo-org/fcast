@@ -120,6 +120,17 @@ pub trait AhbEnv {
     fn yuv_layout(&self) -> Option<VideoFormat>;
     /// An `R8G8B8A8_UNORM` allocation went through at probe time.
     fn rgba_ok(&self) -> bool;
+    /// The renderer can import a gralloc buffer as a GL texture at all: a
+    /// GL context is current on its render thread and the EGL import entry
+    /// points resolved there. False on the wgpu/Vulkan lane, and false until
+    /// a first frame has rendered and could check, so a proposal never
+    /// parks frames the import could not turn into pixels.
+    fn gl_import(&self) -> bool;
+    /// The renderer samples `GL_TEXTURE_EXTERNAL_OES`, which every YUV
+    /// AHardwareBuffer binds as. skia and femtovg do; dodvg refuses the
+    /// target and draws nothing, so YUV is not proposed under it while RGBA,
+    /// an ordinary 2D texture, still is.
+    fn external_textures(&self) -> bool;
 }
 
 /// Everything the pool needs, once the gating has said yes.
@@ -142,7 +153,7 @@ pub struct PoolPlan {
 /// then allocates its own system memory and the frame takes the bridge path
 /// exactly as it does today.
 pub fn plan(env: &dyn AhbEnv, caps: &gst::Caps, need_pool: bool) -> Option<PoolPlan> {
-    if !need_pool || !env.enabled() || env.refused() {
+    if !need_pool || !env.enabled() || env.refused() || !env.gl_import() {
         return None;
     }
     // A decoder that allocates its own importable surfaces (MediaCodec's
@@ -168,7 +179,13 @@ pub fn plan(env: &dyn AhbEnv, caps: &gst::Caps, need_pool: bool) -> Option<PoolP
     match ahb_format {
         // Only the one layout the device really produces. Any other yuv
         // format would be written in an order the import does not expect.
-        AhbFormat::Yuv420 if env.yuv_layout() != Some(info.format()) => return None,
+        // And only for a renderer that can sample an external texture at
+        // all, or the frame would be parked and drawn as nothing.
+        AhbFormat::Yuv420
+            if !env.external_textures() || env.yuv_layout() != Some(info.format()) =>
+        {
+            return None;
+        }
         AhbFormat::Rgba8888 if !env.rgba_ok() => return None,
         _ => {}
     }
@@ -314,6 +331,8 @@ mod tests {
         refused: bool,
         yuv: Option<VideoFormat>,
         rgba: bool,
+        gl_import: bool,
+        external: bool,
     }
 
     impl Default for Env {
@@ -323,6 +342,8 @@ mod tests {
                 refused: false,
                 yuv: Some(VideoFormat::Nv12),
                 rgba: true,
+                gl_import: true,
+                external: true,
             }
         }
     }
@@ -339,6 +360,12 @@ mod tests {
         }
         fn rgba_ok(&self) -> bool {
             self.rgba
+        }
+        fn gl_import(&self) -> bool {
+            self.gl_import
+        }
+        fn external_textures(&self) -> bool {
+            self.external
         }
     }
 
@@ -502,6 +529,30 @@ mod tests {
         assert!(
             plan(&Env::default(), &caps("P010_10LE"), true).is_none(),
             "10-bit has no AHardwareBuffer format"
+        );
+        // The renderer half. No GL context on the render thread (the wgpu
+        // lane, or no frame rendered yet) refuses everything; a GL renderer
+        // without external sampling (dodvg) refuses yuv and keeps rgba.
+        let no_gl = Env {
+            gl_import: false,
+            ..Env::default()
+        };
+        assert!(plan(&no_gl, &nv12, true).is_none(), "no GL import, yuv");
+        assert!(
+            plan(&no_gl, &caps("RGBA"), true).is_none(),
+            "no GL import, rgba"
+        );
+        let no_external = Env {
+            external: false,
+            ..Env::default()
+        };
+        assert!(
+            plan(&no_external, &nv12, true).is_none(),
+            "yuv binds external, which this renderer cannot sample"
+        );
+        assert!(
+            plan(&no_external, &caps("RGBA"), true).is_some(),
+            "rgba is an ordinary 2D texture and stays"
         );
         gst::init().unwrap();
         let zero = gst::Caps::from_str(

@@ -19,7 +19,10 @@
 //! # Where the import runs
 //!
 //! On the render thread, inside a slint rendering notifier, because that is
-//! the only place the renderer's EGL context is current. The streaming thread
+//! the only place the renderer's EGL context is current, if it has one at
+//! all: the first `BeforeRendering` probes for a context and the sink only
+//! proposes a pool once that probe said yes (see
+//! [`crate::android_ahb_gl::probe_render_thread`]). The streaming thread
 //! only parks the frame and asks for a redraw. That also fixes the lifetime:
 //! the parked `gst::Buffer` holds the pool slot, and the buffer that is on
 //! screen is held in a second slot until the next one replaces it, so the
@@ -141,6 +144,8 @@ fn attach_renderer(ui: &crate::MainWindow) {
         .window()
         .set_rendering_notifier(move |state, _api| match state {
             slint::RenderingState::BeforeRendering => {
+                // one real check on the first frame, an atomic load after
+                crate::android_ahb_gl::probe_render_thread();
                 let Some(pending) = PENDING.lock().ok().and_then(|mut p| p.take()) else {
                     return;
                 };
@@ -161,6 +166,8 @@ fn attach_renderer(ui: &crate::MainWindow) {
             ?err,
             "android ahb lane: no rendering notifier, the bridge carries video"
         );
+        // no moment to import in, so nothing must ever be proposed
+        crate::android_ahb_gl::mark_render_unavailable();
     }
 }
 

@@ -46,9 +46,12 @@
 //!
 //! Every failure is a fallback, never an error. A device whose gralloc
 //! refuses `GPU_SAMPLED_IMAGE | CPU_WRITE_OFTEN` together, an API level below
-//! 29, a layout with no gst name: all of them leave the query untouched, the
-//! decoder allocates its own system memory, and the bridge converts as it
-//! always did. `FCAST_ANDROID_AHB=0` does the same by hand.
+//! 29, a layout with no gst name, a renderer with no GL context to import in
+//! (the wgpu/Vulkan lane the android backend runs today, see
+//! [`crate::android_ahb_gl::probe_render_thread`]): all of them leave the
+//! query untouched, the decoder allocates its own system memory, and the
+//! bridge converts as it always did. `FCAST_ANDROID_AHB=0` does the same by
+//! hand.
 
 use std::{
     ptr,
@@ -75,6 +78,15 @@ const USAGE: u64 = (ndk_sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_C
     as u64)
     | (ndk_sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_CPU_READ_RARELY.0 as u64)
     | (ndk_sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE.0 as u64);
+
+/// What a lock asks for: the CPU half of [`USAGE`] and nothing else.
+/// `AHardwareBuffer_lock` and `lockPlanes` take only `USAGE_CPU_*` bits and
+/// answer `-EINVAL` to any other, so passing the allocation usage (with its
+/// GPU bit) refused every lock, on every device, and the probe read that as
+/// a gralloc with no usable layout.
+const LOCK_USAGE: u64 = (ndk_sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_CPU_WRITE_OFTEN
+    .0 as u64)
+    | (ndk_sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_CPU_READ_RARELY.0 as u64);
 
 /// `AHardwareBuffer_lockPlanes` arrived in API 29, and this app declares 28.
 ///
@@ -186,6 +198,12 @@ impl AhbEnv for LiveEnv {
     }
     fn rgba_ok(&self) -> bool {
         self.0.rgba
+    }
+    fn gl_import(&self) -> bool {
+        crate::android_ahb_gl::import_available()
+    }
+    fn external_textures(&self) -> bool {
+        crate::android_ahb_gl::import_available() && crate::android_ahb_gl::EXTERNAL_SAMPLING
     }
 }
 
@@ -321,7 +339,7 @@ impl RawBuffer {
             }; 4],
         };
         let lock_planes = lock_planes_sym()?;
-        let rc = unsafe { lock_planes(self.as_ptr(), USAGE, -1, ptr::null(), &mut raw) };
+        let rc = unsafe { lock_planes(self.as_ptr(), LOCK_USAGE, -1, ptr::null(), &mut raw) };
         if rc != 0 {
             warn!(rc, "android ahb lane: lockPlanes refused");
             return None;
@@ -523,12 +541,19 @@ impl AhbAllocator {
         let planes = raw.lock_planes()?;
 
         let base = planes.data[0];
-        let size =
-            ahb_plan::frame_size(format, height, planes.n, &planes.data, &planes.row_stride)?;
+        // the buffer is locked from here on, every early exit unlocks it
+        // before the drop releases it
+        let Some(size) =
+            ahb_plan::frame_size(format, height, planes.n, &planes.data, &planes.row_stride)
+        else {
+            raw.unlock();
+            return None;
+        };
 
         let mem = unsafe {
             let mem = std::alloc::alloc(MEM_LAYOUT) as *mut AhbMemory;
             if mem.is_null() {
+                raw.unlock();
                 return None;
             }
             gst::ffi::gst_memory_init(
@@ -813,6 +838,12 @@ pub fn finish_write(buffer: &gst::BufferRef) {
 /// takes the conversion path. Every gate is in [`ahb_plan::plan`], which is
 /// tested on the host.
 pub fn propose(query: &mut gst::query::Allocation) -> bool {
+    // The render thread has to have confirmed it can import before anything
+    // is offered; `plan` checks the same fact, this only spares the gralloc
+    // probe below on a renderer that can never take a frame.
+    if !crate::android_ahb_gl::import_available() {
+        return false;
+    }
     // owned, because the query is written to below and the caps borrow it
     let (Some(caps), need_pool) = query.get_owned() else {
         return false;
@@ -884,5 +915,16 @@ mod tests {
                 | (ndk_sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_GPU_SAMPLED_IMAGE.0
                     as u64)
         );
+    }
+
+    /// A lock may carry CPU bits only, per the NDK contract, or gralloc
+    /// answers -EINVAL and the whole lane reads as unsupported.
+    #[test]
+    fn the_lock_usage_is_the_cpu_subset_of_the_allocation_usage() {
+        let cpu_mask = (ndk_sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_CPU_READ_MASK.0
+            as u64)
+            | (ndk_sys::AHardwareBuffer_UsageFlags::AHARDWAREBUFFER_USAGE_CPU_WRITE_MASK.0 as u64);
+        assert_eq!(LOCK_USAGE & !cpu_mask, 0, "a non-CPU bit in the lock usage");
+        assert_eq!(LOCK_USAGE, USAGE & cpu_mask);
     }
 }
