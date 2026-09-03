@@ -25,12 +25,19 @@ static EVENT_CHANNEL: LazyLock<(
 fn android_main(app: slint::android::AndroidApp) {
     log_panics::init();
 
+    // Debug only in debug builds: every tracing debug! line is a logcat
+    // write, and a release apk has no reader for them.
+    let level = if cfg!(debug_assertions) {
+        log::LevelFilter::Debug
+    } else {
+        log::LevelFilter::Info
+    };
     android_logger::init_once(
         android_logger::Config::default()
-            .with_max_level(log::LevelFilter::Debug)
+            .with_max_level(level)
             .with_filter(
                 android_logger::FilterBuilder::new()
-                    .filter_level(log::LevelFilter::Debug)
+                    .filter_level(level)
                     .filter_module("tracing_gstreamer::callsite", log::LevelFilter::Off)
                     .build(),
             ),

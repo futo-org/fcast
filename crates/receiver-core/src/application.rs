@@ -642,15 +642,24 @@ pub struct Application {
     // never touches android-activity's RwLock, see set_playback_active
     #[cfg(target_os = "android")]
     android_jni: (usize, usize),
-    /// The (active, visual) pair last sent to the activity, so state
-    /// transitions that resolve to the same answer cost no JNI round trip.
+    /// The (active, visual, audible) triple last sent to the activity, so
+    /// state transitions that resolve to the same answer cost no JNI round
+    /// trip.
     #[cfg(target_os = "android")]
-    android_playback: (bool, bool),
+    android_playback: (bool, bool, bool),
     /// Whether the current item has something to show. Defaults to true per
     /// load (video and images want the screen awake from the start); flapjack
     /// flips it false when the item turns out to be audio only.
     #[cfg(target_os = "android")]
     android_visual: bool,
+    /// Whether the current item makes sound. Defaults to true per load (a
+    /// cast arriving during a call must not play over it, so focus is taken
+    /// before the tracks are known); false for images and for items whose
+    /// stream collection has no audio track. An inaudible item takes no
+    /// audio focus and no media session, so a photo never pauses whatever
+    /// else is playing.
+    #[cfg(target_os = "android")]
+    android_audible: bool,
     /// A transient focus loss (call, alarm) paused playback, so the matching
     /// regain resumes it. A user pause never sets this.
     #[cfg(target_os = "android")]
@@ -1000,9 +1009,11 @@ impl Application {
                 android_app.activity_as_ptr() as usize,
             ),
             #[cfg(target_os = "android")]
-            android_playback: (false, false),
+            android_playback: (false, false, false),
             #[cfg(target_os = "android")]
             android_visual: true,
+            #[cfg(target_os = "android")]
+            android_audible: true,
             #[cfg(target_os = "android")]
             android_transient_pause: false,
             #[cfg(target_os = "android")]
@@ -1686,17 +1697,22 @@ impl Application {
     }
 
     /// The single edge every device resource hangs off: tells the activity
-    /// whether playback is active and whether it is visual. The Java side
-    /// owns wake lock, wifi lock, FLAG_KEEP_SCREEN_ON (visual only) and
-    /// audio focus against exactly this signal, so nothing can leak past a
-    /// stop, an error, or an item that turns out to be an image.
+    /// whether playback is active, whether it is visual and whether it is
+    /// audible. The Java side owns wake lock, wifi lock, FLAG_KEEP_SCREEN_ON
+    /// (visual only), audio focus and the media session (audible only)
+    /// against exactly this signal, so nothing can leak past a stop, an
+    /// error, or an item that turns out to be an image.
     ///
     /// Over JNI rather than android-activity's set_window_flags, whose
     /// process-wide RwLock deadlocks against the slint event loop holding
     /// the read side across every callback dispatch.
     #[cfg(target_os = "android")]
     fn set_playback_active(&mut self, active: bool) {
-        let state = (active, active && self.android_visual);
+        let state = (
+            active,
+            active && self.android_visual,
+            active && self.android_audible,
+        );
         if self.android_playback == state {
             return;
         }
@@ -1711,10 +1727,11 @@ impl Application {
         match env.call_method(
             &activity,
             "setPlaybackActive",
-            "(ZZ)V",
+            "(ZZZ)V",
             &[
                 jni::objects::JValue::Bool(state.0 as u8),
                 jni::objects::JValue::Bool(state.1 as u8),
+                jni::objects::JValue::Bool(state.2 as u8),
             ],
         ) {
             // cached only on success: a failed release cached as released
@@ -1768,8 +1785,12 @@ impl Application {
         let playing = matches!(self.player.player_state(), PlayerState::Playing);
         let speed = self.player.rate() as f32;
         let dur_ms = (duration_secs * 1000.0) as i64;
-        let meta = (self.android_media_title.clone(), dur_ms);
-        if self.android_meta_pushed.as_ref() != Some(&meta) {
+        // compared in place, the title is only cloned on an actual push
+        let meta_stale = self
+            .android_meta_pushed
+            .as_ref()
+            .is_none_or(|(title, dur)| *title != self.android_media_title || *dur != dur_ms);
+        if meta_stale {
             let (vm, activity) = self.android_jni;
             if let Ok(vm) = unsafe { jni::JavaVM::from_raw(vm as *mut _) } {
                 if let Ok(mut env) = vm.attach_current_thread_permanently() {
@@ -1779,7 +1800,7 @@ impl Application {
                     // permanently attached thread
                     let pushed = env
                         .with_local_frame(4, |env| -> jni::errors::Result<bool> {
-                            let title = env.new_string(&meta.0)?;
+                            let title = env.new_string(&self.android_media_title)?;
                             env.call_method(
                                 &activity,
                                 "updateMediaMetadata",
@@ -1797,7 +1818,7 @@ impl Application {
                             false
                         });
                     if pushed {
-                        self.android_meta_pushed = Some(meta);
+                        self.android_meta_pushed = Some((self.android_media_title.clone(), dur_ms));
                     }
                 }
             }
@@ -1848,6 +1869,7 @@ impl Application {
                 // A new item is visual until flapjack says otherwise, and it
                 // must not inherit the previous item's focus-loss hold.
                 self.android_visual = true;
+                self.android_audible = true;
                 self.android_transient_pause = false;
                 // The dedup below can absorb this transition entirely (stop
                 // then immediate re-cast), but focus still needs a re-check:
@@ -3230,7 +3252,9 @@ impl Application {
         #[cfg(target_os = "android")]
         {
             self.android_transient_pause = false;
-            self.call_activity("ensureAudioFocus", "()V", &[]);
+            if self.android_audible {
+                self.call_activity("ensureAudioFocus", "()V", &[]);
+            }
         }
         if self.is_playing() {
             self.player.play();
@@ -3525,23 +3549,33 @@ impl Application {
     }
 
     fn handle_mdns_event(&mut self, event: Mdns) -> Result<()> {
-        match event {
+        // Unchanged inputs stop here. The rebuild below is a fast_qr run, a
+        // pixel buffer and a scene dirty, and android re-sends the name on
+        // every NSD re-registration and the address set from a 30 s sweep.
+        let changed = match event {
             Mdns::NameSet(device_name) => {
-                self.device_name = Some(device_name.clone());
-                self.gui.set_local_device_name(device_name);
-            }
-            Mdns::IpAdded(addr) => {
-                let _ = self.current_addresses.insert(addr);
-            }
-            Mdns::IpRemoved(addr) => {
-                let _ = self.current_addresses.remove(&addr);
-            }
-            Mdns::SetIps(addrs) => {
-                self.current_addresses.clear();
-                for addr in addrs {
-                    let _ = self.current_addresses.insert(addr);
+                if self.device_name.as_deref() == Some(device_name.as_str()) {
+                    false
+                } else {
+                    self.device_name = Some(device_name.clone());
+                    self.gui.set_local_device_name(device_name);
+                    true
                 }
             }
+            Mdns::IpAdded(addr) => self.current_addresses.insert(addr),
+            Mdns::IpRemoved(addr) => self.current_addresses.remove(&addr),
+            Mdns::SetIps(addrs) => {
+                let addrs: HashSet<IpAddr> = addrs.into_iter().collect();
+                if addrs == self.current_addresses {
+                    false
+                } else {
+                    self.current_addresses = addrs;
+                    true
+                }
+            }
+        };
+        if !changed {
+            return Ok(());
         }
 
         self.update_connection_details()
@@ -4248,6 +4282,19 @@ impl Application {
 
                 self.player.update_media_info();
                 self.on_media_info_updated();
+
+                // The tracks are known now: an item with no audio stream
+                // (image through the pipeline, silent clip) must not hold
+                // audio focus over whatever else is playing. An empty
+                // collection says nothing yet and keeps the load default.
+                #[cfg(target_os = "android")]
+                if !self.player.streams.is_empty() {
+                    self.android_audible = self
+                        .player
+                        .streams
+                        .iter()
+                        .any(|s| s.info.slot == flapjack::TrackSlot::Audio);
+                }
 
                 self.transition_app_state(AppState::Playing);
 
@@ -5171,25 +5218,16 @@ impl Application {
                 #[cfg(target_os = "android")]
                 {
                     self.android_visual = true;
+                    // A picture makes no sound: no audio focus (it would
+                    // pause whatever else is playing), no media session and
+                    // no optimistic wake lock (a photo left up overnight is
+                    // exactly the Play battery case). FLAG_KEEP_SCREEN_ON
+                    // carries the screen.
+                    self.android_audible = false;
                 }
                 self.transition_app_state(AppState::Playing);
 
                 self.media_loaded_successfully();
-
-                // An image is not PLAYING: without this the optimistic
-                // wake-lock acquire from the active edge stays held for the
-                // whole display (a photo left up overnight is exactly the
-                // Play battery case). FLAG_KEEP_SCREEN_ON carries the screen.
-                #[cfg(target_os = "android")]
-                self.call_activity(
-                    "updateMediaSession",
-                    "(ZJF)V",
-                    &[
-                        jni::objects::JValue::Bool(0),
-                        jni::objects::JValue::Long(0),
-                        jni::objects::JValue::Float(0.0),
-                    ],
-                );
             }
         }
 

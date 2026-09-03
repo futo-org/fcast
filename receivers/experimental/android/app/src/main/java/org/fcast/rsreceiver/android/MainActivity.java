@@ -25,6 +25,7 @@ import java.net.NetworkInterface;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Enumeration;
 import java.util.HashMap;
 import java.util.List;
@@ -180,12 +181,31 @@ public class MainActivity extends NativeActivity {
     native boolean getFCastTxtAttribs(Map<String, String> attrs);
     native int getFCastPort();
 
+    /// The previous sweep's raw addresses, net thread only. An unchanged
+    /// sweep is not forwarded: the receiver rebuilds its connection QR on
+    /// every address push, and the 30 s timer would otherwise do that for
+    /// the app's whole life.
+    private ArrayList<byte[]> lastSweep = null;
+
+    private static boolean sameAddresses(ArrayList<byte[]> a, ArrayList<byte[]> b) {
+        if (a.size() != b.size()) {
+            return false;
+        }
+        for (int i = 0; i < a.size(); i++) {
+            if (!Arrays.equals(a.get(i), b.get(i))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     /// One authoritative sweep instead of per-Network bookkeeping: every
     /// interface's current addresses, as the full replacement set. Covers
     /// hotspot/tethering interfaces the ConnectivityManager never reports.
     /// Runs on the net thread.
     void sweepAddresses() {
         ArrayList<ByteBuffer> addrs = new ArrayList<>();
+        ArrayList<byte[]> raw = new ArrayList<>();
         try {
             Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
             while (ifaces != null && ifaces.hasMoreElements()) {
@@ -200,6 +220,7 @@ public class MainActivity extends NativeActivity {
                         continue;
                     }
                     byte[] addressBytes = addr.getAddress();
+                    raw.add(addressBytes);
                     ByteBuffer buf = ByteBuffer.allocateDirect(addressBytes.length);
                     buf.put(addressBytes);
                     addrs.add(buf);
@@ -209,6 +230,10 @@ public class MainActivity extends NativeActivity {
             Log.e(TAG, "interface sweep failed", e);
             return;
         }
+        if (lastSweep != null && sameAddresses(lastSweep, raw)) {
+            return;
+        }
+        lastSweep = raw;
         Log.d(TAG, "address sweep: " + addrs.size() + " addresses");
         nativeSetAddresses(addrs);
     }
@@ -670,11 +695,16 @@ public class MainActivity extends NativeActivity {
     /// from native code on the playback active/idle edge. Any thread.
     /// Ordering is preserved by posting to the main looper.
     ///
+    /// `audible` is false for images and for items with no audio track:
+    /// those take no audio focus (a photo must not pause whatever else is
+    /// playing), no media session and no CPU wake lock. The screen pin and
+    /// the wifi lock follow `active` and `visual` as before.
+    ///
     /// Direct window-flag manipulation rather than android-activity's
     /// set_window_flags, whose process-wide RwLock deadlocks against the
     /// slint event loop's long-held read guard.
     @SuppressLint("WakelockTimeout")
-    public void setPlaybackActive(boolean active, boolean visual) {
+    public void setPlaybackActive(boolean active, boolean visual, boolean audible) {
         runOnUiThread(() -> {
             if (active && !visible) {
                 bringToFront();
@@ -687,21 +717,25 @@ public class MainActivity extends NativeActivity {
                 getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
             }
 
+            boolean audio = active && audible;
             if (mediaSession != null) {
-                mediaSession.setActive(active);
+                mediaSession.setActive(audio);
             }
             ReceiverService.castActive = active;
             ReceiverService.refreshIfRunning();
             castVisual = active && visual;
 
-            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
             castActiveLocal = active;
-            if (active) {
-                // playing usually follows within a tick; acquiring here too
-                // covers the load window, syncWakeLock drops it on pause
-                castPlaying = true;
-                syncWakeLock();
-                updateWifiLockMode(visible);
+            // For an audible item playing usually follows within a tick;
+            // acquiring here too covers the load window, syncWakeLock drops
+            // it on pause. A silent item never needs the CPU awake.
+            castPlaying = audio;
+            syncWakeLock();
+            // Not a plain release on the idle edge: a visible idle receiver
+            // keeps the lock so the next sender's handshake still lands fast.
+            updateWifiLockMode(visible);
+
+            if (audio) {
                 ensureAudioFocus();
                 if (noisyReceiver == null) {
                     noisyReceiver = new android.content.BroadcastReceiver() {
@@ -720,12 +754,8 @@ public class MainActivity extends NativeActivity {
                     }
                 }
             } else {
-                castPlaying = false;
-                syncWakeLock();
-                // Not a plain release: a visible idle receiver keeps the lock
-                // so the next sender's handshake still lands fast.
-                updateWifiLockMode(visible);
                 if (focusRequest != null) {
+                    AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
                     am.abandonAudioFocusRequest(focusRequest);
                     focusRequest = null;
                 }
@@ -937,7 +967,7 @@ public class MainActivity extends NativeActivity {
         if (netThread != null) {
             netThread.quitSafely();
         }
-        setPlaybackActive(false, false);
+        setPlaybackActive(false, false, false);
         stopService(new Intent(this, ReceiverService.class));
         if (mediaSession != null) {
             mediaSession.release();
