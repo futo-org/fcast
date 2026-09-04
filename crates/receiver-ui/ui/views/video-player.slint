@@ -23,8 +23,8 @@ import {
 } from "../common.slint";
 import {
     FCastPalette,
+    RowTint,
 } from "../../../../ui-components/styling.slint";
-import { FocusBorder } from "../../../../ui-components/components.slint";
 
 component SecondaryButton inherits Button {
     icon-size: 18px;
@@ -69,8 +69,9 @@ component HeaderButton inherits Rectangle {
         }
     }
 
-    if root.focused: FocusBorder {
+    if root.focused: Rectangle {
         border-radius: root.height / 2;
+        background: RowTint.focused;
     }
 }
 
@@ -83,19 +84,19 @@ component PlaybackSettingsMenuItem inherits Rectangle {
     callback clicked;
     callback hovered;
 
-    border-radius: 6px;
-
     states [
-        hover when i-ta.has-hover || root.focused: {
+        focused when root.focused: {
             text.color: FCastPalette.foreground;
             arrow-icon.colorize: FCastPalette.foreground;
-            background: FCastPalette.brand-600;
+            background: RowTint.focused;
+        }
+        hover when i-ta.has-hover: {
+            text.color: FCastPalette.foreground;
+            arrow-icon.colorize: FCastPalette.foreground;
+            background: RowTint.hovered;
         }
     ]
-
-    if root.focused: FocusBorder {
-        border-radius: root.border-radius;
-    }
+    animate background { duration: 100ms; }
 
     i-ta := TouchArea {
         clicked => root.clicked();
@@ -109,9 +110,10 @@ component PlaybackSettingsMenuItem inherits Rectangle {
     }
 
     HorizontalLayout {
-        padding: 8px;
-        padding-top: 14px;
-        padding-bottom: 14px;
+        padding-left: 24px;
+        padding-right: 20px;
+        padding-top: 10px;
+        padding-bottom: 10px;
         spacing: 8px;
 
         VerticalLayout {
@@ -146,28 +148,22 @@ component PlaybackSettingsMenuItem inherits Rectangle {
 component SettingItem inherits Rectangle {
     in property <string> value;
     in property <bool> selected;
-    // True when the side bar's keyboard cursor sits on this row. Drawn as a ring
-    // rather than a background so it stays readable on the selected row too.
+    // True when the side bar's keyboard cursor sits on this row. A tint laid
+    // over the background, so it reads on the selected row's gradient too.
     in property <bool> focused;
 
     callback clicked;
     callback hovered;
-
-    border-radius: 6px;
 
     states [
         selected when selected: {
             background: @linear-gradient(90.92deg, #2D7AF8 0.79%, #0757D9 104.49%);
             icon.source: Icons.check-tick;
         }
-        hover when ta.has-hover || root.focused: {
-            background: @linear-gradient(90.92deg, #2D7AF850 0.79%, #0757D950 104.49%);
+        hover when ta.has-hover: {
+            background: RowTint.hovered;
         }
     ]
-
-    if root.focused: FocusBorder {
-        border-radius: root.border-radius;
-    }
 
     ta := TouchArea {
         mouse-cursor: pointer;
@@ -181,10 +177,15 @@ component SettingItem inherits Rectangle {
         }
     }
 
+    if root.focused: Rectangle {
+        background: RowTint.focused;
+    }
+
     HorizontalLayout {
-        padding: 10px;
-        padding-left: 12px;
-        padding-right: 12px;
+        padding-top: 10px;
+        padding-bottom: 10px;
+        padding-left: 24px;
+        padding-right: 20px;
         spacing: 8px;
 
         FText {
@@ -211,6 +212,8 @@ component PlaybackSettingHeader inherits HorizontalLayout {
     callback hovered;
 
     spacing: 15px;
+    padding-left: 15px;
+    padding-right: 15px;
 
     HeaderButton {
         icon: Icons.arrow-right;
@@ -934,11 +937,13 @@ component PlaybackControls inherits Rectangle {
             TouchArea {}
 
             if current-settings-page == SettingsPage.Start: VerticalLayout {
-                padding: 15px;
                 padding-top: 18px;
+                padding-bottom: 15px;
 
                 HorizontalLayout {
                     spacing: 12px;
+                    padding-left: 15px;
+                    padding-right: 15px;
 
                     FText {
                         text: @tr("Playback settings");
@@ -964,7 +969,6 @@ component PlaybackControls inherits Rectangle {
 
                 VerticalLayout {
                     padding-top: 10px;
-                    spacing: 5px;
 
                     if Bridge.video-tracks.length > 0: PlaybackSettingsMenuItem {
                         label: @tr("Video");
@@ -1023,8 +1027,8 @@ component PlaybackControls inherits Rectangle {
             }
 
             if current-settings-page == SettingsPage.Video: VerticalLayout {
-                padding: 15px;
                 padding-top: 18px;
+                padding-bottom: 15px;
 
                 PlaybackSettingHeader {
                     title: @tr("Video track");
@@ -1040,7 +1044,6 @@ component PlaybackControls inherits Rectangle {
 
                 VerticalLayout {
                     padding-top: 10px;
-                    spacing: 5px;
 
                     SettingsTrackList {
                         tracks: Bridge.video-tracks;
@@ -1058,8 +1061,8 @@ component PlaybackControls inherits Rectangle {
             }
 
             if current-settings-page == SettingsPage.Audio: VerticalLayout {
-                padding: 15px;
                 padding-top: 18px;
+                padding-bottom: 15px;
 
                 PlaybackSettingHeader {
                     title: @tr("Audio track");
@@ -1075,7 +1078,6 @@ component PlaybackControls inherits Rectangle {
 
                 VerticalLayout {
                     padding-top: 10px;
-                    spacing: 5px;
 
                     SettingsTrackList {
                         tracks: Bridge.audio-tracks;
@@ -1093,8 +1095,8 @@ component PlaybackControls inherits Rectangle {
             }
 
             if current-settings-page == SettingsPage.Subtitle: VerticalLayout {
-                padding: 15px;
                 padding-top: 18px;
+                padding-bottom: 15px;
 
                 PlaybackSettingHeader {
                     title: @tr("Subtitle track");
@@ -1110,7 +1112,6 @@ component PlaybackControls inherits Rectangle {
 
                 VerticalLayout {
                     padding-top: 10px;
-                    spacing: 5px;
 
                     SettingsTrackList {
                         tracks: Bridge.subtitle-tracks;
@@ -1131,8 +1132,8 @@ component PlaybackControls inherits Rectangle {
             }
 
             if current-settings-page == SettingsPage.Rate: VerticalLayout {
-                padding: 15px;
                 padding-top: 18px;
+                padding-bottom: 15px;
 
                 PlaybackSettingHeader {
                     title: @tr("Playback speed");
@@ -1148,7 +1149,6 @@ component PlaybackControls inherits Rectangle {
 
                 VerticalLayout {
                     padding-top: 10px;
-                    spacing: 5px;
 
                     // No scroll-into-view here: the eight rates always fit the panel.
                     ListView {
@@ -1212,10 +1212,237 @@ component PlaybackControls inherits Rectangle {
     }
 }
 
+// The mini OSD: what the player says about a transport command that did not
+// come from a click on it. One slim strip along the bottom, nothing to press:
+// the state, where playback is, a thin line for it, and a word while a seek
+// is still landing. The full chrome takes over the moment someone interacts.
+component MiniOsd inherits Rectangle {
+    in property <bool> shown;
+
+    height: 64px;
+    clip: true;
+
+    property <float> played: Bridge.duration-secs > 0
+        ? Math.clamp(Bridge.progress-secs / Bridge.duration-secs, 0.0, 1.0)
+        : 0.0;
+    // A keyboard seek has the badge for how far it went; a sender's is
+    // absolute and only says here that it is still landing.
+    property <int> delta: Bridge.mini-osd-seek-delta;
+
+    // The same motion as the chrome's reveal: it rises a little and fades,
+    // on the controls' own curve.
+    body := Rectangle {
+        y: root.shown ? 0px : 12px;
+        opacity: root.shown ? 1.0 : 0.0;
+        animate y, opacity {
+            duration: 200ms;
+            easing: ease-out-expo;
+        }
+
+    Rectangle {
+        background: @linear-gradient(0deg, rgba(0, 0, 0, 0.75) 0%, rgba(0, 0, 0, 0.0) 100%);
+    }
+
+    HorizontalLayout {
+        padding-left: 24px;
+        padding-right: 24px;
+        padding-top: 24px;
+        padding-bottom: 16px;
+        spacing: 14px;
+
+        VerticalLayout {
+            alignment: center;
+
+            Image {
+                width: 14px;
+                height: 14px;
+                source: Bridge.playback-state == GuiPlaybackState.Playing ? Icons.pause : Icons.play;
+                colorize: FCastPalette.foreground;
+            }
+        }
+
+        // Outfit's digits are proportional, so the label is as wide as the
+        // widest time it can show (the format is always hh:mm:ss) and left
+        // aligned: a ticking digit moves nothing beside it.
+        Rectangle {
+            width: max(eights.preferred-width, zeros.preferred-width) + 4px;
+
+            // The two widest digit shapes, whichever this face makes wider.
+            eights := FText {
+                visible: false;
+                text: Bridge.is-live ? "88:88:88" : "88:88:88 / 88:88:88";
+                font-size: 13px;
+            }
+
+            zeros := FText {
+                visible: false;
+                text: Bridge.is-live ? "00:00:00" : "00:00:00 / 00:00:00";
+                font-size: 13px;
+            }
+
+            FText {
+                x: 0;
+                text: Bridge.is-live
+                    ? Bridge.sec-float-to-string(Bridge.progress-secs)
+                    : Bridge.sec-float-to-string(Bridge.progress-secs) + " / " + Bridge.sec-float-to-string(Bridge.duration-secs);
+                font-size: 13px;
+                vertical-alignment: center;
+                height: 100%;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            horizontal-stretch: 1;
+
+            Rectangle {
+                height: 4px;
+                border-radius: 2px;
+                background: #FFFFFF33;
+
+                Rectangle {
+                    x: 0;
+                    width: parent.width * root.played;
+                    height: parent.height;
+                    border-radius: parent.border-radius;
+                    background: Bridge.is-live ? FCastPalette.negative-800 : FCastPalette.foreground;
+                    animate width { duration: 150ms; }
+                }
+            }
+        }
+
+        if root.delta == 0 && Bridge.seek-pending: FText {
+            text: @tr("Seeking…");
+            font-size: 13px;
+            color: FCastPalette.opacity-light-500;
+            vertical-alignment: center;
+        }
+    }
+    }
+}
+
+// The seek badge: a pill on the side of the picture a keyboard seek went
+// toward, with the running total of the presses, the way the video apps show
+// a double tap. Pops in, and fades a moment after the last press.
+component SeekBadge inherits Rectangle {
+    in property <bool> shown;
+    // The seconds shown, unsigned: the side and the glyph say which way.
+    // Kept by the caller across the fade, so the pill never reads zero on
+    // its way out.
+    in property <int> seconds;
+    in property <bool> rewind;
+    // The other side took over: go at once rather than fade.
+    in property <bool> snap;
+
+    width: 104px;
+    height: 44px;
+    border-radius: self.height / 2;
+    background: rgba(0, 0, 0, 0.6);
+    opacity: root.shown ? 1.0 : 0.0;
+    transform-scale: root.shown ? 1.0 : 0.9;
+    animate opacity, transform-scale {
+        duration: root.shown ? 120ms : (root.snap ? 0ms : 250ms);
+        easing: ease-out-expo;
+    }
+
+    HorizontalLayout {
+        alignment: center;
+        spacing: 8px;
+        padding-left: 14px;
+        padding-right: 14px;
+
+        // Two play glyphs make the fast forward mark, turned round for rewind.
+        VerticalLayout {
+            alignment: center;
+
+            Rectangle {
+                width: 22px;
+                height: 12px;
+                transform-rotation: root.rewind ? 180deg : 0deg;
+
+                Image {
+                    x: 0;
+                    width: 12px;
+                    height: 12px;
+                    source: Icons.play;
+                    colorize: FCastPalette.foreground;
+                }
+
+                Image {
+                    x: 9px;
+                    width: 12px;
+                    height: 12px;
+                    source: Icons.play;
+                    colorize: FCastPalette.foreground;
+                }
+            }
+        }
+
+        FText {
+            text: @tr("{}s", root.seconds);
+            font-size: 15px;
+            font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
 export component VideoPlayerView inherits Rectangle {
     width: 100%;
     height: 100%;
     background: transparent;
+
+    // The seek badge's clock: each keyboard seek pops it and restarts the
+    // fade, the total it shows is frozen at the last press so the fade-out
+    // never reads zero.
+    property <bool> badge-visible: false;
+    property <int> badge-delta: 0;
+    property <int> badge-serial: Bridge.seek-badge-serial;
+    changed badge-serial => {
+        badge-delta = Bridge.mini-osd-seek-delta;
+        badge-visible = true;
+        badge-tim.running = true;
+        badge-tim.restart();
+    }
+    badge-tim := Timer {
+        interval: 700ms;
+        running: false;
+        triggered => {
+            badge-visible = false;
+            Bridge.mini-osd-seek-delta = 0;
+            self.running = false;
+        }
+    }
+
+    // The mini OSD's clock. Every outside transport command shows the strip
+    // and restarts the fade; the tick keeps it up while a pause pins it or a
+    // seek is still landing, and folds it the first time neither holds.
+    property <bool> mini-visible: false;
+    property <int> mini-serial: Bridge.mini-osd-serial;
+    changed mini-serial => {
+        mini-visible = true;
+        mini-tim.running = true;
+        mini-tim.restart();
+    }
+    // A pause pinned from outside lets go when playback moves on by any
+    // route, a click on the chrome included.
+    property <GuiPlaybackState> mini-state: Bridge.playback-state;
+    changed mini-state => {
+        if mini-state != GuiPlaybackState.Paused {
+            Bridge.mini-osd-pinned = false;
+        }
+    }
+    mini-tim := Timer {
+        interval: 2500ms;
+        running: false;
+        triggered => {
+            if Bridge.mini-osd-pinned || Bridge.seek-pending {
+                return;
+            }
+            mini-visible = false;
+            self.running = false;
+        }
+    }
 
     // CPU-delivered video, behind every control. The desktop libplacebo
     // path leaves the source empty and paints under the window instead.
@@ -1288,6 +1515,33 @@ export component VideoPlayerView inherits Rectangle {
         width: 1phx;
         height: 1phx;
         background: Bridge.cue-anchor;
+    }
+
+    // Below the chrome, and only while the chrome is away: an interaction
+    // that reveals the controls is what retires the strip.
+    MiniOsd {
+        y: root.height - self.height;
+        width: 100%;
+        shown: mini-visible && !Bridge.controls-overlay-visible;
+    }
+
+    // One pill per half, on the half the seek went toward. Turning round
+    // drops the old one on the spot and starts the other from scratch.
+    SeekBadge {
+        x: root.width * 0.25 - self.width / 2;
+        y: (root.height - self.height) / 2;
+        rewind: true;
+        shown: badge-visible && badge-delta < 0;
+        snap: badge-visible && badge-delta > 0;
+        seconds: -badge-delta;
+    }
+
+    SeekBadge {
+        x: root.width * 0.75 - self.width / 2;
+        y: (root.height - self.height) / 2;
+        shown: badge-visible && badge-delta > 0;
+        snap: badge-visible && badge-delta < 0;
+        seconds: badge-delta;
     }
 
     // Ancestor TouchArea covering the whole view: its has-hover stays true while the pointer is

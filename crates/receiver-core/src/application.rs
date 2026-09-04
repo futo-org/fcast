@@ -547,6 +547,27 @@ enum MediaSource {
     },
 }
 
+/// The mini OSD's reading of a transport operation, `None` for one that is
+/// not transport or whose effect depends on a state the player is not in.
+fn remote_transport_kind(
+    op: &Operation,
+    state: PlayerState,
+) -> Option<crate::gui::TransportKind> {
+    use crate::gui::TransportKind as T;
+    use fcast_protocol::v4::PlaybackState as P;
+    match op {
+        Operation::Pause | Operation::SetPlaybackState(P::Paused) => Some(T::Pause),
+        Operation::Resume | Operation::SetPlaybackState(P::Playing) => Some(T::Resume),
+        Operation::Seek(_) => Some(T::Seek),
+        Operation::ResumeOrPause => match state {
+            PlayerState::Playing => Some(T::Pause),
+            PlayerState::Paused => Some(T::Resume),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 #[derive(Debug, Copy, Clone)]
 pub enum PacketOrigin {
     Gui,
@@ -3359,6 +3380,14 @@ impl Application {
     }
 
     fn handle_operation(&mut self, op: Operation, origin: PacketOrigin) -> Result<bool> {
+        // A transport command from outside this UI gets the player's mini OSD:
+        // the sender's pause, resume and seek. A click on the receiver's own
+        // chrome is its own feedback.
+        if !matches!(origin, PacketOrigin::Gui)
+            && let Some(kind) = remote_transport_kind(&op, self.player.player_state())
+        {
+            self.gui.transport_from_sender(kind);
+        }
         match op {
             Operation::Pause => self.pause(),
             Operation::Resume => self.resume(),

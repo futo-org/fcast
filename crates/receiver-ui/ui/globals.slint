@@ -9,6 +9,15 @@ export enum GuiPlaybackState {
     Loading,
 }
 
+// A transport command that did not come from a click on this UI: the
+// sender's, or a keyboard shortcut with the chrome hidden. See the player's
+// mini OSD.
+export enum UiTransport {
+    Pause,
+    Resume,
+    Seek,
+}
+
 export enum AppState {
     Idle,
     LoadingMedia,
@@ -211,6 +220,43 @@ export global Bridge {
     in-out property <UiUpdaterState> updater-state: UiUpdaterState.None;
     // Maintained by the video player's PlaybackControls: true while the controls are drawn over the video.
     in-out property <bool> controls-overlay-visible: false;
+
+    // The player's mini OSD: a slim state-and-progress strip for transport
+    // commands that came from outside this UI, where the full chrome would
+    // be noise. Bumped per command; a pause pins the strip until playback
+    // moves on, everything else fades on its own.
+    in-out property <int> mini-osd-serial: 0;
+    in-out property <bool> mini-osd-pinned: false;
+    // Seconds the keyboard seeks moved by, summed while the seek badge is up
+    // so three taps read as one jump. Zero for a sender's seek, which is
+    // absolute. The badge clears it when it fades.
+    in-out property <int> mini-osd-seek-delta: 0;
+    // Bumped per keyboard seek: the badge's own clock.
+    in-out property <int> seek-badge-serial: 0;
+    callback transport-from-sender(kind: UiTransport);
+    transport-from-sender(kind) => {
+        note-remote-transport(kind);
+    }
+    public function note-remote-transport(kind: UiTransport) {
+        if kind == UiTransport.Pause {
+            mini-osd-pinned = true;
+        } else if kind == UiTransport.Resume {
+            mini-osd-pinned = false;
+        }
+        mini-osd-seek-delta = 0;
+        mini-osd-serial += 1;
+    }
+    public function note-keyboard-seek(delta-secs: int) {
+        // Presses in one direction add up; turning round starts over, the
+        // old pill is not something to subtract from.
+        if (mini-osd-seek-delta > 0) == (delta-secs > 0) {
+            mini-osd-seek-delta += delta-secs;
+        } else {
+            mini-osd-seek-delta = delta-secs;
+        }
+        seek-badge-serial += 1;
+        mini-osd-serial += 1;
+    }
 
     // Inspector
     in-out property <bool> show-inspector: false;
@@ -453,11 +499,22 @@ export global Bridge {
             toggle-fullscreen();
             return accept;
         } else if Bridge.is-playing() && event.text == Key.Space {
+            // With the chrome hidden the shortcut is an outside command as
+            // far as feedback goes: the mini OSD says what it did.
+            if !controls-overlay-visible {
+                note-remote-transport(playback-state == GuiPlaybackState.Playing ? UiTransport.Pause : UiTransport.Resume);
+            }
             resume-or-pause();
             return accept;
         } else if Bridge.is-playing() && event.text == Key.LeftArrow {
+            if !controls-overlay-visible {
+                note-keyboard-seek(-10);
+            }
             Bridge.seek-to-percent((Bridge.progress-secs - 10) / Bridge.duration-secs);
         } else if Bridge.is-playing() && event.text == Key.RightArrow {
+            if !controls-overlay-visible {
+                note-keyboard-seek(10);
+            }
             Bridge.seek-to-percent((Bridge.progress-secs + 10) / Bridge.duration-secs);
         } else if Bridge.is-playing() && event.text == Key.DownArrow {
             Bridge.set-volume(Math.clamp(Bridge.volume - 0.05, 0.0, 1.0));

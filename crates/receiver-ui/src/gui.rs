@@ -300,6 +300,15 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
                         });
             }
 
+            // The winit window's own cursor visibility as well: slint only
+            // re-applies a mouse-cursor when the pointer moves, so this is
+            // what makes the hide land on a still pointer.
+            #[cfg(feature = "scene-cues")]
+            {
+                use slint::winit_030::WinitWindowAccessor;
+                ui.window().with_winit_window(|win| win.set_cursor_visible(!hidden));
+            }
+
             #[cfg(target_os = "macos")]
             {
                 let _ = &ui;
@@ -722,6 +731,14 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
         UpdateGuiCommand::SetImageViaPlayer(via_player) => bridge.set_image_via_player(via_player),
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),
         UpdateGuiCommand::SetSeekPending(pending) => bridge.set_seek_pending(pending),
+        UpdateGuiCommand::TransportFromSender(kind) => {
+            use receiver_core::gui::TransportKind;
+            bridge.invoke_transport_from_sender(match kind {
+                TransportKind::Pause => crate::UiTransport::Pause,
+                TransportKind::Resume => crate::UiTransport::Resume,
+                TransportKind::Seek => crate::UiTransport::Seek,
+            });
+        }
         UpdateGuiCommand::SetSourceBackoff {
             remaining_ms,
             total_ms,

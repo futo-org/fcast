@@ -5,8 +5,7 @@ import {
     ScrollView,
     Icons,
 } from "../../../ui-components/std-widgets.slint";
-import { FCastPalette, Icons as FluentIcons } from "../../../ui-components/styling.slint";
-import { FocusBorder } from "../../../ui-components/components.slint";
+import { FCastPalette, RowTint, Icons as FluentIcons } from "../../../ui-components/styling.slint";
 import { Bridge } from "globals.slint";
 
 // A section heading (icon + label) that groups related settings.
@@ -42,35 +41,84 @@ component SectionHeader inherits HorizontalLayout {
     Rectangle { }
 }
 
+// The drawer's list scrolls to whichever row takes focus, since a remote has
+// no wheel. Rows report themselves in window coordinates; the drawer keeps
+// the scroll view's frame here and moves the viewport.
+global SettingsScroll {
+    // Two-way with the scroll view's viewport.
+    in-out property <length> viewport-y;
+    // The visible frame, in window coordinates, kept by the drawer.
+    in-out property <length> top;
+    in-out property <length> visible-height;
+
+    // Bring a row into view with a section header's worth of room above it,
+    // so the first row of a section shows its title and the first row of the
+    // list scrolls the list all the way back up.
+    public function reveal(row-top: length, row-height: length) {
+        // No frame yet means nothing to reveal against.
+        if self.visible-height <= 0px {
+            return;
+        }
+        if row-top - self.top < 44px {
+            self.viewport-y = min(0px, self.viewport-y + (44px - (row-top - self.top)));
+        } else if row-top - self.top + row-height + 8px > self.visible-height {
+            self.viewport-y = self.viewport-y - (row-top - self.top + row-height + 8px - self.visible-height);
+        }
+    }
+}
+
 // A boolean setting: label on the left, a Switch on the right. Toggling
-// autosaves through `set-bool-setting`.
-component ToggleRow inherits HorizontalLayout {
+// autosaves through `set-bool-setting`. The switch is the tab stop; the whole
+// row tints while it holds focus, and a click anywhere on the row toggles.
+component ToggleRow inherits Rectangle {
     in property <string> label;
     in property <string> setting-key;
     in-out property <bool> value;
 
-    spacing: 12px;
-    padding-left: 24px;
-    padding-right: 20px;
-    padding-top: 7px;
-    padding-bottom: 7px;
+    background: sw.has-focus ? RowTint.focused : (touch.has-hover ? RowTint.hovered : transparent);
+    animate background { duration: 100ms; }
 
-    Text {
-        text: root.label;
-        color: FCastPalette.foreground;
-        font-size: 14px;
-        horizontal-stretch: 1;
-        vertical-alignment: center;
-        wrap: word-wrap;
+    function toggle() {
+        root.value = !root.value;
+        Bridge.set-bool-setting(root.setting-key, root.value);
     }
 
-    VerticalLayout {
-        alignment: center;
+    touch := TouchArea {
+        clicked => {
+            root.toggle();
+        }
+    }
 
-        Switch {
-            checked <=> root.value;
-            toggled => {
-                Bridge.set-bool-setting(root.setting-key, self.checked);
+    HorizontalLayout {
+        spacing: 12px;
+        padding-left: 24px;
+        padding-right: 20px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+
+        Text {
+            text: root.label;
+            color: FCastPalette.foreground;
+            font-size: 14px;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            sw := Switch {
+                focus-ring: false;
+                checked <=> root.value;
+                toggled => {
+                    Bridge.set-bool-setting(root.setting-key, self.checked);
+                }
+                changed has-focus => {
+                    if self.has-focus {
+                        SettingsScroll.reveal(root.absolute-position.y, root.height);
+                    }
+                }
             }
         }
     }
@@ -78,186 +126,283 @@ component ToggleRow inherits HorizontalLayout {
 
 // A free-text setting. Autosaves on Enter or when focus leaves the field, so a
 // half-typed value is never written.
-component TextRow inherits HorizontalLayout {
+//
+// The row, not the field, is the tab stop: browsing the list with a remote
+// lands on the row and shows the value, and only selecting it (Enter, or a
+// click) brings the field up and focuses it, which is what opens the on-screen
+// keyboard. The field exists only while editing, so tab traversal can never
+// reach it on its own. Enter, Escape, or focus leaving the field saves and
+// hands focus back to the row.
+component TextRow inherits Rectangle {
     in property <string> label;
     in property <string> setting-key;
     in property <string> placeholder;
     in-out property <string> value;
+    property <bool> editing: false;
 
-    spacing: 12px;
-    padding-left: 24px;
-    padding-right: 20px;
-    padding-top: 7px;
-    padding-bottom: 7px;
+    background: row-focus.has-focus || root.editing
+        ? RowTint.focused
+        : (touch.has-hover ? RowTint.hovered : transparent);
+    animate background { duration: 100ms; }
 
-    Text {
-        text: root.label;
-        color: FCastPalette.foreground;
-        font-size: 14px;
-        horizontal-stretch: 1;
-        vertical-alignment: center;
-        wrap: word-wrap;
+    function begin-edit() {
+        root.editing = true;
     }
 
-    VerticalLayout {
-        alignment: center;
+    function end-edit(text: string) {
+        Bridge.set-string-setting(root.setting-key, text);
+        // A field destroyed here never reports losing focus, so the flag the
+        // window keys its arrow capture on is cleared by hand.
+        Bridge.text-edit-focused = false;
+        root.editing = false;
+        row-focus.focus();
+    }
 
-        edit := LineEdit {
-            width: 190px;
-            text <=> root.value;
-            placeholder-text: root.placeholder;
-            accepted => {
-                Bridge.set-string-setting(root.setting-key, self.text);
+    touch := TouchArea {
+        clicked => {
+            root.begin-edit();
+        }
+    }
+
+    // Zero width, so it never takes clicks away from the touch area.
+    row-focus := FocusScope {
+        x: 0;
+        width: 0;
+
+        key-pressed(event) => {
+            if event.text == Key.Space || event.text == Key.Return {
+                root.begin-edit();
+                return accept;
             }
-            changed has-focus => {
-                Bridge.text-edit-focused = self.has-focus;
-                if !self.has-focus {
-                    Bridge.set-string-setting(root.setting-key, self.text);
+
+            return reject;
+        }
+        changed has-focus => {
+            if self.has-focus {
+                SettingsScroll.reveal(root.absolute-position.y, root.height);
+            }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 12px;
+        padding-left: 24px;
+        padding-right: 20px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+
+        Text {
+            text: root.label;
+            color: FCastPalette.foreground;
+            font-size: 14px;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            // The value at rest: the field's footprint, none of its focus.
+            if !root.editing: Rectangle {
+                width: 190px;
+                height: 32px;
+                border-radius: 4px;
+                background: FCastPalette.opacity-light-1100;
+
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+
+                    Text {
+                        text: root.value == "" ? root.placeholder : root.value;
+                        color: root.value == "" ? FCastPalette.opacity-light-500 : FCastPalette.foreground;
+                        font-size: 14px;
+                        vertical-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+
+            if root.editing: LineEdit {
+                width: 190px;
+                text <=> root.value;
+                placeholder-text: root.placeholder;
+                init => {
+                    self.focus();
+                }
+                accepted => {
+                    root.end-edit(self.text);
+                }
+                key-pressed(event) => {
+                    if event.text == Key.Escape {
+                        root.end-edit(self.text);
+                        return accept;
+                    }
+
+                    return reject;
+                }
+                changed has-focus => {
+                    Bridge.text-edit-focused = self.has-focus;
+                    if !self.has-focus {
+                        // Focus moved on by itself (a click elsewhere, the
+                        // remote stepping past): save and fold, but leave
+                        // focus where it went.
+                        Bridge.set-string-setting(root.setting-key, self.text);
+                        root.editing = false;
+                    }
                 }
             }
         }
     }
 }
 
-// A one-of setting that expands inline instead of opening a popup, so it can
-// never overflow the window or get stranded on a resize. Selecting an option
-// autosaves. The first model entry is the one an unset config resolves to,
-// spelled either as the sentinel "Default" or as the value it means.
-component SelectRow inherits VerticalLayout {
+// A one-of setting as an inline spinner, the way TV settings do it: the row
+// shows the value between two chevrons, Left and Right step through the
+// options with wrap-around, Enter steps forward, and every step autosaves.
+// Nothing opens: one row, no second step, no focus to catch on the way out.
+// The first model entry is the one an unset config resolves to, spelled
+// either as the sentinel "Default" or as the value it means.
+component SelectRow inherits Rectangle {
     in property <string> label;
     in property <string> setting-key;
     in property <[string]> model;
     in-out property <string> value;
-    property <bool> expanded: false;
+    // The value's place in the model, kept by the probes below, since a
+    // function cannot search an array.
+    property <int> current: 0;
+    property <bool> lit: row-focus.has-focus || touch.has-hover || prev-touch.has-hover || next-touch.has-hover;
 
-    // Closing the drawer (scrim click, close button, Escape) leaves the row folded
-    // open otherwise, and it would still be open the next time it is shown.
-    property <bool> drawer-open: Bridge.show-settings;
-    changed drawer-open => {
-        if !root.drawer-open {
-            root.expanded = false;
+    background: row-focus.has-focus ? RowTint.focused : (root.lit ? RowTint.hovered : transparent);
+    animate background { duration: 100ms; }
+
+    function step(delta: int) {
+        if root.model.length == 0 {
+            return;
         }
+        root.current = Math.mod(root.current + delta + root.model.length, root.model.length);
+        root.value = root.model[root.current];
+        Bridge.set-string-setting(root.setting-key, root.value);
     }
 
-    function select(opt: string) {
-        root.value = opt;
-        Bridge.set-string-setting(root.setting-key, opt);
-        root.expanded = false;
-        // Collapsing destroys the option rows, so pull focus back to the header
-        // instead of letting the window end up with no focused item at all.
-        row-focus.focus();
-    }
-
-    Rectangle {
-        height: 34px;
-
-        TouchArea {
-            clicked => {
-                root.expanded = !root.expanded;
+    // One zero-size probe per option: whichever matches the value names the
+    // current index, at creation and whenever the value moves under it.
+    for opt[i] in root.model: Rectangle {
+        width: 0;
+        height: 0;
+        property <bool> hit: opt == root.value;
+        init => {
+            if self.hit {
+                root.current = i;
             }
         }
-
-        // Keyboard twin of the touch area: a tab stop that folds the row open.
-        // Zero width, so it never takes clicks away from the touch area.
-        row-focus := FocusScope {
-            x: 0;
-            width: 0;
-
-            key-pressed(event) => {
-                if event.text == Key.Space || event.text == Key.Return {
-                    root.expanded = !root.expanded;
-                    return accept;
-                }
-
-                return reject;
-            }
-        }
-
-        if row-focus.has-focus: FocusBorder {
-            border-radius: 4px;
-        }
-
-        HorizontalLayout {
-            spacing: 10px;
-            padding-left: 24px;
-            padding-right: 20px;
-
-            Text {
-                text: root.label;
-                color: FCastPalette.foreground;
-                font-size: 14px;
-                horizontal-stretch: 1;
-                vertical-alignment: center;
-            }
-
-            Text {
-                text: root.value;
-                color: FCastPalette.opacity-light-500;
-                font-size: 14px;
-                vertical-alignment: center;
-            }
-
-            VerticalLayout {
-                alignment: center;
-
-                Image {
-                    source: root.expanded ? FluentIcons.chevron-up : FluentIcons.chevron-down;
-                    width: 12px;
-                    colorize: FCastPalette.opacity-light-500;
-                }
+        changed hit => {
+            if self.hit {
+                root.current = i;
             }
         }
     }
 
-    if root.expanded: VerticalLayout {
+    touch := TouchArea {
+        clicked => {
+            root.step(1);
+        }
+    }
+
+    // Zero width, so it never takes clicks away from the touch areas.
+    row-focus := FocusScope {
+        x: 0;
+        width: 0;
+
+        key-pressed(event) => {
+            if event.text == Key.RightArrow || event.text == Key.Return || event.text == Key.Space {
+                root.step(1);
+                return accept;
+            }
+            if event.text == Key.LeftArrow {
+                root.step(-1);
+                return accept;
+            }
+
+            return reject;
+        }
+        changed has-focus => {
+            if self.has-focus {
+                SettingsScroll.reveal(root.absolute-position.y, root.height);
+            }
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 10px;
         padding-left: 24px;
         padding-right: 20px;
-        padding-bottom: 4px;
-        spacing: 2px;
+        padding-top: 7px;
+        padding-bottom: 7px;
 
-        for opt in root.model: Rectangle {
-            height: 30px;
-            border-radius: 4px;
-            background: opt == root.value
-                ? FCastPalette.opacity-light-1000
-                : (option-touch.has-hover || option-focus.has-focus ? FCastPalette.opacity-light-1100 : transparent);
+        Text {
+            text: root.label;
+            color: FCastPalette.foreground;
+            font-size: 14px;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+        }
 
-            animate background {
-                duration: 100ms;
-            }
+        // The chevrons brighten with the row, so the affordance reads from
+        // the couch.
+        VerticalLayout {
+            alignment: center;
 
-            option-touch := TouchArea {
-                clicked => {
-                    root.select(opt);
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 4px;
+                background: prev-touch.has-hover ? RowTint.focused : transparent;
+
+                Image {
+                    source: FluentIcons.chevron-down;
+                    width: 12px;
+                    transform-rotation: 90deg;
+                    colorize: root.lit ? FCastPalette.foreground : FCastPalette.opacity-light-500;
                 }
-            }
 
-            option-focus := FocusScope {
-                x: 0;
-                width: 0;
-
-                key-pressed(event) => {
-                    if event.text == Key.Space || event.text == Key.Return {
-                        root.select(opt);
-                        return accept;
+                prev-touch := TouchArea {
+                    clicked => {
+                        root.step(-1);
                     }
-
-                    return reject;
                 }
             }
+        }
 
-            if option-focus.has-focus: FocusBorder {
-                border-radius: parent.border-radius;
-            }
+        Text {
+            text: root.value;
+            color: root.lit ? FCastPalette.foreground : FCastPalette.opacity-light-500;
+            font-size: 14px;
+            min-width: 96px;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
 
-            HorizontalLayout {
-                padding-left: 12px;
+        VerticalLayout {
+            alignment: center;
 
-                Text {
-                    text: opt;
-                    color: opt == root.value ? FCastPalette.foreground : FCastPalette.opacity-light-500;
-                    font-size: 13px;
-                    vertical-alignment: center;
+            Rectangle {
+                width: 24px;
+                height: 24px;
+                border-radius: 4px;
+                background: next-touch.has-hover ? RowTint.focused : transparent;
+
+                Image {
+                    source: FluentIcons.chevron-down;
+                    width: 12px;
+                    transform-rotation: -90deg;
+                    colorize: root.lit ? FCastPalette.foreground : FCastPalette.opacity-light-500;
+                }
+
+                next-touch := TouchArea {
+                    clicked => {
+                        root.step(1);
+                    }
                 }
             }
         }
@@ -357,19 +502,44 @@ export component SettingsDrawer inherits Rectangle {
                     vertical-alignment: center;
                 }
 
-                close-btn := Button {
-                    icon: Icons.close;
-                    icon-size: 13px;
+                // Focus is the same tinted disc the playback drawer's
+                // header buttons show, not the widget's ring.
+                Rectangle {
                     width: 34px;
                     height: 34px;
-                    clicked => {
-                        Bridge.show-settings = false;
+
+                    close-btn := Button {
+                        width: parent.width;
+                        height: parent.height;
+                        icon: Icons.close;
+                        icon-size: 13px;
+                        focus-ring: false;
+                        clicked => {
+                            Bridge.show-settings = false;
+                        }
+                    }
+
+                    if close-btn.has-focus: Rectangle {
+                        border-radius: self.height / 2;
+                        background: RowTint.focused;
                     }
                 }
             }
 
-            ScrollView {
+            scroll := ScrollView {
                 vertical-stretch: 1;
+                viewport-y <=> SettingsScroll.viewport-y;
+                // The frame the rows are revealed against. Set at creation
+                // and again whenever the layout gives the view a new height:
+                // a `changed` alone never fires for a first value.
+                init => {
+                    SettingsScroll.visible-height = self.visible-height;
+                    SettingsScroll.top = self.absolute-position.y;
+                }
+                changed visible-height => {
+                    SettingsScroll.visible-height = self.visible-height;
+                    SettingsScroll.top = self.absolute-position.y;
+                }
 
                 VerticalLayout {
                     padding-bottom: 16px;

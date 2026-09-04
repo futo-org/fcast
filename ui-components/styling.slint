@@ -73,6 +73,14 @@ export global FCastPalette {
     out property <brush> foreground: #FFFFFF;
 }
 
+// The tint a list row shows while it is the focused one (the remote's cursor)
+// or under the pointer: a rectangle behind the row, never a ring around it.
+// Both drawers, settings and playback, read these two.
+export global RowTint {
+    out property <color> focused: FCastPalette.opacity-light-1000;
+    out property <color> hovered: FCastPalette.opacity-light-1100;
+}
+
 export global FluentPalette {
     // in-out property <ColorScheme> color-scheme: ColorSchemeSelector.color-scheme;
     property <bool> dark-color-scheme: {

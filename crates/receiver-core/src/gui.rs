@@ -88,6 +88,14 @@ pub struct InspectorSample {
     pub buffering: Option<InspectorBuffering>,
 }
 
+/// What a sender's transport command does, for the mini OSD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportKind {
+    Pause,
+    Resume,
+    Seek,
+}
+
 #[derive(Debug)]
 pub enum UpdateGuiCommand {
     DeviceConnected,
@@ -156,6 +164,10 @@ pub enum UpdateGuiCommand {
     SetImageViaPlayer(bool),
     SetIsLive(bool),
     SetSeekPending(bool),
+    /// A transport command that did not come from this UI (the sender's
+    /// pause, resume or seek). The player shows its mini OSD for it, where a
+    /// click on the receiver's own chrome needs no echo.
+    TransportFromSender(TransportKind),
     /// Server-directed source backoff countdown ("server busy, retrying in
     /// Ns"). `remaining_ms == 0` clears it, `total_ms` sizes the bar.
     SetSourceBackoff {
@@ -475,6 +487,10 @@ impl GuiController {
 
     pub fn set_seek_pending(&self, pending: bool) {
         self.send(UpdateGuiCommand::SetSeekPending(pending));
+    }
+
+    pub fn transport_from_sender(&self, kind: TransportKind) {
+        self.send(UpdateGuiCommand::TransportFromSender(kind));
     }
 
     pub fn set_playback_rate(&mut self, rate: f32) {
