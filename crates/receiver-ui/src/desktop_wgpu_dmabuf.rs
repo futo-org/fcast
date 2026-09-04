@@ -564,8 +564,13 @@ impl ImportCache {
 mod tests {
     use super::*;
 
+    /// A device with an import route. `None` on the GL floor as well as on
+    /// no adapter at all: the questions below are about what a device that
+    /// CAN import reports, and GL cannot.
     fn device() -> Option<wgpu::Device> {
-        crate::desktop_wgpu_video::create_shared_device().map(|s| s.device)
+        crate::desktop_wgpu_video::create_shared_device()
+            .filter(|s| s.dmabuf)
+            .map(|s| s.device)
     }
 
     /// The whole caps offer rests on this: the adapter must be able to sample
@@ -574,7 +579,7 @@ mod tests {
     #[test]
     fn the_adapter_reports_importable_nv12_modifiers() {
         let Some(device) = device() else {
-            eprintln!("no vulkan adapter, skipping");
+            eprintln!("no dmabuf import route on this adapter, skipping");
             return;
         };
         let mods = importable_modifiers(&device, PixelFormat::Nv12);

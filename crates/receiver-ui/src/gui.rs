@@ -300,17 +300,6 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
                         });
             }
 
-            // The subsurface sink occludes the winit window once controls hide, so Slint's
-            // redraw-applied cursor change never lands: set it on the winit window, hide
-            // and unhide.
-            #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
-            {
-                use i_slint_backend_winit::WinitWindowAccessor;
-                ui.window().with_winit_window(|win| {
-                    win.set_cursor_visible(!hidden);
-                });
-            }
-
             #[cfg(target_os = "macos")]
             {
                 let _ = &ui;
@@ -407,14 +396,6 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         sec_to_string(sec as f64).to_shared_string()
     });
 }
-
-pub enum RendererMessage {
-    CreateBluredAudioTrackCover(DecodedImage),
-    ClearBluredAudioTrackCover,
-    ClearVideoOverlays,
-}
-
-type RendererMsgSender = std::sync::mpsc::Sender<RendererMessage>;
 
 /// Damper for the 5 Hz player tick. Every slint property write schedules a
 /// frame even when nothing visible depends on it, which kept the renderer
@@ -516,35 +497,27 @@ fn set_buffered_ranges(
 /// cannot overwrite the newer cover (or a clear) with a stale one.
 static COVER_BLUR_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-fn clear_audio_covers(bridge: &Bridge, renderer_tx: &RendererMsgSender) {
+fn clear_audio_covers(bridge: &Bridge) {
+    // Bumped so a blur still in flight lands nowhere.
     COVER_BLUR_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     bridge.set_audio_track_cover(CompoundImage::default());
     bridge.set_blured_audio_track_cover(CompoundImage::default());
-    let _ = renderer_tx.send(RendererMessage::ClearBluredAudioTrackCover);
 }
 
-/// One blur per lane. The wgpu lane downscales on the shared device (a 4K+
+/// The desktop lane downscales on the shared device when there is one (a 4K+
 /// cover costs real cpu time to shrink) and cpu-blurs the 96px result,
-/// android does both on the cpu, the GL lane keeps its renderer-thread blur
-/// passes. The worker lands its result only if still current.
-fn spawn_cover_blur(ui: &MainWindow, img: DecodedImage, renderer_tx: &RendererMsgSender) {
+/// android does both on the cpu. The worker lands its result only if still
+/// current.
+fn spawn_cover_blur(ui: &MainWindow, img: DecodedImage) {
     use std::sync::atomic::Ordering;
-    #[cfg(all(not(target_os = "android"), feature = "video-wgpu"))]
-    let gpu = crate::desktop_wgpu_video::has_shared_device();
-    #[cfg(not(all(not(target_os = "android"), feature = "video-wgpu")))]
-    let gpu = false;
-    if !gpu && !cfg!(target_os = "android") {
-        let _ = renderer_tx.send(RendererMessage::CreateBluredAudioTrackCover(img));
-        return;
-    }
     let generation = COVER_BLUR_GEN.fetch_add(1, Ordering::Relaxed) + 1;
     let ui_weak = ui.as_weak();
     std::thread::spawn(move || {
-        #[cfg(all(not(target_os = "android"), feature = "video-wgpu"))]
-        let small = gpu
+        #[cfg(not(target_os = "android"))]
+        let small = crate::desktop_wgpu_video::has_shared_device()
             .then(|| crate::desktop_wgpu_video::downscale_cover(&img.image, 96))
             .flatten();
-        #[cfg(not(all(not(target_os = "android"), feature = "video-wgpu")))]
+        #[cfg(target_os = "android")]
         let small: Option<receiver_core::image::RgbaImage> = None;
         // blur_cover skips its own downscale when the input is already small
         let blurred = receiver_core::image::blur_cover(small.as_ref().unwrap_or(&img.image));
@@ -582,12 +555,7 @@ fn unhide_cursor_outside_video_scene(ui: &MainWindow) {
     }
 }
 
-fn handle_command(
-    ui: MainWindow,
-    cmd: UpdateGuiCommand,
-    renderer_tx: &RendererMsgSender,
-    damper: &mut TickDamper,
-) {
+fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper) {
     let bridge = ui.global::<Bridge>();
 
     match cmd {
@@ -655,7 +623,7 @@ fn handle_command(
             ImageType::Preview => bridge.set_image_preview(as_compound(&img.0)),
             ImageType::AudioTrackCover => {
                 bridge.set_audio_track_cover(as_compound(&img.0));
-                spawn_cover_blur(&ui, img.0, renderer_tx);
+                spawn_cover_blur(&ui, img.0);
             }
         },
         UpdateGuiCommand::UpdatePlaybackProgress {
@@ -669,9 +637,9 @@ fn handle_command(
         }
         UpdateGuiCommand::SetMediaTitle(title) => bridge.set_media_title(title.to_shared_string()),
         UpdateGuiCommand::SetArtistName(name) => bridge.set_artist_name(name.to_shared_string()),
-        UpdateGuiCommand::ClearAudioCovers => clear_audio_covers(&bridge, renderer_tx),
+        UpdateGuiCommand::ClearAudioCovers => clear_audio_covers(&bridge),
         UpdateGuiCommand::ClearCommonPlaybackState => {
-            clear_audio_covers(&bridge, renderer_tx);
+            clear_audio_covers(&bridge);
             set_playback_progress(&bridge, damper, 0.0, 0.0, true);
             set_buffered_ranges(&bridge, damper, Vec::new(), true);
         }
@@ -703,10 +671,9 @@ fn handle_command(
             bridge.set_current_audio_track(audio);
             bridge.set_current_subtitle_track(subtitle);
         }
-        UpdateGuiCommand::ClearVideoOverlays => {
-            let _ = renderer_tx.send(RendererMessage::ClearVideoOverlays);
-            ui.window().request_redraw();
-        }
+        // The video lane draws its cues straight off the engine, which the
+        // application clears alongside this, so the repaint is all it takes.
+        UpdateGuiCommand::ClearVideoOverlays => ui.window().request_redraw(),
         UpdateGuiCommand::SetConnectionDetails { qr_code, addrs } => {
             bridge.set_qr_code(slint::Image::from_rgb8(qr_pixbuf(&qr_code.0)));
             bridge.set_local_ip_addrs(addrs.to_shared_string());
@@ -750,7 +717,7 @@ fn handle_command(
         UpdateGuiCommand::SetPlaybackState(state) => bridge.set_playback_state(state.into()),
         UpdateGuiCommand::ClearImageState => {
             bridge.set_image_preview(CompoundImage::default());
-            clear_audio_covers(&bridge, renderer_tx);
+            clear_audio_covers(&bridge);
         }
         UpdateGuiCommand::SetImageViaPlayer(via_player) => bridge.set_image_via_player(via_player),
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),
@@ -836,7 +803,6 @@ fn handle_command(
                     .unwrap_or_else(|| receiver_core::ui_scaling::DEFAULT_MODE_NAME.to_owned())
                     .into(),
             );
-            bridge.set_cfg_video_hdr_output(config.video.hdr_output);
             bridge.set_cfg_video_render_profile(
                 config
                     .video
@@ -1047,7 +1013,6 @@ fn set_graph_dump(ui: &MainWindow, dump: GraphDumpData) {
 pub fn spawn_command_handler(
     ui_weak: slint::Weak<MainWindow>,
     mut cmd_rx: UnboundedReceiver<UpdateGuiCommand>,
-    renderer_tx: RendererMsgSender,
     // Runs on the event-loop thread; the tray handle is `!Send`. A no-op when there is no tray.
     on_show_tray: Box<dyn FnOnce()>,
 ) {
@@ -1071,7 +1036,7 @@ pub fn spawn_command_handler(
                     }
                     continue;
                 }
-                handle_command(ui, cmd, &renderer_tx, &mut damper);
+                handle_command(ui, cmd, &mut damper);
             } else {
                 debug!("Stopping");
                 break;

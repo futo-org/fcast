@@ -83,7 +83,7 @@ const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 /// arrived are the ones the viewer has not read yet.
 const MAX_ACTIVE_CUES: usize = 8;
 
-/// Inline capacity of the overlay set the GL lane reads per frame.
+/// Inline capacity of the overlay set a raster consumer reads per frame.
 ///
 /// Text cues alone are bounded by [`MAX_ACTIVE_CUES`], but a bitmap set adds a
 /// region per subpicture on top, so this cannot be made spill-proof the way the
@@ -239,8 +239,7 @@ pub fn cue_is_in_future(start_rt: gst::ClockTime, frame_rt: gst::ClockTime) -> b
 /// placed in window coordinates.
 ///
 /// One paint of a [`CueScene`] at one reveal rank, produced by the worker's
-/// vello_cpu backend for the lanes that take [`Overlay`]s (the wayland
-/// subsurface sink and android). The
+/// vello_cpu backend for the lanes that take [`Overlay`]s (android). The
 /// engine's own artifact is the scene, which is what the dodvg lanes will draw
 /// directly.
 #[derive(Debug)]
@@ -1148,14 +1147,13 @@ impl CueEngine {
 
     /// The display lists on screen right now, evaluating nothing.
     ///
-    /// For a consumer whose schedule is advanced elsewhere. The desktop GL lane
-    /// is that consumer: its sink still calls [`Self::overlays_for`] per frame
-    /// on the streaming thread, because the bitmap subtitle set has no display
-    /// list and stays on the raster path, and [`Self::current_overlays`] is
-    /// what advances it while paused. Reaching for [`Self::scenes_for`]
-    /// from that lane's repaint would evaluate the schedule a second time,
-    /// at the repaint clock rather than the frame's, and move every cue
-    /// boundary with it.
+    /// For a consumer whose schedule is advanced elsewhere: one that still
+    /// calls [`Self::overlays_for`] per frame on the streaming thread, because
+    /// its bitmap subtitle set has no display list and stays on the raster
+    /// path, with [`Self::current_overlays`] advancing it while paused.
+    /// Reaching for [`Self::scenes_for`] from such a lane's repaint would
+    /// evaluate the schedule a second time, at the repaint clock rather than
+    /// the frame's, and move every cue boundary with it.
     pub fn shown_scenes(&self) -> SmallVec<[ShownScene; MAX_ACTIVE_CUES]> {
         active_scenes(&self.shared.state.lock())
     }
@@ -1190,7 +1188,7 @@ impl CueEngine {
     /// [`Self::overlays_for`], which switches the vello_cpu paint lane off.
     ///
     /// The paint lane exists for the consumers that still take [`Overlay`]s
-    /// (the wayland subsurface sink, android). For a scene consumer every paint
+    /// (android). For a scene consumer every paint
     /// is wasted worker time AND a `SceneKey` clone per frame in
     /// [`Self::resolve_work`], since a paint that is never asked for is a want
     /// that is never satisfied. Off, a steady cue costs the lane nothing.
@@ -1200,7 +1198,7 @@ impl CueEngine {
     /// because [`active_overlays`] refuses to composite a text cue whose pixels
     /// the consumer is drawing itself. A subpicture has no display list and is
     /// the one thing a scene consumer cannot draw, so it stays on this path on
-    /// every lane. That is exactly what the desktop GL lane wants of them, and
+    /// every lane. That is exactly what the desktop lane wants of them, and
     /// it is what lets it keep advancing the schedule where it always did.
     pub fn set_scene_consumer(&self, on: bool) {
         self.shared.scene_consumer.store(on, Ordering::Relaxed);
@@ -2560,8 +2558,8 @@ impl SceneCache {
 
 /// THE COMPATIBILITY LANE: scenes painted, keyed by (scene, reveal rank).
 ///
-/// The engine publishes scenes, but the wayland subsurface sink and android
-/// still take [`Overlay`]s of pixels, and
+/// The engine publishes scenes, but android still takes [`Overlay`]s of
+/// pixels, and
 /// they read the overlay set per displayed frame. So a paint is memoized here
 /// rather than repeated: the same (scene, rank) always answers the SAME
 /// allocation, which is what keeps `overlays_for` a pointer copy.
@@ -5681,7 +5679,7 @@ mod tests {
         assert!(bitmap.iter().all(|overlay| overlay.pixels[0] == 7));
     }
 
-    /// WAVE 7's bitmap preservation, on the seam the desktop GL lane runs on.
+    /// WAVE 7's bitmap preservation, on the seam the desktop lane runs on.
     ///
     /// A scene consumer draws the display lists itself, so the text cue has to
     /// leave the overlay list; a subpicture is decoded pixels with no display

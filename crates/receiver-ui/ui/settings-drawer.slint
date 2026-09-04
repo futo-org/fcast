@@ -480,11 +480,6 @@ export component SettingsDrawer inherits Rectangle {
                         title: @tr("Video");
                         icon: Icons.settings-video;
                     }
-                    ToggleRow {
-                        label: @tr("HDR passthrough");
-                        setting-key: "video.hdr_output";
-                        value <=> Bridge.cfg-video-hdr-output;
-                    }
                     SelectRow {
                         label: @tr("Render profile");
                         setting-key: "video.render_profile";

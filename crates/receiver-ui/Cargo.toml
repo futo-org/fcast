@@ -7,10 +7,8 @@ license = "GPL-3.0-only"
 [dependencies]
 gst-static-env.workspace = true
 gstreamer-src.workspace = true
-# This crate owns the GL/render loop, so it is where `render` is switched on —
-# for itself and for the surface receiver-core re-exports to the binaries.
 receiver-core = { path = "../receiver-core" }
-fcast-video = { path = "../fcast-video", features = ["slint"] }
+fcast-video = { path = "../fcast-video" }
 fcast-protocol = { path = "../fcast-protocol", features = ["tokio-receiver"] }
 fcast-runtime = { path = "../fcast-runtime" }
 anyhow.workspace = true
@@ -18,7 +16,6 @@ tokio.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 oneshot = { version = "0.2", features = ["std"] }
-glow.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
 gst-base.workspace = true
 gst-video.workspace = true
@@ -32,17 +29,15 @@ features = [
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
-# This half of the GPU stack stays off android: video is MediaCodec's direct
+# The desktop video lane stays off android: video is MediaCodec's direct
 # surface there, so the receiver's own presentation lane is not built. The UI
 # still renders on the GPU, through dodvg's wgpu executor in the fork.
-receiver-core = { path = "../receiver-core", features = ["render"] }
-fcast-video = { path = "../fcast-video", features = ["slint", "render"] }
-libplacebo.path = "../libplacebo"
-# The `video-wgpu` lane only: its appsink, and the presentation crate with
-# the wgpu it is built against (30, matching the slint fork's lock so the two
-# never resolve to different wgpu crates). The presentation crate lives in the
-# slint fork, which is what makes the single-wgpu property structural: dodvg
-# depends on the same path.
+#
+# The lane's appsink, and the presentation crate with the wgpu it is built
+# against (30, matching the slint fork's lock so the two never resolve to
+# different wgpu crates). The presentation crate lives in the slint fork,
+# which is what makes the single-wgpu property structural: dodvg depends on
+# the same path.
 gst-app = { workspace = true, optional = true }
 i-slint-video-wgpu = { path = "../../../slint-forked/internal/video-wgpu", optional = true }
 # Shader language only. The backend features are per-OS in the sections below,
@@ -74,9 +69,7 @@ ndk-sys = "0.6"
 i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "8796fa98619e560970a3ab82bc97efa0a5894778" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-glutin_egl_sys = { version = "0.7.1" }
-i-slint-backend-winit = { workspace = true, optional = true }
-# The `video-wgpu` lane's dmabuf import. `ash` must resolve to the same crate
+# The lane's dmabuf import. `ash` must resolve to the same crate
 # wgpu-hal 30 uses, or the raw vulkan handles are different types; `gst-app`
 # already pins the gst side and gst-allocators is where the dmabuf memory
 # wrapper lives.
@@ -88,18 +81,15 @@ i-slint-backend-winit = { workspace = true, optional = true }
 gst-allocators = { package = "gstreamer-allocators", version = "0.25", features = [ "v1_28" ], optional = true }
 gst-video = { workspace = true, features = [ "v1_28" ] }
 ash = { version = "0.38", optional = true }
-# gles probes the wgpu GL backend as the future floor for retiring the hand
-# written GL lane, selected at runtime by FCAST_WGPU_BACKEND=gl.
+# gles is the floor behind vulkan, see desktop_wgpu_video::backend_passes.
 wgpu = { version = "30", default-features = false, features = [
     "vulkan",
     "gles",
 ], optional = true }
 
-# The lane has never been run on windows and is not compiled into the shipping
-# msi (`video-wgpu` is off in every build the CI makes), so windows keeps
-# exactly the backends it has always had rather than gaining an untested third
-# one. `dx12` is a one word addition here whenever someone has a box to try it
-# on; nothing else in the lane is D3D aware either way.
+# The lane has never been run on windows. `dx12` is a one word addition here
+# whenever someone has a box to try it on; nothing else in the lane is D3D
+# aware either way.
 [target.'cfg(target_os = "windows")'.dependencies]
 wgpu = { version = "30", default-features = false, features = [
     "vulkan",
@@ -145,27 +135,12 @@ desktop = [
     "slint/backend-winit",
     "slint/renderer-dodvg",
     "receiver-core/desktop",
-    "wayland-subsurface",
     "scene-cues",
-]
-# The route from the application to the dodvg renderer, which is where the
-# subtitle cue overlay slot lives. Both desktop lanes draw text cues through
-# it, so it is a feature of its own rather than a line in either.
-scene-cues = ["slint/unstable-winit-030"]
-wayland-subsurface = [
-    "dep:i-slint-backend-winit",
-    "fcast-video/wayland-subsurface",
-]
-systray = ["slint/system-tray", "receiver-core/systray"]
-# Desktop presentation through i-slint-video-wgpu instead of libplacebo.
-# Compiling it changes nothing: the lane is selected at runtime by
-# FCAST_DESKTOP_WGPU_VIDEO=1. See src/desktop_wgpu_video.rs.
-#
-# The zero-copy lane needs slint itself on wgpu 30, so the dodvg renderer's
-# wgpu backend rides along. The GL lane keeps dodvg on OpenGL, which the
-# `desktop` feature above already pulls in, so both lanes are the same
-# renderer on two graphics APIs.
-video-wgpu = [
+    # Desktop presentation through i-slint-video-wgpu, see
+    # src/desktop_wgpu_video.rs. It needs slint itself on wgpu 30, so the
+    # dodvg renderer's wgpu backend rides along; the OpenGL one above stays
+    # for a box where no wgpu device comes up, which then plays without
+    # video.
     "dep:i-slint-video-wgpu",
     "dep:wgpu",
     "dep:gst-app",
@@ -173,9 +148,11 @@ video-wgpu = [
     "dep:ash",
     "slint/unstable-wgpu-30",
     "slint/renderer-dodvg-wgpu",
-    # Pulls `backend-winit` with it.
-    "scene-cues",
 ]
+# The route from the application to the dodvg renderer, which is where the
+# subtitle cue overlay slot lives.
+scene-cues = ["slint/unstable-winit-030"]
+systray = ["slint/system-tray", "receiver-core/systray"]
 kms-backend = ["slint/backend-linuxkms"]
 # No renderer feature: the android backend carries dodvg on wgpu 30 itself,
 # where it used to name skia here. `backend-android-activity-06` pulls no

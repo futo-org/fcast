@@ -777,6 +777,9 @@ pub struct Player {
     /// teardown's own flush from a branch that is genuinely stuck. See
     /// [`TeardownFlag`].
     teardown: TeardownFlag,
+    /// `shutdown` ran and its barrier fired, so the pipeline is down and no
+    /// job may be queued behind it. See [`Drop`].
+    shut_down: bool,
     /// Discards seen vs subtitle items delivered, the signal that catches a
     /// latched track the discard COUNT never can. See [`SubtitleFlow`].
     subtitle_flow: SubtitleFlow,
@@ -1084,6 +1087,7 @@ impl Player {
             pending_volume: None,
             state_machine: StateMachine::new(),
             teardown: teardown_flag,
+            shut_down: false,
             subtitle_flow,
             streams: Vec::new(),
         })
@@ -1724,9 +1728,12 @@ impl Player {
         // resources NOW rather than at the next load. Queued on the worker,
         // it also aborts an in-flight load cleanly (jobs are ordered).
         match null {
-            Some(feedback) => self.fcast.shutdown(Box::new(move || {
-                debug!(res = ?feedback.send(()), "Sent shutdown feedback signal");
-            })),
+            Some(feedback) => {
+                self.shut_down = true;
+                self.fcast.shutdown(Box::new(move || {
+                    debug!(res = ?feedback.send(()), "Sent shutdown feedback signal");
+                }))
+            }
             None => {
                 // Don't raise an already shut-down pipeline back to READY.
                 if self.state_machine.current_state != gst::State::Null {
@@ -2141,9 +2148,16 @@ impl Player {
 impl Drop for Player {
     fn drop(&mut self) {
         // The player's worker exits on its own once the last handle drops.
-        // Queue the final teardown (usually a no-op, `shutdown` already
-        // drove the pipeline to Null and waited).
-        self.set_state_async(gst::State::Null);
+        // A player that was never shut down gets its teardown queued here.
+        // One that was must NOT: the shutdown barrier means the worker has
+        // let go of the pipeline, and a job queued behind it makes the worker
+        // take hold again while this handle drops, which can leave the worker
+        // with the last reference and the pipeline (the video sink's GPU
+        // textures included) dying on that thread after `main` returned, at
+        // process exit, under a GL display already torn down.
+        if !self.shut_down {
+            self.set_state_async(gst::State::Null);
+        }
     }
 }
 
@@ -2184,11 +2198,12 @@ mod tests {
 
     /// FULL-STACK field triage: the same default-selected-subtitle probe the
     /// driver suite runs, but through `Player` - its selection policy, its
-    /// consumer install order, the REAL `FSink`, and the REAL `CueEngine` the
-    /// sink owns. Everything the shipped receiver has except the GUI: no
-    /// window, no GL, no `frame-available`/`overlays-changed` signal
-    /// consumers, and no `render-delay` feedback (that lives in `receiver-ui`
-    /// and needs a repaint loop to produce a cost to feed back).
+    /// consumer install order, a clocked headless sink, and the REAL
+    /// `CueEngine` beside it. Everything the shipped receiver has except the
+    /// GUI: no window, no GL, no `frame-available`/`overlays-changed`
+    /// signal consumers, and no `render-delay` feedback (that lives in
+    /// `receiver-ui` and needs a repaint loop to produce a cost to feed
+    /// back).
     ///
     /// The point is the DELTA against `dash_testbed`'s
     /// `probe_default_subtitle_on_a_live_uri`, which drives the driver alone
@@ -2223,8 +2238,8 @@ mod tests {
         register_shipped_subtitle_parsers();
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let sink = fcast_video::video::FSink::new();
-        let engine = sink.cue_engine();
+        let sink = headless_video_sink();
+        let engine = fcast_video::cue::CueEngine::new();
         engine.set_canvas(1280, 720);
         let mut player = Player::new(
             Some(sink.clone().upcast()),
@@ -2292,22 +2307,20 @@ mod tests {
     ///
     /// The field correlates the subtitle discard with a video-obstruction
     /// transition (2 for 2, ~400 ms and ~900 ms after `obstructed=true`). The
-    /// handler itself cannot be the cause - it terminates in
-    /// `wl_subsurface.place_above`/`place_below` plus a Wayland connection
-    /// flush and touches no GStreamer object (`fcast-video/src/wayland_sink.rs
-    /// :1362`, and the trait default at `video_sink.rs:34` is an empty body).
-    /// Its SECOND-ORDER path does reach the pipeline: a restack flips
-    /// `self_clocked()`, that changes which render path runs and therefore the
-    /// measured render cost, and `note_render_cost` pushes the new cost to the
-    /// sink and posts a LATENCY message (`receiver-ui/src/lib.rs:160-166`),
+    /// handler itself could not be the cause: on the wayland subsurface sink
+    /// this was reported against (since removed) it terminated in a restack
+    /// plus a connection flush and touched no GStreamer object. Its
+    /// SECOND-ORDER path did reach the pipeline: a restack flipped the sink
+    /// between self-clocked and repaint-driven rendering, that changed the
+    /// measured render cost, and the UI pushed the new cost to the sink and
+    /// posted a LATENCY message,
     /// which makes the whole pipeline recalculate latency. The field log shows
     /// `RecalculateLatency` tracking the obstruction transitions.
     ///
     /// So this drives THAT, exactly as `note_render_cost` does, at controlled
     /// offsets into the item's life - including mid-bring-up, while the text
     /// branch is still being constructed. Calling `set_video_obstructed` here
-    /// would be theatre: headless there is no subsurface and the default body
-    /// does nothing.
+    /// would be theatre: headless there is no window and nothing listens.
     ///
     /// Env-driven so the matrix runs without recompiling:
     ///   `FCAST_PROBE_URI`            the item (required)
@@ -2331,8 +2344,8 @@ mod tests {
         register_shipped_subtitle_parsers();
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let sink = fcast_video::video::FSink::new();
-        let engine = sink.cue_engine();
+        let sink = headless_video_sink();
+        let engine = fcast_video::cue::CueEngine::new();
         engine.set_canvas(1280, 720);
         let mut player = Player::new(
             Some(sink.clone().upcast()),
@@ -2413,21 +2426,17 @@ mod tests {
         );
     }
 
-    /// The REAL video sink runs headless, which is what makes a full-stack
-    /// field-triage harness possible at all: `FSink` owns the cue engine
-    /// (`receiver-ui` takes the engine OUT of the sink and hands both to the
-    /// player, `receiver-ui/src/lib.rs:756-782`), and its `show_frame` only
-    /// stores the newest frame behind a mutex, so nothing here needs a window,
-    /// a GL context or placebo. The delta against the shipped binary is the UI
-    /// render path and its two signal connections, not the sink itself.
-    #[test]
-    fn the_real_video_sink_and_its_cue_engine_build_headless() {
-        crate::gstreamer::init_for_tests();
-        let sink = fcast_video::video::FSink::new();
-        let engine = sink.cue_engine();
-        engine.set_canvas(1280, 720);
-        let element: gst::Element = sink.upcast();
-        assert_eq!(element.current_state(), gst::State::Null);
+    /// A clocked sink with no window behind it. The shipped lane is an
+    /// appsink paced like a video sink, so a synchronous fakesink drives the
+    /// pipeline at the same field pace and the cue engine stays the one the
+    /// player hands the driver, exactly as `receiver-ui` wires it.
+    fn headless_video_sink() -> gst_base::BaseSink {
+        gst::ElementFactory::make("fakesink")
+            .property("sync", true)
+            .build()
+            .expect("fakesink")
+            .downcast()
+            .expect("fakesink is a base sink")
     }
 
     /// The verdict needs BOTH halves: a discard, and nothing delivered since.

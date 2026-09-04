@@ -149,7 +149,6 @@ impl CueGeometry {
     }
 
     /// The canvas last pushed, `(0, 0)` before the first one.
-    #[cfg_attr(not(feature = "video-wgpu"), allow(dead_code))]
     pub(crate) fn window(&self) -> (u32, u32) {
         unpack(self.window.load(Ordering::Relaxed))
     }
@@ -157,7 +156,6 @@ impl CueGeometry {
     /// The picture last pushed, `(0, 0)` before the first frame. A resize has
     /// to re-anchor against the picture that is still on screen, and only the
     /// frame path knows what that is.
-    #[cfg_attr(not(feature = "video-wgpu"), allow(dead_code))]
     pub(crate) fn picture(&self) -> (u32, u32) {
         unpack(self.picture.load(Ordering::Relaxed))
     }
@@ -409,7 +407,7 @@ mod cue_geometry_tests {
     /// nothing else in the tree would notice.
     ///
     /// [`place_with_par`]: slint::wgpu_30::video::place_with_par
-    #[cfg(feature = "video-wgpu")]
+    #[cfg(not(target_os = "android"))]
     #[test]
     fn the_cue_rect_is_the_one_slint_places_the_picture_in() {
         use slint::wgpu_30::video as iv;

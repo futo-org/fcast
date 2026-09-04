@@ -20,8 +20,8 @@
 //!
 //! # The chain, and what a break looks like
 //!
-//! The whole path is here: `flapjack`'s transport into `fcast-video`'s
-//! [`FSink`] and the [`CueEngine`] it owns, wired exactly as
+//! The whole path is here: `flapjack`'s transport into a clocked headless
+//! sink and the [`CueEngine`] beside it, wired exactly as
 //! `receiver-core::player` wires it.
 //!
 //! 1. **DELIVERY**, does the covering cue reach the subtitle consumer while
@@ -64,15 +64,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fcast_video::{
-    cue::{CueInput, TextFormat},
-    video::FSink,
-};
+use fcast_video::cue::{CueEngine, CueInput, TextFormat};
 use flapjack::{
     AudioSink, MediaInput, Player, PlayerEvent, Seek, SelectionGate, Sinks, StartPoint,
     SubtitleFeedItem, TrackSlot, TrackTarget,
 };
-use gst::prelude::*;
 use parking_lot::Mutex;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -146,19 +142,24 @@ struct Probe {
 
 impl Probe {
     fn new(t0: Instant) -> Self {
-        let video_sink = FSink::new();
-        let engine = video_sink.cue_engine();
+        // Synchronous so the pipeline runs at field pace, like the shipped
+        // appsink lane.
+        let video_sink = gst::ElementFactory::make("fakesink")
+            .property("sync", true)
+            .build()
+            .expect("fakesink");
+        let engine = CueEngine::new();
         engine.set_canvas(1280, 720);
 
+        // The engine's own change hook is what the UI lane repaints on.
         let repaints = Arc::new(AtomicUsize::new(0));
         let counter = repaints.clone();
-        video_sink.connect("overlays-changed", false, move |_values| {
+        engine.set_on_change(move || {
             counter.fetch_add(1, Ordering::Release);
-            None
         });
 
         let player = Player::new(Sinks {
-            video: Some(video_sink.clone().upcast()),
+            video: Some(video_sink.clone()),
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
                     .property("sync", true)

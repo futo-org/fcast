@@ -14,6 +14,20 @@
 //! same device and queue, which is what makes a plane texture crossable at
 //! all: a texture import has to happen on the device that samples it.
 //!
+//! A box with no hardware Vulkan (a software-only or missing driver) falls
+//! through to wgpu's GL backend on linux and windows, which is the floor: the
+//! same hardware OpenGL driver the lane this replaces ran on there, with the
+//! upload arm carrying every frame since GL has no dmabuf import. On a hybrid
+//! box the GL pass pins glvnd to the Mesa vendor first (see `egl_vendor`).
+//!
+//! The floor's device is opened differently. A GL instance presents only on
+//! the display it was opened with, which on Wayland is one connection: the
+//! window's, and that does not exist at startup. So the startup pass only
+//! PROVES a hardware GL adapter, slint is asked to open the real device on the
+//! window's display (GL by name, see `gl_floor_settings`), and the lane adopts
+//! it from the first `RenderingSetup` (`adopt_renderer_device`); the sink
+//! waits for that handover for a moment before it is built.
+//!
 //! Nothing here renders. There is no video render target, no three-deep
 //! rotation and no readback: the lane describes the frame's own planes in
 //! `slint::wgpu_30::video`'s vocabulary and the renderer converts them
@@ -59,7 +73,7 @@
 //! With no shared device (no adapter, or the backend selection refused it)
 //! slint is on dodvg's OpenGL executor, which has no video path at all and
 //! draws nothing for a video image. So the lane declines: `make_sink` answers
-//! `None` and the caller keeps its libplacebo `FSink`. The rule is that the
+//! `None` and the receiver plays with no video sink. The rule is that the
 //! capability query answers unsupported before a producer commits to the path.
 //!
 //! That is also why `FrameSource::SystemMemory` is not the answer here even
@@ -74,11 +88,14 @@
 //! is best effort: a VA decoder ignores it once its input state is settled, so
 //! the lane keeps retrying the import instead of latching itself off.
 //!
-//! Off by default even when compiled in: set `FCAST_DESKTOP_WGPU_VIDEO=1`.
-//! `FCAST_DESKTOP_WGPU_DMABUF=0` keeps the lane on but leaves the appsink
-//! advertising system memory only, which is the A/B control for the import.
+//! `FCAST_DESKTOP_WGPU_DMABUF=0` leaves the appsink advertising system memory
+//! only, which is the A/B control for the import.
+//! `FCAST_WGPU_SOFTWARE=0` refuses a CPU adapter (lavapipe, llvmpipe), which
+//! is otherwise the last resort after every hardware pass declined.
+//! `__EGL_VENDOR_LIBRARY_FILENAMES` set by hand overrides the GL pass's own
+//! vendor pin.
 
-use fcast_video::render_options::{RenderProfile, RenderingOptions};
+use fcast_video::render_options::RenderProfile;
 use gst::prelude::*;
 use gst_video::prelude::*;
 use i_slint_video_wgpu::{
@@ -101,11 +118,11 @@ use tracing::{debug, error, info, warn};
 /// are three color planes plus alpha. Stack arrays, nothing allocated.
 const UPLOAD_MAX_PLANES: usize = i_slint_video_wgpu::gpu::MAX_PLANES;
 
-/// True when the lane is requested. Called once at startup by the backend
-/// selection, and once more while the sink is chosen.
-pub fn enabled() -> bool {
-    std::env::var("FCAST_DESKTOP_WGPU_VIDEO").is_ok_and(|v| v == "1")
-}
+/// `gst_video_sink_init`'s pacing, which an appsink does not inherit from
+/// basesink: a frame later than this is dropped instead of rendered.
+const VIDEO_SINK_MAX_LATENESS: gst::ClockTime = gst::ClockTime::from_mseconds(5);
+/// Same source, what the sink reports it needs to render one frame.
+const VIDEO_SINK_PROCESSING_DEADLINE: gst::ClockTime = gst::ClockTime::from_mseconds(15);
 
 // ---------------------------------------------------------------------------
 // caps -> FrameDesc
@@ -211,11 +228,21 @@ fn map_transfer(transfer: gst_video::VideoTransferFunction) -> Transfer {
     }
 }
 
-/// Only BT.2020 needs a gamut matrix. The 601 primaries sets have no variant
-/// in the crate and are close enough to BT.709 to pass through.
+/// The gamut the frame was mastered in, for the linear-light matrix to
+/// BT.709. The SD sets matter because a `bt601` colorimetry string carries
+/// SMPTE 170M primaries, which is every NTSC-era stream, and the old lane
+/// converted them. DCI-P3 (`smpte-rp431`) has a greenish white the crate
+/// has no adaptation for and is taken as Display P3, which is far closer
+/// than BT.709 would be. The rest have no variant and are close enough to
+/// BT.709 to pass through, or are so rare (BT.470M, film) that the old
+/// lane's handling of them was never exercised either.
 fn map_primaries(primaries: gst_video::VideoColorPrimaries) -> Primaries {
+    use gst_video::VideoColorPrimaries as P;
     match primaries {
-        gst_video::VideoColorPrimaries::Bt2020 => Primaries::Bt2020,
+        P::Bt2020 => Primaries::Bt2020,
+        P::Smpte170m | P::Smpte240m => Primaries::Bt601_525,
+        P::Bt470bg | P::Ebu3213 => Primaries::Bt601_625,
+        P::Smpteeg432 | P::Smpterp431 => Primaries::DisplayP3,
         _ => Primaries::Bt709,
     }
 }
@@ -231,8 +258,30 @@ fn map_chroma(site: gst_video::VideoChromaSite) -> ChromaLocation {
     }
 }
 
+/// The smallest peak a stream may signal and be believed, in nits.
+///
+/// The libplacebo lane took a mastering luminance only from 100 nits up, and
+/// pl floors its tone mapping input there regardless. Below it the number is
+/// a muxer's units mistake (a 1 meant as 1000, or 0.0001-nit units written
+/// as nits), and the crate would take it at its word: a peak at or under 203
+/// nits maps every code to `v.min(peak) / 203`, which for 0.1 nits is a
+/// black frame under playing audio.
+const MIN_SIGNALLED_PEAK_NITS: f32 = 100.0;
+
+/// The signalled peak, or zero when it is absent or too small to believe.
+/// Zero is what the crate reads as unknown, and it then answers with the
+/// transfer's own peak, exactly as the old lane did by not setting it.
+fn believable_peak(nits: f32) -> f32 {
+    // the negated compare also sends a NaN to unknown
+    if !(nits >= MIN_SIGNALLED_PEAK_NITS) {
+        return 0.0;
+    }
+    nits
+}
+
 /// Mastering peak and MaxCLL off the caps, in nits. Absent fields stay zero,
-/// which the crate reads as "unknown" and falls back to the transfer peak.
+/// which the crate reads as "unknown" and falls back to the transfer peak;
+/// so does anything under [`MIN_SIGNALLED_PEAK_NITS`].
 pub fn hdr_metadata(caps: &gst::CapsRef) -> HdrMetadata {
     let max_mastering_nits = gst_video::VideoMasteringDisplayInfo::from_caps(caps)
         .map(|mdi| mdi.max_display_mastering_luminance() as f32 * 0.0001)
@@ -241,8 +290,8 @@ pub fn hdr_metadata(caps: &gst::CapsRef) -> HdrMetadata {
         .map(|cll| cll.max_content_light_level() as f32)
         .unwrap_or(0.0);
     HdrMetadata {
-        max_mastering_nits,
-        max_cll,
+        max_mastering_nits: believable_peak(max_mastering_nits),
+        max_cll: believable_peak(max_cll),
     }
 }
 
@@ -354,8 +403,7 @@ impl DitherRule {
 }
 
 /// The render profile as this lane's knobs. Plain data, resolved once at
-/// startup from the receiver's config the way the libplacebo lane resolves
-/// its preset struct, and then read per frame.
+/// startup from the receiver's config, and then read per frame.
 ///
 /// The mapping follows libplacebo's three preset structs
 /// (`src/renderer.c:202`), which are what the other lane hands to
@@ -486,6 +534,9 @@ fn ingress_color(desc: &FrameDesc) -> iv::ColorInfo {
         primaries: match desc.primaries {
             Primaries::Bt709 => iv::Primaries::Bt709,
             Primaries::Bt2020 => iv::Primaries::Bt2020,
+            Primaries::Bt601_525 => iv::Primaries::Bt601_525,
+            Primaries::Bt601_625 => iv::Primaries::Bt601_625,
+            Primaries::DisplayP3 => iv::Primaries::DisplayP3,
         },
         chroma_location: match desc.chroma_location {
             ChromaLocation::Left => iv::ChromaLocation::Left,
@@ -539,8 +590,8 @@ fn profile_quality(profile: RenderProfile) -> Quality {
 }
 
 /// The container's orientation tag, which is where a phone records that
-/// the sensor was sideways. Same tag and same mapping the FSink lane
-/// reads, so both lanes turn a clip the same way.
+/// the sensor was sideways. Same tag and same mapping every lane before
+/// this one read, so a clip turns the way it always did.
 /// It answers in [`iv::BufferTransform`], the orientation the frame declares
 /// to slint. Only the four quarter turns are ever produced: the mirrored
 /// variants exist in the vocabulary because a compositor applies them for
@@ -669,24 +720,31 @@ fn block_on<F: std::future::Future>(fut: F) -> F::Output {
 /// Metal on mac; see [`create_shared_device`].
 pub struct SharedDevice {
     pub instance: wgpu::Instance,
-    pub adapter: wgpu::Adapter,
+    /// `None` when the device was adopted from slint's renderer (the GL
+    /// floor): the notifier hands over no adapter. The Manual backend
+    /// selection needs one, so only a device opened here takes that route.
+    pub adapter: Option<wgpu::Adapter>,
+    /// What the device runs on, for the log line and the tests.
+    pub info: wgpu::AdapterInfo,
     pub device: wgpu::Device,
     pub queue: wgpu::Queue,
     /// The adapter granted R16Unorm, so the 16-bit-container formats can be
     /// negotiated.
-    norm16: bool,
+    pub(crate) norm16: bool,
     /// The adapter granted the dmabuf import extensions, so the appsink can
     /// offer `memory:DMABuf` and the decoder's planes reach the gpu unmapped.
-    dmabuf: bool,
+    /// False on the GL floor, which has no import route at all.
+    pub(crate) dmabuf: bool,
 }
 
 /// Set once, after slint accepted the device. Read by every sink built later,
 /// which is what puts the lane in zero-copy mode.
 static SHARED: OnceLock<SharedDevice> = OnceLock::new();
 
-/// Why slint refused the device, when it did. Kept because the selection
-/// runs before the log subscriber exists, and a silent fall back to the
-/// libplacebo sink is exactly the thing that would go unnoticed.
+/// Why no shared device was adopted, when one was not: slint refused it, or
+/// the only adapter was a software one. Kept because the selection runs
+/// before the log subscriber exists, and a silent fall back to the libplacebo
+/// sink is exactly the thing that would go unnoticed.
 static REFUSED: OnceLock<String> = OnceLock::new();
 
 /// Records a refusal for the sink to report once logging is up.
@@ -694,37 +752,186 @@ pub fn note_shared_device_refused(err: String) {
     let _ = REFUSED.set(err);
 }
 
-/// The wgpu backend this OS presents with, and the `FCAST_WGPU_BACKEND`
-/// override on top of it.
+/// Whether the lane may present on an adapter of this type.
 ///
-/// The default is whatever the Cargo.toml compiled a backend in for: Vulkan on
-/// linux and windows, Metal on mac. Only those are compiled, so naming a
-/// backend the build does not have simply finds no adapter, which is reported
-/// by the caller's warning rather than here.
+/// A CPU adapter (lavapipe, swiftshader) is what wgpu hands back on a box
+/// whose only Vulkan driver is a software one: `request_adapter` orders it
+/// last but still returns it when nothing else exists, and
+/// `force_fallback_adapter: false` does not exclude it. Slint renders on this
+/// device too, so taking it early would put the whole UI and the video
+/// through a software rasterizer on a machine whose OpenGL driver is hardware
+/// (Intel gen7 without hasvk, a VM on virgl, a distribution without the
+/// Vulkan ICD). The GL pass behind it is what that machine renders on, and
+/// only when that declines too does a software pass take the adapter.
+fn adapter_acceptable(device_type: wgpu::DeviceType, allow_software: bool) -> bool {
+    allow_software || device_type != wgpu::DeviceType::Cpu
+}
+
+/// Whether a software adapter may be taken once every hardware pass declined.
+/// On by default: with no other video path in the receiver, a box with only
+/// lavapipe or llvmpipe plays slowly rather than not at all.
+/// `FCAST_WGPU_SOFTWARE=0` refuses it, for an A/B that wants the decline.
+fn software_adapter_allowed() -> bool {
+    std::env::var("FCAST_WGPU_SOFTWARE")
+        .ok()
+        .is_none_or(|v| v != "0")
+}
+
+/// The backends tried for an adapter, in order, as [`backend_passes`] resolves
+/// them from the `FCAST_WGPU_BACKEND` override.
 ///
-/// An unrecognized value is a typo, not a request; it warns and takes the
-/// default instead of silently leaving the lane adapterless.
-fn selected_backends() -> wgpu::Backends {
+/// Without an override: the platform's own backend first (Vulkan on linux and
+/// windows, Metal on mac), then the GL backend as the floor on linux and
+/// windows. The floor is what a box whose only Vulkan driver is a software
+/// one, or none at all, lands on: its OpenGL driver is hardware, and this is
+/// the same driver the lane this replaces ran on there. Not on mac, where the
+/// GL backend is not compiled (it would need ANGLE).
+///
+/// An override names one backend and that is the only pass. An unrecognized
+/// value is a typo, not a request; it warns and takes the default list instead
+/// of silently leaving the lane adapterless.
+fn backend_passes_for(override_: Option<&str>) -> Vec<wgpu::Backends> {
     let default = i_slint_video_wgpu::default_backends();
-    match std::env::var("FCAST_WGPU_BACKEND") {
-        // gl probes the wgpu GL backend, the candidate floor for retiring the
-        // hand written GL lane. Not compiled on mac (it would need ANGLE).
-        Ok(v) if v == "gl" => wgpu::Backends::GL,
-        Ok(v) if v == "vulkan" => wgpu::Backends::VULKAN,
-        Ok(v) if v == "metal" => wgpu::Backends::METAL,
-        Ok(v) => {
+    let mut passes = vec![default];
+    if !cfg!(target_vendor = "apple") {
+        passes.push(wgpu::Backends::GL);
+    }
+    match override_ {
+        Some("gl") => vec![wgpu::Backends::GL],
+        Some("vulkan") => vec![wgpu::Backends::VULKAN],
+        Some("metal") => vec![wgpu::Backends::METAL],
+        Some(v) => {
             warn!(
                 value = %v,
-                "wgpu video lane: unknown FCAST_WGPU_BACKEND, using the platform default"
+                "wgpu video lane: unknown FCAST_WGPU_BACKEND, using the platform order"
             );
-            default
+            passes
         }
-        Err(_) => default,
+        None => passes,
+    }
+}
+
+fn backend_passes() -> Vec<wgpu::Backends> {
+    backend_passes_for(std::env::var("FCAST_WGPU_BACKEND").ok().as_deref())
+}
+
+/// Steering glvnd for the GL pass. Linux only, where glvnd is.
+///
+/// glvnd hands an EGL display to the first vendor library, in file order,
+/// that accepts the platform. On a hybrid laptop that is `10_nvidia.json`
+/// before `50_mesa.json`, and the NVIDIA EGL accepts the surfaceless and the
+/// Wayland platform requests wgpu makes, then dies creating the device: the
+/// session, the compositor and VA-API all run on the Mesa integrated GPU and
+/// the discrete one is render offload. A GL pass that gets there has already
+/// found no hardware Vulkan, so the Mesa device is the only sensible answer,
+/// and the pin is the variable glvnd itself reads for exactly this. A value
+/// the user set stands.
+#[cfg(target_os = "linux")]
+mod egl_vendor {
+    use std::path::PathBuf;
+
+    /// glvnd's own knob: a colon list of vendor JSONs that replaces its
+    /// directory scan.
+    pub const FILENAMES: &str = "__EGL_VENDOR_LIBRARY_FILENAMES";
+    /// glvnd's other knob, the directories it scans instead of the defaults.
+    const DIRS: &str = "__EGL_VENDOR_LIBRARY_DIRS";
+    /// Where glvnd looks when [`DIRS`] is unset. The first two are its
+    /// compiled default on every distribution, the third is where NixOS
+    /// patches it to, the last is a common local install.
+    const DEFAULT_DIRS: [&str; 4] = [
+        "/etc/glvnd/egl_vendor.d",
+        "/usr/share/glvnd/egl_vendor.d",
+        "/run/opengl-driver/share/glvnd/egl_vendor.d",
+        "/usr/local/share/glvnd/egl_vendor.d",
+    ];
+
+    pub fn vendor_dirs() -> Vec<PathBuf> {
+        match std::env::var_os(DIRS) {
+            Some(v) if !v.is_empty() => std::env::split_paths(&v).collect(),
+            _ => DEFAULT_DIRS.iter().map(PathBuf::from).collect(),
+        }
+    }
+
+    /// The `library_path` of one vendor JSON. No JSON parser: the file is
+    /// one object with one key glvnd's own reader wants, and a malformed one
+    /// is skipped the way glvnd skips it.
+    pub fn library_path(json: &str) -> Option<String> {
+        const KEY: &str = "\"library_path\"";
+        let rest = &json[json.find(KEY)? + KEY.len()..];
+        let rest = &rest[rest.find(':')? + 1..];
+        let rest = &rest[rest.find('"')? + 1..];
+        Some(rest[..rest.find('"')?].to_string())
+    }
+
+    /// The Mesa vendor JSON to pin, when there is a reason to: another vendor
+    /// is installed beside it. Alone, or absent, glvnd's own choice stands.
+    /// Sorted by path so the answer is the same one every time.
+    pub fn mesa_pin(dirs: &[PathBuf]) -> Option<PathBuf> {
+        let mut vendors: Vec<(PathBuf, String)> = Vec::new();
+        for dir in dirs {
+            let Ok(entries) = std::fs::read_dir(dir) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().is_some_and(|x| x == "json")
+                    && let Ok(text) = std::fs::read_to_string(&path)
+                    && let Some(lib) = library_path(&text)
+                {
+                    vendors.push((path, lib));
+                }
+            }
+        }
+        vendors.sort();
+        let mesa: Vec<&PathBuf> = vendors
+            .iter()
+            .filter(|(_, lib)| lib.to_ascii_lowercase().contains("mesa"))
+            .map(|(path, _)| path)
+            .collect();
+        if mesa.is_empty() || mesa.len() == vendors.len() {
+            return None;
+        }
+        Some(mesa[0].clone())
+    }
+
+    /// Pin glvnd to Mesa before the GL pass opens its first display, when
+    /// another vendor is installed beside it.
+    ///
+    /// Process-global, and glvnd reads it once, on the first EGL call the
+    /// process makes. So this has to run before that call, which is why the
+    /// lane's device is opened at startup before slint or GStreamer exist;
+    /// called later it would be too late to matter and harmless.
+    pub fn pin_mesa_on_hybrid() {
+        if std::env::var_os(FILENAMES).is_some_and(|v| !v.is_empty()) {
+            return;
+        }
+        let Some(json) = mesa_pin(&vendor_dirs()) else {
+            return;
+        };
+        tracing::info!(
+            vendor = %json.display(),
+            "wgpu video lane: GL pass pinned to the Mesa EGL vendor"
+        );
+        // SAFETY: the environment is written at startup, on the main thread,
+        // before the runtime or slint have spawned anything that reads it.
+        // The one caller is `create_shared_device`, whose contract this is.
+        unsafe { std::env::set_var(FILENAMES, &json) };
     }
 }
 
 /// Opens the lane's gpu device. Also the device slint renders on when the
 /// caller hands it over with [`adopt_shared_device`].
+///
+/// One pass per backend in [`backend_passes`] order, and the first pass that
+/// yields a hardware adapter with a working device wins. A pass with no
+/// adapter, a software one, or a device that refuses to open is declined
+/// and the next backend is tried, so a box whose Vulkan is lavapipe or
+/// missing lands on the GL backend rather than on nothing. `None` only when
+/// every pass declined, and then the reasons are kept for the sink to report
+/// once logging is up.
+///
+/// Called at startup, before slint and before any other thread: the GL pass
+/// steers glvnd through the environment (see [`egl_vendor`]).
 ///
 /// LowPower on purpose: the integrated adapter is where slint rendered
 /// before, it is where VA-API decode lands on a hybrid box, and sharing one
@@ -732,7 +939,42 @@ fn selected_backends() -> wgpu::Backends {
 /// box gets that GPU either way. `WGPU_POWER_PREF` overrides, same variable
 /// slint reads.
 pub fn create_shared_device() -> Option<SharedDevice> {
-    let backends = selected_backends();
+    let mut declined = Vec::new();
+    for (backends, allow_software) in device_passes(software_adapter_allowed()) {
+        #[cfg(target_os = "linux")]
+        if backends == wgpu::Backends::GL {
+            egl_vendor::pin_mesa_on_hybrid();
+        }
+        match open_on(backends, allow_software) {
+            Ok(shared) => return Some(shared),
+            Err(why) => {
+                // Lost when this runs before the subscriber; the sink
+                // reports the collected reasons.
+                warn!(%why, ?backends, "wgpu video lane: backend pass declined");
+                declined.push(format!("{backends:?}: {why}"));
+            }
+        }
+    }
+    note_shared_device_refused(declined.join("; "));
+    None
+}
+
+/// The passes [`create_shared_device`] makes, in order: every backend on a
+/// hardware adapter first, and only then the same backends again taking a
+/// software one, so a box whose OpenGL driver is hardware never runs the UI
+/// on a rasterizer because its Vulkan driver is not.
+fn device_passes(software: bool) -> Vec<(wgpu::Backends, bool)> {
+    let hardware = backend_passes();
+    let mut passes: Vec<_> = hardware.iter().map(|b| (*b, false)).collect();
+    if software {
+        passes.extend(hardware.iter().map(|b| (*b, true)));
+    }
+    passes
+}
+
+/// One backend pass of [`create_shared_device`]: the adapter, the gate on its
+/// type, and the device. The error is the reason, for the log.
+fn open_on(backends: wgpu::Backends, allow_software: bool) -> Result<SharedDevice, String> {
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
@@ -747,9 +989,14 @@ pub fn create_shared_device() -> Option<SharedDevice> {
         compatible_surface: None,
         apply_limit_buckets: false,
     }))
-    .map_err(|err| warn!(?err, ?backends, "wgpu video lane: no adapter"))
-    .ok()?;
+    .map_err(|err| format!("no adapter: {err}"))?;
     let info = adapter.get_info();
+    if !adapter_acceptable(info.device_type, allow_software) {
+        return Err(format!(
+            "only a software adapter ({} on {:?})",
+            info.name, info.backend
+        ));
+    }
     // Every 16-bit-container format rides one device feature, and the crate
     // is the authority on which. P010 stands in for the whole class.
     let wanted =
@@ -777,8 +1024,7 @@ pub fn create_shared_device() -> Option<SharedDevice> {
         required_limits: limits,
         ..Default::default()
     }))
-    .map_err(|err| warn!(?err, "wgpu video lane: device creation failed"))
-    .ok()?;
+    .map_err(|err| format!("device creation failed on {}: {err}", info.name))?;
     install_device_error_handlers(&device);
     let norm16 = features.contains(wanted);
     info!(
@@ -789,14 +1035,114 @@ pub fn create_shared_device() -> Option<SharedDevice> {
         dmabuf,
         "wgpu video lane: device opened"
     );
-    Some(SharedDevice {
+    Ok(SharedDevice {
         instance,
-        adapter,
+        adapter: Some(adapter),
+        info,
         device,
         queue,
         norm16,
         dmabuf,
     })
+}
+
+/// Set when the GL floor was chosen: slint opens the device on the window's
+/// display and hands it to [`adopt_renderer_device`] at its first
+/// `RenderingSetup`, and until then the lane has no device to build on.
+static ADOPTION_PENDING: AtomicBool = AtomicBool::new(false);
+
+/// Whether the device the startup pass opened is the GL floor, where slint has
+/// to open the presenting device itself. See the module docs.
+pub fn is_gl_floor(shared: &SharedDevice) -> bool {
+    shared.info.backend == wgpu::Backend::Gl
+}
+
+/// The settings slint opens the GL floor's device with: the GL backend BY
+/// NAME (the renderer avoids it otherwise), the same power preference as the
+/// startup pass, and the 16-bit norm feature when the pass's adapter granted
+/// it. The pass proved the adapter; this asks for its twin on the window's
+/// display.
+pub fn gl_floor_settings(shared: &SharedDevice) -> slint::wgpu_30::WGPUSettings {
+    let mut settings = slint::wgpu_30::WGPUSettings::default();
+    settings.backends = wgpu::Backends::GL;
+    settings.power_preference =
+        wgpu::PowerPreference::from_env().unwrap_or(wgpu::PowerPreference::LowPower);
+    settings.device_required_features = if shared.norm16 {
+        i_slint_video_wgpu::required_device_features(&[PixelFormat::P010, PixelFormat::I444P16])
+    } else {
+        wgpu::Features::empty()
+    };
+    settings.device_label = Some("fcast-desktop-video".into());
+    settings
+}
+
+/// Tells the lane that slint will hand over the device it opens, so the sink
+/// waits for it instead of declining before it exists.
+pub fn expect_renderer_device() {
+    ADOPTION_PENDING.store(true, Ordering::Release);
+}
+
+/// Whether a promised renderer device has not arrived yet.
+pub fn adoption_pending() -> bool {
+    ADOPTION_PENDING.load(Ordering::Acquire) && SHARED.get().is_none()
+}
+
+/// Waits for the renderer's device when one was promised, for at most
+/// `timeout`. The window is up within a frame of startup, so this is a few
+/// milliseconds; a window that never comes up (a tray-only start) leaves the
+/// promise unmet and the lane then declines the way it does with no device.
+pub async fn await_renderer_device(timeout: std::time::Duration) {
+    let deadline = std::time::Instant::now() + timeout;
+    while adoption_pending() && std::time::Instant::now() < deadline {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    if adoption_pending() {
+        warn!(
+            "wgpu video lane: the renderer never handed over its device, playing without video"
+        );
+    }
+}
+
+/// Adopts the device slint's renderer opened, from the `RenderingSetup`
+/// notifier. Only acts while a device is expected: the Manual path published
+/// its own device before slint ever saw it, and this leaves that alone.
+///
+/// The error handlers go on here for the same reason they do in [`open_on`]:
+/// wgpu's default panics, and this device is used from the streaming thread
+/// too.
+pub fn adopt_renderer_device(
+    instance: &wgpu::Instance,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+) {
+    if !ADOPTION_PENDING.swap(false, Ordering::AcqRel) {
+        return;
+    }
+    let wanted =
+        i_slint_video_wgpu::required_device_features(&[PixelFormat::P010, PixelFormat::I444P16]);
+    let features = device.features();
+    let norm16 = features.contains(wanted);
+    let dmabuf = cfg!(target_os = "linux")
+        && features.contains(wgpu::Features::VULKAN_EXTERNAL_MEMORY_DMA_BUF);
+    install_device_error_handlers(device);
+    let info = device.adapter_info();
+    info!(
+        adapter = %info.name,
+        backend = ?info.backend,
+        device_type = ?info.device_type,
+        norm16,
+        dmabuf,
+        "wgpu video lane: adopted the device slint opened on the window's display"
+    );
+    adopt_shared_device(SharedDevice {
+        instance: instance.clone(),
+        adapter: None,
+        info,
+        device: device.clone(),
+        queue: queue.clone(),
+        norm16,
+        dmabuf,
+    });
 }
 
 /// Set when the driver dropped the device. Nothing recreates it, so the lane
@@ -1196,6 +1542,9 @@ struct Gpu {
     /// The last caps the lane had no render path for, so the drop is reported
     /// once per stream instead of once per frame.
     unmappable: Option<gst::Caps>,
+    /// What the inspector's stream card was last told, so it is re-published
+    /// only when the caps, the orientation or the route moved.
+    announced: Option<(Arc<CapsPlan>, iv::BufferTransform, &'static str)>,
     /// Import failures on this stream, for the one-shot log and the tests.
     import_fails: u64,
     /// Imported dmabuf planes, keyed on the buffer they came from. The
@@ -1386,21 +1735,21 @@ impl Gpu {
     /// there is nothing to hand plane textures to: a machine that refused the
     /// shared device has slint on dodvg's OpenGL executor, which draws
     /// nothing at all for a video image, so the honest answer is `None` and
-    /// the caller keeps its libplacebo sink.
+    /// the player runs with no video sink.
     fn new(quality: Quality) -> Option<Self> {
         let Some(shared) = SHARED.get() else {
             match REFUSED.get() {
                 Some(err) => warn!(
                     %err,
-                    "wgpu video lane: slint refused the shared device, leaving the lane to the libplacebo sink"
+                    "wgpu video lane: no shared device to present on, playing without video"
                 ),
                 None => info!(
-                    "wgpu video lane: no shared device, leaving the lane to the libplacebo sink"
+                    "wgpu video lane: no shared device, playing without video"
                 ),
             }
             return None;
         };
-        let info = shared.adapter.get_info();
+        let info = &shared.info;
         info!(
             adapter = %info.name,
             backend = ?info.backend,
@@ -1441,6 +1790,7 @@ impl Gpu {
             norm16,
             offer_dmabuf: true,
             unmappable: None,
+            announced: None,
             import_fails: 0,
             #[cfg(target_os = "linux")]
             imports: Default::default(),
@@ -1745,6 +2095,29 @@ impl Gpu {
         #[cfg(target_os = "linux")]
         self.imports.clear();
         self.pool.clear();
+        // The stream is going with them, so the next one announces itself
+        // even when its caps look the same.
+        self.announced = None;
+    }
+
+    /// The inspector's stream card, when the stream's shape moved since the
+    /// last one: the caps plan by identity, the orientation, and which route
+    /// the frame took. Nothing on a steady stream.
+    fn announce(
+        &mut self,
+        plan: &Arc<CapsPlan>,
+        rotation: iv::BufferTransform,
+        arm: &'static str,
+    ) -> Option<VideoCard> {
+        if let Some((seen, seen_rotation, seen_arm)) = &self.announced
+            && Arc::ptr_eq(seen, plan)
+            && *seen_rotation == rotation
+            && *seen_arm == arm
+        {
+            return None;
+        }
+        self.announced = Some((Arc::clone(plan), rotation, arm));
+        Some(video_card(plan, rotation, arm))
     }
 
     /// Records a refused import and says whether the caller should ask
@@ -1817,9 +2190,76 @@ fn clear_bridge_frame(ui: crate::MainWindow) {
     let bridge = ui.global::<crate::Bridge>();
     bridge.set_sw_video_frame(slint::Image::default());
     bridge.set_sw_video_active(false);
+    bridge.set_have_video_dbg_info(false);
     // A bitmap subtitle over no picture is a subtitle floating on black, and
     // this is reached on paths that never pump again (device lost, idle).
     bridge.set_bitmap_subtitle(crate::SubtitleOverlay::default());
+}
+
+/// The inspector's stream card and the frame size beside it. Built on the
+/// streaming thread; every field is a `SharedString` or a word, so it crosses
+/// to the UI as it is.
+struct VideoCard {
+    info: crate::UiVideoDbgInfo,
+    width: i32,
+    height: i32,
+}
+
+fn video_card(plan: &CapsPlan, rotation: iv::BufferTransform, arm: &'static str) -> VideoCard {
+    use slint::ToSharedString;
+    let info = &plan.info;
+    let colorimetry = info.colorimetry();
+    let fps = info.fps();
+    let par = info.par();
+    let framerate = if fps.denom() == 0 {
+        String::new()
+    } else {
+        format!("{:.3} fps", fps.numer() as f64 / fps.denom() as f64)
+    };
+    let desc = &plan.desc;
+    let hdr = if desc.transfer.is_hdr() {
+        format!(
+            "{:?}, mastering {:.0} nits, MaxCLL {:.0}",
+            desc.transfer, desc.hdr.max_mastering_nits, desc.hdr.max_cll
+        )
+    } else {
+        "SDR".to_owned()
+    };
+    let rotation = match rotation {
+        iv::BufferTransform::Normal => "0°",
+        iv::BufferTransform::Rotate90 => "90°",
+        iv::BufferTransform::Rotate180 => "180°",
+        iv::BufferTransform::Rotate270 => "270°",
+        iv::BufferTransform::Flipped => "flipped",
+        iv::BufferTransform::Flipped90 => "flipped 90°",
+        iv::BufferTransform::Flipped180 => "flipped 180°",
+        iv::BufferTransform::Flipped270 => "flipped 270°",
+    };
+    VideoCard {
+        width: info.width() as i32,
+        height: info.height() as i32,
+        info: crate::UiVideoDbgInfo {
+            format: format!("{:?} ({}-bit)", info.format(), info.comp_depth(0)).to_shared_string(),
+            resolution: format!("{}x{}", info.width(), info.height()).to_shared_string(),
+            framerate: framerate.to_shared_string(),
+            pixel_aspect: format!("{}:{}", par.numer(), par.denom()).to_shared_string(),
+            rotation: rotation.to_shared_string(),
+            memory: arm.to_shared_string(),
+            primaries: format!("{:?}", colorimetry.primaries()).to_shared_string(),
+            transfer: format!("{:?}", colorimetry.transfer()).to_shared_string(),
+            matrix: format!("{:?}", colorimetry.matrix()).to_shared_string(),
+            range: format!("{:?}", colorimetry.range()).to_shared_string(),
+            hdr: hdr.to_shared_string(),
+        },
+    }
+}
+
+fn publish_video_card(ui: &crate::MainWindow, card: VideoCard) {
+    let bridge = ui.global::<crate::Bridge>();
+    bridge.set_video_frame_width(card.width);
+    bridge.set_video_frame_height(card.height);
+    bridge.set_video_dbg_info(card.info);
+    bridge.set_have_video_dbg_info(true);
 }
 
 /// The cue engine, the geometry it has been told about, and the overlay slot in
@@ -1842,9 +2282,9 @@ struct Cues {
     /// The bitmap subtitle set, which has no display list and so cannot go on
     /// the renderer's overlay slot. Same locking argument as `overlay`.
     bitmaps: parking_lot::Mutex<crate::bitmap_overlay::BitmapOverlay>,
-    /// The coded video size, latched. The GL lane learns it in its sink's caps
-    /// handler; this lane has no sink of its own, so it comes off the appsink's
-    /// caps plan, and the bitmap decoders need it to scale their regions onto
+    /// The coded video size, latched. This lane has no sink of its own, so it
+    /// comes off the appsink's caps plan, and the bitmap decoders need it to
+    /// scale their regions onto
     /// the picture. Written by the streaming thread, one relaxed swap a frame.
     coded: AtomicU64,
     /// What the bridge property was last told, so a steady cue does not dirty
@@ -1859,15 +2299,14 @@ impl Cues {
     /// `frame_rt` is the running time of the frame being handed to the scene,
     /// or `None` for a repaint with no frame behind it (a cue landing, expiring
     /// or being cleared while paused), which re-evaluates against the frozen
-    /// clock exactly as the GL lane's `current_overlays` does.
+    /// clock exactly as a raster consumer's `current_overlays` does.
     ///
     /// Costs nothing at rest: the engine's schedule pass, then a compare per
     /// showing cue. The display list is copied only when the engine publishes
     /// a new scene or the stack moves.
     fn pump(&self, ui: &crate::MainWindow, frame_rt: Option<gst::ClockTime>) {
         // The overlay lives on the renderer, not in the picture, so a player
-        // that lost the screen must not leave a cue over the idle view. Same
-        // guard the GL lane's pump_cues applies.
+        // that lost the screen must not leave a cue over the idle view.
         let bridge = ui.global::<crate::Bridge>();
         let owns_screen = bridge.get_app_state() == crate::ui_types::AppState::Playing.into()
             && bridge.get_player_variant() == crate::ui_types::UiPlayerVariant::Video.into();
@@ -2102,7 +2541,7 @@ impl Sink {
         // regions onto. Latched, so a steady stream never takes the engine lock
         // here.
         self.cues.note_coded(plan.size);
-        let result = match plan.modifier {
+        let (result, arm) = match plan.modifier {
             // dmabuf frames, the route that never maps the buffer
             #[cfg(target_os = "linux")]
             Some(modifier) if gpu.can_import() => {
@@ -2110,7 +2549,7 @@ impl Sink {
                     return;
                 };
                 match gpu.present_imported(owned, &plan, rotation, modifier) {
-                    Ok(presented) => Ok(presented),
+                    Ok(presented) => (Ok(presented), "dmabuf import"),
                     Err(err) => {
                         if gpu.note_import_failure(&err) {
                             self.renegotiate(appsink, &gpu);
@@ -2140,7 +2579,7 @@ impl Sink {
                 #[cfg(not(target_os = "linux"))]
                 let imported: Option<Result<FramePayload, String>> = None;
                 match imported {
-                    Some(result) => result,
+                    Some(result) => (result, "udmabuf import"),
                     None => {
                         let Ok(frame) =
                             gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &plan.info)
@@ -2161,8 +2600,11 @@ impl Sink {
                             planes[i] = data;
                             strides[i] = pitch[i] as u32;
                         }
-                        gpu.present(plan.desc, plan.par, rotation, &planes[..n], &strides[..n])
-                            .map_err(|err| err.to_string())
+                        (
+                            gpu.present(plan.desc, plan.par, rotation, &planes[..n], &strides[..n])
+                                .map_err(|err| err.to_string()),
+                            "upload",
+                        )
                     }
                 }
             }
@@ -2171,6 +2613,13 @@ impl Sink {
         match result {
             Ok(presented) => {
                 gpu.last_error = None;
+                // The inspector's card, once per stream shape rather than
+                // per frame.
+                if let Some(card) = gpu.announce(&plan, rotation, arm) {
+                    let _ = self
+                        .ui
+                        .upgrade_in_event_loop(move |ui| publish_video_card(&ui, card));
+                }
                 drop(gpu);
                 self.pending.store(true, Ordering::Release);
                 // The frame object itself is built here, on the UI thread:
@@ -2440,11 +2889,24 @@ fn toplevel_pipeline(element: &gst::Element) -> Option<gst::Pipeline> {
 pub fn make_sink(
     ui: slint::Weak<crate::MainWindow>,
     cues: fcast_video::cue::CueEngine,
-    render_opts: RenderingOptions,
+    profile: RenderProfile,
 ) -> Option<(gst::Element, CueTick)> {
-    let quality = profile_quality(render_opts.profile);
-    info!(profile = ?render_opts.profile, ?quality, "wgpu video lane: render profile");
-    let gpu = Gpu::new(quality)?;
+    let quality = profile_quality(profile);
+    info!(?profile, ?quality, "wgpu video lane: render profile");
+    Some(make_sink_on(Gpu::new(quality)?, ui, cues))
+}
+
+/// [`make_sink`] past the device decision: the sink for a gpu already built.
+///
+/// Split out so the tests drive the whole appsink, probes and callbacks
+/// included, on a device of their own. The test binary never publishes a
+/// shared one, and before this existed every test that went through
+/// `make_sink` skipped on that and passed empty.
+fn make_sink_on(
+    gpu: Gpu,
+    ui: slint::Weak<crate::MainWindow>,
+    cues: fcast_video::cue::CueEngine,
+) -> (gst::Element, CueTick) {
     let caps = gpu.caps();
     info!(%caps, "wgpu video lane: appsink offering");
     // The formats the software arm may hand a udmabuf pool out for, taken off
@@ -2457,7 +2919,7 @@ pub fn make_sink(
     // key clone per frame for a want that is never satisfied.
     cues.set_scene_consumer(true);
     // Pay the fontconfig/fontmap first-use cost on the raster thread now,
-    // instead of inside the first cue. `FSink::new` does the same.
+    // instead of inside the first cue.
     cues.warm();
     let sink = Arc::new(Sink {
         gpu: parking_lot::Mutex::new(gpu),
@@ -2496,6 +2958,16 @@ pub fn make_sink(
         .max_buffers(2)
         .drop(true)
         .build();
+    // An appsink keeps the basesink defaults, and the sink this replaces did
+    // not: gst_video_sink_init turns QoS on, drops a frame more than 5ms late
+    // instead of rendering it, and reports a 15ms processing deadline. A box
+    // that cannot keep up relies on all three. Without them every late frame
+    // is drawn anyway and the picture falls further behind the audio for as
+    // long as the load lasts, where the old sink skipped and let the decoder
+    // skip too.
+    appsink.set_qos(true);
+    appsink.set_max_lateness(VIDEO_SINK_MAX_LATENESS.nseconds() as i64);
+    appsink.set_processing_deadline(VIDEO_SINK_PROCESSING_DEADLINE);
     // The whole software zero-copy arm. A software decoder writes with the
     // CPU, so it can never negotiate `memory:DMABuf` caps; what it can do is
     // write into pages that happen to be a dma_buf, which is what a udmabuf
@@ -2565,9 +3037,10 @@ pub fn make_sink(
                         }
                     }
                     // The cue engine schedules in running time, so it needs the
-                    // same segment the frames are timestamped against. `FSink`
-                    // takes these in its own `event` handler; an appsink has
-                    // none, so the probe is the only place they can be seen.
+                    // same segment the frames are timestamped against. A sink
+                    // subclass takes these in its own `event` handler; an
+                    // appsink has none, so the probe is the only place they
+                    // can be seen.
                     gst::EventView::Segment(ev) => {
                         sink.cues.engine.set_video_segment(ev.segment());
                     }
@@ -2613,7 +3086,7 @@ pub fn make_sink(
     }
 
     let tick = CueTick(Arc::clone(&sink.cues));
-    Some((appsink.upcast(), tick))
+    (appsink.upcast(), tick)
 }
 
 /// Counts heap allocations on the calling thread, so a test can put a number
@@ -2717,12 +3190,200 @@ mod tests {
     /// it here, and the mode is passed explicitly anyway.
     /// The options a test builds a sink with: whatever the receiver
     /// defaults to, so a test that does not care renders the default lane.
-    pub(super) fn test_render_opts() -> RenderingOptions {
-        RenderingOptions {
-            profile: RenderProfile::Fast,
-            visualize_lut: false,
-            show_clipping: false,
+    /// The whole appsink on a device of this test's own, since the binary
+    /// never publishes a shared one. `None` without an adapter.
+    pub(super) fn test_sink(
+        engine: fcast_video::cue::CueEngine,
+    ) -> Option<(gst::Element, CueTick)> {
+        Some(super::make_sink_on(
+            texture_gpu()?,
+            slint::Weak::default(),
+            engine,
+        ))
+    }
+
+    /// The pacing the appsink has to be given by hand. The sink this lane
+    /// replaces is a GstVideoSink, whose init turns these on
+    /// (`gstvideosink.c`, `gst_video_sink_init`), and a box that cannot keep
+    /// up relies on them: a late frame is dropped instead of rendered and the
+    /// QoS event lets the decoder skip. At the basesink defaults the picture
+    /// drifts behind the audio for as long as the load lasts.
+    #[test]
+    fn the_appsink_paces_like_the_video_sink_it_replaces() {
+        gst::init().unwrap();
+        let Some((sink, _tick)) = test_sink(fcast_video::cue::CueEngine::new()) else {
+            eprintln!("no gpu adapter, skipping");
+            return;
+        };
+        assert!(sink.property::<bool>("qos"), "qos events must go upstream");
+        assert_eq!(
+            sink.property::<i64>("max-lateness"),
+            5_000_000,
+            "a frame more than 5ms late must be dropped"
+        );
+        assert_eq!(sink.property::<u64>("processing-deadline"), 15_000_000);
+        // and the defaults this is set apart from, so a plain appsink put back
+        // in its place fails here rather than in the field
+        let plain = gst_app::AppSink::builder().build();
+        assert!(!plain.property::<bool>("qos"));
+        assert_eq!(plain.property::<i64>("max-lateness"), -1);
+    }
+
+    /// A software Vulkan adapter is refused unless asked for: it would take
+    /// slint's whole UI through a software rasterizer on a box whose OpenGL
+    /// driver is hardware. Every hardware type, and the unknown one the GL
+    /// backend reports, stays acceptable.
+    #[test]
+    fn a_software_adapter_is_refused_on_the_hardware_passes() {
+        use wgpu::DeviceType as D;
+        assert!(!adapter_acceptable(D::Cpu, false));
+        assert!(
+            adapter_acceptable(D::Cpu, true),
+            "the software pass takes it"
+        );
+        for hardware in [D::IntegratedGpu, D::DiscreteGpu, D::VirtualGpu, D::Other] {
+            assert!(
+                adapter_acceptable(hardware, false),
+                "{hardware:?} must stay"
+            );
         }
+    }
+
+    /// Every hardware pass comes before any software one, so a hardware GL
+    /// driver beats a software Vulkan one, and refusing software drops the
+    /// tail without touching the order.
+    #[test]
+    fn the_software_passes_trail_every_hardware_pass() {
+        let hardware = backend_passes();
+        let passes = device_passes(true);
+        assert_eq!(passes.len(), hardware.len() * 2);
+        let (first, second) = passes.split_at(hardware.len());
+        assert!(first.iter().all(|(_, software)| !software));
+        assert!(second.iter().all(|(_, software)| *software));
+        assert_eq!(first.iter().map(|(b, _)| *b).collect::<Vec<_>>(), hardware);
+        assert_eq!(second.iter().map(|(b, _)| *b).collect::<Vec<_>>(), hardware);
+        assert_eq!(
+            device_passes(false).len(),
+            hardware.len(),
+            "refused software is no pass at all"
+        );
+    }
+
+    /// The platform backend is tried first and the GL backend is the floor
+    /// behind it; an override names one pass and a typo keeps the order.
+    #[test]
+    fn the_backend_passes_end_on_the_gl_floor() {
+        use wgpu::Backends as B;
+        let platform = i_slint_video_wgpu::default_backends();
+        let expect = if cfg!(target_vendor = "apple") {
+            vec![B::METAL]
+        } else {
+            vec![platform, B::GL]
+        };
+        assert_eq!(backend_passes_for(None), expect);
+        assert_eq!(
+            backend_passes_for(Some("bogus")),
+            expect,
+            "a typo is not a request"
+        );
+        assert_eq!(backend_passes_for(Some("gl")), vec![B::GL]);
+        assert_eq!(backend_passes_for(Some("vulkan")), vec![B::VULKAN]);
+        assert_eq!(backend_passes_for(Some("metal")), vec![B::METAL]);
+    }
+
+    /// Which pass this box takes, printed for the run and pinned to the rule:
+    /// whatever opened is not a software adapter unless that was asked for.
+    #[test]
+    fn a_device_opens_on_a_hardware_adapter_or_says_why_not() {
+        match create_shared_device() {
+            Some(shared) => {
+                let info = &shared.info;
+                eprintln!(
+                    "device: {} on {:?} ({:?}), norm16 {}, dmabuf {}",
+                    info.name, info.backend, info.device_type, shared.norm16, shared.dmabuf
+                );
+                assert!(
+                    software_adapter_allowed() || info.device_type != wgpu::DeviceType::Cpu,
+                    "a software adapter got through the gate"
+                );
+            }
+            None => eprintln!("no device: {:?}", REFUSED.get()),
+        }
+    }
+
+    /// glvnd's vendor JSON is one key deep and comes in both spellings the
+    /// two vendors ship.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_vendor_json_gives_up_its_library_path() {
+        use super::egl_vendor::library_path;
+        let nvidia = "{\n  \"file_format_version\": \"1.0.0\",\n  \"ICD\": {\n    \
+                      \"library_path\": \"/nix/store/x/lib/libEGL_nvidia.so.0\"\n  }\n}\n";
+        let mesa = "{\n    \"file_format_version\" : \"1.0.0\",\n    \"ICD\" : {\n        \
+                    \"library_path\" : \"/usr/lib/libEGL_mesa.so.0\"\n    }\n}\n";
+        assert_eq!(
+            library_path(nvidia).as_deref(),
+            Some("/nix/store/x/lib/libEGL_nvidia.so.0")
+        );
+        assert_eq!(
+            library_path(mesa).as_deref(),
+            Some("/usr/lib/libEGL_mesa.so.0")
+        );
+        assert_eq!(library_path("{}"), None);
+        assert_eq!(library_path("{\"library_path\": 3}"), None);
+    }
+
+    /// The pin exists for one shape, Mesa beside another vendor, and stays out
+    /// of the way otherwise: Mesa alone, another vendor alone, nothing at all.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn mesa_is_pinned_only_beside_another_vendor() {
+        use super::egl_vendor::mesa_pin;
+        let root = std::env::temp_dir().join(format!("fcast-egl-vendor-{}", std::process::id()));
+        let dir = |name: &str, files: &[(&str, &str)]| {
+            let d = root.join(name);
+            std::fs::create_dir_all(&d).unwrap();
+            for (file, lib) in files {
+                std::fs::write(
+                    d.join(file),
+                    format!("{{ \"file_format_version\": \"1.0.0\", \"ICD\": {{ \"library_path\": \"{lib}\" }} }}"),
+                )
+                .unwrap();
+            }
+            d
+        };
+        let hybrid = dir(
+            "hybrid",
+            &[
+                ("10_nvidia.json", "/lib/libEGL_nvidia.so.0"),
+                ("50_mesa.json", "/lib/libEGL_mesa.so.0"),
+            ],
+        );
+        assert_eq!(
+            mesa_pin(&[hybrid.clone()]),
+            Some(hybrid.join("50_mesa.json")),
+            "two vendors, one of them mesa: pin mesa"
+        );
+        let mesa_only = dir("mesa", &[("50_mesa.json", "/lib/libEGL_mesa.so.0")]);
+        assert_eq!(mesa_pin(&[mesa_only]), None, "mesa alone needs no pin");
+        let nvidia_only = dir("nvidia", &[("10_nvidia.json", "/lib/libEGL_nvidia.so.0")]);
+        assert_eq!(
+            mesa_pin(&[nvidia_only.clone()]),
+            None,
+            "no mesa, nothing to pin to"
+        );
+        assert_eq!(
+            mesa_pin(&[root.join("missing")]),
+            None,
+            "no directory, no pin"
+        );
+        // split across two directories, the way a distro and a local install are
+        let mesa_elsewhere = dir("elsewhere", &[("50_mesa.json", "/opt/libEGL_mesa.so.0")]);
+        assert_eq!(
+            mesa_pin(&[nvidia_only, mesa_elsewhere.clone()]),
+            Some(mesa_elsewhere.join("50_mesa.json"))
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -4719,9 +5380,7 @@ mod tests {
     fn caps_the_lane_cannot_render_are_accepted_not_refused() {
         gst::init().unwrap();
         let engine = fcast_video::cue::CueEngine::new();
-        let Some((sink, _tick)) =
-            super::make_sink(slint::Weak::default(), engine, test_render_opts())
-        else {
+        let Some((sink, _tick)) = test_sink(engine) else {
             eprintln!("no gpu adapter, skipping");
             return;
         };
@@ -4763,9 +5422,7 @@ mod tests {
     fn the_chain_in_front_of_the_sink_accepts_what_the_sink_cannot_render() {
         gst::init().unwrap();
         let engine = fcast_video::cue::CueEngine::new();
-        let Some((sink, _tick)) =
-            super::make_sink(slint::Weak::default(), engine, test_render_opts())
-        else {
+        let Some((sink, _tick)) = test_sink(engine) else {
             eprintln!("no gpu adapter, skipping");
             return;
         };
@@ -5368,12 +6025,11 @@ mod tests {
             "a window that did not move re-keyed every cue anyway"
         );
 
+        // Never blank: either the old list is still up (into_stale) or the
+        // worker has already landed the new one, which the loop below grades.
+        // Which of the two it is races the worker, so it is not asserted.
         let during = cues.engine.current_scenes();
         assert_eq!(during.len(), 1, "the resize blanked the cue");
-        assert!(
-            Arc::ptr_eq(&during[0].scene, &before[0].scene),
-            "the resize dropped the display list before the new one existed"
-        );
 
         loop {
             let now = cues.engine.current_scenes();
@@ -5648,7 +6304,7 @@ mod tests {
     /// machine that refused the shared device has slint on dodvg's OpenGL
     /// executor, which draws nothing at all for a video image, so there is
     /// nothing for a rendered picture to be handed to. `make_sink` answering
-    /// `None` is what puts the libplacebo `FSink` back in its place.
+    /// `None` is what leaves the player with no video sink.
     #[test]
     fn without_a_shared_device_the_lane_declines() {
         // Nothing in this binary ever publishes one: the sinks under test
@@ -5978,7 +6634,41 @@ mod tests {
         assert_eq!(d.range, Range::Full);
         assert_eq!(d.matrix, Matrix::Bt601);
         assert_eq!(d.transfer, Transfer::Bt1886);
-        assert_eq!(d.primaries, Primaries::Bt709, "smpte170m has no variant");
+        assert_eq!(
+            d.primaries,
+            Primaries::Bt601_525,
+            "smpte170m is the SD gamut"
+        );
+    }
+
+    /// The gamut sets the old lane converted and this one used to flatten
+    /// onto BT.709: every SD stream, and the P3 that phones tag.
+    #[test]
+    fn sd_and_p3_primaries_get_their_gamut_matrix() {
+        // the numeric form is range:matrix:transfer:primaries, with gst's
+        // primaries numbering: 3 bt470bg, 4 smpte170m, 5 smpte240m, 10
+        // smpte-rp431, 11 smpte-eg432, 12 ebu3213
+        for (colorimetry, want) in [
+            ("bt601", Primaries::Bt601_525),
+            ("1:4:0:4", Primaries::Bt601_525),
+            ("smpte240m", Primaries::Bt601_525),
+            ("1:4:0:5", Primaries::Bt601_525),
+            ("1:4:0:3", Primaries::Bt601_625),
+            ("1:4:0:12", Primaries::Bt601_625),
+            ("1:4:0:11", Primaries::DisplayP3),
+            ("1:4:0:10", Primaries::DisplayP3),
+            ("bt709", Primaries::Bt709),
+            ("bt2020", Primaries::Bt2020),
+            // no variant: passes through as BT.709, as it always did
+            ("1:4:0:2", Primaries::Bt709),
+        ] {
+            let d = desc(&format!(
+                "video/x-raw, format=(string)NV12, width=(int)720, height=(int)576, \
+                 colorimetry=(string){colorimetry}"
+            ))
+            .unwrap_or_else(|| panic!("{colorimetry} must map"));
+            assert_eq!(d.primaries, want, "{colorimetry}");
+        }
     }
 
     /// Caps with no colorimetry at all, which is what a raw testsrc or a
@@ -6059,6 +6749,37 @@ mod tests {
         let hdr = hdr_metadata(&bare);
         assert_eq!(hdr.max_mastering_nits, 0.0);
         assert_eq!(hdr.max_cll, 0.0);
+    }
+
+    /// A peak too small to be real is unknown, not a peak. The old lane only
+    /// believed a mastering luminance from 100 nits up, and the crate takes
+    /// whatever it is handed: a 0.0001-nit peak would tone map the whole
+    /// frame to black under playing audio.
+    #[test]
+    fn an_unbelievable_peak_is_treated_as_unknown() {
+        gst::init().unwrap();
+        // the units mistake seen in the wild: "1" where 10000000 was meant,
+        // and a MaxCLL in the wrong unit too
+        let caps = gst::Caps::from_str(
+            "video/x-raw, format=(string)P010_10LE, width=(int)3840, height=(int)2160, \
+             colorimetry=(string)bt2100-pq, \
+             mastering-display-info=(string)\"34000:16000:13250:34500:7500:3000:15635:16450:1:1\", \
+             content-light-level=(string)\"10:4\"",
+        )
+        .unwrap();
+        let hdr = hdr_metadata(&caps);
+        assert_eq!(hdr.max_mastering_nits, 0.0, "0.0001 nits is not a peak");
+        assert_eq!(hdr.max_cll, 0.0, "10 nits is not a peak either");
+        // and the crate then falls back to the transfer, not to black
+        let info = gst_video::VideoInfo::from_caps(&caps).unwrap();
+        let desc = frame_desc(&info, hdr).unwrap();
+        assert_eq!(i_slint_video_wgpu::gpu::peak_nits(&desc), 10_000.0);
+
+        // the floor itself, on both sides of it
+        assert_eq!(believable_peak(99.9), 0.0);
+        assert_eq!(believable_peak(100.0), 100.0);
+        assert_eq!(believable_peak(1000.0), 1000.0);
+        assert_eq!(believable_peak(f32::NAN), 0.0);
     }
 
     // -----------------------------------------------------------------
@@ -6680,7 +7401,7 @@ mod tests {
 /// what the zero-copy half of this module needs:
 ///
 /// ```text
-/// LIBVA_DRIVER_NAME=iHD cargo test -p receiver-ui --features desktop,video-wgpu \
+/// LIBVA_DRIVER_NAME=iHD cargo test -p receiver-ui --features desktop \
 ///     --lib -- --test-threads=1 transitions
 /// ```
 #[cfg(all(test, target_os = "linux"))]
@@ -6713,48 +7434,66 @@ mod transitions {
 
     /// Two seconds of h264 at each size, encoded once per process. `None`
     /// without ffmpeg, so this skips instead of failing.
-    fn clips() -> Option<Vec<PathBuf>> {
+    /// One fixture clip, generated once per process under a lock. The soaks
+    /// run in parallel and share this directory, and an existence check on
+    /// its own let one test open the file another test's ffmpeg was still
+    /// writing ("This file contains no playable streams"). Written beside
+    /// its final name and renamed into place, so a killed ffmpeg leaves no
+    /// half file for the next caller to find.
+    fn fixture_clip(name: &str, args: &[&str]) -> Option<PathBuf> {
+        static LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _held = LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let dir = std::env::temp_dir().join(format!("fcast-transitions-{}", std::process::id()));
         std::fs::create_dir_all(&dir).ok()?;
+        let path = dir.join(name);
+        if path.exists() {
+            return Some(path);
+        }
+        // same extension, so ffmpeg still picks the muxer off it
+        let partial = dir.join(format!("partial-{name}"));
+        let status = std::process::Command::new("ffmpeg")
+            .args(["-hide_banner", "-loglevel", "error"])
+            .args(args)
+            .arg("-y")
+            .arg(&partial)
+            .status()
+            .ok()?;
+        if !status.success() {
+            return None;
+        }
+        std::fs::rename(&partial, &path).ok()?;
+        Some(path)
+    }
+
+    fn clips() -> Option<Vec<PathBuf>> {
         let mut out = Vec::new();
         for (w, h) in SIZES {
-            let path = dir.join(format!("clip-{w}x{h}.mp4"));
-            if !path.exists() {
-                let status = std::process::Command::new("ffmpeg")
-                    .args([
-                        "-hide_banner",
-                        "-loglevel",
-                        "error",
-                        "-f",
-                        "lavfi",
-                        "-i",
-                        &format!("testsrc2=size={w}x{h}:rate=25:duration=2"),
-                        // audio too: the field failure landed on the audio
-                        // half of a join, and a video-only item never builds
-                        // the second streamsynchronizer pair
-                        "-f",
-                        "lavfi",
-                        "-i",
-                        "sine=frequency=440:duration=2",
-                        "-c:v",
-                        "libx264",
-                        "-pix_fmt",
-                        "yuv420p",
-                        "-g",
-                        "25",
-                        "-c:a",
-                        "aac",
-                        "-shortest",
-                        "-y",
-                    ])
-                    .arg(&path)
-                    .status()
-                    .ok()?;
-                if !status.success() {
-                    return None;
-                }
-            }
-            out.push(path);
+            let video = format!("testsrc2=size={w}x{h}:rate=25:duration=2");
+            out.push(fixture_clip(
+                &format!("clip-{w}x{h}.mp4"),
+                &[
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    &video,
+                    // audio too: the field failure landed on the audio half
+                    // of a join, and a video-only item never builds the
+                    // second streamsynchronizer pair
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=2",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-g",
+                    "25",
+                    "-c:a",
+                    "aac",
+                    "-shortest",
+                ],
+            )?);
         }
         Some(out)
     }
@@ -6764,31 +7503,17 @@ mod transitions {
     /// be BUILT rather than reused, which is the shape the field failures all
     /// share ("a chain join finished kind=Video").
     fn audio_only_clip() -> Option<PathBuf> {
-        let dir = std::env::temp_dir().join(format!("fcast-transitions-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok()?;
-        let path = dir.join("clip-audio.m4a");
-        if !path.exists() {
-            let status = std::process::Command::new("ffmpeg")
-                .args([
-                    "-hide_banner",
-                    "-loglevel",
-                    "error",
-                    "-f",
-                    "lavfi",
-                    "-i",
-                    "sine=frequency=440:duration=2",
-                    "-c:a",
-                    "aac",
-                    "-y",
-                ])
-                .arg(&path)
-                .status()
-                .ok()?;
-            if !status.success() {
-                return None;
-            }
-        }
-        Some(path)
+        fixture_clip(
+            "clip-audio.m4a",
+            &[
+                "-f",
+                "lavfi",
+                "-i",
+                "sine=frequency=440:duration=2",
+                "-c:a",
+                "aac",
+            ],
+        )
     }
 
     fn uri(path: &Path) -> String {
@@ -6902,11 +7627,7 @@ mod transitions {
         init();
         super::FAIL_IMPORTS.store(0, Ordering::Release);
         let engine = fcast_video::cue::CueEngine::new();
-        let Some((video_sink, _tick)) = super::make_sink(
-            slint::Weak::default(),
-            engine.clone(),
-            super::tests::test_render_opts(),
-        ) else {
+        let Some((video_sink, _tick)) = super::tests::test_sink(engine.clone()) else {
             eprintln!("no vulkan device, skipping");
             return;
         };
@@ -7063,7 +7784,21 @@ mod transitions {
         if !uri(&clips[pick(rounds)]).ends_with(".m4a") {
             assert!(!decoders.is_empty(), "{name}: no decoder was ever built");
         }
-        player.stop();
+        // Synchronous, not `stop()`: that is queued on the worker, and a test
+        // that returns while the teardown runs leaves the worker alive at
+        // process exit when it is the last one to finish. That segfaulted a
+        // flapjack thread in libc once these soaks began to run for real.
+        // The shutdown barrier fires when everything is down; a disconnect
+        // means the worker is already gone, which is the same thing.
+        let (down_tx, down_rx) = std::sync::mpsc::channel();
+        player.shutdown(Box::new(move || {
+            let _ = down_tx.send(());
+        }));
+        if let Err(std::sync::mpsc::RecvTimeoutError::Timeout) =
+            down_rx.recv_timeout(std::time::Duration::from_secs(30))
+        {
+            panic!("{name}: the player's teardown never finished");
+        }
 
         let caps = seen.caps.lock().unwrap();
         let dmabuf = caps.iter().filter(|c| c.contains("memory:DMABuf")).count();
@@ -7119,44 +7854,30 @@ mod transitions {
     /// neither is in the offer, so both take the caps event down the path
     /// that used to end the item.
     fn odd_format_clips() -> Option<Vec<PathBuf>> {
-        let dir = std::env::temp_dir().join(format!("fcast-transitions-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).ok()?;
         let mut out = Vec::new();
         for pix in ["yuv422p", "yuv444p"] {
-            let path = dir.join(format!("clip-{pix}.mp4"));
-            if !path.exists() {
-                let status = std::process::Command::new("ffmpeg")
-                    .args([
-                        "-hide_banner",
-                        "-loglevel",
-                        "error",
-                        "-f",
-                        "lavfi",
-                        "-i",
-                        "testsrc2=size=640x360:rate=25:duration=2",
-                        "-f",
-                        "lavfi",
-                        "-i",
-                        "sine=frequency=440:duration=2",
-                        "-c:v",
-                        "libx264",
-                        "-pix_fmt",
-                        pix,
-                        "-g",
-                        "25",
-                        "-c:a",
-                        "aac",
-                        "-shortest",
-                        "-y",
-                    ])
-                    .arg(&path)
-                    .status()
-                    .ok()?;
-                if !status.success() {
-                    return None;
-                }
-            }
-            out.push(path);
+            out.push(fixture_clip(
+                &format!("clip-{pix}.mp4"),
+                &[
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=640x360:rate=25:duration=2",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:duration=2",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    pix,
+                    "-g",
+                    "25",
+                    "-c:a",
+                    "aac",
+                    "-shortest",
+                ],
+            )?);
         }
         Some(out)
     }

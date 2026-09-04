@@ -127,8 +127,7 @@ export global Bridge {
     in-out property <length> safe-area-bottom;
     // Video frames pushed into the scene: android's software bridge, and
     // the desktop wgpu lane, whose image is the rendered texture itself
-    // when slint shares its device and a readback otherwise. Empty on the
-    // desktop libplacebo path, which paints video behind the window.
+    // when slint shares its device and a readback otherwise.
     in property <image> sw-video-frame;
     // a sw frame is being presented, the view paints black behind it
     in property <bool> sw-video-active;
@@ -269,7 +268,6 @@ export global Bridge {
     // Seeded with what an unset config means, so the startup push is a no-op
     // and the `changed` hook in main.slint only fires on a real difference.
     in-out property <string> cfg-interface-ui-scale: "tv";
-    in-out property <bool> cfg-video-hdr-output: true;
     in-out property <string> cfg-video-render-profile: "Default";
     in-out property <string> cfg-discovery-exclude-interfaces;
     in-out property <string> cfg-log-level: "Default";

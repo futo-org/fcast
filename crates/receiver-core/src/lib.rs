@@ -43,22 +43,9 @@ pub mod utils;
 pub use fcast_gst_elements::vajpegdec;
 pub use fcast_gst_elements::{fcompsrc, fwebrtcsrc, imagedec, imagetypefind};
 
-// Renderer *settings* only: plain data, no libplacebo. This is what the CLI and
-// the config store carry, so it stays available with `render` off.
+// Renderer settings, plain data the CLI and the config store carry.
 #[cfg(not(target_os = "android"))]
-use fcast_video::render_options::{RenderProfile, RenderingOptions};
-
-// Everything below is the GPU render surface, re-exported for the receiver
-// binaries. Behind `render` so a test build of this crate never drags in
-// libplacebo (and the C library its -sys crate builds).
-#[cfg(all(target_os = "linux", feature = "render"))]
-pub use fcast_video::egl;
-#[cfg(feature = "render")]
-pub use fcast_video::{SwapchainSink, VideoSink};
-#[cfg(feature = "render")]
-pub use glow;
-#[cfg(feature = "render")]
-pub use libplacebo;
+use fcast_video::render_options::RenderProfile;
 
 pub use gst;
 pub use gst_video;
@@ -203,12 +190,6 @@ pub struct CliArgs {
     /// Change what video frame render profile should be used
     #[arg(long, value_enum)]
     render_profile: Option<RenderProfile>,
-    /// Visualize the color mapping lookup table used for video rendering
-    #[arg(long, default_value_t = false)]
-    visualize_color_mapping_lut: bool,
-    /// Visualize clipped pixels from tone-mapping
-    #[arg(long, default_value_t = false)]
-    visualize_hdr_clipping: bool,
     /// Path to the settings file to use
     #[arg(long)]
     settings_file_path: Option<String>,
@@ -219,9 +200,6 @@ pub struct CliArgs {
     /// Run without a GUI
     #[arg(long, default_value_t = false)]
     pub headless: bool,
-    /// Force HDR content to be tone-mapped to SDR.
-    #[arg(long, default_value_t = false)]
-    pub disable_hdr_output: bool,
 }
 
 /// The receiver's effective settings: parsed CLI flags plus the persisted
@@ -270,14 +248,6 @@ impl Settings {
                     .and_then(parse_render_profile)
             })
             .unwrap_or(RenderProfile::Fast)
-    }
-
-    pub fn rendering_options(&self) -> RenderingOptions {
-        RenderingOptions {
-            profile: self.render_profile(),
-            visualize_lut: self.cli.visualize_color_mapping_lut,
-            show_clipping: self.cli.visualize_hdr_clipping,
-        }
     }
 
     /// Regex of network interface names to exclude from advertising on.
@@ -353,10 +323,6 @@ impl Settings {
 
     pub fn no_fullscreen_player(&self) -> bool {
         self.cli.no_fullscreen_player || !self.config.get().interface.fullscreen_player
-    }
-
-    pub fn disable_hdr_output(&self) -> bool {
-        self.cli.disable_hdr_output || !self.config.get().video.hdr_output
     }
 
     /// GUI scaling mode, resolved from `--ui-scale` then `[interface]

@@ -18,21 +18,16 @@ fn main() -> anyhow::Result<()> {
 
     if !settings.headless() && std::env::var("SLINT_BACKEND") == Err(std::env::VarError::NotPresent)
     {
-        // The zero-copy video lane needs slint on the same wgpu device the
-        // sink renders with, and that decision has to be made here, before a
-        // window exists. It declines unless FCAST_DESKTOP_WGPU_VIDEO=1 and a
-        // gpu device came up, and then the OpenGL selection stands.
-        #[cfg(feature = "video-wgpu")]
-        let wgpu_video = rcore::select_wgpu_video_backend();
-        #[cfg(not(feature = "video-wgpu"))]
-        let wgpu_video = false;
-
-        if !wgpu_video {
+        // The video lane needs slint on the same wgpu device the sink
+        // renders with, and that decision has to be made here, before a
+        // window exists. It declines when no gpu device came up at all, and
+        // then the OpenGL selection stands: the UI runs, playback has no
+        // video.
+        if !rcore::select_wgpu_video_backend() {
             let selector = rcore::slint::BackendSelector::new();
-            // Both dodvg lanes are compiled in when the wgpu one is. Name the
-            // OpenGL one so this build renders like every other one instead of
-            // leaning on the backend's default order.
-            #[cfg(feature = "video-wgpu")]
+            // Both dodvg lanes are compiled in. Name the OpenGL one so this
+            // build renders like every other one instead of leaning on the
+            // backend's default order.
             let selector = selector.renderer_name("dodvg".into());
             #[cfg(not(target_os = "windows"))]
             let selector = selector.require_opengl_with_version(3, 30);
@@ -46,16 +41,5 @@ fn main() -> anyhow::Result<()> {
         rcore::tracing::warn!(?err, "Failed to set XDG app id");
     }
 
-    // Opt into the experimental Wayland subsurface sink with
-    // FCAST_VIDEO_SINK=wayland-subsurface.
-    #[cfg(target_os = "linux")]
-    if std::env::var("FCAST_VIDEO_SINK").as_deref() == Ok("wayland-subsurface") {
-        let sink = rcore::WaylandSubsurfaceSink::new(
-            settings.disable_hdr_output(),
-            settings.rendering_options(),
-        );
-        return rcore::run(settings, sink);
-    }
-
-    rcore::run(settings, rcore::SwapchainSink::new())
+    rcore::run(settings)
 }

@@ -1,11 +1,7 @@
-//! Subtitle cues on the desktop lanes: the engine's display lists, put in
-//! front of the dodvg renderer as its own scene type.
-//!
-//! Shared verbatim by both. The wgpu lane drives it from its appsink
-//! (`desktop_wgpu_video::Cues`), the GL lane from the rendering notifier
-//! (`lib.rs`, `VideoTick::pump_cues`); dodvg is the same renderer on two
-//! graphics APIs and the overlay slot is the same slot. Nothing here knows
-//! which one it is on.
+//! Subtitle cues on the desktop lane: the engine's display lists, put in
+//! front of the dodvg renderer as its own scene type. Driven from the video
+//! lane's appsink (`desktop_wgpu_video::Cues`); nothing here knows about the
+//! picture it sits over.
 //!
 //! The engine (`fcast_video::cue`) lays a cue out on its worker and publishes
 //! an `Arc<fcast_video::cue_scene::CueScene>`. The renderer takes an
@@ -693,7 +689,7 @@ pub(crate) mod tests {
     }
 }
 
-/// THE WAVE 7 GATE: the desktop GL lane, taken off libplacebo's subtitle
+/// THE WAVE 7 GATE: the desktop lane, taken off the engine's painted subtitle
 /// overlays and put on the renderer's scene slot, draws the same cue in the
 /// same place.
 ///
@@ -727,9 +723,9 @@ mod wave7_gate {
         *,
     };
 
-    /// A warm engine on the RASTER lane, which is the desktop GL lane exactly
-    /// as it ran before this wave: vello_cpu paints every cue and
-    /// `current_overlays` is what the libplacebo compositor uploaded.
+    /// A warm engine on the RASTER lane, which is what the desktop ran before
+    /// this wave: vello_cpu paints every cue and `current_overlays` is what
+    /// the video compositor uploaded.
     fn painted(cues: &[CueInput]) -> CueEngine {
         gst::init().unwrap();
         let engine = CueEngine::new();
@@ -789,7 +785,7 @@ mod wave7_gate {
             repaint.pixels.as_slice(),
             overlay.pixels.as_slice(),
             "the display list handed to the renderer paints different pixels than the \
-             libplacebo lane composited, so the two lanes are not showing the same cue"
+             raster lane composited, so the two lanes are not showing the same cue"
         );
 
         // And that display list is what lands on the overlay slot, at the
@@ -871,7 +867,7 @@ mod wave7_gate {
 /// `desktop_wgpu_video` installs, and because it is the claim the plan makes
 /// (`FRAME_ALLOC_BUDGET` unchanged with cues on screen) rather than a property
 /// of the translation.
-#[cfg(all(test, feature = "video-wgpu"))]
+#[cfg(all(test, not(target_os = "android")))]
 mod alloc_gate {
     use std::time::{Duration, Instant};
 

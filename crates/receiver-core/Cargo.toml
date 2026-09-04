@@ -48,9 +48,6 @@ tracing-tracy = { version = "=0.11.2", optional = true }
 hayro-jpeg2000 = "0.3"
 jxl-oxide = { version = "0.12", features = ["image"] }
 oneshot = { version = "0.2", features = ["std"] }
-# Re-export only (see `render`). Optional so a test build of this crate never
-# builds the C libplacebo.
-libplacebo = { path = "../libplacebo", optional = true }
 toml_edit.workspace = true
 directories.workspace = true
 headers = "0.4"
@@ -90,9 +87,6 @@ google-cast-protocol = { path = "../google-cast-protocol" }
 rcgen.workspace = true
 uuid.workspace = true
 
-# Re-export only (see `render`).
-glow = { workspace = true, optional = true }
-
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 # AVIF decode, which needs dav1d through the `image` crate's own binding.
@@ -104,6 +98,8 @@ tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = [ "env-filter" ] }
+# Only to cap the `log` bridge at the configured level, see logging.rs.
+log.workspace = true
 gst-plugin-rtp = { workspace = true, optional = true }
 clap.workspace = true
 inhibit-screensaver.path = "../inhibit-screensaver"
@@ -112,7 +108,6 @@ inhibit-screensaver.path = "../inhibit-screensaver"
 image = { workspace = true, features = ["encode"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-glutin_egl_sys = { version = "0.7.1" }
 pipewire = { version = "0.10", features = ["v0_3_50"] }
 libspa = "0.10"
 libc = "0.2"
@@ -154,12 +149,6 @@ flapjack-test.workspace = true
 
 [features]
 default = []
-# The GPU render surface this crate re-exports for the receiver binaries
-# (`SwapchainSink`/`VideoSink`/`egl`/`glow`/`libplacebo`). OFF by default: this
-# crate's own tests drive pipelines, never a GPU, and leaving it on made every
-# `cargo test -p receiver-core` build the C libplacebo. `receiver-ui` — the only
-# consumer that renders — turns it on.
-render = ["dep:libplacebo", "dep:glow", "fcast-video/render"]
 airplay = ["dep:plist", "dep:ctr", "dep:apple-fairplay"]
 desktop = ["static-gst-plugins"]
 systray = []
