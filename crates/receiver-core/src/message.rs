@@ -235,6 +235,11 @@ pub enum Message {
     AppUpdate(AppUpdate),
     GuiWindowClosed(oneshot::Sender<()>),
     FCastSenderDisconnect(SenderId),
+    /// A sender said who it is (v3 initial message, v4 introduction).
+    SenderIntroduced {
+        sender_id: SenderId,
+        info: crate::gui::SenderInfo,
+    },
 }
 
 pub enum ReceiverToFCastSender {

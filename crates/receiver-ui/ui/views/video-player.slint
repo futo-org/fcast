@@ -967,6 +967,21 @@ component PlaybackControls inherits Rectangle {
                     }
                 }
 
+                // Who this stream is from, for the one that arrives unasked.
+                if Bridge.senders.length > 0: HorizontalLayout {
+                    padding-left: 15px;
+                    padding-right: 15px;
+
+                    FText {
+                        text: Bridge.senders.length == 1
+                            ? @tr("Casting from {}", Bridge.senders[0].name == "" ? Bridge.senders[0].app : Bridge.senders[0].name)
+                            : @tr("Casting from {} and {} more", Bridge.senders[0].name == "" ? Bridge.senders[0].app : Bridge.senders[0].name, Bridge.senders.length - 1);
+                        font-size: 12px;
+                        color: FCastPalette.opacity-light-500;
+                        overflow: elide;
+                    }
+                }
+
                 VerticalLayout {
                     padding-top: 10px;
 
@@ -1316,6 +1331,15 @@ component MiniOsd inherits Rectangle {
             font-size: 13px;
             color: FCastPalette.opacity-light-500;
             vertical-alignment: center;
+        }
+
+        // The sender that asked, when it has a name.
+        if Bridge.mini-osd-by != "": FText {
+            text: Bridge.mini-osd-by;
+            font-size: 13px;
+            color: FCastPalette.opacity-light-500;
+            vertical-alignment: center;
+            overflow: elide;
         }
     }
     }

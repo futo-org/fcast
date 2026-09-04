@@ -564,6 +564,14 @@ fn unhide_cursor_outside_video_scene(ui: &MainWindow) {
     }
 }
 
+fn ui_sender(info: receiver_core::gui::SenderInfo) -> crate::UiSender {
+    crate::UiSender {
+        name: info.display_name.to_shared_string(),
+        app: info.app_name.to_shared_string(),
+        version: info.app_version.to_shared_string(),
+    }
+}
+
 fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper) {
     let bridge = ui.global::<Bridge>();
 
@@ -731,14 +739,22 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
         UpdateGuiCommand::SetImageViaPlayer(via_player) => bridge.set_image_via_player(via_player),
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),
         UpdateGuiCommand::SetSeekPending(pending) => bridge.set_seek_pending(pending),
-        UpdateGuiCommand::TransportFromSender(kind) => {
+        UpdateGuiCommand::TransportFromSender { kind, by } => {
             use receiver_core::gui::TransportKind;
-            bridge.invoke_transport_from_sender(match kind {
-                TransportKind::Pause => crate::UiTransport::Pause,
-                TransportKind::Resume => crate::UiTransport::Resume,
-                TransportKind::Seek => crate::UiTransport::Seek,
-            });
+            bridge.invoke_transport_from_sender(
+                match kind {
+                    TransportKind::Pause => crate::UiTransport::Pause,
+                    TransportKind::Resume => crate::UiTransport::Resume,
+                    TransportKind::Seek => crate::UiTransport::Seek,
+                },
+                by.unwrap_or_default().to_shared_string(),
+            );
         }
+        UpdateGuiCommand::SetSenders(senders) => {
+            let senders: Vec<crate::UiSender> = senders.into_iter().map(ui_sender).collect();
+            bridge.set_senders(Rc::new(VecModel::from(senders)).into());
+        }
+
         UpdateGuiCommand::SetSourceBackoff {
             remaining_ms,
             total_ms,

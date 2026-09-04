@@ -18,6 +18,13 @@ export enum UiTransport {
     Seek,
 }
 
+// A sender as it introduced itself. Empty strings where it said nothing.
+export struct UiSender {
+    name: string,
+    app: string,
+    version: string,
+}
+
 export enum AppState {
     Idle,
     LoadingMedia,
@@ -205,6 +212,8 @@ export global Bridge {
     in-out property <float> volume: 1.0;
     in-out property <bool> is-debugging: false;
     in-out property <int> connected_devices: 0;
+    // The senders that introduced themselves, live.
+    in property <[UiSender]> senders;
     in-out property <bool> is-scrubbing-position: false;
     // True from the moment the user releases the scrubber until the pipeline reports it has landed
     // on the requested position.
@@ -227,14 +236,18 @@ export global Bridge {
     // moves on, everything else fades on its own.
     in-out property <int> mini-osd-serial: 0;
     in-out property <bool> mini-osd-pinned: false;
+    // Who issued the command, when a sender did and had a name; empty for
+    // the keyboard.
+    in-out property <string> mini-osd-by;
     // Seconds the keyboard seeks moved by, summed while the seek badge is up
     // so three taps read as one jump. Zero for a sender's seek, which is
     // absolute. The badge clears it when it fades.
     in-out property <int> mini-osd-seek-delta: 0;
     // Bumped per keyboard seek: the badge's own clock.
     in-out property <int> seek-badge-serial: 0;
-    callback transport-from-sender(kind: UiTransport);
-    transport-from-sender(kind) => {
+    callback transport-from-sender(kind: UiTransport, by: string);
+    transport-from-sender(kind, by) => {
+        mini-osd-by = by;
         note-remote-transport(kind);
     }
     public function note-remote-transport(kind: UiTransport) {
@@ -247,6 +260,7 @@ export global Bridge {
         mini-osd-serial += 1;
     }
     public function note-keyboard-seek(delta-secs: int) {
+        mini-osd-by = "";
         // Presses in one direction add up; turning round starts over, the
         // old pill is not something to subtract from.
         if (mini-osd-seek-delta > 0) == (delta-secs > 0) {
@@ -502,6 +516,7 @@ export global Bridge {
             // With the chrome hidden the shortcut is an outside command as
             // far as feedback goes: the mini OSD says what it did.
             if !controls-overlay-visible {
+                mini-osd-by = "";
                 note-remote-transport(playback-state == GuiPlaybackState.Playing ? UiTransport.Pause : UiTransport.Resume);
             }
             resume-or-pause();

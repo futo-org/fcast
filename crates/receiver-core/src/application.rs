@@ -817,6 +817,8 @@ pub struct Application {
     receiver_info: Arc<crate::ReceiverInfo>,
     fcast_txt_records: HashMap<String, String>,
     fcast_senders: HashMap<SenderId, FCastSenderHandle>,
+    /// What each introduced sender said about itself, for the UI.
+    senders: HashMap<SenderId, crate::gui::SenderInfo>,
     inspector_bitrates: InspectorBitrates,
     /// Gates all inspector work so nothing is computed or sent while it is
     /// closed.
@@ -1127,6 +1129,7 @@ impl Application {
             receiver_info,
             fcast_txt_records,
             fcast_senders: HashMap::new(),
+            senders: HashMap::new(),
         })
     }
 
@@ -3386,7 +3389,16 @@ impl Application {
         if !matches!(origin, PacketOrigin::Gui)
             && let Some(kind) = remote_transport_kind(&op, self.player.player_state())
         {
-            self.gui.transport_from_sender(kind);
+            let by = match origin {
+                PacketOrigin::FCast { sender_id, .. } | PacketOrigin::GCast { sender_id, .. } => {
+                    self.senders
+                        .get(&sender_id)
+                        .map(|s| s.display_name.clone())
+                        .filter(|name| !name.is_empty())
+                }
+                _ => None,
+            };
+            self.gui.transport_from_sender(kind, by);
         }
         match op {
             Operation::Pause => self.pause(),
@@ -5781,6 +5793,13 @@ impl Application {
             }
             Message::FCastSenderDisconnect(id) => {
                 self.fcast_senders.remove(&id);
+                if self.senders.remove(&id).is_some() {
+                    self.gui.set_senders(self.senders.values().cloned().collect());
+                }
+            }
+            Message::SenderIntroduced { sender_id, info } => {
+                self.senders.insert(sender_id, info);
+                self.gui.set_senders(self.senders.values().cloned().collect());
             }
             Message::SetConfigBool { key, value } => {
                 #[cfg(not(target_os = "android"))]
