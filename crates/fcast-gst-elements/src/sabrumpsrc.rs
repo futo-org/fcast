@@ -985,11 +985,13 @@ mod imp {
                 b"styp" | b"sidx" | b"moof" | b"mdat" | b"emsg" => return pos,
                 _ => {}
             }
-            // A largesize near u64::MAX is a corrupt box, not a panic. Checked
-            // so a hostile segment cannot overflow the cursor (debug asserts).
+            // A largesize near u64::MAX is a corrupt box, not a panic. Checked,
+            // and a box running past the data ends the scan, so the cursor
+            // stays inside the slice and the loop bound cannot overflow.
             let Some(next) = usize::try_from(box_size)
                 .ok()
                 .and_then(|size| pos.checked_add(size))
+                .filter(|next| *next <= data.len())
             else {
                 break;
             };
