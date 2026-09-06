@@ -985,9 +985,52 @@ mod imp {
                 b"styp" | b"sidx" | b"moof" | b"mdat" | b"emsg" => return pos,
                 _ => {}
             }
-            pos += box_size as usize;
+            // A largesize near u64::MAX is a corrupt box, not a panic. Checked
+            // so a hostile segment cannot overflow the cursor (debug asserts).
+            let Some(next) = usize::try_from(box_size)
+                .ok()
+                .and_then(|size| pos.checked_add(size))
+            else {
+                break;
+            };
+            pos = next;
         }
         0
+    }
+
+    #[cfg(test)]
+    mod prefix_tests {
+        use super::mp4_init_prefix_length;
+
+        fn boxed(kind: &[u8; 4], payload: &[u8]) -> Vec<u8> {
+            let mut out = ((payload.len() + 8) as u32).to_be_bytes().to_vec();
+            out.extend_from_slice(kind);
+            out.extend_from_slice(payload);
+            out
+        }
+
+        #[test]
+        fn the_prefix_ends_at_the_first_media_box() {
+            let mut data = boxed(b"ftyp", b"isom");
+            data.extend(boxed(b"moov", &[0; 16]));
+            let prefix = data.len();
+            data.extend(boxed(b"moof", &[0; 4]));
+            data.extend(boxed(b"mdat", b"payload"));
+            assert_eq!(mp4_init_prefix_length(&data), prefix);
+            assert_eq!(mp4_init_prefix_length(&data[prefix..]), 0);
+        }
+
+        #[test]
+        fn a_largesize_box_past_the_address_space_is_unparseable_not_a_panic() {
+            // size32 == 1 selects the 64-bit largesize, here u64::MAX. The
+            // cursor advance used to be an unchecked add, an overflow panic in
+            // debug builds on a segment the network handed us.
+            let mut data = 1u32.to_be_bytes().to_vec();
+            data.extend_from_slice(b"ftyp");
+            data.extend_from_slice(&u64::MAX.to_be_bytes());
+            data.extend_from_slice(&[0; 8]);
+            assert_eq!(mp4_init_prefix_length(&data), 0);
+        }
     }
 
     /// Flush the appsrc after a SERVER-initiated seek, which (unlike a client
