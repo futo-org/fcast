@@ -436,7 +436,6 @@ fn media_warning_toast_kind(kind: player::MediaWarningKind) -> UiToastKind {
     use player::MediaWarningKind as K;
     match kind {
         K::MissingCodecForTrack => UiToastKind::MissingCodecForTrack,
-        K::StuckStream => UiToastKind::StuckStream,
         K::SubtitleFormatUnsupported => UiToastKind::SubtitleFormatUnsupported,
         K::Unknown => UiToastKind::GenericWarning,
     }
@@ -487,7 +486,7 @@ fn push_recent_warning(ring: &mut RecentWarnings, at: Instant, code: &'static st
 }
 
 /// The warnings preceding a fatal error are usually the actual story (a
-/// stuck stream, a discard streak), so the bug-report block carries them.
+/// missing codec, a track that stopped), so the bug-report block carries them.
 fn format_recent_warnings(ring: &RecentWarnings, now: Instant) -> String {
     if ring.is_empty() {
         return "no recent warnings".to_owned();
@@ -2624,21 +2623,6 @@ impl Application {
     /// exclusion, and skipping ticks would let excluded time count as
     /// pinned playback on the first resumed tick.
     fn poll_freeze_watchdog(&mut self) -> Result<()> {
-        // A DEAD SUBTITLE TRACK, which the discard escalation cannot see.
-        // Sampled here because this is the tick that already exists; the
-        // verdict needs elapsed time and the bus hook has none (see
-        // `player::SubtitleFlow`). Reported at most once per load, and only
-        // logged: the track is gone for the item either way, and a toast for
-        // something the user cannot act on is the noise the warning filter
-        // exists to prevent.
-        if let Some(stream) = self.player.stalled_subtitle_stream() {
-            error!(
-                stream,
-                "the subtitle track took a FLUSHING discard and has delivered nothing since: \
-                 its multiqueue slot is latched and the track will not play again for this item"
-            );
-        }
-
         if !self.freeze_watchdog.enabled() {
             return Ok(());
         }

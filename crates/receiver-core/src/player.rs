@@ -1,6 +1,5 @@
 use std::{
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    time::{Duration, Instant},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::Result;
@@ -57,228 +56,6 @@ fn missing_plugin_is_ignorable(msg: &gst::Message) -> bool {
         return false;
     };
     !caps.is_empty() && caps.iter().all(|s| s.name().as_str().starts_with("meta/"))
-}
-
-/// The debug text our adaptivedemux2 carry-patch posts when it discards a
-/// buffer instead of pausing the output task for good
-/// (the fork's `adaptivedemux2-transient-flushing-no-permanent-pause` patch).
-/// Ours, so it is stable and appears nowhere else in GStreamer.
-const TRANSIENT_FLUSHING_DISCARD: &str =
-    "downstream returned FLUSHING while this element is not flushing";
-
-/// Whether a bus WARNING is the carry-patch's transient-FLUSHING discard: the
-/// ONE warning class that must not reach the user.
-///
-/// It reports a RECOVERED hiccup (the patch turned a permanent silent freeze
-/// into one discarded buffer, playback continues), so the toast is pure noise,
-/// and the race can fire on any transient flush. The match is on the debug
-/// string because the patch posts a NULL user-facing text, so the message is
-/// GStreamer's generic "GStreamer encountered a general stream error." for
-/// STREAM/FAILED and cannot discriminate anything. Deliberately not a general
-/// suppression list: every other warning still toasts exactly as before.
-fn warning_is_transient_flushing_discard(debug: Option<&str>) -> bool {
-    debug.is_some_and(|debug| debug.contains(TRANSIENT_FLUSHING_DISCARD))
-}
-
-/// The stream the discard names: `Discarding data on <stream>: downstream ...`.
-///
-/// The stream name is the whole of what makes a persistent discard actionable -
-/// `subtitle_00` says the text branch is the stuck one, `video_00` says the
-/// item is dead - and it is the only per-stream key the message carries.
-fn discarded_stream_name(debug: &str) -> Option<&str> {
-    let rest = debug.split("Discarding data on ").nth(1)?;
-    let name = rest.split(':').next()?.trim();
-    (!name.is_empty()).then_some(name)
-}
-
-/// Discards on ONE stream before the classifier stops calling it transient.
-///
-/// "Transient" is a claim, and `dash-embedded-still-broken.txt` is that claim
-/// being wrong: one `Discarding data on subtitle_00` at PLAYING, logged as
-/// "(recovered)", on a run where the subtitles never appeared at all. The
-/// carry-patch's discard IS recoverable per buffer - it drops one buffer
-/// instead of pausing the output loop for good - but nothing about it says the
-/// downstream FLUSHING will ever clear, and a multiqueue slot's `srcresult`
-/// latches until a FLUSH_STOP reaches it. So the count is the evidence: one
-/// discard is a race, several on the same stream is a branch that is not
-/// coming back.
-///
-/// Three, not one: a genuine transient flush can legitimately catch more than
-/// one buffer in flight (the demuxer's output loop serves every track from one
-/// thread and can be several buffers deep when a flush lands).
-const FLUSHING_DISCARD_ESCALATION: u32 = 3;
-
-/// How long a subtitle track may sit discarded with nothing delivered before
-/// the receiver calls it dead rather than transient.
-///
-/// Generous, because a sparse track legitimately delivers nothing for a while:
-/// this is a track that took a FLUSHING discard and then produced NO cue at
-/// all for half a minute, not a track that is merely quiet.
-const SUBTITLE_STALL_VERDICT: Duration = Duration::from_secs(30);
-
-/// The subtitle path's liveness, shared between the consumer callback (which
-/// counts what reaches the engine) and the bus hook (which sees the discards).
-///
-/// # Why the discard COUNT cannot be the signal
-///
-/// [`FLUSHING_DISCARD_ESCALATION`] waits for a third discard on one stream. It
-/// will never arrive. The carry-patch sets `slot->warned_transient_flushing`
-/// on the FIRST discard and clears it nowhere (`gstadaptivedemux.c:3700-3701`,
-/// three references in the whole file: the declaration, this check and this
-/// set), so a slot that has latched downstream FLUSHING for good discards
-/// every subsequent buffer SILENTLY. The receiver therefore sees exactly ONE
-/// warning for a permanently dead track, and a count-based threshold of three
-/// is unreachable for the precise failure it was built to catch - which is the
-/// field's `subtitle_00`, count=1, subtitles never appearing.
-///
-/// So the second signal is DELIVERY, not repetition: a discard followed by
-/// [`SUBTITLE_STALL_VERDICT`] of nothing reaching the engine is a dead track,
-/// however many warnings upstream chose to post. Sampled on the application's
-/// existing tick (`Application::poll_freeze_watchdog`'s caller), never on a
-/// timer of its own - the bus hook stays lock-free-ish and wakeup-free, which
-/// is this file's standing discipline.
-#[derive(Default, Clone)]
-struct SubtitleFlow(std::sync::Arc<SubtitleFlowInner>);
-
-#[derive(Default)]
-struct SubtitleFlowInner {
-    /// Subtitle items that reached the engine this load.
-    delivered: AtomicU64,
-    /// The first FLUSHING discard since the last load: the stream it named,
-    /// the delivery count when it happened, and when. `None` until one lands.
-    discard: std::sync::Mutex<Option<(String, u64, Instant)>>,
-    /// The verdict has been reported; never report it twice for one load.
-    reported: AtomicBool,
-}
-
-impl SubtitleFlow {
-    fn delivered(&self) {
-        self.0.delivered.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Count an item on its way to the engine and hand it back.
-    ///
-    /// A `Clear` is the ABSENCE of a cue, not one, so it does not count: a
-    /// track that only ever clears has delivered nothing, which is exactly the
-    /// state this verdict exists to name.
-    fn tally(&self, item: flapjack::SubtitleFeedItem) -> flapjack::SubtitleFeedItem {
-        if !matches!(item, flapjack::SubtitleFeedItem::Clear) {
-            self.delivered();
-        }
-        item
-    }
-
-    /// Record a discard, keeping the FIRST one: it is the one whose delivery
-    /// mark tells us whether anything has flowed since the track broke.
-    fn note_discard(&self, stream: &str) {
-        let Ok(mut discard) = self.0.discard.lock() else {
-            return;
-        };
-        if discard.is_none() {
-            *discard = Some((
-                stream.to_owned(),
-                self.0.delivered.load(Ordering::Relaxed),
-                Instant::now(),
-            ));
-        }
-    }
-
-    /// A new load: nothing discarded, nothing delivered, verdict re-armed.
-    fn reset(&self) {
-        self.0.delivered.store(0, Ordering::Relaxed);
-        self.0.reported.store(false, Ordering::Relaxed);
-        if let Ok(mut discard) = self.0.discard.lock() {
-            *discard = None;
-        }
-    }
-
-    /// The stream to report as dead, once, or `None`.
-    fn stalled_stream(&self) -> Option<String> {
-        let Ok(discard) = self.0.discard.lock() else {
-            return None;
-        };
-        let (stream, delivered_then, at) = discard.as_ref()?;
-        if self.0.delivered.load(Ordering::Relaxed) != *delivered_then
-            || at.elapsed() < SUBTITLE_STALL_VERDICT
-            || self.0.reported.swap(true, Ordering::SeqCst)
-        {
-            return None;
-        }
-        Some(stream.clone())
-    }
-}
-
-/// Whether a teardown is in flight, shared with the bus hook.
-///
-/// # Why the escalation needs to know
-///
-/// A Stop on a live adaptive item ALWAYS produces this discard class, and
-/// harmlessly: the teardown's flush pair reaches the demuxer while its output
-/// loop still has buffers in hand, so every selected stream discards one. A
-/// field log of a plain `Stop { target: Ready }` shows it on `video_00` AND
-/// `audio_00` within ~1 ms of the job, alongside the crate's "restoring the
-/// segment the flush pair removed" on `sink_0..2` - the ordinary shape of an
-/// item being taken down, and the rig measures the same thing (the repeated
-/// re-enable test's discards all land at 41.62 s against a shutdown at
-/// 41.98 s).
-///
-/// Counting those against [`FLUSHING_DISCARD_ESCALATION`] spends 2-3 of a
-/// 3-discard budget per Stop, so a receiver that has stopped a couple of items
-/// escalates on the next transient race and tells the user a track is dead
-/// when nothing is wrong. The budget exists for the MID-PLAY discard - the
-/// stuck branch that never comes back - and that is the one it has to keep
-/// its accuracy for.
-///
-/// An `AtomicBool` because the reader is the bus hook on a GStreamer streaming
-/// thread, which this file's discipline keeps lock-free and wait-free.
-#[derive(Default, Clone)]
-struct TeardownFlag(std::sync::Arc<std::sync::atomic::AtomicBool>);
-
-impl TeardownFlag {
-    fn set(&self, tearing_down: bool) {
-        self.0.store(tearing_down, Ordering::SeqCst);
-    }
-
-    fn tearing_down(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
-    }
-}
-
-/// Per-stream discard counts for [`FLUSHING_DISCARD_ESCALATION`].
-///
-/// COUNT-BASED, deliberately, and there is no timer anywhere near it. This is
-/// read and written from the bus hook, which runs on GStreamer STREAMING
-/// THREADS; arming or servicing a timer there is the one thing this file's
-/// discipline forbids. A count needs no clock and no wakeup: the Nth discard
-/// is itself the event.
-///
-/// Keyed by stream name so two stuck streams escalate independently, and never
-/// reset - a stream that recovers simply stops arriving here, and re-arming on
-/// a gap would need exactly the timer this avoids.
-#[derive(Default)]
-struct FlushingDiscards(std::sync::Mutex<std::collections::HashMap<String, u32>>);
-
-impl FlushingDiscards {
-    /// Record one discard on `stream` and return its new count.
-    ///
-    /// A poisoned lock is not worth a panic on a streaming thread: the counter
-    /// is diagnostics, so a poisoned map degrades to "always transient" rather
-    /// than taking the pipeline down with it.
-    fn record(&self, stream: &str) -> u32 {
-        let Ok(mut counts) = self.0.lock() else {
-            return 1;
-        };
-        let count = counts.entry(stream.to_owned()).or_insert(0);
-        *count = count.saturating_add(1);
-        *count
-    }
-}
-
-/// Lever: `FCAST_NO_WARNING_FILTER` (set = old behavior, every warning toasts).
-/// Read once, the hook runs on streaming threads.
-fn toast_every_warning() -> bool {
-    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("FCAST_NO_WARNING_FILTER").is_some())
 }
 
 /// The driver's bitmap subtitle format as the engine names it.
@@ -462,10 +239,6 @@ pub enum MediaWarningKind {
     /// A real media track has no decoder and stays disabled. Detail is the
     /// codec description from the missing-plugin element message.
     MissingCodecForTrack,
-    /// The escalated flushing-discard verdict (see the raw-message hook): a
-    /// stream latched FLUSHING and will not resume by itself. Detail is the
-    /// stuck stream's name.
-    StuckStream,
     /// The selected subtitle track's caps cannot be rendered. Never produced
     /// by classification, the application raises it from
     /// [`PlayerEvent::SubtitleTrackUnsupported`]. Detail is the caps string.
@@ -480,7 +253,8 @@ impl MediaWarningKind {
     pub fn code(self) -> &'static str {
         match self {
             Self::MissingCodecForTrack => "FC-W01",
-            Self::StuckStream => "FC-W02",
+            // FC-W02 was the C adaptive demuxer's stuck-stream verdict, retired
+            // with it. Never reused.
             Self::SubtitleFormatUnsupported => "FC-W03",
             Self::Unknown => "FC-W99",
         }
@@ -508,15 +282,10 @@ fn gst_error_domain_code(err: &gst::glib::Error) -> String {
 
 fn classify_warning(
     error: &gst::glib::Error,
-    debug: Option<&str>,
     missing_desc: Option<String>,
 ) -> (MediaWarningKind, Option<String>) {
     if error.matches(gst::CoreError::MissingPlugin) {
         return (MediaWarningKind::MissingCodecForTrack, missing_desc);
-    }
-    if warning_is_transient_flushing_discard(debug) {
-        let stream = debug.and_then(discarded_stream_name).map(str::to_owned);
-        return (MediaWarningKind::StuckStream, stream);
     }
     (MediaWarningKind::Unknown, None)
 }
@@ -773,16 +542,9 @@ pub struct Player {
     /// was still in flight, applied when it arrives (see `set_volume`).
     pending_volume: Option<f32>,
     state_machine: StateMachine,
-    /// Shared with the bus hook so the FLUSHING-discard escalation can tell a
-    /// teardown's own flush from a branch that is genuinely stuck. See
-    /// [`TeardownFlag`].
-    teardown: TeardownFlag,
     /// `shutdown` ran and its barrier fired, so the pipeline is down and no
     /// job may be queued behind it. See [`Drop`].
     shut_down: bool,
-    /// Discards seen vs subtitle items delivered, the signal that catches a
-    /// latched track the discard COUNT never can. See [`SubtitleFlow`].
-    subtitle_flow: SubtitleFlow,
 }
 
 impl Player {
@@ -865,12 +627,8 @@ impl Player {
         // method used here is non-blocking by construction (nothing rasterizes
         // inline, nothing waits on the raster worker) and none of them can
         // panic on a caller's cue text.
-        let subtitle_flow = SubtitleFlow::default();
         if let Some(engine) = cue_engine {
-            let flow = subtitle_flow.clone();
-            // `tally` counts and hands the item straight back, so the delivery
-            // signal costs this match neither an arm nor an indent level.
-            fcast.set_subtitle_consumer(move |item| match flow.tally(item) {
+            fcast.set_subtitle_consumer(move |item| match item {
                 flapjack::SubtitleFeedItem::Cue {
                     format,
                     text,
@@ -925,10 +683,6 @@ impl Player {
         // reports). Runs on the posting (streaming) thread.
         let missing_plugins = std::sync::Arc::new(MissingPluginTracker::default());
         let missing_plugins_relay = missing_plugins.clone();
-        let discards = FlushingDiscards::default();
-        let teardown_flag = TeardownFlag::default();
-        let teardown = teardown_flag.clone();
-        let flow_hook = subtitle_flow.clone();
         let hook_tx = msg_tx.clone();
         let hook: flapjack::MessageHook = Box::new(move |msg| {
             use gst::MessageView;
@@ -1004,79 +758,6 @@ impl Player {
                     true
                 }
                 MessageView::Warning(warning) => {
-                    let detail = warning.debug();
-                    if warning_is_transient_flushing_discard(detail.as_deref()) {
-                        // PERSISTENCE FIRST. The carry-patch recovers each
-                        // individual buffer, so one discard really is a race
-                        // worth swallowing - but the same message repeating on
-                        // one stream means the downstream FLUSHING is not
-                        // clearing, and a multiqueue slot's `srcresult` latches
-                        // until a FLUSH_STOP reaches its sink pad
-                        // (gstmultiqueue.c:2498 / :1466 / :2789). Past the
-                        // threshold this stops being called "recovered", names
-                        // the stuck stream, and is allowed through to the user
-                        // EXACTLY ONCE (the count is strictly increasing, so
-                        // the equality is a one-shot) - a toast per discarded
-                        // buffer would be its own denial of service.
-                        let stream = detail
-                            .as_deref()
-                            .and_then(discarded_stream_name)
-                            .unwrap_or("?");
-                        // EXPECTED, and off the budget. A teardown's own flush
-                        // pair produces this on every selected stream (see
-                        // [`TeardownFlag`]); it says nothing about whether a
-                        // branch is stuck, because the branch is going away.
-                        // Still logged - the A/B marker and the field forensics
-                        // both want it - just not counted, and never escalated.
-                        if teardown.tearing_down() {
-                            let src = msg.src().map(|src| src.name().to_string());
-                            debug!(
-                                src = src.as_deref().unwrap_or("?"),
-                                stream,
-                                detail = detail.as_deref().unwrap_or(""),
-                                "adaptivedemux2 discarded data during teardown (expected: the \
-                                 stop's own flush caught the output loop mid-buffer)"
-                            );
-                            return !toast_every_warning();
-                        }
-                        // The delivery-based verdict's evidence, recorded
-                        // whatever the count does (see [`SubtitleFlow`]: for a
-                        // permanently latched slot the count never reaches the
-                        // escalation threshold, because upstream warns once).
-                        flow_hook.note_discard(stream);
-                        let count = discards.record(stream);
-                        if count >= FLUSHING_DISCARD_ESCALATION {
-                            let src = msg.src().map(|src| src.name().to_string());
-                            error!(
-                                src = src.as_deref().unwrap_or("?"),
-                                stream,
-                                count,
-                                detail = detail.as_deref().unwrap_or(""),
-                                "adaptivedemux2 keeps discarding data on this stream: downstream \
-                                 is persistently FLUSHING, so the branch is stuck and the track \
-                                 will not play again by itself"
-                            );
-                            return count != FLUSHING_DISCARD_ESCALATION && !toast_every_warning();
-                        }
-                        // LOG-ONLY. Consuming the message here is what keeps the
-                        // toast away: the crate emits no event for a consumed
-                        // message, and `PlayerEvent::Warning` is the only thing
-                        // that reaches the GUI. Log it anyway (unconditionally,
-                        // so the lever's A/B still has the marker), and with the
-                        // detail the user-facing text lacks: the message the
-                        // receiver used to print carried only GStreamer's
-                        // generic STREAM/FAILED sentence, which named neither
-                        // the element nor the pad.
-                        let src = msg.src().map(|src| src.name().to_string());
-                        warn!(
-                            src = src.as_deref().unwrap_or("?"),
-                            stream,
-                            count,
-                            detail = detail.as_deref().unwrap_or(""),
-                            "adaptivedemux2 discarded data on a transient FLUSHING (recovered)"
-                        );
-                        return !toast_every_warning();
-                    }
                     if warning.error().matches(gst::CoreError::MissingPlugin) {
                         let real = missing_plugins.saw_real.swap(false, Ordering::SeqCst);
                         let ignorable = missing_plugins.saw_ignorable.swap(false, Ordering::SeqCst);
@@ -1108,9 +789,7 @@ impl Player {
             seekable_known: false,
             pending_volume: None,
             state_machine: StateMachine::new(),
-            teardown: teardown_flag,
             shut_down: false,
-            subtitle_flow,
             streams: Vec::new(),
         })
     }
@@ -1230,7 +909,7 @@ impl Player {
                 } else {
                     None
                 };
-                let (kind, detail) = classify_warning(&error, debug.as_deref(), missing_desc);
+                let (kind, detail) = classify_warning(&error, missing_desc);
                 let mut message =
                     format!("{} [{}]", error.message(), gst_error_domain_code(&error));
                 if let Some(src) = src {
@@ -1438,10 +1117,6 @@ impl Player {
     /// `UriLoaded`). External subtitles attach separately as live inputs
     /// (`attach_external_subtitle`). Callers go through `load`.
     fn set_source(&mut self, source: MediaInput, start: flapjack::StartPoint) {
-        // A new item is not the old one's teardown: discards from here on are
-        // about THIS load and count normally again.
-        self.teardown.set(false);
-        self.subtitle_flow.reset();
         self.clear_state();
         self.state_machine.clear_state();
         self.expected_generation = Some(self.fcast.load(source, start));
@@ -1758,11 +1433,6 @@ impl Player {
 
     fn go_to_stopped_state(&mut self, null: Option<oneshot::Sender<()>>) {
         self.desired_transport = RunningState::Playing;
-        // BEFORE the teardown is dispatched, not after: the discards this
-        // suppresses land within ~1 ms of the job, on the streaming threads,
-        // while this function is still running. Cleared by the next `load`.
-        self.teardown.set(true);
-
         // A full teardown either way (pipeline down, inputs and the per-load
         // audio sink removed), so a Stop releases the item's network/audio
         // resources NOW rather than at the next load. Queued on the worker,
@@ -1788,16 +1458,6 @@ impl Player {
         // leftovers leak into the next one.
         self.state_machine.clear_state();
         self.clear_state();
-    }
-
-    /// The subtitle track that took a FLUSHING discard and has delivered
-    /// nothing since, reported at most once per load. `None` normally.
-    ///
-    /// Polled from the application's tick rather than pushed from the bus
-    /// hook, because the verdict needs elapsed time and the hook may not have
-    /// any (see [`SubtitleFlow`]).
-    pub fn stalled_subtitle_stream(&self) -> Option<String> {
-        self.subtitle_flow.stalled_stream()
     }
 
     pub fn stop(&mut self) {
@@ -2204,6 +1864,7 @@ impl Drop for Player {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     /// Put a test's registry where the shipped binary's is on the subtitle
     /// path, which `init_for_tests` does not.
@@ -2319,9 +1980,6 @@ mod tests {
                 overlays_seen += 1;
             }
             had_overlay = now_overlay;
-            if let Some(stream) = player.stalled_subtitle_stream() {
-                eprintln!("PLAYER PROBE stalled subtitle stream: {stream}");
-            }
             std::thread::sleep(Duration::from_millis(50));
         }
 
@@ -2444,9 +2102,6 @@ mod tests {
                 overlays_seen += 1;
             }
             had_overlay = now_overlay;
-            if let Some(stream) = player.stalled_subtitle_stream() {
-                eprintln!("OBSTRUCTION PROBE stalled subtitle stream: {stream}");
-            }
             std::thread::sleep(Duration::from_millis(25));
         }
 
@@ -2477,62 +2132,6 @@ mod tests {
             .expect("fakesink")
             .downcast()
             .expect("fakesink is a base sink")
-    }
-
-    /// The verdict needs BOTH halves: a discard, and nothing delivered since.
-    /// A discard alone is the transient the escalation was always willing to
-    /// forgive.
-    #[test]
-    fn a_discard_followed_by_a_delivery_is_not_a_stalled_track() {
-        let flow = SubtitleFlow::default();
-        flow.note_discard("subtitle_00");
-        // Backdate past the verdict window so only the delivery decides.
-        {
-            let mut d = flow.0.discard.lock().expect("discard");
-            let (stream, mark, _) = d.take().expect("noted");
-            *d = Some((stream, mark, Instant::now() - SUBTITLE_STALL_VERDICT * 2));
-        }
-        flow.delivered();
-        assert_eq!(flow.stalled_stream(), None);
-    }
-
-    #[test]
-    fn a_discard_with_nothing_delivered_since_is_reported_once() {
-        let flow = SubtitleFlow::default();
-        flow.delivered();
-        flow.note_discard("subtitle_00");
-        // Not yet: the window has not elapsed, so a sparse track is safe.
-        assert_eq!(flow.stalled_stream(), None);
-        {
-            let mut d = flow.0.discard.lock().expect("discard");
-            let (stream, mark, _) = d.take().expect("noted");
-            *d = Some((stream, mark, Instant::now() - SUBTITLE_STALL_VERDICT * 2));
-        }
-        assert_eq!(flow.stalled_stream(), Some("subtitle_00".to_owned()));
-        // ONCE: a per-tick repeat would be a log flood for a track that is
-        // already gone for the item.
-        assert_eq!(flow.stalled_stream(), None);
-    }
-
-    /// The FIRST discard is the one kept: its delivery mark is what "nothing
-    /// since the track broke" is measured against, so a later discard must not
-    /// move the goalposts forward.
-    #[test]
-    fn a_later_discard_does_not_reset_the_verdict_clock() {
-        let flow = SubtitleFlow::default();
-        flow.note_discard("subtitle_00");
-        flow.note_discard("subtitle_01");
-        let held = flow.0.discard.lock().expect("discard").clone();
-        assert_eq!(held.map(|(s, _, _)| s), Some("subtitle_00".to_owned()));
-    }
-
-    #[test]
-    fn a_load_rearms_the_verdict() {
-        let flow = SubtitleFlow::default();
-        flow.note_discard("subtitle_00");
-        flow.reset();
-        assert!(flow.0.discard.lock().expect("discard").is_none());
-        assert_eq!(flow.0.delivered.load(Ordering::Relaxed), 0);
     }
 
     /// The driver's caps gate and the engine's decoder table each write down
@@ -2994,86 +2593,6 @@ mod tests {
         );
     }
 
-    /// The field shape: our carry-patch's discard warning, as GStreamer
-    /// formats a debug string (source location and object path around it), must
-    /// be recognized so it stays out of the toast.
-    #[test]
-    fn the_carry_patchs_discard_warning_is_recognized() {
-        let debug = "gstadaptivedemux.c(3705): gst_adaptive_demux_output_loop (): \
-                     /GstPipeline:flapjack/GstURISourceBin:fj-src-0/GstDashDemux2:dashdemux2:\n\
-                     Discarding data on subtitle_00: downstream returned FLUSHING while this \
-                     element is not flushing";
-        assert!(warning_is_transient_flushing_discard(Some(debug)));
-        // Any pad name, and the bare message on its own.
-        assert!(warning_is_transient_flushing_discard(Some(
-            "Discarding data on video_01: downstream returned FLUSHING while this element is not flushing"
-        )));
-    }
-
-    /// Narrow on purpose: this is not a general warning-suppression list, so
-    /// everything else must keep reaching the user exactly as before.
-    #[test]
-    fn other_warnings_are_never_filtered() {
-        assert!(!warning_is_transient_flushing_discard(None));
-        assert!(!warning_is_transient_flushing_discard(Some("")));
-        assert!(!warning_is_transient_flushing_discard(Some(
-            "gsturidecodebin.c(1234): no decoder available for type 'video/x-h265'"
-        )));
-        // Superficially similar but a different condition: only the patch's
-        // full sentence counts.
-        assert!(!warning_is_transient_flushing_discard(Some(
-            "gstqueue.c(1393): pushing on pad src returned FLUSHING"
-        )));
-        assert!(!warning_is_transient_flushing_discard(Some(
-            "Discarding data on subtitle_00: downstream returned NOT_LINKED"
-        )));
-    }
-
-    /// The stream name is what makes a persistent discard actionable, so it
-    /// has to survive GStreamer's full debug formatting, not just the bare
-    /// sentence.
-    #[test]
-    fn the_discarded_stream_is_named() {
-        let debug = "gstadaptivedemux.c(3705): gst_adaptive_demux_output_loop (): \
-                     /GstPipeline:flapjack/GstURISourceBin:urisourcebin0/GstDashDemux2:dashdemux2-0:\n\
-                     Discarding data on subtitle_00: downstream returned FLUSHING while this \
-                     element is not flushing";
-        assert_eq!(discarded_stream_name(debug), Some("subtitle_00"));
-        assert_eq!(
-            discarded_stream_name(
-                "Discarding data on video_01: downstream returned FLUSHING while this element is not flushing"
-            ),
-            Some("video_01")
-        );
-        // Nothing to name is not a panic and not an empty name.
-        assert_eq!(discarded_stream_name("some other warning entirely"), None);
-        assert_eq!(discarded_stream_name("Discarding data on : x"), None);
-    }
-
-    /// Counting is PER STREAM and escalates only on the stream that keeps
-    /// failing. `dash-embedded-still-broken.txt` is the case that matters: the
-    /// text branch is stuck while video and audio are fine, so a global
-    /// counter would either escalate on healthy streams or need several
-    /// unrelated discards before it noticed the one that is wedged.
-    #[test]
-    fn repeated_discards_escalate_per_stream() {
-        let discards = FlushingDiscards::default();
-        // Below the threshold, still "transient".
-        for expected in 1..FLUSHING_DISCARD_ESCALATION {
-            assert_eq!(discards.record("subtitle_00"), expected);
-        }
-        // A different stream has its own count and does not push the first one
-        // over.
-        assert_eq!(discards.record("video_00"), 1);
-        assert_eq!(discards.record("subtitle_00"), FLUSHING_DISCARD_ESCALATION);
-        // Strictly increasing past the threshold, which is what makes the
-        // "let it through exactly once" equality in the hook a one-shot.
-        assert_eq!(
-            discards.record("subtitle_00"),
-            FLUSHING_DISCARD_ESCALATION + 1
-        );
-    }
-
     #[test]
     fn missing_plugin_ignorable_only_for_metadata_streams() {
         crate::gstreamer::init_for_tests();
@@ -3225,7 +2744,6 @@ mod tests {
         }
         let warning_codes = [
             (MediaWarningKind::MissingCodecForTrack, "FC-W01"),
-            (MediaWarningKind::StuckStream, "FC-W02"),
             (MediaWarningKind::SubtitleFormatUnsupported, "FC-W03"),
             (MediaWarningKind::Unknown, "FC-W99"),
         ];
@@ -3261,22 +2779,14 @@ mod tests {
     #[test]
     fn warning_classification() {
         let missing = gst::glib::Error::new(gst::CoreError::MissingPlugin, "no decoder");
-        let (kind, detail) = classify_warning(&missing, None, Some("H.265 (Main)".into()));
+        let (kind, detail) = classify_warning(&missing, Some("H.265 (Main)".into()));
         assert_eq!(kind, MediaWarningKind::MissingCodecForTrack);
         assert_eq!(detail.as_deref(), Some("H.265 (Main)"));
-
-        // The escalated discard: generic STREAM/FAILED text, the carry-patch
-        // marker plus stream name only in the debug string.
-        let discard = gst::glib::Error::new(gst::StreamError::Failed, "general stream error");
-        let debug = format!("Discarding data on subtitle_00: {TRANSIENT_FLUSHING_DISCARD}");
-        let (kind, detail) = classify_warning(&discard, Some(&debug), None);
-        assert_eq!(kind, MediaWarningKind::StuckStream);
-        assert_eq!(detail.as_deref(), Some("subtitle_00"));
 
         // Anything else is Unknown and carries no detail, even with a stale
         // missing-plugin description pending.
         let other = gst::glib::Error::new(gst::StreamError::Failed, "clock problem");
-        let (kind, detail) = classify_warning(&other, Some("no marker"), Some("stale".into()));
+        let (kind, detail) = classify_warning(&other, Some("stale".into()));
         assert_eq!(kind, MediaWarningKind::Unknown);
         assert_eq!(detail, None);
     }

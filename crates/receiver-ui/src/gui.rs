@@ -109,7 +109,6 @@ impl From<ui_types::UiToastKind> for UiToastKind {
             K::OutputFailure => UiToastKind::OutputFailure,
             K::ImageDownloadFailed => UiToastKind::ImageDownloadFailed,
             K::MissingCodecForTrack => UiToastKind::MissingCodecForTrack,
-            K::StuckStream => UiToastKind::StuckStream,
             K::SubtitleFormatUnsupported => UiToastKind::SubtitleFormatUnsupported,
             K::GenericWarning => UiToastKind::GenericWarning,
         }
@@ -121,7 +120,7 @@ fn toast_kind_is_warning(kind: ui_types::UiToastKind) -> bool {
     use ui_types::UiToastKind as K;
     matches!(
         kind,
-        K::MissingCodecForTrack | K::StuckStream | K::SubtitleFormatUnsupported | K::GenericWarning
+        K::MissingCodecForTrack | K::SubtitleFormatUnsupported | K::GenericWarning
     )
 }
 
