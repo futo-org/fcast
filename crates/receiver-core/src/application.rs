@@ -2021,6 +2021,7 @@ impl Application {
         url: String,
         headers: Option<HashMap<String, String>>,
     ) -> player::MediaInput {
+        let headers = media_source::request_headers(headers.as_ref());
         let built = match container {
             "application/x-whep" => media_source::build_whep_source(&url),
             "application/x-fwebrtc" => match self.pending_fwebrtc_channel.take() {
@@ -2045,14 +2046,16 @@ impl Application {
                     );
                     media_source::build_uri_source_with_head(
                         &url,
-                        headers,
-                        Some(media_source::PreloadedHead {
+                        headers.clone(),
+                        media_source::PreloadedHead {
                             bytes: item.bytes,
                             total: item.total,
-                        }),
+                        },
                     )
                 }
-                None => media_source::build_uri_source(&url, headers),
+                // flapjack builds the source and sends the headers with every
+                // request the item makes.
+                None => return player::MediaInput::uri_with_headers(url, headers),
             },
         };
         match built {
@@ -2060,7 +2063,7 @@ impl Application {
             Err(err) => {
                 error!(?err, container, "Failed to build the fcast source element");
                 // Fall back to the URI path so the load surfaces a real error.
-                player::MediaInput::Uri(url)
+                player::MediaInput::uri_with_headers(url, headers)
             }
         }
     }
@@ -2757,27 +2760,32 @@ impl Application {
     /// cached item still goes through urisourcebin with its bytes as a
     /// preloaded head, because a prepared input's pads sit
     /// unlinked-and-blocked until the swap and the appsrc bytes source dies
-    /// not-negotiated against them.
+    /// not-negotiated against them. An uncached item is flapjack's own URI
+    /// input.
     fn build_gapless_source(
         &mut self,
         container: &str,
         url: String,
         headers: Option<HashMap<String, String>>,
     ) -> player::MediaInput {
-        let head =
-            self.queue_cache_entry(&url, container)
-                .map(|item| media_source::PreloadedHead {
-                    bytes: item.bytes,
-                    total: item.total,
-                });
-        match media_source::build_uri_source_with_head(&url, headers, head) {
+        let headers = media_source::request_headers(headers.as_ref());
+        let head = self
+            .queue_cache_entry(&url, container)
+            .map(|item| media_source::PreloadedHead {
+                bytes: item.bytes,
+                total: item.total,
+            });
+        let Some(head) = head else {
+            return player::MediaInput::uri_with_headers(url, headers);
+        };
+        match media_source::build_uri_source_with_head(&url, headers.clone(), head) {
             Ok(element) => player::MediaInput::Element(element),
             Err(err) => {
                 error!(
                     ?err,
                     container, "Failed to build the gapless source element"
                 );
-                player::MediaInput::Uri(url)
+                player::MediaInput::uri_with_headers(url, headers)
             }
         }
     }
@@ -3593,6 +3601,7 @@ impl Application {
         // Unchanged inputs stop here. The rebuild below is a fast_qr run, a
         // pixel buffer and a scene dirty, and android re-sends the name on
         // every NSD re-registration and the address set from a 30 s sweep.
+        let addresses_changed = !matches!(event, Mdns::NameSet(_));
         let changed = match event {
             Mdns::NameSet(device_name) => {
                 if self.device_name.as_deref() == Some(device_name.as_str()) {
@@ -3617,6 +3626,12 @@ impl Application {
         };
         if !changed {
             return Ok(());
+        }
+        if addresses_changed {
+            // A pooled HTTP connection outlives the change as a corpse until
+            // its keep-alive notices, which a viewer sees as a freeze at the
+            // next segment.
+            self.player.network_changed();
         }
 
         self.update_connection_details()
@@ -3685,6 +3700,38 @@ impl Application {
     /// Map a selected subtitle stream id to the wire id senders should see: an
     /// external's STABLE catalog id, otherwise the stream's advertised
     /// index.
+    /// The wire/GUI edge: the applied stream ids mapped back to advertised
+    /// indices, for the GUI and every sender. On a confirmed selection, and
+    /// again when the collection lands after one.
+    fn publish_track_ids(&mut self) {
+        let video_id = self
+            .player
+            .current_video_sid()
+            .and_then(|sid| self.player.stream_idx_by_id(sid));
+        let audio_id = self
+            .player
+            .current_audio_sid()
+            .and_then(|sid| self.player.stream_idx_by_id(sid));
+        let subtitle_id = self.advertised_subtitle_id(self.player.current_subtitle_sid());
+        self.gui.set_track_ids(
+            video_id.map(|i| i as i32).unwrap_or(-1),
+            audio_id.map(|i| i as i32).unwrap_or(-1),
+            subtitle_id.map(|i| i as i32).unwrap_or(-1),
+        );
+
+        if self.updates_tx.strong_count() > 0 {
+            let msgs = vec![
+                v4::MessageBuilder::new().change_track(video_id, v4::flat::MediaTrackType::Video),
+                v4::MessageBuilder::new().change_track(audio_id, v4::flat::MediaTrackType::Audio),
+                v4::MessageBuilder::new()
+                    .change_track(subtitle_id, v4::flat::MediaTrackType::Subtitle),
+            ];
+            let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+                fcast::V4Message::TracksSelected(msgs),
+            )));
+        }
+    }
+
     fn advertised_subtitle_id(&self, subtitle_sid: Option<&str>) -> Option<u32> {
         let sid = subtitle_sid?;
         // The catalog comes first: an external is never advertised under its list
@@ -4346,6 +4393,16 @@ impl Application {
                 self.refresh_external_stream_sids();
 
                 self.update_tracks(true);
+                // An upstream engine confirms its selection on activation,
+                // ahead of decodebin3's merged collection, so a confirmation
+                // that arrived before this mapped against no tracks and read
+                // as nothing selected.
+                if self.player.current_video_sid().is_some()
+                    || self.player.current_audio_sid().is_some()
+                    || self.player.current_subtitle_sid().is_some()
+                {
+                    self.publish_track_ids();
+                }
 
                 if !self.have_media_info {
                     self.media_loaded_successfully();
@@ -4495,40 +4552,12 @@ impl Application {
                 if selected.subtitle.as_deref() != prev_subtitle.as_deref() {
                     self.gui.clear_video_overlays();
                 }
-                // The wire/GUI edge: applied stream ids map back to advertised indices.
-                let video_id = selected
-                    .video
-                    .as_deref()
-                    .and_then(|sid| self.player.stream_idx_by_id(sid));
-                let audio_id = selected
-                    .audio
-                    .as_deref()
-                    .and_then(|sid| self.player.stream_idx_by_id(sid));
-                let subtitle_id = self.advertised_subtitle_id(selected.subtitle.as_deref());
-                self.gui.set_track_ids(
-                    video_id.map(|i| i as i32).unwrap_or(-1),
-                    audio_id.map(|i| i as i32).unwrap_or(-1),
-                    subtitle_id.map(|i| i as i32).unwrap_or(-1),
-                );
+                self.publish_track_ids();
 
                 if video.is_some() {
                     self.video_stream_available()?;
                 } else {
                     self.video_stream_unavailable();
-                }
-
-                if self.updates_tx.strong_count() > 0 {
-                    let msgs = vec![
-                        v4::MessageBuilder::new()
-                            .change_track(video_id, v4::flat::MediaTrackType::Video),
-                        v4::MessageBuilder::new()
-                            .change_track(audio_id, v4::flat::MediaTrackType::Audio),
-                        v4::MessageBuilder::new()
-                            .change_track(subtitle_id, v4::flat::MediaTrackType::Subtitle),
-                    ];
-                    let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
-                        fcast::V4Message::TracksSelected(msgs),
-                    )));
                 }
             }
             player::PlayerEvent::SeekFailed => {
@@ -5019,7 +5048,7 @@ impl Application {
                     Ok(element) => player::MediaInput::Element(element),
                     Err(err) => {
                         error!(?err, "Failed to build the AirPlay mirror source");
-                        player::MediaInput::Uri(uri)
+                        player::MediaInput::uri(uri)
                     }
                 };
                 // No start seek: a mirror stream is live.

@@ -40,10 +40,7 @@ pub fn init_and_load_plugins() {
     }
 
     fcast_gst_elements::fcastwhepsrcbin::plugin_init().unwrap();
-    fcast_gst_elements::fcasthttpsrc::plugin_init().unwrap();
     flapjack::audiostretch::plugin_init().unwrap();
-    #[cfg(target_os = "linux")]
-    fcast_gst_elements::pwaudiosink::plugin_init().unwrap();
     fcast_gst_elements::fcompsrc::plugin_init().unwrap();
     fcast_gst_elements::sabrumpsrc::plugin_init().unwrap();
     #[cfg(feature = "airplay")]
@@ -72,6 +69,15 @@ pub fn init_and_load_plugins() {
                 .expect("registered by gstrssubparse above")
                 .set_rank(gst::Rank::PRIMARY);
         }
+        // flapjack's adaptive engine ahead of the C dashdemux2/hlsdemux2 pair
+        // (both PRIMARY + 1). It registers at MARGINAL on purpose so the
+        // consumer makes this call; the C pair stays linked as the fallback
+        // when the Rust one refuses a manifest.
+        flapjack::plugins::rsadaptivesrc::plugin_init().unwrap();
+        registry
+            .lookup_feature("rsadaptivesrc")
+            .expect("registered by rsadaptivesrc::plugin_init above")
+            .set_rank(gst::Rank::PRIMARY + 2);
     }
 
     #[cfg(feature = "static-gst-plugins")]

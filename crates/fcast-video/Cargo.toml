@@ -13,12 +13,13 @@ gst-video.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 # The one text rasterizer (src/cue_ir.rs): parley + vello_cpu render every
-# arm, pango-markup cues included (parsed by gst-subparse's pure-Rust
+# arm, pango-markup cues included (parsed by flapjack-subparse's pure-Rust
 # pango-markup reimplementation). Nothing here links pango or cairo.
 #
-# gst-subparse is here for its `subparse_formats` + `pango_markup` re-exports
-# alone; the plugin's elements are registered by receiver-core, not by us.
-gst-subparse.workspace = true
+# flapjack-subparse is here for its `subparse_formats` + `pango_markup`
+# re-exports alone; the plugin's elements are registered by receiver-core, not
+# by us.
+flapjack-subparse.workspace = true
 parley.workspace = true
 peniko.workspace = true
 vello_cpu.workspace = true

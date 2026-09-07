@@ -1695,10 +1695,6 @@ dependencies = [
  "document-features",
  "idna",
  "log",
- "publicsuffix",
- "serde",
- "serde_derive",
- "serde_json",
  "time",
  "url",
 ]
@@ -2714,12 +2710,9 @@ dependencies = [
  "hyper",
  "image",
  "jxl-oxide",
- "libc",
- "libspa",
  "mime",
  "parking_lot",
  "pin-project-lite",
- "pipewire",
  "reqwest",
  "sabrump",
  "self_cell",
@@ -2848,9 +2841,9 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "flapjack-subparse",
  "gst-static-env",
  "gst-static-link",
- "gst-subparse",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-base",
@@ -2976,6 +2969,7 @@ name = "flapjack"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "flapjack-androidmedia",
  "flapjack-audiostretch",
  "flapjack-core",
  "flapjack-pwaudiosink",
@@ -2986,9 +2980,25 @@ dependencies = [
  "gst-static-link",
  "gstreamer",
  "gstreamer-app",
+ "gstreamer-audio",
  "gstreamer-src",
  "parking_lot",
  "tracing",
+]
+
+[[package]]
+name = "flapjack-androidmedia"
+version = "0.1.0"
+dependencies = [
+ "gst-static-env",
+ "gst-static-link",
+ "gstreamer",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-src",
+ "gstreamer-video",
+ "jni 0.21.1",
+ "ndk-sys 0.6.0+11769913",
 ]
 
 [[package]]
@@ -3014,6 +3024,7 @@ dependencies = [
  "idna_adapter",
  "reqwest",
  "rustls",
+ "rustls-platform-verifier",
  "tokio",
 ]
 
@@ -3101,25 +3112,6 @@ dependencies = [
 [[package]]
 name = "flapjack-subparse-formats"
 version = "0.1.0"
-
-[[package]]
-name = "flapjack-test"
-version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=stable#a5f3a86f1af27c66da299c349a73d97e54132f08"
-dependencies = [
- "ctor 0.2.9",
- "gst-static-env",
- "gst-static-link",
- "gstreamer",
- "gstreamer-audio",
- "gstreamer-base",
- "gstreamer-src",
- "gstreamer-video",
- "parking_lot",
- "serde",
- "toml 1.1.2+spec-1.1.0",
- "tracing",
-]
 
 [[package]]
 name = "flatbuffers"
@@ -3571,9 +3563,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "300e883d756b2e4ec94e02791f39b04b522276138852cfc41d9fb7e904106099"
 dependencies = [
  "cfg-if",
+ "js-sys",
  "libc",
  "r-efi 6.0.0",
  "rand_core 0.10.1",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -3998,19 +3992,6 @@ name = "gst-static-link"
 version = "0.1.0"
 
 [[package]]
-name = "gst-subparse"
-version = "0.1.0"
-source = "git+https://github.com/MAlba124/gst-subparse-rs.git?rev=506831f#506831f756096852f6db9346afa5b76520216264"
-dependencies = [
- "encoding_rs",
- "gst-plugin-version-helper",
- "gstreamer",
- "gstreamer-base",
- "pango-markup",
- "subparse-formats",
-]
-
-[[package]]
 name = "gstreamer"
 version = "0.25.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4415,6 +4396,34 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tracing",
+]
+
+[[package]]
+name = "h3"
+version = "0.0.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "10872b55cfb02a821b69dc7cf8dc6a71d6af25eb9a79662bec4a9d016056b3be"
+dependencies = [
+ "bytes",
+ "fastrand",
+ "futures-util",
+ "http",
+ "pin-project-lite",
+ "tokio",
+]
+
+[[package]]
+name = "h3-quinn"
+version = "0.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8b2e732c8d91a74731663ac8479ab505042fbf547b9a207213ab7fbcbfc4f8b4"
+dependencies = [
+ "bytes",
+ "futures",
+ "h3",
+ "quinn",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
@@ -6203,6 +6212,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "lru-slab"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "112b39cec0b298b6c1999fee3e31427f74f676e4cb9879ed1a121b43661a4154"
+
+[[package]]
 name = "lyon_algorithms"
 version = "1.0.20"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7358,14 +7373,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "pango-markup"
-version = "0.1.0"
-source = "git+https://github.com/MAlba124/gst-subparse-rs.git?rev=506831f#506831f756096852f6db9346afa5b76520216264"
-dependencies = [
- "subparse-formats",
-]
-
-[[package]]
 name = "parking"
 version = "2.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7939,22 +7946,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "psl-types"
-version = "2.0.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
-
-[[package]]
-name = "publicsuffix"
-version = "2.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6f42ea446cab60335f76979ec15e12619a2165b5ae2c12166bef27d283a9fadf"
-dependencies = [
- "idna",
- "psl-types",
-]
-
-[[package]]
 name = "pulldown-cmark"
 version = "0.13.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8021,6 +8012,63 @@ checksum = "cdcc8dd4e2f670d309a5f0e83fe36dfdc05af317008fea29144da1a2ac858e5e"
 dependencies = [
  "memchr",
  "serde",
+]
+
+[[package]]
+name = "quinn"
+version = "0.11.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0c1a41e437b6bbd489372cd4971de128e85c855f56c57f283d20ff016cf7c0a8"
+dependencies = [
+ "bytes",
+ "cfg_aliases",
+ "futures-io",
+ "pin-project-lite",
+ "quinn-proto",
+ "quinn-udp",
+ "rustc-hash 2.1.2",
+ "rustls",
+ "socket2",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "quinn-proto"
+version = "0.11.17"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "04759210543be93709136e28212294a659ef5001836ff4eab4d663e4529bba83"
+dependencies = [
+ "bytes",
+ "getrandom 0.4.3",
+ "lru-slab",
+ "rand 0.10.1",
+ "rand_pcg",
+ "ring",
+ "rustc-hash 2.1.2",
+ "rustls",
+ "rustls-pki-types",
+ "slab",
+ "thiserror 2.0.18",
+ "tinyvec",
+ "tracing",
+ "web-time",
+]
+
+[[package]]
+name = "quinn-udp"
+version = "0.5.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "35a133f956daabe89a61a685c2649f13d82d5aa4bd5d12d1277e1072a21c0694"
+dependencies = [
+ "cfg_aliases",
+ "libc",
+ "once_cell",
+ "socket2",
+ "tracing",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -8118,6 +8166,15 @@ name = "rand_core"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "63b8176103e19a2643978565ca18b50549f6101881c443590420e4dc998a3c69"
+
+[[package]]
+name = "rand_pcg"
+version = "0.10.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "caa0f4137e1c0a72f4c651489402276c8e8e1cf081f3b0ba156d2cbeef09e86a"
+dependencies = [
+ "rand_core 0.10.1",
+]
 
 [[package]]
 name = "range-alloc"
@@ -8299,7 +8356,7 @@ dependencies = [
  "fcast-runtime",
  "fcast-video",
  "flapjack",
- "flapjack-test",
+ "flapjack-subparse",
  "futures",
  "gethostname",
  "google-cast-protocol 0.1.0",
@@ -8308,7 +8365,6 @@ dependencies = [
  "gst-plugin-webrtc",
  "gst-static-env",
  "gst-static-link",
- "gst-subparse",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-audio",
@@ -8358,6 +8414,7 @@ dependencies = [
  "serde_json",
  "sha1",
  "sha2 0.11.0",
+ "simulator",
  "smallvec",
  "smol_str 0.3.6",
  "thiserror 2.0.18",
@@ -8389,7 +8446,6 @@ dependencies = [
  "fcast-runtime",
  "fcast-video",
  "flapjack",
- "flapjack-test",
  "gst-plugin-dav1d",
  "gst-static-env",
  "gst-static-link",
@@ -8408,6 +8464,7 @@ dependencies = [
  "oneshot",
  "parking_lot",
  "receiver-core",
+ "simulator",
  "slint",
  "slint-build",
  "tokio",
@@ -8513,8 +8570,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 [[package]]
 name = "reqwest"
 version = "0.13.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "219c5811de6525e5416c7d5d53bb656d3afdbc6c5af816e0802bcfa42dbdc1c3"
+source = "git+https://gitlab.futo.org/fcast/reqwest.git?branch=flapjack%2Fmaster#80646e0ddeb56801435de70e3bb7d1a7862f4b0a"
 dependencies = [
  "base64",
  "bytes",
@@ -8523,6 +8579,8 @@ dependencies = [
  "encoding_rs",
  "futures-core",
  "h2",
+ "h3",
+ "h3-quinn",
  "http",
  "http-body",
  "http-body-util",
@@ -8536,11 +8594,13 @@ dependencies = [
  "native-tls",
  "percent-encoding",
  "pin-project-lite",
+ "quinn",
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
  "serde",
  "serde_json",
+ "socket2",
  "sync_wrapper",
  "tokio",
  "tokio-native-tls",
@@ -8775,6 +8835,7 @@ version = "1.14.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "30a7197ae7eb376e574fe940d068c30fe0462554a3ddbe4eca7838e049c937a9"
 dependencies = [
+ "web-time",
  "zeroize",
 ]
 
@@ -9238,6 +9299,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "fcf6e9b9bc7cd39363ba9032692b5303940ab16f600fedf844de215c657ec508"
 
 [[package]]
+name = "simulator"
+version = "0.1.0"
+dependencies = [
+ "ctor 0.2.9",
+ "gst-static-env",
+ "gst-static-link",
+ "gstreamer",
+ "gstreamer-audio",
+ "gstreamer-base",
+ "gstreamer-src",
+ "gstreamer-video",
+ "parking_lot",
+ "serde",
+ "toml 1.1.2+spec-1.1.0",
+ "tracing",
+]
+
+[[package]]
 name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9615,11 +9694,6 @@ dependencies = [
  "quote",
  "syn 2.0.118",
 ]
-
-[[package]]
-name = "subparse-formats"
-version = "0.1.0"
-source = "git+https://github.com/MAlba124/gst-subparse-rs.git?rev=506831f#506831f756096852f6db9346afa5b76520216264"
 
 [[package]]
 name = "subtle"
@@ -10202,17 +10276,14 @@ dependencies = [
  "bitflags 2.13.0",
  "bytes",
  "futures-core",
- "futures-util",
  "http",
  "http-body",
  "http-body-util",
  "pin-project-lite",
  "tokio",
  "tokio-util",
- "tower",
  "tower-layer",
  "tower-service",
- "url",
 ]
 
 [[package]]

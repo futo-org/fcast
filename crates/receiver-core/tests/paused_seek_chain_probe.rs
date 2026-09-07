@@ -300,7 +300,7 @@ fn probe_the_paused_seek_chain() {
     let t0 = Instant::now();
     let p = Probe::new(t0);
     p.player.load(
-        MediaInput::Uri(uri),
+        MediaInput::uri(uri),
         StartPoint::Seek {
             position: gst::ClockTime::ZERO,
             rate: 1.0,

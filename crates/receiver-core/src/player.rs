@@ -797,22 +797,28 @@ impl Player {
         // worker thread, this constructor only wires the receiver-specific
         // pieces onto its API.
         //
-        // Audio: the native PipeWire sink on Linux when a daemon is
-        // reachable (see pwaudiosink.rs for why), autoaudiosink otherwise.
-        // FCAST_NO_PW_AUDIO=1 forces the fallback for A/B comparisons.
+        // Audio: flapjack's PipeWire sink on Linux when a daemon is
+        // reachable, autoaudiosink otherwise. FCAST_NO_PW_AUDIO=1 forces the
+        // fallback for A/B comparisons. The sink registers above pulsesink,
+        // so the knob demotes it too or autoaudiosink would pick it anyway.
         #[cfg(target_os = "linux")]
-        let audio = if std::env::var("FCAST_NO_PW_AUDIO").is_ok_and(|v| v == "1")
-            || !fcast_gst_elements::pwaudiosink::is_available()
-        {
-            info!("audio sink: autoaudiosink (PipeWire disabled or unreachable)");
+        let audio = if std::env::var("FCAST_NO_PW_AUDIO").is_ok_and(|v| v == "1") {
+            let _ = flapjack::pwaudiosink::plugin_init();
+            if let Some(feature) = gst::Registry::get().lookup_feature("pwaudiosink") {
+                feature.set_rank(gst::Rank::NONE);
+            }
+            info!("audio sink: autoaudiosink (PipeWire disabled)");
+            flapjack::AudioSink::Auto
+        } else if !flapjack::pwaudiosink::is_available() {
+            info!("audio sink: autoaudiosink (PipeWire unreachable)");
             flapjack::AudioSink::Auto
         } else {
-            info!("audio sink: native PipeWire (fcastpwaudiosink)");
+            info!("audio sink: native PipeWire (pwaudiosink)");
             flapjack::AudioSink::Factory(Box::new(|| {
                 use anyhow::Context;
-                gst::ElementFactory::make("fcastpwaudiosink")
+                gst::ElementFactory::make("pwaudiosink")
                     .build()
-                    .context("creating fcastpwaudiosink")
+                    .context("creating pwaudiosink")
             }))
         };
         // The plugin's AAudio sink; android's autoaudiosink would find
@@ -923,6 +929,7 @@ impl Player {
         let teardown_flag = TeardownFlag::default();
         let teardown = teardown_flag.clone();
         let flow_hook = subtitle_flow.clone();
+        let hook_tx = msg_tx.clone();
         let hook: flapjack::MessageHook = Box::new(move |msg| {
             use gst::MessageView;
             match msg.view() {
@@ -961,6 +968,21 @@ impl Player {
                     true
                 }
                 MessageView::Element(_) => {
+                    // The adaptive engine says what kind of presentation it
+                    // plays, on every manifest. A live one (a playlist still
+                    // growing) reaches the UI as the IsLive a NO_PREROLL
+                    // source would have raised, which nothing else in an
+                    // HLS pipeline does: it prerolls and buffers like a file.
+                    if let Some(structure) = msg.structure()
+                        && structure.name() == "rsadaptivesrc-presentation"
+                    {
+                        let live = structure.get::<bool>("live").unwrap_or(false);
+                        debug!(live, "adaptive presentation reported");
+                        if live {
+                            hook_tx.player(PlayerEvent::IsLive, None);
+                        }
+                        return false;
+                    }
                     // Consume ONLY missing-plugin reports. Other element
                     // messages (flapjack-image-stream, sabrump-status) belong to
                     // flapjack's translation and must fall through; a
@@ -1131,6 +1153,17 @@ impl Player {
             // the receiver's transport is driven by its own state machine
             // over StateChanged, the high-level mirror is redundant here
             E::PlaybackChanged(_) => return,
+            // the engine's ABR rung, logged for session triage; nothing in
+            // the protocol carries it yet
+            E::QualityChanged(quality) => {
+                info!(
+                    bitrate = quality.bitrate,
+                    width = ?quality.width,
+                    height = ?quality.height,
+                    "adaptive rendition changed"
+                );
+                return;
+            }
             E::StreamsSelected {
                 video,
                 audio,
@@ -1696,6 +1729,13 @@ impl Player {
         self.fcast.recover_clock();
     }
 
+    /// The host saw its network change (an address came or went), so flapjack
+    /// drops every pooled HTTP connection and the next request dials afresh
+    /// instead of stalling on a dead keep-alive.
+    pub fn network_changed(&self) {
+        self.fcast.network_changed();
+    }
+
     /// Produce a graph snapshot of the pipeline for the inspector, delivered
     /// via `done`. Runs on the flapjack worker so the graph walk is
     /// serialized against loads and teardowns (the walk reads every
@@ -2193,7 +2233,7 @@ mod tests {
         // The audio sink the receiver picks on Linux, chosen inside
         // `Player::new` and instantiated per load.
         #[cfg(target_os = "linux")]
-        let _ = fcast_gst_elements::pwaudiosink::plugin_init();
+        let _ = flapjack::pwaudiosink::plugin_init();
     }
 
     /// FULL-STACK field triage: the same default-selected-subtitle probe the
@@ -2249,7 +2289,7 @@ mod tests {
         )
         .expect("building the player");
 
-        player.load(MediaInput::Uri(uri), None);
+        player.load(MediaInput::uri(uri), None);
 
         let deadline = Instant::now() + Duration::from_secs(75);
         let mut overlays_seen = 0usize;
@@ -2360,7 +2400,7 @@ mod tests {
         if let Ok(external) = std::env::var("FCAST_PROBE_EXTERNAL") {
             player.attach_external_subtitle(&external);
         }
-        player.load(MediaInput::Uri(uri), None);
+        player.load(MediaInput::uri(uri), None);
 
         let start = Instant::now();
         let deadline = start + Duration::from_secs(60);
@@ -2518,7 +2558,7 @@ mod tests {
 
     /// The bytes the driver's tests push are bytes a decoder can actually read.
     ///
-    /// `flapjack_test`'s bitmap fixtures are DELIBERATELY not the decoders'
+    /// `simulator`'s bitmap fixtures are DELIBERATELY not the decoders'
     /// own: they are written from the specifications a second time, so that
     /// a transport test cannot pass because both ends share one author's
     /// misreading. The cost of that is a fixture nobody ever decodes: every
@@ -2534,17 +2574,17 @@ mod tests {
         for (format, bytes, codec_data) in [
             (
                 fcast_video::subpic::BitmapFormat::Pgs,
-                flapjack_test::pgs::display_set(0),
+                simulator::pgs::display_set(0),
                 None,
             ),
             (
                 fcast_video::subpic::BitmapFormat::Vobsub,
-                flapjack_test::vobsub::subpicture_unit(0),
-                Some(flapjack_test::vobsub::SAMPLE_IDX.to_vec()),
+                simulator::vobsub::subpicture_unit(0),
+                Some(simulator::vobsub::SAMPLE_IDX.to_vec()),
             ),
             (
                 fcast_video::subpic::BitmapFormat::Dvb,
-                flapjack_test::dvb::display_set(0),
+                simulator::dvb::display_set(0),
                 None,
             ),
         ] {
@@ -2629,7 +2669,7 @@ mod tests {
             AudioSink, Player, PlayerEvent, SelectionGate, Sinks, StartPoint, SubtitleFeedItem,
             TrackSlot, TrackTarget,
         };
-        use flapjack_test::{
+        use simulator::{
             scenario::ScenarioBuilder,
             sink::FTestSink,
             spec::{CueSpec, Pacing, StreamSpec},
@@ -2639,7 +2679,7 @@ mod tests {
         gst::init().unwrap();
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| {
-            flapjack_test::register_for_tests();
+            simulator::register_for_tests();
             flapjack::audiostretch::plugin_init().expect("registering audiostretch");
         });
 
@@ -2770,7 +2810,7 @@ mod tests {
         };
 
         player.load(
-            MediaInput::Uri(scenario.uri()),
+            MediaInput::uri(scenario.uri()),
             StartPoint::Seek {
                 position: gst::ClockTime::ZERO,
                 rate: 1.0,

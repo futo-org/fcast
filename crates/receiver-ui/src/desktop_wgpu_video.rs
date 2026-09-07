@@ -5808,7 +5808,7 @@ mod tests {
         // Real PGS bytes through the production decoder, not a stand-in set.
         engine.submit_bitmap(fcast_video::subpic::BitmapPacket {
             format: fcast_video::subpic::BitmapFormat::Pgs,
-            data: gst::Buffer::from_slice(flapjack_test::pgs::display_set(1)),
+            data: gst::Buffer::from_slice(simulator::pgs::display_set(1)),
             codec_data: None,
             rt: gst::ClockTime::ZERO,
             duration: None,
@@ -5902,7 +5902,7 @@ mod tests {
         queue_cues_behind(&engine, 64);
         engine.submit_bitmap(fcast_video::subpic::BitmapPacket {
             format: fcast_video::subpic::BitmapFormat::Pgs,
-            data: gst::Buffer::from_slice(flapjack_test::pgs::display_set(1)),
+            data: gst::Buffer::from_slice(simulator::pgs::display_set(1)),
             codec_data: None,
             rt: gst::ClockTime::ZERO,
             duration: None,
@@ -7416,7 +7416,7 @@ mod transitions {
     };
 
     use flapjack::{AudioSink, MediaInput, Player, PlayerEvent, SelectionGate, Sinks, StartPoint};
-    use flapjack_test::sink::FTestSink;
+    use simulator::sink::FTestSink;
     use gst::prelude::*;
 
     /// Sizes the clips are encoded at.
@@ -7532,7 +7532,7 @@ mod transitions {
                     .try_init();
             }
             crate::gstreamer::init_and_load_plugins();
-            flapjack_test::register_for_tests();
+            simulator::register_for_tests();
             let _ = flapjack::audiostretch::plugin_init();
         });
     }
@@ -7677,7 +7677,7 @@ mod transitions {
         };
 
         player.load(
-            MediaInput::Uri(uri(&clips[pick(0)])),
+            MediaInput::uri(uri(&clips[pick(0)])),
             StartPoint::Seek {
                 position: gst::ClockTime::ZERO,
                 rate: 1.0,
@@ -7713,7 +7713,7 @@ mod transitions {
             let deadline = Instant::now() + Duration::from_secs(45);
             if gapless {
                 gapless_done += 1;
-                player.prepare_next(MediaInput::Uri(next));
+                player.prepare_next(MediaInput::uri(next));
                 while activated.load(Ordering::Acquire) < gapless_done {
                     assert!(
                         Instant::now() < deadline,
@@ -7727,7 +7727,7 @@ mod transitions {
                 let want = seen.caps.lock().unwrap().len() + 1;
                 loaded.store(false, Ordering::Release);
                 player.load(
-                    MediaInput::Uri(next),
+                    MediaInput::uri(next),
                     StartPoint::Seek {
                         position: gst::ClockTime::ZERO,
                         rate: 1.0,

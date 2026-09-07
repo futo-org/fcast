@@ -65,9 +65,10 @@ license = "MIT"
 gstreamer-src = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branch = "master" }
 gst-static-link = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branch = "master" }
 gst-static-env = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branch = "master" }
-# The media player library and its test harness, extracted 2026-08-23.
-flapjack = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "stable" }
-flapjack-test = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "stable" }
+# The media player library and its test simulator, extracted 2026-08-23. The
+# android line and the Rust network elements live on master.
+flapjack = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "master" }
+simulator = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "master" }
 tokio = { version = "1.52", features = [ "full" ] }
 serde = { version = "1.0", features = [ "derive" ] }
 gst = { package = "gstreamer", version = "0.25" }
@@ -78,7 +79,9 @@ gst-plugin-rtp = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "http
 gst-plugin-webrtc = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false }
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
-gst-subparse = { git = "https://github.com/MAlba124/gst-subparse-rs.git", rev = "506831f" }
+# flapjack's in-tree subparse: the player and the receiver must share ONE
+# `CueIr`, the cue engine keys its raster cache on the same `Arc`.
+flapjack-subparse = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "master" }
 # The cue-IR renderer stack (crates/fcast-video/src/cue_ir.rs). vello_cpu keeps
 # the exact revision the upstream cueir-demo pins: the parley workspace's own,
 # which its examples (and our rasterizer) are written against.
@@ -225,9 +228,8 @@ opt-level = 3
 [profile.dev.package.byteorder-lite]
 opt-level = 3
 
-# Local flapjack override for the android receiver bring-up: the android
-# support (gst-plugin-androidmedia, direct-surface video, aaudiosink) is
-# not on the stable branch yet.
+# Local flapjack override while the android line and the Rust network
+# elements settle on master.
 # Local slint fork override: carries the android safe-area fix (stable ->
 # system-window insets below API 30), not on the pinned rev yet.
 [patch."https://gitlab.futo.org/fcast/slint.git"]
@@ -238,6 +240,8 @@ i-slint-backend-winit = { path = "../slint-forked/internal/backends/winit" }
 
 [patch."https://gitlab.futo.org/fcast/flapjack.git"]
 flapjack = { path = "../flapjack/flapjack" }
+simulator = { path = "../flapjack/simulator" }
+flapjack-subparse = { path = "../flapjack/plugins/subparse" }
 
 # TEMPORARY, drop this whole section once ../gstreamer-src is pushed. Its
 # build script only exported the built dav1d archive dir under scope=Full, so
@@ -248,6 +252,10 @@ gst-static-link = { path = "../gstreamer-src/gst-static-link" }
 gst-static-env = { path = "../gstreamer-src/gst-static-env" }
 
 [patch.crates-io]
+# flapjack's reqwest fork, branched from the 0.13.4 tag: HTTP/3 without the
+# `reqwest_unstable` gate, taken through Alt-Svc. Every 0.13 reqwest in the
+# tree resolves to it.
+reqwest = { git = "https://gitlab.futo.org/fcast/reqwest.git", branch = "flapjack/master" }
 # Disable encoders
 image = { git = "https://gitlab.futo.org/fcast/image-rs.git", rev = "9ee78f3f" }
 rustls = { git = "https://gitlab.futo.org/fcast/rustls.git", rev = "72ec207b" }

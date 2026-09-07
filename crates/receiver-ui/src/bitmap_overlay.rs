@@ -840,7 +840,7 @@ mod pipeline_proof {
         AudioSink, MediaInput, Player, PlayerEvent, SelectionGate, Sinks, StartPoint,
         SubtitleFeedItem, TrackSlot, TrackTarget,
     };
-    use flapjack_test::{
+    use simulator::{
         caps as tcaps,
         scenario::ScenarioBuilder,
         sink::FTestSink,
@@ -880,12 +880,12 @@ mod pipeline_proof {
             cues.push(CueSpec::packets(
                 up,
                 down,
-                vec![flapjack_test::pgs::display_set(i as u8)],
+                vec![simulator::pgs::display_set(i as u8)],
             ));
             cues.push(CueSpec::packets(
                 down,
                 down + gst::ClockTime::from_mseconds(10),
-                vec![flapjack_test::pgs::clear_set()],
+                vec![simulator::pgs::clear_set()],
             ));
         }
         cues
@@ -897,7 +897,7 @@ mod pipeline_proof {
         crate::gstreamer::init_and_load_plugins();
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| {
-            flapjack_test::register_for_tests();
+            simulator::register_for_tests();
             let _ = flapjack::audiostretch::plugin_init();
         });
 
@@ -1005,7 +1005,7 @@ mod pipeline_proof {
         };
 
         player.load(
-            MediaInput::Uri(scenario.uri()),
+            MediaInput::uri(scenario.uri()),
             StartPoint::Seek {
                 position: gst::ClockTime::ZERO,
                 rate: 1.0,

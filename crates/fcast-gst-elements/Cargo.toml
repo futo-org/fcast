@@ -43,9 +43,6 @@ hayro-jpeg2000 = "0.3"
 image = { workspace = true, features = ["avif-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-pipewire = { version = "0.10", features = ["v0_3_50"] }
-libspa = "0.10"
-libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 
 [target.'cfg(target_os = "android")'.dependencies]

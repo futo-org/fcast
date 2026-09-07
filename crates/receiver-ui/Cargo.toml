@@ -118,9 +118,9 @@ dav1d-sys = { version = "0.8", features = ["bundled"] }
 
 [dev-dependencies]
 # The end-to-end subtitle proof drives the real player and the real text
-# branch: flapjack owns the pipeline, flapjack-test synthesizes the streams.
+# branch: flapjack owns the pipeline, the simulator synthesizes the streams.
 flapjack.workspace = true
-flapjack-test.workspace = true
+simulator.workspace = true
 # The transition soak prints the lane's own log lines when RUST_LOG is set.
 tracing-subscriber = { workspace = true, features = [ "env-filter" ] }
 
