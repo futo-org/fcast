@@ -39,29 +39,20 @@ pub fn init_and_load_plugins() {
         flapjack::android::register_plugin().unwrap();
     }
 
-    #[cfg(target_os = "android")]
-    fcast_gst_elements::fcastwhepsrcbin::plugin_init().unwrap();
     flapjack::audiostretch::plugin_init().unwrap();
     fcast_gst_elements::fcompsrc::plugin_init().unwrap();
     fcast_gst_elements::sabrumpsrc::plugin_init().unwrap();
     #[cfg(feature = "airplay")]
     crate::airplay::source::plugin_init().unwrap();
-    #[cfg(target_os = "android")]
-    fcast_gst_elements::fwebrtcsrc::plugin_init().unwrap();
     fcast_gst_elements::imagetypefind::plugin_init().unwrap();
     fcast_gst_elements::imagedec::plugin_init().unwrap();
     #[cfg(target_os = "linux")]
     fcast_gst_elements::vajpegdec::plugin_init().unwrap();
-    #[cfg(target_os = "android")]
-    gstrswebrtc::plugin_register_static().unwrap();
-    // Desktop mirroring and WHEP: webrtcbin2 (webrtcsend/webrtcrecv on rtpbin2,
-    // librice ICE, dimpl DTLS) and fcast's bins on it, the same element names
-    // the C-webrtcbin bins had, so nothing downstream of the registry changes.
-    #[cfg(not(target_os = "android"))]
-    {
-        gstrswebrtcbin2::plugin_register_static().unwrap();
-        fcast_webrtc::plugin_init().unwrap();
-    }
+    // Mirroring and WHEP: webrtcbin2 (webrtcsend/webrtcrecv on rtpbin2, librice
+    // ICE, dimpl DTLS) and fcast's bins on it, the same element names the
+    // C-webrtcbin bins had, so nothing downstream of the registry changes.
+    gstrswebrtcbin2::plugin_register_static().unwrap();
+    fcast_webrtc::plugin_init().unwrap();
     gstrssubparse::plugin_register_static().unwrap();
 
     // Swap ranks so decodebin3/parsebin autoplug the Rust subtitle parsers, which
@@ -91,8 +82,7 @@ pub fn init_and_load_plugins() {
             .set_rank(gst::Rank::PRIMARY + 2);
     }
 
-    #[cfg(feature = "static-gst-plugins")]
-    #[cfg(not(target_os = "android"))]
+    // rtprecv for webrtcrecv, and the depayloaders, every platform.
     gstrsrtp::plugin_register_static().unwrap();
 
     // The only AV1 decoder on android. Hardware AV1 is far from universal and

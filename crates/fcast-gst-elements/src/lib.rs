@@ -6,13 +6,7 @@ pub mod companion_ctx;
 
 #[cfg(feature = "textoverlay")]
 pub mod fcasttextoverlay;
-// The C webrtcbin receive bins, android only: desktop mirrors through
-// fcast-webrtc on webrtcbin2, which registers the same element names.
-#[cfg(target_os = "android")]
-pub mod fcastwhepsrcbin;
 pub mod fcompsrc;
-#[cfg(target_os = "android")]
-pub mod fwebrtcsrc;
 pub mod imagedec;
 pub mod imagetypefind;
 pub mod sabrumpsrc;

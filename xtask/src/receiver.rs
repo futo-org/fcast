@@ -1,7 +1,7 @@
 use anyhow::Result;
 use camino::Utf8PathBuf;
 use clap::{Args, Subcommand};
-use xshell::cmd;
+use xshell::{cmd, Shell};
 
 #[cfg(target_os = "macos")]
 use crate::BuildMacosInstallerArgs;
@@ -204,11 +204,14 @@ impl ReceiverArgs {
                 let _env_pkg_config_cross = sh.push_env("PKG_CONFIG_ALLOW_CROSS", "1");
 
                 match args.cmd {
-                    AndroidReceiverCommand::Check => cmd!(
-                        sh,
-                        "cargo ndk --target aarch64-linux-android check -p receiver-android"
-                    )
-                    .run()?,
+                    AndroidReceiverCommand::Check => {
+                        let _rice = rice_proto_env(&sh, &root_path, AndroidAbiTarget::Arm64)?;
+                        cmd!(
+                            sh,
+                            "cargo ndk --target aarch64-linux-android check -p receiver-android"
+                        )
+                        .run()?
+                    }
                     AndroidReceiverCommand::Clippy => todo!(),
                     AndroidReceiverCommand::BuildLibGst => {
                         let _env_build_system = sh.push_env(
@@ -251,6 +254,7 @@ impl ReceiverArgs {
                         ]);
 
                         for target in targets {
+                            let _rice = rice_proto_env(&sh, &root_path, target)?;
                             let gst_root = sh.var("GSTREAMER_ROOT_ANDROID").unwrap();
                             let _env_pkg_config_path = sh.push_env(
                                 "PKG_CONFIG_PATH",
@@ -423,4 +427,41 @@ impl ReceiverArgs {
 
         Ok(())
     }
+}
+
+/// Point system-deps at the rice-proto built for `target`, the C ABI librice's
+/// ICE layer links (see ../webrtcbin2/README.md). The host prefix comes from
+/// .cargo/config.toml; an android target needs its own, built once per ABI
+/// with cargo-c against the NDK, which is the command the error spells out.
+/// Real environment variables win over the config's defaults, so pushing
+/// these here is what makes `cargo ndk` link the right architecture.
+fn rice_proto_env<'a>(
+    sh: &'a Shell,
+    root: &Utf8PathBuf,
+    target: AndroidAbiTarget,
+) -> Result<(xshell::PushEnv<'a>, xshell::PushEnv<'a>)> {
+    let name = match target {
+        AndroidAbiTarget::X64 => "x86_64",
+        AndroidAbiTarget::X86 => "x86",
+        AndroidAbiTarget::Arm64 => "aarch64",
+        AndroidAbiTarget::Arm32 => "armv7",
+    };
+    let prefix = concat_path(root, &format!("../webrtcbin2/target/rice-proto-{name}"));
+    let lib = concat_path(&prefix, "lib");
+    if !lib.join("librice-proto.a").exists() {
+        let triple = target.translate();
+        anyhow::bail!(
+            "no rice-proto for {triple}: build it once for this ABI with cargo-c against \
+             the NDK, into ../webrtcbin2/target/rice-proto-{name} (see \
+             ../webrtcbin2/README.md and build-rice-proto.sh; \
+             --target {triple}, capi,rustls, and the NDK CC/AR/LINKER env set)"
+        );
+    }
+    Ok((
+        sh.push_env("SYSTEM_DEPS_RICE_PROTO_SEARCH_NATIVE", lib.as_str()),
+        sh.push_env(
+            "SYSTEM_DEPS_RICE_PROTO_INCLUDE",
+            concat_path(&prefix, "include/rice").as_str(),
+        ),
+    ))
 }

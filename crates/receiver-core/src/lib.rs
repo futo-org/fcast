@@ -42,10 +42,7 @@ pub mod utils;
 #[cfg(target_os = "linux")]
 pub use fcast_gst_elements::vajpegdec;
 pub use fcast_gst_elements::{fcompsrc, imagedec, imagetypefind};
-#[cfg(not(target_os = "android"))]
 pub use fcast_webrtc::fwebrtcsrc;
-#[cfg(target_os = "android")]
-pub use fcast_gst_elements::fwebrtcsrc;
 
 // Renderer settings, plain data the CLI and the config store carry.
 #[cfg(not(target_os = "android"))]

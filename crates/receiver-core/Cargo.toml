@@ -86,6 +86,13 @@ google-cast-protocol = { path = "../google-cast-protocol" }
 rcgen.workspace = true
 uuid.workspace = true
 
+# Mirroring and WHEP on the Rust WebRTC stack, every platform: webrtcbin2
+# (librice ICE, dimpl DTLS, rtpbin2) and fcast's receive/send bins on it.
+# rtprecv lives under webrtcrecv, the depayloaders come from the same crate.
+gst-plugin-rtp.workspace = true
+fcast-webrtc.workspace = true
+gst-plugin-webrtcbin2.workspace = true
+
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 # AVIF decode, which needs dav1d through the `image` crate's own binding.
@@ -93,16 +100,12 @@ uuid.workspace = true
 # the dav1d-plugin feature), but nothing has wired THIS consumer to it, so
 # still images in AVIF stay off there.
 image = { workspace = true, features = ["avif-native"] }
-# Mirroring and WHEP on the Rust WebRTC stack, see the workspace manifest.
-fcast-webrtc.workspace = true
-gst-plugin-webrtcbin2.workspace = true
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = [ "env-filter" ] }
 # Only to cap the `log` bridge at the configured level, see logging.rs.
 log.workspace = true
-gst-plugin-rtp = { workspace = true, optional = true }
 clap.workspace = true
 inhibit-screensaver.path = "../inhibit-screensaver"
 
@@ -119,8 +122,6 @@ tokio-rustls = { workspace = true, default-features = false, features = [ "loggi
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = "0.6"
-# The C webrtcbin stack, android only until rice-proto is cross-built.
-gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing = { workspace = true, features = [ "log" ] }
@@ -159,10 +160,8 @@ systray = []
 kms-backend = []
 android = ["dav1d-plugin"]
 tracy = ["dep:tracing-tracy"]
-static-gst-plugins = ["dav1d-plugin", "dep:gst-plugin-rtp"]
-# The software AV1 decoder, split out of `static-gst-plugins` so android can
-# take it without `gst-plugin-rtp`, which that feature also pulls and which is
-# not registered there anyway. Android needs this more than desktop does:
+static-gst-plugins = ["dav1d-plugin"]
+# The software AV1 decoder. Android needs this more than desktop does:
 # hardware AV1 decoding is far from universal, and without a software decoder
 # an AV1 stream on a device that lacks it has nothing to fall back to.
 dav1d-plugin = ["dep:gst-plugin-dav1d", "dep:dav1d-sys"]
