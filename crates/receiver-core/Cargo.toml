@@ -37,7 +37,6 @@ smallvec.workspace = true
 smol_str.workspace = true
 parking_lot.workspace = true
 bytes.workspace = true
-gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
 gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", features = [ "static" ], optional = true }
 # Flips the forked crate's bundled feature: the static wrap's dav1d whenever
 # gstreamer-src built one, a normal system probe otherwise.
@@ -94,6 +93,9 @@ uuid.workspace = true
 # the dav1d-plugin feature), but nothing has wired THIS consumer to it, so
 # still images in AVIF stay off there.
 image = { workspace = true, features = ["avif-native"] }
+# Mirroring and WHEP on the Rust WebRTC stack, see the workspace manifest.
+fcast-webrtc.workspace = true
+gst-plugin-webrtcbin2.workspace = true
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing.workspace = true
@@ -117,6 +119,8 @@ tokio-rustls = { workspace = true, default-features = false, features = [ "loggi
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = "0.6"
+# The C webrtcbin stack, android only until rice-proto is cross-built.
+gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing = { workspace = true, features = [ "log" ] }

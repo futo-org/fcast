@@ -12,8 +12,6 @@ gst-base.workspace = true
 gst-app.workspace = true
 gst-video.workspace = true
 gst-audio = { package = "gstreamer-audio", version = "0.25" }
-gst-webrtc.workspace = true
-gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
 tokio.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
@@ -46,6 +44,10 @@ image = { workspace = true, features = ["avif-native"] }
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 
 [target.'cfg(target_os = "android")'.dependencies]
+# fwebrtcsrc and fcastwhepsrcbin on C webrtcbin, android only: desktop uses
+# fcast-webrtc on webrtcbin2 (see receiver-core).
+gst-webrtc.workspace = true
+gst-plugin-webrtc = { workspace = true, features = [ "static", "src", "whep-client" ] }
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]

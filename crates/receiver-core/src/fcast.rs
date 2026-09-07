@@ -1156,9 +1156,12 @@ enum CompanionQueueItem {
     GetResource(FeedbackSender<companion::ResourceResponse>),
 }
 
-// Both live with the signaller that consumes them
-// (fcast-gst-elements::fwebrtcsrc); re-exported so
+// Both live with the element that consumes them (fcast-webrtc on desktop,
+// fcast-gst-elements::fwebrtcsrc on android); re-exported so
 // `crate::fcast::InternalMessage` and friends still resolve.
+#[cfg(not(target_os = "android"))]
+pub use fcast_webrtc::{InternalMessage, MirroringOfferRx};
+#[cfg(target_os = "android")]
 pub use fcast_gst_elements::fwebrtcsrc::{InternalMessage, MirroringOfferRx};
 
 pub struct InitialV4State {

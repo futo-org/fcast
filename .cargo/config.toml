@@ -22,6 +22,14 @@ GSTREAMER_SRC_REPO = "https://gitlab.futo.org/fcast/gstreamer.git"
 GSTREAMER_SRC_REF = "fcast/1.29.2"
 # Deterministic build-tree location, independent of any global cargo build-dir.
 GSTREAMER_SRC_BUILD_ROOT = { value = "target/gst-static", relative = true }
+# librice's ICE layer links rice-proto, a C ABI cargo-c builds from a Rust
+# crate. Until xtask folds that step in, system-deps is pointed at the prefix
+# ../webrtcbin2/build-rice-proto.sh installs. Static, so the receiver carries it.
+SYSTEM_DEPS_RICE_PROTO_NO_PKG_CONFIG = "1"
+SYSTEM_DEPS_RICE_PROTO_SEARCH_NATIVE = { value = "../webrtcbin2/target/rice-proto/lib", relative = true }
+SYSTEM_DEPS_RICE_PROTO_LIB = "rice-proto"
+SYSTEM_DEPS_RICE_PROTO_INCLUDE = { value = "../webrtcbin2/target/rice-proto/include/rice", relative = true }
+SYSTEM_DEPS_RICE_PROTO_LINK = "static"
 # Target-scoped C toolchain for cc-rs build scripts (ring, skia glue, ...):
 # the nix host clang wrapper cannot cross-compile to android. The wrappers
 # resolve the NDK like the linkers do.

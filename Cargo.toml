@@ -75,9 +75,16 @@ gst = { package = "gstreamer", version = "0.25" }
 gst-app = { package = "gstreamer-app", version = "0.25", features = [ "v1_24" ] }
 gst-video = { package = "gstreamer-video", version = "0.25", features = [ "v1_24" ] }
 gst-base = { package = "gstreamer-base", version = "0.25", features = [ "v1_24" ] }
-gst-plugin-rtp = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false, features = [ "static", "depay" ] }
+gst-plugin-rtp = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false, features = [ "static", "depay", "rtpbin2" ] }
 gst-plugin-webrtc = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false }
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
+# The Rust WebRTC stack the desktop receiver mirrors through: webrtcbin2
+# (librice ICE, dimpl DTLS, rtpbin2 underneath) and fcast's receive bins on
+# it. Sibling checkouts; rice-proto comes from ../webrtcbin2/build-rice-proto.sh
+# (see .cargo/config.toml). Android stays on C webrtcbin until rice-proto is
+# cross-built for it.
+gst-plugin-webrtcbin2 = { path = "../webrtcbin2" }
+fcast-webrtc = { path = "../webrtcbin2/fcast-webrtc" }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
 # flapjack's in-tree subparse: the player and the receiver must share ONE
 # `CueIr`, the cue engine keys its raster cache on the same `Arc`.
