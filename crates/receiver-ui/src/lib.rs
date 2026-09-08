@@ -161,10 +161,10 @@ pub fn run(settings: Settings) -> Result<()> {
 
     logging::init(settings.log_level());
 
-    if let Err(err) = tokio_rustls::rustls::crypto::ring::default_provider().install_default() {
+    if let Err(err) = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default() {
         error!(
             ?err,
-            "Failed to register ring as rustls default crypto provider"
+            "Failed to register aws-lc-rs as rustls default crypto provider"
         );
     }
 

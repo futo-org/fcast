@@ -90,7 +90,7 @@ impl Connection {
     }
 
     async fn upgrade_tls(&mut self, fingerprint: Option<&[u8]>) -> Result<()> {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
         let verifier = match fingerprint {
             Some(fp) => CertVerifier::new(fp.to_vec(), provider.clone()),
             None => CertVerifier::new_no_fingerprint_check(provider.clone()),

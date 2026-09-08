@@ -30,7 +30,7 @@ sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
-tokio-rustls = { workspace = true, default-features = false, features = ["logging", "ring", "tls12"] }
+tokio-rustls = { workspace = true, default-features = false, features = ["logging", "aws-lc-rs", "tls12"] }
 rustls-pki-types.workspace = true
 sha2.workspace = true
 rcgen.workspace = true

@@ -118,7 +118,7 @@ libspa = "0.10"
 libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ] }
-tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
+tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "aws-lc-rs", "tls12" ] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = "0.6"
@@ -128,12 +128,12 @@ tracing = { workspace = true, features = [ "log" ] }
 jni = "0.21.1"
 ndk-context = "0.1"
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
-tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "aws-lc-rs", "tls12" ] }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "gzip", "cookies" ] }
 app-updater = { path = "../app-updater"}
-tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
+tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "aws-lc-rs", "tls12" ] }
 receiver-resources.path = "../receiver-resources"
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image", "embedded-libheif" ] }
 

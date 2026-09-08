@@ -28,7 +28,7 @@ features = [
 ]
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
+tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "aws-lc-rs", "tls12" ] }
 # The desktop video lane stays off android: video is MediaCodec's direct
 # surface there, so the receiver's own presentation lane is not built. The UI
 # still renders on the GPU, through dodvg's wgpu executor in the fork.

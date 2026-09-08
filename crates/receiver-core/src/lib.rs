@@ -128,13 +128,13 @@ pub fn fcast_committed_port() -> Option<u16> {
     FCAST_COMMITTED_PORT.get().copied()
 }
 
-/// Install ring as the process-wide rustls crypto provider, before any TLS
+/// Install aws-lc-rs as the process-wide rustls crypto provider, before any TLS
 /// work. Idempotent enough for one call per process entry.
 pub fn install_default_crypto_provider() {
-    if let Err(err) = tokio_rustls::rustls::crypto::ring::default_provider().install_default() {
+    if let Err(err) = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default() {
         tracing::error!(
             ?err,
-            "Failed to register ring as rustls default crypto provider"
+            "Failed to register aws-lc-rs as rustls default crypto provider"
         );
     }
 }

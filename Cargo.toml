@@ -143,7 +143,7 @@ infer = "0.19.0"
 image = { version = "0.25", default-features = false }
 base64 = "0.22"
 x509-parser = "0.17"
-rcgen = "0.14"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 
 [profile.release]
 lto = "fat"
@@ -277,7 +277,9 @@ librice = { path = "../librice/librice" }
 # flapjack's reqwest fork, branched from the 0.13.4 tag: HTTP/3 without the
 # `reqwest_unstable` gate, taken through Alt-Svc. Every 0.13 reqwest in the
 # tree resolves to it.
-reqwest = { git = "https://gitlab.futo.org/fcast/reqwest.git", branch = "flapjack/master" }
+# TEMPORARY path override, drop once ../reqwest is pushed: `http3` pinned
+# quinn's ring glue, which kept ring in the tree next to aws-lc-rs.
+reqwest = { path = "../reqwest" }
 # Disable encoders
 image = { git = "https://gitlab.futo.org/fcast/image-rs.git", rev = "9ee78f3f" }
 rustls = { git = "https://gitlab.futo.org/fcast/rustls.git", rev = "72ec207b" }
