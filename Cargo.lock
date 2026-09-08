@@ -160,6 +160,7 @@ dependencies = [
  "cfg-if",
  "cipher",
  "cpufeatures 0.2.17",
+ "zeroize",
 ]
 
 [[package]]
@@ -174,6 +175,7 @@ dependencies = [
  "ctr",
  "ghash",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -4235,23 +4237,29 @@ dependencies = [
 name = "gst-plugin-webrtcbin2"
 version = "0.16.0-alpha"
 dependencies = [
+ "aes",
+ "aes-gcm",
+ "ctr",
  "dimpl",
  "futures",
  "gst-plugin-version-helper",
  "gstreamer",
  "gstreamer-app",
  "gstreamer-base",
+ "hmac",
  "human_bytes",
  "librice",
  "rand 0.10.1",
  "rcgen",
  "sdp-types 0.2.0",
+ "sha1",
  "sha2 0.10.9",
  "thiserror 2.0.18",
  "time",
  "tokio",
  "tracing",
  "url",
+ "zeroize",
 ]
 
 [[package]]
