@@ -50,6 +50,22 @@ pub fn init(loglevel: Option<LevelFilter>) {
             .with_target("hyper_util", LevelFilter::INFO)
             .with_target("h2", LevelFilter::INFO)
             .with_target("winit", LevelFilter::INFO)
+            // gpu backends log a line per resource at debug, naga a line per
+            // shader pass, none of it useful once a frame is on screen
+            .with_target("wgpu", LevelFilter::INFO)
+            .with_target("wgpu_core", LevelFilter::INFO)
+            .with_target("wgpu_hal", LevelFilter::INFO)
+            .with_target("naga", LevelFilter::INFO)
+            // rtpbin2 logs a debug line per packet through these two, the rest
+            // of the session stays visible
+            .with_target("gstrsrtp::rtpbin2::sync", LevelFilter::INFO)
+            .with_target("gstrsrtp::rtpbin2::jitterbuffer", LevelFilter::INFO)
+            // the ICE agent traces every poll and conncheck at info, ~1000
+            // lines a second for the length of a mirror session. It reached no
+            // subscriber while rice-proto was a C library; now that it is a
+            // crate in our graph it does. Failures still come through at warn.
+            .with_target("rice_proto", LevelFilter::WARN)
+            .with_target("librice", LevelFilter::WARN)
             .with_default(LevelFilter::TRACE);
 
         let fmt_layer = tracing_subscriber::fmt::layer()

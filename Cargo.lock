@@ -1864,6 +1864,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "crc"
+version = "3.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eb8a2a1cd12ab0d987a5d5e825195d372001a4094a0376319d5a0ad71c1ba0d"
+dependencies = [
+ "crc-catalog",
+]
+
+[[package]]
+name = "crc-catalog"
+version = "2.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "217698eaf96b4a3f0bc4f3662aaa55bdf913cd54d7204591faa790070c6d0853"
+
+[[package]]
 name = "crc32fast"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4094,7 +4109,6 @@ dependencies = [
 [[package]]
 name = "gst-plugin-rtp"
 version = "0.15.2"
-source = "git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=f8bdc4929ff79e2567d97c5e95ac90b452812c79#f8bdc4929ff79e2567d97c5e95ac90b452812c79"
 dependencies = [
  "anyhow",
  "atomic_refcell",
@@ -6287,8 +6301,6 @@ dependencies = [
 [[package]]
 name = "librice"
 version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8b61f89b0d4478978e7e3da01dd8f1c1c1f9429d93456495f68bd3e21f3b3148"
 dependencies = [
  "byteorder",
  "futures",
@@ -9028,13 +9040,44 @@ dependencies = [
 [[package]]
 name = "rice-c"
 version = "0.4.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "40710ad9a408bd8ccde3256661c44ba6584b7a05d894f2b90c7409f8c9286d2d"
 dependencies = [
- "bindgen",
+ "rice-proto",
  "sans-io-time",
- "system-deps",
  "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "rice-ctypes"
+version = "0.4.3"
+
+[[package]]
+name = "rice-proto"
+version = "0.4.3"
+dependencies = [
+ "byteorder",
+ "libc",
+ "nom 8.0.0",
+ "rand 0.9.4",
+ "rice-ctypes",
+ "rice-stun-types",
+ "rustls",
+ "rustls-platform-verifier",
+ "smallvec",
+ "stun-proto",
+ "tracing",
+ "tracing-subscriber",
+ "turn-client-proto",
+ "turn-client-rustls",
+]
+
+[[package]]
+name = "rice-stun-types"
+version = "0.4.3"
+dependencies = [
+ "byteorder",
+ "rand 0.9.4",
+ "stun-types",
  "tracing",
 ]
 
@@ -10126,6 +10169,43 @@ dependencies = [
 ]
 
 [[package]]
+name = "stun-proto"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d93b223082474c3952d14cbea5b2d5356e913f6253e6b0e0659199149c483058"
+dependencies = [
+ "base64",
+ "byteorder",
+ "hashbrown 0.16.1",
+ "rand 0.9.4",
+ "sans-io-time",
+ "siphasher",
+ "smallvec",
+ "stun-types",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "stun-types"
+version = "2.0.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d50df914b1fa980b7408d3f49bdab19db7223115f8c4ae6eb162c039d7d63ad3"
+dependencies = [
+ "byteorder",
+ "crc",
+ "hmac",
+ "md-5 0.10.6",
+ "rand 0.9.4",
+ "sha1",
+ "sha2 0.10.9",
+ "smallvec",
+ "subtle",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "subtle"
 version = "2.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -10888,6 +10968,43 @@ dependencies = [
  "sha1",
  "thiserror 2.0.18",
  "url",
+]
+
+[[package]]
+name = "turn-client-proto"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "31cd1f845e25b7a6cee179ae2c661c78fa19fadb41835ef1821ac44fa11fe8ca"
+dependencies = [
+ "byteorder",
+ "smallvec",
+ "stun-proto",
+ "thiserror 2.0.18",
+ "tracing",
+ "turn-types",
+]
+
+[[package]]
+name = "turn-client-rustls"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "23f9853635c3fcc8ca8ebda4b8c1a384b03ba140266eb70a2c50024f8b7e11c0"
+dependencies = [
+ "rustls",
+ "tracing",
+ "turn-client-proto",
+]
+
+[[package]]
+name = "turn-types"
+version = "0.7.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b219ecb1e95783c98ff2819d51e95ef54dad78ae438be7ffa490d6480a3df0de"
+dependencies = [
+ "byteorder",
+ "stun-proto",
+ "stun-types",
+ "tracing",
 ]
 
 [[package]]

@@ -258,7 +258,22 @@ gstreamer-src = { path = "../gstreamer-src/gstreamer-src" }
 gst-static-link = { path = "../gstreamer-src/gst-static-link" }
 gst-static-env = { path = "../gstreamer-src/gst-static-env" }
 
+# TEMPORARY, drop once ../gst-plugins-rs is pushed and the rev above moves.
+# rtpbin2's recv path asked the pad for its name on every queue and poll, and
+# gst_object_get_name copies the string out each time: one allocation per
+# packet on each side, purely to prefix a log line. The name is cached on the
+# pad struct now. Only gst-plugin-rtp is patched; gst-plugin-webrtc, which
+# mirroring-core uses, still comes from the pinned rev.
+[patch."https://gitlab.futo.org/fcast/gst-plugins-rs.git"]
+gst-plugin-rtp = { path = "../gst-plugins-rs/net/rtp" }
+
 [patch.crates-io]
+# librice fork: rice-c consumes rice-proto as a Rust crate (its capi feature),
+# not a cargo-c C staticlib. Drops the .a's bundled std (which collided with the
+# LTO'd std in release builds), bindgen, system-deps, and the per-ABI rice-proto
+# cross-build. Patching librice cascades: its rice-c/rice-proto are path deps in
+# the fork workspace, so they come from the fork too.
+librice = { path = "../librice/librice" }
 # flapjack's reqwest fork, branched from the 0.13.4 tag: HTTP/3 without the
 # `reqwest_unstable` gate, taken through Alt-Svc. Every 0.13 reqwest in the
 # tree resolves to it.
