@@ -80,11 +80,11 @@ gst-plugin-webrtc = { rev = "518b3b9b49ad23c659aa6ea3e587e1846f02b056", git = "h
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
 # The Rust WebRTC stack the desktop receiver mirrors through: webrtcbin2
 # (librice ICE, dimpl DTLS, rtpbin2 underneath) and fcast's receive bins on
-# it. Sibling checkouts; rice-proto comes from ../webrtcbin2/build-rice-proto.sh
-# (see .cargo/config.toml). Android stays on C webrtcbin until rice-proto is
-# cross-built for it.
-gst-plugin-webrtcbin2 = { path = "../webrtcbin2" }
-fcast-webrtc = { path = "../webrtcbin2/fcast-webrtc" }
+# it, registered on every platform (`gstreamer.rs` plugin_register_static,
+# no cfg). rice-proto is a Rust crate from the librice fork now, so there is
+# no cross-built C ABI and no build-rice-proto.sh wiring left to carry.
+gst-plugin-webrtcbin2 = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "1cf2d4013b3db9da730949907e104d98fb606746" }
+fcast-webrtc = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "1cf2d4013b3db9da730949907e104d98fb606746" }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
 # flapjack's in-tree subparse: the player and the receiver must share ONE
 # `CueIr`, the cue engine keys its raster cache on the same `Arc`.
@@ -259,7 +259,7 @@ flapjack-subparse = { path = "../flapjack/plugins/subparse" }
 # LTO'd std in release builds), bindgen, system-deps, and the per-ABI rice-proto
 # cross-build. Patching librice cascades: its rice-c/rice-proto are path deps in
 # the fork workspace, so they come from the fork too.
-librice = { path = "../librice/librice" }
+librice = { git = "https://gitlab.futo.org/fcast/librice.git", rev = "8e0028eac7cd49dbb9355015f999bf582cb6cf38" }
 # flapjack's reqwest fork, branched from the 0.13.4 tag: HTTP/3 without the
 # `reqwest_unstable` gate, taken through Alt-Svc, and `http3` on quinn's
 # aws-lc-rs provider so ring stays out of the tree. Every 0.13 reqwest in the

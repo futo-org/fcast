@@ -2934,6 +2934,7 @@ dependencies = [
 [[package]]
 name = "fcast-webrtc"
 version = "0.1.0"
+source = "git+https://gitlab.futo.org/fcast/webrtcbin2.git?rev=1cf2d4013b3db9da730949907e104d98fb606746#1cf2d4013b3db9da730949907e104d98fb606746"
 dependencies = [
  "bytes",
  "gst-plugin-webrtcbin2",
@@ -4143,6 +4144,7 @@ dependencies = [
 [[package]]
 name = "gst-plugin-webrtcbin2"
 version = "0.16.0-alpha"
+source = "git+https://gitlab.futo.org/fcast/webrtcbin2.git?rev=1cf2d4013b3db9da730949907e104d98fb606746#1cf2d4013b3db9da730949907e104d98fb606746"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -6187,6 +6189,7 @@ dependencies = [
 [[package]]
 name = "librice"
 version = "0.4.3"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=8e0028eac7cd49dbb9355015f999bf582cb6cf38#8e0028eac7cd49dbb9355015f999bf582cb6cf38"
 dependencies = [
  "byteorder",
  "futures",
@@ -8888,6 +8891,7 @@ dependencies = [
 [[package]]
 name = "rice-c"
 version = "0.4.3"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=8e0028eac7cd49dbb9355015f999bf582cb6cf38#8e0028eac7cd49dbb9355015f999bf582cb6cf38"
 dependencies = [
  "rice-proto",
  "sans-io-time",
@@ -8898,10 +8902,12 @@ dependencies = [
 [[package]]
 name = "rice-ctypes"
 version = "0.4.3"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=8e0028eac7cd49dbb9355015f999bf582cb6cf38#8e0028eac7cd49dbb9355015f999bf582cb6cf38"
 
 [[package]]
 name = "rice-proto"
 version = "0.4.3"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=8e0028eac7cd49dbb9355015f999bf582cb6cf38#8e0028eac7cd49dbb9355015f999bf582cb6cf38"
 dependencies = [
  "byteorder",
  "libc",
@@ -8922,6 +8928,7 @@ dependencies = [
 [[package]]
 name = "rice-stun-types"
 version = "0.4.3"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=8e0028eac7cd49dbb9355015f999bf582cb6cf38#8e0028eac7cd49dbb9355015f999bf582cb6cf38"
 dependencies = [
  "byteorder",
  "rand 0.9.4",
