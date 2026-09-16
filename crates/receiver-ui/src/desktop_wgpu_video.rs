@@ -801,7 +801,22 @@ fn software_adapter_allowed() -> bool {
 /// of silently leaving the lane adapterless.
 fn backend_passes_for(override_: Option<&str>) -> Vec<wgpu::Backends> {
     let default = i_slint_video_wgpu::default_backends();
-    let mut passes = vec![default];
+    let mut passes = Vec::new();
+    // Windows leads with D3D12, which the crate's own default does not: it is
+    // the only one of the three backends that can take a d3d12 decoder's
+    // texture (see `crate::desktop_wgpu_d3d12`), so a box that has it should
+    // not land on vulkan and upload every frame. The other two stay behind it
+    // as the floor.
+    //
+    // Pinning the runtime first is not optional: a box whose only D3D12
+    // adapter is WARP declines this pass and then crashes in the GL one
+    // without it. See `desktop_wgpu_d3d12::pin_runtime`.
+    #[cfg(target_os = "windows")]
+    {
+        crate::desktop_wgpu_d3d12::pin_runtime();
+        passes.push(wgpu::Backends::DX12);
+    }
+    passes.push(default);
     if !cfg!(target_vendor = "apple") {
         passes.push(wgpu::Backends::GL);
     }
@@ -809,6 +824,7 @@ fn backend_passes_for(override_: Option<&str>) -> Vec<wgpu::Backends> {
         Some("gl") => vec![wgpu::Backends::GL],
         Some("vulkan") => vec![wgpu::Backends::VULKAN],
         Some("metal") => vec![wgpu::Backends::METAL],
+        Some("dx12") => vec![wgpu::Backends::DX12],
         Some(v) => {
             warn!(
                 value = %v,
@@ -968,6 +984,30 @@ pub fn create_shared_device() -> Option<SharedDevice> {
     None
 }
 
+/// Every instance the selection opened, kept for the life of the process.
+///
+/// A pass that declines used to drop its instance on the spot, which is fine
+/// until D3D12 is one of the backends. Releasing the last D3D12 object
+/// unloads `D3D12Core.dll`, and the next backend to want it loads it again at
+/// a fresh address -- on a box whose only D3D12 adapter is WARP, that is the
+/// DX12 hardware pass declining a CPU adapter and then the GL floor coming up
+/// on ANGLE, which is D3D backed itself. The second load faults inside
+/// `d3d12.dll` before the receiver has logged its first line.
+///
+/// Holding them costs a handful of objects for the process's life and is what
+/// the selection wanted anyway: the passes are one negotiation, not several.
+static WGPU_INSTANCES: OnceLock<parking_lot::Mutex<Vec<wgpu::Instance>>> = OnceLock::new();
+
+/// Registers an instance in [`WGPU_INSTANCES`] and hands back a clone to use.
+/// `wgpu::Instance` is a refcounted handle, so the clone is the same instance.
+fn keep_alive(instance: wgpu::Instance) -> wgpu::Instance {
+    WGPU_INSTANCES
+        .get_or_init(Default::default)
+        .lock()
+        .push(instance.clone());
+    instance
+}
+
 /// The passes [`create_shared_device`] makes, in order: every backend on a
 /// hardware adapter first, and only then the same backends again taking a
 /// software one, so a box whose OpenGL driver is hardware never runs the UI
@@ -984,10 +1024,10 @@ fn device_passes(software: bool) -> Vec<(wgpu::Backends, bool)> {
 /// One backend pass of [`create_shared_device`]: the adapter, the gate on its
 /// type, and the device. The error is the reason, for the log.
 fn open_on(backends: wgpu::Backends, allow_software: bool) -> Result<SharedDevice, String> {
-    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+    let instance = keep_alive(wgpu::Instance::new(wgpu::InstanceDescriptor {
         backends,
         ..wgpu::InstanceDescriptor::new_without_display_handle()
-    });
+    }));
     // No compatible_surface: no window exists yet. Every driver that presents
     // at all presents from its only graphics queue, so the surface slint
     // creates later fits.
@@ -1563,6 +1603,37 @@ struct Gpu {
     /// buffer would have taken anyway.
     #[cfg(target_os = "macos")]
     iosurface_import_off: bool,
+    /// The pixel formats a d3d12 decoder's texture can be imported as on
+    /// windows: NV12, and the wide pair when the device took the 16-bit norm
+    /// feature. Empty when the arm is switched off, when the device is not a
+    /// D3D12 one, or when GStreamer has no device for its adapter, which is
+    /// also what leaves the `memory:D3D12Memory` structures out of the offer.
+    #[cfg(target_os = "windows")]
+    d3d12: Arc<[PixelFormat]>,
+    /// GStreamer's device for the adapter wgpu ended up on. Shared with the
+    /// sink's context query, which is what puts the decoder on that same
+    /// adapter; a texture allocated on another one cannot be opened here at
+    /// all.
+    #[cfg(target_os = "windows")]
+    d3d12_device: Option<Arc<crate::desktop_wgpu_d3d12::Device>>,
+    /// Whether the appsink still advertises the `memory:D3D12Memory`
+    /// structures. Cleared the first time an import fails, which together
+    /// with the reconfigure event the sink pushes is how upstream is asked
+    /// for system memory instead.
+    #[cfg(target_os = "windows")]
+    offer_d3d12: bool,
+    /// Set when a d3d12 frame failed to import, which stops the lane retrying
+    /// it per frame. The fallback is sound here whether or not upstream
+    /// listens to the ask: a `GstD3D12Memory` maps by downloading through a
+    /// staging texture, so an unimported frame is slow rather than
+    /// unreadable, which is not true of a VA surface.
+    #[cfg(target_os = "windows")]
+    d3d12_import_off: bool,
+    /// Set beside it and cleared by the sink once it has pushed the
+    /// reconfigure, so the ask goes out once per refusal rather than once a
+    /// frame.
+    #[cfg(target_os = "windows")]
+    d3d12_renarrow: bool,
     /// The last caps the lane had no render path for, so the drop is reported
     /// once per stream instead of once per frame.
     unmappable: Option<gst::Caps>,
@@ -1581,11 +1652,17 @@ struct Gpu {
     /// See [`crate::desktop_wgpu_iosurface::ImportCache`].
     #[cfg(target_os = "macos")]
     imports: crate::desktop_wgpu_iosurface::ImportCache,
+    /// The same, for the textures a d3d12 decoder cycles.
+    /// See [`crate::desktop_wgpu_d3d12::ImportCache`].
+    #[cfg(target_os = "windows")]
+    imports: crate::desktop_wgpu_d3d12::ImportCache,
     /// Frames taken by each route, for the log line and the tests.
     #[cfg(target_os = "linux")]
     dmabuf_frames: u64,
     #[cfg(target_os = "macos")]
     iosurface_frames: u64,
+    #[cfg(target_os = "windows")]
+    d3d12_frames: u64,
     sysmem_frames: u64,
     /// One error line per desc change instead of one per frame.
     last_error: Option<String>,
@@ -1695,6 +1772,60 @@ fn iosurface_table(device: &wgpu::Device, norm16: bool) -> Arc<[PixelFormat]> {
         .collect();
     info!(formats = ?out, "wgpu video lane: importing videotoolbox surfaces");
     Arc::from(out)
+}
+
+/// The formats a d3d12 decoder's texture can be imported as.
+///
+/// Unlike the mac arm, this one DOES move the caps. A d3d12 decoder asked for
+/// system memory downloads every frame itself, through a staging texture, and
+/// the `ID3D12Resource` never leaves it; the `memory:D3D12Memory` structures
+/// have to be in the offer for the texture to travel at all. This list is
+/// what those structures name, and it is also what the import can then
+/// describe to the renderer.
+///
+/// Empty when the arm is switched off or the device is not a D3D12 one, and
+/// then the offer is system memory only and every frame takes the upload arm.
+#[cfg(target_os = "windows")]
+fn d3d12_table(device: &wgpu::Device, norm16: bool) -> Arc<[PixelFormat]> {
+    if !crate::desktop_wgpu_d3d12::enabled() {
+        return Arc::from([]);
+    }
+    if unsafe { device.as_hal::<wgpu::hal::api::Dx12>() }.is_none() {
+        warn!("wgpu video lane: not a d3d12 device, no texture import");
+        return Arc::from([]);
+    }
+    let out: Vec<PixelFormat> = [PixelFormat::Nv12, PixelFormat::P010, PixelFormat::P016]
+        .into_iter()
+        .filter(|f| crate::desktop_wgpu_d3d12::importable(*f, norm16))
+        .collect();
+    info!(formats = ?out, "wgpu video lane: importing d3d12 decoder textures");
+    Arc::from(out)
+}
+
+/// The gst spelling of the formats [`d3d12_table`] lists, which is what the
+/// `memory:D3D12Memory` structures are built from. Every one of them is also
+/// in the system-memory offer, so narrowing to that after a refused import
+/// never strands a decoder on a format the lane cannot take.
+#[cfg(target_os = "windows")]
+fn d3d12_caps(formats: &[PixelFormat]) -> Option<gst::Caps> {
+    let list: Vec<gst_video::VideoFormat> = formats
+        .iter()
+        .filter_map(|f| match f {
+            PixelFormat::Nv12 => Some(gst_video::VideoFormat::Nv12),
+            PixelFormat::P010 => Some(gst_video::VideoFormat::P01010le),
+            PixelFormat::P016 => Some(gst_video::VideoFormat::P016Le),
+            _ => None,
+        })
+        .collect();
+    if list.is_empty() {
+        return None;
+    }
+    Some(
+        gst_video::VideoCapsBuilder::new()
+            .features([crate::desktop_wgpu_d3d12::CAPS_FEATURE_MEMORY_D3D12])
+            .format_list(list)
+            .build(),
+    )
 }
 
 /// One `memory:DMABuf` structure listing the `fourcc:modifier` pairs the
@@ -1835,6 +1966,24 @@ impl Gpu {
         let udmabuf = udmabuf_table(&device, dmabuf, &sysmem_formats(norm16));
         #[cfg(target_os = "macos")]
         let iosurface = iosurface_table(&device, norm16);
+        #[cfg(target_os = "windows")]
+        let d3d12 = d3d12_table(&device, norm16);
+        // Pairing gstreamer's device with wgpu's is what makes the offer
+        // honest: without one there is no way to pin the decoder to this
+        // adapter, and a texture allocated on another one cannot be opened
+        // here, so the whole arm goes away instead of failing per frame.
+        #[cfg(target_os = "windows")]
+        let d3d12_device = if d3d12.is_empty() {
+            None
+        } else {
+            crate::desktop_wgpu_d3d12::Device::new(&device).map(Arc::new)
+        };
+        #[cfg(target_os = "windows")]
+        let d3d12: Arc<[PixelFormat]> = if d3d12_device.is_none() {
+            Arc::from([])
+        } else {
+            d3d12
+        };
         Self {
             renderer: Renderer::new(&device),
             dmabuf: import_table(&device, dmabuf, norm16),
@@ -1846,6 +1995,16 @@ impl Gpu {
             iosurface,
             #[cfg(target_os = "macos")]
             iosurface_import_off: false,
+            #[cfg(target_os = "windows")]
+            d3d12,
+            #[cfg(target_os = "windows")]
+            d3d12_device,
+            #[cfg(target_os = "windows")]
+            offer_d3d12: true,
+            #[cfg(target_os = "windows")]
+            d3d12_import_off: false,
+            #[cfg(target_os = "windows")]
+            d3d12_renarrow: false,
             device,
             queue,
             pool: Arc::new(FramePool::default()),
@@ -1855,12 +2014,18 @@ impl Gpu {
             unmappable: None,
             announced: None,
             import_fails: 0,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(
+                target_os = "linux",
+                target_os = "macos",
+                target_os = "windows"
+            ))]
             imports: Default::default(),
             #[cfg(target_os = "linux")]
             dmabuf_frames: 0,
             #[cfg(target_os = "macos")]
             iosurface_frames: 0,
+            #[cfg(target_os = "windows")]
+            d3d12_frames: 0,
             sysmem_frames: 0,
             last_error: None,
             quality,
@@ -1900,11 +2065,20 @@ impl Gpu {
     }
 
     /// The whole offer. The `memory:DMABuf` structures come first so a VA-API
-    /// decoder settles on one and hands out fds; the system-memory structure
-    /// stays behind them for software decoders, and is all that is left once
-    /// [`Self::offer_dmabuf`] is cleared.
+    /// decoder settles on one and hands out fds, and the `memory:D3D12Memory`
+    /// ones do the same for a d3d12 decoder on windows; the system-memory
+    /// structure stays behind them for software decoders, and is all that is
+    /// left once [`Self::offer_dmabuf`] or [`Self::offer_d3d12`] is cleared.
     fn caps(&self) -> gst::Caps {
         let mut caps = gst::Caps::new_empty();
+        #[cfg(target_os = "windows")]
+        if self.offer_d3d12
+            && let Some(d3d12) = d3d12_caps(&self.d3d12)
+        {
+            caps.get_mut()
+                .expect("freshly built, uniquely owned")
+                .append(d3d12);
+        }
         if self.offer_dmabuf {
             let out = caps.get_mut().expect("freshly built, uniquely owned");
             for (format, modifiers) in &self.dmabuf {
@@ -1949,7 +2123,11 @@ impl Gpu {
         // the upload arm's plane textures sitting in free slots. A frame
         // still in flight keeps its own, which is why this is the free list
         // and not everything.
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        ))]
         self.imports.clear();
         self.pool.clear();
         self.caps = Some((caps, Arc::clone(&plan)));
@@ -2151,6 +2329,117 @@ impl Gpu {
         Some(Ok(self.payload(slot, plan.desc, plan.par, rotation)))
     }
 
+    /// Whether a frame of this format arriving as a d3d12 texture can be
+    /// imported. The caps had to carry `memory:D3D12Memory` for one to arrive
+    /// at all, so this is the second half of that gate, not the whole of it.
+    #[cfg(target_os = "windows")]
+    fn can_import_d3d12(&self, format: PixelFormat) -> bool {
+        !self.d3d12_import_off && self.d3d12.contains(&format)
+    }
+
+    /// The windows zero-copy route: a d3d12 decoder's frame is an
+    /// `ID3D12Resource`, so its planes can be opened on this device and
+    /// sampled instead of downloaded through a staging texture and uploaded
+    /// again.
+    ///
+    /// `None` means this frame is not one of those, or the import refused it,
+    /// and the caller uploads it instead. Falling back is safe here the way
+    /// it is for a udmabuf and an IOSurface and not for a VA surface: mapping
+    /// a `GstD3D12Memory` downloads real pixels, with a video meta carrying
+    /// the real strides. It costs a full frame across the bus twice, which is
+    /// why the refusal also narrows the offer.
+    ///
+    /// The buffer rides inside the frame that is handed over, since the
+    /// textures read the decoder's own resource rather than a copy of it.
+    /// Slint drops the frame once the last submit that read those planes has
+    /// retired, and that drop is what hands the texture back to the
+    /// decoder's pool.
+    #[cfg(target_os = "windows")]
+    fn present_d3d12(
+        &mut self,
+        sample: &gst::Sample,
+        buffer: &gst::BufferRef,
+        plan: &CapsPlan,
+        rotation: iv::BufferTransform,
+    ) -> Option<Result<FramePayload, String>> {
+        if !self.can_import_d3d12(plan.desc.format)
+            || !crate::desktop_wgpu_d3d12::is_d3d12(buffer)
+        {
+            return None;
+        }
+        let device = Arc::clone(self.d3d12_device.as_ref()?);
+        // the state a real refusal leaves the lane in: latched off for this
+        // stream and the offer narrowed, with the frame uploaded rather than
+        // dropped
+        #[cfg(test)]
+        if FAIL_IMPORTS.load(Ordering::Relaxed) > 0 {
+            FAIL_IMPORTS.fetch_sub(1, Ordering::Relaxed);
+            self.refuse_d3d12("test: forced import refusal");
+            return None;
+        }
+        let owned = sample.buffer_owned()?;
+        // Before anything samples them: the decoder may still be writing, and
+        // unlike a dmabuf or an IOSurface a d3d12 buffer says so with a fence
+        // rather than being finished by the time it is handed out.
+        let imported = crate::desktop_wgpu_d3d12::sync(&owned)
+            .and_then(|()| crate::desktop_wgpu_d3d12::frame_source(&owned, &plan.info))
+            .map_err(str::to_string)
+            .and_then(|source| {
+                self.imports
+                    .get_or_import(&device, &self.device, &plan.desc, &source)
+            });
+        let index = match imported {
+            Ok(index) => index,
+            Err(err) => {
+                self.refuse_d3d12(&err);
+                return None;
+            }
+        };
+        self.d3d12_frames += 1;
+        // one line, not one a frame: which route the stream took is the thing
+        // worth reading in a log, and the counters carry the rest
+        if self.d3d12_frames == 1 {
+            info!(
+                width = plan.desc.width,
+                height = plan.desc.height,
+                format = ?plan.desc.format,
+                "wgpu video lane: importing d3d12 decoder textures, no cpu map on the video path"
+            );
+        }
+        let mut slot = self.pool.take();
+        slot.planes.clear();
+        // Refcount clones of the cache's own textures, so the cache is free
+        // to evict the entry while this frame still reads them.
+        slot.planes
+            .extend_from_slice(self.imports.frame(index).planes());
+        slot.buffer = Some(owned);
+        Some(Ok(self.payload(slot, plan.desc, plan.par, rotation)))
+    }
+
+    /// Latches the d3d12 arm off for this stream and narrows the offer, once.
+    #[cfg(target_os = "windows")]
+    fn refuse_d3d12(&mut self, err: &str) {
+        self.import_fails += 1;
+        if self.d3d12_import_off {
+            return;
+        }
+        self.d3d12_import_off = true;
+        self.offer_d3d12 = false;
+        self.d3d12_renarrow = true;
+        warn!(
+            %err,
+            "wgpu video lane: d3d12 frame refused the import, uploading and asking \
+             upstream for system memory"
+        );
+    }
+
+    /// Whether the sink still owes upstream the reconfigure for a refusal.
+    /// Clears as it answers, so the ask goes out once.
+    #[cfg(target_os = "windows")]
+    fn take_d3d12_renarrow(&mut self) -> bool {
+        std::mem::take(&mut self.d3d12_renarrow)
+    }
+
     /// Wraps a filled slot as the frame that crosses to the UI thread.
     fn payload(
         &self,
@@ -2248,7 +2537,11 @@ impl Gpu {
     ///
     /// Off linux there is nothing imported, so only the pool goes.
     fn release_held(&mut self) {
-        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        #[cfg(any(
+            target_os = "linux",
+            target_os = "macos",
+            target_os = "windows"
+        ))]
         self.imports.clear();
         self.pool.clear();
         // The stream is going with them, so the next one announces itself
@@ -2320,6 +2613,18 @@ impl Gpu {
         #[cfg(target_os = "macos")]
         {
             self.iosurface_import_off = false;
+        }
+        // Windows carries both halves: the per-frame latch and the offer, the
+        // way linux carries them separately for its two arms.
+        #[cfg(target_os = "windows")]
+        {
+            self.d3d12_import_off = false;
+            self.d3d12_renarrow = false;
+            if !self.offer_d3d12 && !self.d3d12.is_empty() {
+                self.offer_d3d12 = true;
+                self.import_fails = 0;
+                return Some(self.caps());
+            }
         }
         if self.offer_dmabuf || self.dmabuf.is_empty() {
             return None;
@@ -2616,7 +2921,13 @@ impl CueTick {
 const IMPORT_ARM: &str = "udmabuf import";
 #[cfg(target_os = "macos")]
 const IMPORT_ARM: &str = "iosurface import";
-#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+#[cfg(target_os = "windows")]
+const IMPORT_ARM: &str = "d3d12 import";
+#[cfg(not(any(
+    target_os = "linux",
+    target_os = "macos",
+    target_os = "windows"
+)))]
 const IMPORT_ARM: &str = "import";
 
 struct Sink {
@@ -2750,7 +3061,25 @@ impl Sink {
                 let imported = gpu.present_linear(sample, buffer, &plan, rotation);
                 #[cfg(target_os = "macos")]
                 let imported = gpu.present_iosurface(sample, buffer, &plan, rotation);
-                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+                // Windows is the one arm here whose frames DID negotiate a
+                // caps feature of their own; the memory is asked all the same,
+                // because the answer is what says whether this particular
+                // buffer is the decoder's texture or a downloaded copy of it.
+                #[cfg(target_os = "windows")]
+                let imported = {
+                    let result = gpu.present_d3d12(sample, buffer, &plan, rotation);
+                    // A refused import narrows the offer, and the ask that
+                    // goes with it has to be pushed once, not once a frame.
+                    if gpu.take_d3d12_renarrow() {
+                        self.renegotiate(appsink, &gpu);
+                    }
+                    result
+                };
+                #[cfg(not(any(
+                    target_os = "linux",
+                    target_os = "macos",
+                    target_os = "windows"
+                )))]
                 let imported: Option<Result<FramePayload, String>> = None;
                 match imported {
                     Some(result) => (result, IMPORT_ARM),
@@ -3088,6 +3417,15 @@ fn make_sink_on(
     // to take it.
     #[cfg(target_os = "linux")]
     let udmabuf = Arc::clone(&gpu.udmabuf);
+    // Taken off the gpu for the same reason, so the context query never has
+    // to reach behind the lock either.
+    #[cfg(target_os = "windows")]
+    let d3d12_device = gpu.d3d12_device.clone();
+    // The forced route below pins caps this lane can only take when the
+    // import is really there; without it the capsfilter would negotiate
+    // nothing and the player would show no video at all.
+    #[cfg(target_os = "windows")]
+    let can_import_d3d12 = !gpu.d3d12.is_empty();
     // This lane draws display lists, never rasters, so the engine's vello_cpu
     // paint lane is dead weight behind it: worker milliseconds per cue and a
     // key clone per frame for a want that is never satisfied.
@@ -3142,6 +3480,17 @@ fn make_sink_on(
     appsink.set_qos(true);
     appsink.set_max_lateness(VIDEO_SINK_MAX_LATENESS.nseconds() as i64);
     appsink.set_processing_deadline(VIDEO_SINK_PROCESSING_DEADLINE);
+    // A d3d12 decoder picks its device before it allocates anything, and it
+    // asks downstream first. Answering with the device built for wgpu's own
+    // adapter is what puts the decoder's textures somewhere this process can
+    // open them; without it a hybrid box decodes on one GPU, renders on the
+    // other and imports nothing.
+    #[cfg(target_os = "windows")]
+    if let Some(device) = d3d12_device
+        && let Some(pad) = appsink.static_pad("sink")
+    {
+        crate::desktop_wgpu_d3d12::answer_context_query(&pad, appsink.upcast_ref(), device);
+    }
     // The whole software zero-copy arm. A software decoder writes with the
     // CPU, so it can never negotiate `memory:DMABuf` caps; what it can do is
     // write into pages that happen to be a dma_buf, which is what a udmabuf
@@ -3251,16 +3600,124 @@ fn make_sink_on(
     // `notify::parent` would be the obvious hook and is not one, GstObject
     // leaves the notify for it commented out. Once is enough: the player keeps
     // one pipeline for its whole life.
-    if let Some(pad) = appsink.static_pad("sink") {
-        pad.connect_linked(|pad, _| {
-            if let Some(pipeline) = pad.parent_element().as_ref().and_then(toplevel_pipeline) {
-                guarantee_video_meta_in(&pipeline);
-            }
-        });
-    }
-
+    //
+    // It goes on whichever pad faces the player, which is the appsink's own
+    // unless the forced upload below wrapped it in a bin.
     let tick = CueTick(Arc::clone(&sink.cues));
+    #[cfg(target_os = "windows")]
+    if force_d3d12_upload() && !can_import_d3d12 {
+        warn!(
+            "wgpu video lane: FCAST_DESKTOP_WGPU_D3D12_FORCE, but this device has no d3d12              import, so there is nothing to force it through"
+        );
+    }
+    #[cfg(target_os = "windows")]
+    if force_d3d12_upload()
+        && can_import_d3d12
+        && let Some(bin) = wrap_in_d3d12_upload(&appsink)
+    {
+        if let Some(pad) = bin.static_pad("sink") {
+            hook_video_meta_guarantee(&pad);
+        }
+        return (bin, tick);
+    }
+    if let Some(pad) = appsink.static_pad("sink") {
+        hook_video_meta_guarantee(&pad);
+    }
     (appsink.upcast(), tick)
+}
+
+/// Asks the pipeline for `GstVideoMeta` support once this pad is linked into
+/// one. See the call sites for why it is that moment and no other.
+fn hook_video_meta_guarantee(pad: &gst::Pad) {
+    pad.connect_linked(|pad, _| {
+        if let Some(pipeline) = pad.parent_element().as_ref().and_then(toplevel_pipeline) {
+            guarantee_video_meta_in(&pipeline);
+        }
+    });
+}
+
+/// Puts a `d3d12upload` in front of the appsink, so the import runs on a box
+/// whose decoders cannot hand out a d3d12 texture themselves.
+///
+/// `FCAST_DESKTOP_WGPU_D3D12_FORCE=1`, and OFF by default because it is a
+/// test rig rather than a route: it ADDS work, uploading the decoder's
+/// system-memory frame into a texture so the import can then carry it. On a
+/// box with hardware decode it is strictly worse than leaving it alone, since
+/// the decoder would have produced that texture itself.
+///
+/// What it buys is coverage. The import, its cache, the fence wait and the
+/// plane wrapping are all exercised for real, on a machine where the only
+/// D3D12 adapter is WARP and no decoder registers at all. `d3d12upload` is
+/// registered whatever the adapter can do -- only the DECODERS are gated on
+/// an `ID3D12VideoDevice` -- and every `GstD3D12BufferPool` allocates
+/// `D3D12_HEAP_FLAG_SHARED`, so the buffers it hands over carry the shareable
+/// NT handle the import opens.
+#[cfg(target_os = "windows")]
+fn force_d3d12_upload() -> bool {
+    std::env::var("FCAST_DESKTOP_WGPU_D3D12_FORCE").is_ok_and(|v| v == "1")
+}
+
+/// The bin that does it: `videoconvert ! d3d12upload ! capsfilter ! appsink`,
+/// ghosted to the convert's sink pad. `None` leaves the appsink to be
+/// returned bare, which is a working lane without the forced route rather
+/// than a failure.
+///
+/// Both of the extra elements earn their place, and leaving either out makes
+/// the rig prove nothing:
+///
+/// - `videoconvert`, because a software decoder hands out I420. `d3d12upload`
+///   will happily carry I420 in d3d12 memory, but this import cannot take it:
+///   it wraps plane SLICES of one resource, which is a biplanar DXGI layout.
+///   Without the convert, negotiation walks past the lane's `memory:D3D12Memory`
+///   structures to its system-memory ones and the route quietly does nothing.
+/// - `capsfilter`, because that walk should not be left to preference order
+///   at all. Pinning NV12 in d3d12 memory means the chain either negotiates
+///   the one shape under test or fails loudly.
+///
+/// The pad probes stay on the APPSINK's own sink pad, where they already are:
+/// events and queries reach it through the bin unchanged. The one that does
+/// move is the meta hook above, which has to sit on the pad the player links.
+#[cfg(target_os = "windows")]
+fn wrap_in_d3d12_upload(appsink: &gst_app::AppSink) -> Option<gst::Element> {
+    let make = |name: &str| match gst::ElementFactory::make(name).build() {
+        Ok(element) => Some(element),
+        Err(err) => {
+            warn!(
+                %err,
+                element = name,
+                "wgpu video lane: the forced import route needs this element, staying off"
+            );
+            None
+        }
+    };
+    let convert = make("videoconvert")?;
+    let upload = make("d3d12upload")?;
+    let filter = make("capsfilter")?;
+    filter.set_property(
+        "caps",
+        gst_video::VideoCapsBuilder::new()
+            .features([crate::desktop_wgpu_d3d12::CAPS_FEATURE_MEMORY_D3D12])
+            .format(gst_video::VideoFormat::Nv12)
+            .build(),
+    );
+    let bin = gst::Bin::with_name("fcast-d3d12-force");
+    let sink: &gst::Element = appsink.upcast_ref();
+    let built = bin
+        .add_many([&convert, &upload, &filter, sink])
+        .and_then(|()| gst::Element::link_many([&convert, &upload, &filter, sink]))
+        .ok()
+        .and_then(|()| convert.static_pad("sink"))
+        .and_then(|target| gst::GhostPad::with_target(&target).ok())
+        .and_then(|ghost| bin.add_pad(&ghost).ok());
+    if built.is_none() {
+        warn!("wgpu video lane: could not build the forced d3d12 upload bin");
+        return None;
+    }
+    info!(
+        "wgpu video lane: FCAST_DESKTOP_WGPU_D3D12_FORCE, converting and uploading every \
+         frame into a d3d12 texture so the import carries it"
+    );
+    Some(bin.upcast())
 }
 
 /// Counts heap allocations on the calling thread, so a test can put a number

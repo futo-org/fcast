@@ -83,8 +83,8 @@ gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
 # it, registered on every platform (`gstreamer.rs` plugin_register_static,
 # no cfg). rice-proto is a Rust crate from the librice fork now, so there is
 # no cross-built C ABI and no build-rice-proto.sh wiring left to carry.
-gst-plugin-webrtcbin2 = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "1cf2d4013b3db9da730949907e104d98fb606746" }
-fcast-webrtc = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "1cf2d4013b3db9da730949907e104d98fb606746" }
+gst-plugin-webrtcbin2 = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "14833cc2b278fff935657bbe02f46f23c45b114b" }
+fcast-webrtc = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "14833cc2b278fff935657bbe02f46f23c45b114b" }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
 # flapjack's in-tree subparse: the player and the receiver must share ONE
 # `CueIr`, the cue engine keys its raster cache on the same `Arc`.
@@ -106,9 +106,9 @@ tracing-subscriber = "0.3"
 tracing-gstreamer = { git = "https://github.com/MAlba124/tracing-gstreamer.git", rev = "3ad7a1e71a4ca4d1fd9a229642fd09586370acaf" }
 tracing-panic = "0.1.2"
 parking_lot = "0.12"
-slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "24d86388d178b8cee5014720b1ff62f91bf5c64e", default-features = false }
-slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "24d86388d178b8cee5014720b1ff62f91bf5c64e" }
-i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "24d86388d178b8cee5014720b1ff62f91bf5c64e" }
+slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba", default-features = false }
+slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba" }
+i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba" }
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.23", features = [ "v4" ] }
 bytes = "1"
@@ -251,7 +251,7 @@ flapjack-subparse = { path = "../flapjack/plugins/subparse" }
 # LTO'd std in release builds), bindgen, system-deps, and the per-ABI rice-proto
 # cross-build. Patching librice cascades: its rice-c/rice-proto are path deps in
 # the fork workspace, so they come from the fork too.
-librice = { git = "https://gitlab.futo.org/fcast/librice.git", rev = "8e0028eac7cd49dbb9355015f999bf582cb6cf38" }
+librice = { git = "https://gitlab.futo.org/fcast/librice.git", rev = "134c5da390164cd1f2e9bb5670d818ac927f1315" }
 # flapjack's reqwest fork, branched from the 0.13.4 tag: HTTP/3 without the
 # `reqwest_unstable` gate, taken through Alt-Svc, and `http3` on quinn's
 # aws-lc-rs provider so ring stays out of the tree. Every 0.13 reqwest in the

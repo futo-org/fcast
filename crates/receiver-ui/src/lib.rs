@@ -73,6 +73,10 @@ mod bitmap_overlay;
 /// into the dodvg renderer's own scene type.
 #[cfg(all(not(target_os = "android"), feature = "scene-cues"))]
 mod cue_overlay;
+/// The windows counterpart: a d3d12 decoder's own texture, opened on wgpu's
+/// device and sampled per plane instead of downloaded and uploaded again.
+#[cfg(target_os = "windows")]
+mod desktop_wgpu_d3d12;
 /// Zero-copy import of the decoder's dmabuf planes for the lane below.
 #[cfg(target_os = "linux")]
 mod desktop_wgpu_dmabuf;

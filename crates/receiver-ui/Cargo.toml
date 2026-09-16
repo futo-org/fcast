@@ -39,7 +39,7 @@ tokio-rustls = { workspace = true, default-features = false, features = [ "loggi
 # which is what makes the single-wgpu property structural: dodvg depends on
 # the same path.
 gst-app = { workspace = true, optional = true }
-i-slint-video-wgpu = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "24d86388d178b8cee5014720b1ff62f91bf5c64e", optional = true }
+i-slint-video-wgpu = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba", optional = true }
 # Shader language only. The backend features are per-OS in the sections below,
 # and cargo unions the features of every target section that matches, so a mac
 # build gets `wgsl` from here and `metal` from its own.
@@ -66,7 +66,7 @@ ndk-context = "0.1"
 # the slint android backend already pulls in, so nothing is duplicated.
 ndk-sys = "0.6"
 # the video surface behind the window (fork addition)
-i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "24d86388d178b8cee5014720b1ff62f91bf5c64e" }
+i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The lane's dmabuf import. `ash` must resolve to the same crate
@@ -87,13 +87,33 @@ wgpu = { version = "30", default-features = false, features = [
     "gles",
 ], optional = true }
 
-# The lane has never been run on windows. `dx12` is a one word addition here
-# whenever someone has a box to try it on; nothing else in the lane is D3D
-# aware either way.
+# The import here is a D3D12 shared resource, not a dmabuf: gst-allocators and
+# ash stay linux-only above, and src/desktop_wgpu_d3d12.rs opens the decoder's
+# own texture on the device slint renders with.
+#
+# `dx12` leads the backend order on windows (see
+# desktop_wgpu_video::backend_passes), because it is the only one of the three
+# that can take that resource. Vulkan and gles stay behind it as the floor for
+# a box whose adapter refuses a D3D12 device, and both carry every frame on
+# the upload arm.
 [target.'cfg(target_os = "windows")'.dependencies]
 wgpu = { version = "30", default-features = false, features = [
+    "dx12",
     "vulkan",
     "gles",
+], optional = true }
+# The import's other half. This MUST resolve to the same `windows` crate
+# wgpu-hal 30 builds its dx12 backend against (0.62), or `ID3D12Device` and
+# `ID3D12Resource` are different types here than they are there and the opened
+# resource cannot be handed over. Features union across the graph, so naming
+# these three namespaces is what adds `OpenSharedHandle` and the LUID to what
+# wgpu-hal already turns on.
+windows = { version = "0.62", default-features = false, features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D12",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
 ], optional = true }
 
 # The cursor-hide callback in gui.rs sets the macOS cursor directly.
@@ -167,6 +187,7 @@ desktop = [
     "dep:wgpu",
     "dep:objc2-metal",
     "dep:objc2-io-surface",
+    "dep:windows",
     "dep:gst-app",
     "dep:gst-allocators",
     "dep:ash",

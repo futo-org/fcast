@@ -1693,7 +1693,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.2.0"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1702,7 +1702,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.2.0"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2936,7 +2936,7 @@ dependencies = [
 [[package]]
 name = "fcast-webrtc"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/webrtcbin2.git?rev=1cf2d4013b3db9da730949907e104d98fb606746#1cf2d4013b3db9da730949907e104d98fb606746"
+source = "git+https://gitlab.futo.org/fcast/webrtcbin2.git?rev=14833cc2b278fff935657bbe02f46f23c45b114b#14833cc2b278fff935657bbe02f46f23c45b114b"
 dependencies = [
  "bytes",
  "gst-plugin-webrtcbin2",
@@ -4002,7 +4002,7 @@ checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
 [[package]]
 name = "gst-build-config"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#96a3059c06f29e254db095260ab5def120f512b7"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#405524890c4d10e17d5570aebabaa3c8be96ddb6"
 
 [[package]]
 name = "gst-plugin-dav1d"
@@ -4146,7 +4146,7 @@ dependencies = [
 [[package]]
 name = "gst-plugin-webrtcbin2"
 version = "0.16.0-alpha"
-source = "git+https://gitlab.futo.org/fcast/webrtcbin2.git?rev=1cf2d4013b3db9da730949907e104d98fb606746#1cf2d4013b3db9da730949907e104d98fb606746"
+source = "git+https://gitlab.futo.org/fcast/webrtcbin2.git?rev=14833cc2b278fff935657bbe02f46f23c45b114b#14833cc2b278fff935657bbe02f46f23c45b114b"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4176,7 +4176,7 @@ dependencies = [
 [[package]]
 name = "gst-static-env"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#96a3059c06f29e254db095260ab5def120f512b7"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#405524890c4d10e17d5570aebabaa3c8be96ddb6"
 dependencies = [
  "ctor 0.6.3",
  "gio-sys",
@@ -4200,7 +4200,7 @@ dependencies = [
 [[package]]
 name = "gst-static-link"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#96a3059c06f29e254db095260ab5def120f512b7"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#405524890c4d10e17d5570aebabaa3c8be96ddb6"
 
 [[package]]
 name = "gstreamer"
@@ -4469,7 +4469,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-src"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#96a3059c06f29e254db095260ab5def120f512b7"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#405524890c4d10e17d5570aebabaa3c8be96ddb6"
 dependencies = [
  "fd-lock",
  "gst-build-config",
@@ -4927,7 +4927,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-android-activity"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "android-activity 0.5.2",
  "android-activity 0.6.1",
@@ -4943,7 +4943,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-linuxkms"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "bytemuck",
  "calloop 0.14.4",
@@ -4967,7 +4967,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-selector"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "cfg-if",
  "cfg_aliases",
@@ -4986,7 +4986,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-testing"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "cfg_aliases",
  "i-slint-common",
@@ -4998,7 +4998,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-winit"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -5045,7 +5045,7 @@ dependencies = [
 [[package]]
 name = "i-slint-common"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "derive_more",
  "fontique",
@@ -5061,7 +5061,7 @@ dependencies = [
 [[package]]
 name = "i-slint-compiler"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "annotate-snippets 0.12.16",
  "by_address",
@@ -5093,7 +5093,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "async-channel",
  "auto_enums",
@@ -5147,7 +5147,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core-macros"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "quote",
  "serde_json",
@@ -5157,7 +5157,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-dodvg"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "glow",
  "i-slint-core",
@@ -5172,7 +5172,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-femtovg"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "cfg-if",
  "const-field-offset",
@@ -5193,7 +5193,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-skia"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "ash",
  "bytemuck",
@@ -5233,7 +5233,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-software"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "bytemuck",
  "clru",
@@ -5252,7 +5252,7 @@ dependencies = [
 [[package]]
 name = "i-slint-video"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "wgpu",
 ]
@@ -5260,7 +5260,7 @@ dependencies = [
 [[package]]
 name = "i-slint-video-wgpu"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "thiserror 2.0.18",
  "wgpu",
@@ -6206,7 +6206,7 @@ dependencies = [
 [[package]]
 name = "librice"
 version = "0.4.3"
-source = "git+https://gitlab.futo.org/fcast/librice.git?rev=8e0028eac7cd49dbb9355015f999bf582cb6cf38#8e0028eac7cd49dbb9355015f999bf582cb6cf38"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=134c5da390164cd1f2e9bb5670d818ac927f1315#134c5da390164cd1f2e9bb5670d818ac927f1315"
 dependencies = [
  "byteorder",
  "futures",
@@ -8724,6 +8724,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "wgpu",
+ "windows",
 ]
 
 [[package]]
@@ -8911,7 +8912,7 @@ dependencies = [
 [[package]]
 name = "rice-c"
 version = "0.4.3"
-source = "git+https://gitlab.futo.org/fcast/librice.git?rev=8e0028eac7cd49dbb9355015f999bf582cb6cf38#8e0028eac7cd49dbb9355015f999bf582cb6cf38"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=134c5da390164cd1f2e9bb5670d818ac927f1315#134c5da390164cd1f2e9bb5670d818ac927f1315"
 dependencies = [
  "rice-proto",
  "sans-io-time",
@@ -8922,12 +8923,12 @@ dependencies = [
 [[package]]
 name = "rice-ctypes"
 version = "0.4.3"
-source = "git+https://gitlab.futo.org/fcast/librice.git?rev=8e0028eac7cd49dbb9355015f999bf582cb6cf38#8e0028eac7cd49dbb9355015f999bf582cb6cf38"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=134c5da390164cd1f2e9bb5670d818ac927f1315#134c5da390164cd1f2e9bb5670d818ac927f1315"
 
 [[package]]
 name = "rice-proto"
 version = "0.4.3"
-source = "git+https://gitlab.futo.org/fcast/librice.git?rev=8e0028eac7cd49dbb9355015f999bf582cb6cf38#8e0028eac7cd49dbb9355015f999bf582cb6cf38"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=134c5da390164cd1f2e9bb5670d818ac927f1315#134c5da390164cd1f2e9bb5670d818ac927f1315"
 dependencies = [
  "byteorder",
  "libc",
@@ -8948,7 +8949,7 @@ dependencies = [
 [[package]]
 name = "rice-stun-types"
 version = "0.4.3"
-source = "git+https://gitlab.futo.org/fcast/librice.git?rev=8e0028eac7cd49dbb9355015f999bf582cb6cf38#8e0028eac7cd49dbb9355015f999bf582cb6cf38"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=134c5da390164cd1f2e9bb5670d818ac927f1315#134c5da390164cd1f2e9bb5670d818ac927f1315"
 dependencies = [
  "byteorder",
  "rand 0.9.4",
@@ -9703,7 +9704,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slint"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-android-activity",
@@ -9727,7 +9728,7 @@ dependencies = [
 [[package]]
 name = "slint-build"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "derive_more",
  "fontique",
@@ -9739,7 +9740,7 @@ dependencies = [
 [[package]]
 name = "slint-macros"
 version = "1.17.1"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -11248,7 +11249,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vtable"
 version = "0.4.0"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -11259,7 +11260,7 @@ dependencies = [
 [[package]]
 name = "vtable-macro"
 version = "0.4.0"
-source = "git+https://gitlab.futo.org/fcast/slint.git?rev=24d86388d178b8cee5014720b1ff62f91bf5c64e#24d86388d178b8cee5014720b1ff62f91bf5c64e"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=207faa6c04eeba4b4406c8b23a6b14db7beb09ba#207faa6c04eeba4b4406c8b23a6b14db7beb09ba"
 dependencies = [
  "proc-macro2",
  "quote",
