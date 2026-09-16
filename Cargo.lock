@@ -7331,6 +7331,7 @@ dependencies = [
  "block2 0.6.2",
  "objc2 0.6.4",
  "objc2-foundation 0.3.2",
+ "objc2-io-surface",
 ]
 
 [[package]]
@@ -8710,6 +8711,8 @@ dependencies = [
  "ndk-context",
  "ndk-sys 0.6.0+11769913",
  "objc2-app-kit 0.3.2",
+ "objc2-io-surface",
+ "objc2-metal 0.3.2",
  "oneshot",
  "parking_lot",
  "receiver-core",

@@ -62,11 +62,18 @@
 //! else. Both arms allocate nothing of the lane's own per frame at that point,
 //! which the steady-state tests at the bottom of this file measure.
 //!
-//! Off linux there is no import route at all: the whole `desktop_wgpu_dmabuf`
-//! module is linux-only, the offer is system memory, and every frame takes the
-//! upload arm. On mac that means one CPU copy of a VideoToolbox frame per
-//! picture. Importing its `IOSurface` as a Metal texture is the parity work,
-//! and is deliberately not attempted here.
+//! On mac the route is [`desktop_wgpu_iosurface`] and the caps do not move at
+//! all. VideoToolbox decodes into CVPixelBuffers, and `vtdec` hands the same
+//! IOSurface-backed memory out whether the caps say `memory:IOSurface` or
+//! plain system memory, so the offer stays as it was and the lane asks the
+//! MEMORY whether it carries a surface. Each plane is then wrapped as an
+//! `MTLTexture` on the shared device, cached per surface exactly as the dmabuf
+//! arm caches per buffer. A frame the import refuses is mapped and uploaded,
+//! which is safe here in a way it is not for a VA surface: a CVPixelBuffer
+//! maps to ordinary pixels.
+//!
+//! On windows there is no import route at all and every frame takes the upload
+//! arm.
 //!
 //! # Fallback
 //!
@@ -90,6 +97,8 @@
 //!
 //! `FCAST_DESKTOP_WGPU_DMABUF=0` leaves the appsink advertising system memory
 //! only, which is the A/B control for the import.
+//! `FCAST_DESKTOP_WGPU_IOSURFACE=0` is the mac one, and puts every frame back
+//! on the upload arm without moving the caps.
 //! `FCAST_WGPU_SOFTWARE=0` refuses a CPU adapter (lavapipe, llvmpipe), which
 //! is otherwise the last resort after every hardware pass declined.
 //! `__EGL_VENDOR_LIBRARY_FILENAMES` set by hand overrides the GL pass's own
@@ -1539,6 +1548,21 @@ struct Gpu {
     /// the upload arm the buffer would have taken anyway.
     #[cfg(target_os = "linux")]
     linear_import_off: bool,
+    /// The pixel formats a VideoToolbox surface can be imported as on mac:
+    /// NV12, and P010 when the device took the 16-bit norm feature. Empty
+    /// when the arm is switched off or the device is not metal, and then
+    /// every frame takes the upload arm.
+    ///
+    /// Read per frame by the import detection, so it is a list of at most two
+    /// entries rather than anything that allocates to search.
+    #[cfg(target_os = "macos")]
+    iosurface: Arc<[PixelFormat]>,
+    /// Set when an IOSurface frame failed to import, which stops the lane
+    /// retrying it per frame. No renegotiation here either: the caps say
+    /// system memory already and the fallback is the map and upload the
+    /// buffer would have taken anyway.
+    #[cfg(target_os = "macos")]
+    iosurface_import_off: bool,
     /// The last caps the lane had no render path for, so the drop is reported
     /// once per stream instead of once per frame.
     unmappable: Option<gst::Caps>,
@@ -1553,9 +1577,15 @@ struct Gpu {
     /// gpu. See [`crate::desktop_wgpu_dmabuf::ImportCache`].
     #[cfg(target_os = "linux")]
     imports: crate::desktop_wgpu_dmabuf::ImportCache,
+    /// The same, for the surfaces VideoToolbox cycles.
+    /// See [`crate::desktop_wgpu_iosurface::ImportCache`].
+    #[cfg(target_os = "macos")]
+    imports: crate::desktop_wgpu_iosurface::ImportCache,
     /// Frames taken by each route, for the log line and the tests.
     #[cfg(target_os = "linux")]
     dmabuf_frames: u64,
+    #[cfg(target_os = "macos")]
+    iosurface_frames: u64,
     sysmem_frames: u64,
     /// One error line per desc change instead of one per frame.
     last_error: Option<String>,
@@ -1637,6 +1667,33 @@ fn udmabuf_table(
     } else {
         info!(formats = ?out, "wgpu video lane: udmabuf pool offered to software decoders");
     }
+    Arc::from(out)
+}
+
+/// The formats a VideoToolbox surface can be imported as.
+///
+/// There is no caps side to this one. `vtdec` hands the same
+/// `GstAppleCoreVideoMemory` out whether the caps say `memory:IOSurface` or
+/// plain system memory, so the lane leaves its offer alone and asks the
+/// memory itself (see [`crate::desktop_wgpu_iosurface`]); this list is only
+/// what the import can then describe to the renderer.
+///
+/// Empty when the arm is switched off or the device is not metal, and then
+/// every frame takes the upload arm.
+#[cfg(target_os = "macos")]
+fn iosurface_table(device: &wgpu::Device, norm16: bool) -> Arc<[PixelFormat]> {
+    if !crate::desktop_wgpu_iosurface::enabled() {
+        return Arc::from([]);
+    }
+    if unsafe { device.as_hal::<wgpu::hal::api::Metal>() }.is_none() {
+        warn!("wgpu video lane: not a metal device, no iosurface import");
+        return Arc::from([]);
+    }
+    let out: Vec<PixelFormat> = [PixelFormat::Nv12, PixelFormat::P010]
+        .into_iter()
+        .filter(|f| crate::desktop_wgpu_iosurface::importable(*f, norm16))
+        .collect();
+    info!(formats = ?out, "wgpu video lane: importing videotoolbox surfaces");
     Arc::from(out)
 }
 
@@ -1776,6 +1833,8 @@ impl Gpu {
     ) -> Self {
         #[cfg(target_os = "linux")]
         let udmabuf = udmabuf_table(&device, dmabuf, &sysmem_formats(norm16));
+        #[cfg(target_os = "macos")]
+        let iosurface = iosurface_table(&device, norm16);
         Self {
             renderer: Renderer::new(&device),
             dmabuf: import_table(&device, dmabuf, norm16),
@@ -1783,6 +1842,10 @@ impl Gpu {
             udmabuf,
             #[cfg(target_os = "linux")]
             linear_import_off: false,
+            #[cfg(target_os = "macos")]
+            iosurface,
+            #[cfg(target_os = "macos")]
+            iosurface_import_off: false,
             device,
             queue,
             pool: Arc::new(FramePool::default()),
@@ -1792,10 +1855,12 @@ impl Gpu {
             unmappable: None,
             announced: None,
             import_fails: 0,
-            #[cfg(target_os = "linux")]
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
             imports: Default::default(),
             #[cfg(target_os = "linux")]
             dmabuf_frames: 0,
+            #[cfg(target_os = "macos")]
+            iosurface_frames: 0,
             sysmem_frames: 0,
             last_error: None,
             quality,
@@ -1816,6 +1881,12 @@ impl Gpu {
     /// structures of vtdec's template intersect empty against this offer, so
     /// it settles on plain system memory and never drags a GstGLContext into
     /// the pipeline.
+    ///
+    /// Settling on system memory does not cost the mac its zero copy. The
+    /// buffers behind these caps are still CVPixelBuffers, and the lane
+    /// imports their IOSurfaces off the memory rather than the caps feature:
+    /// see [`crate::desktop_wgpu_iosurface`] for why that is the shape the
+    /// offer keeps.
     fn formats(&self) -> Vec<gst_video::VideoFormat> {
         sysmem_formats(self.norm16)
     }
@@ -1878,7 +1949,7 @@ impl Gpu {
         // the upload arm's plane textures sitting in free slots. A frame
         // still in flight keeps its own, which is why this is the free list
         // and not everything.
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.imports.clear();
         self.pool.clear();
         self.caps = Some((caps, Arc::clone(&plan)));
@@ -1995,6 +2066,91 @@ impl Gpu {
         Ok(self.payload(slot, plan.desc, plan.par, rotation))
     }
 
+    /// Whether a frame of this format arriving as a VideoToolbox surface can
+    /// be imported. The caps say system memory either way, so this is the
+    /// whole gate on the mac zero-copy route.
+    #[cfg(target_os = "macos")]
+    fn can_import_iosurface(&self, format: PixelFormat) -> bool {
+        !self.iosurface_import_off && self.iosurface.contains(&format)
+    }
+
+    /// The mac zero-copy route: every VideoToolbox frame is an IOSurface, so
+    /// its planes can be wrapped as metal textures instead of locked, mapped
+    /// and uploaded.
+    ///
+    /// `None` means this frame is not one of those, or the import refused it,
+    /// and the caller uploads it instead. Falling back is safe here the way
+    /// it is for a udmabuf and not for a VA surface: a CVPixelBuffer maps to
+    /// ordinary pixels, with a video meta carrying the real strides.
+    ///
+    /// The buffer rides inside the frame that is handed over, since the
+    /// textures read the decoder's own surface rather than a copy of it.
+    /// Slint drops the frame once the last submit that read those planes has
+    /// retired, and that drop is what hands the pixel buffer back to
+    /// VideoToolbox's pool.
+    #[cfg(target_os = "macos")]
+    fn present_iosurface(
+        &mut self,
+        sample: &gst::Sample,
+        buffer: &gst::BufferRef,
+        plan: &CapsPlan,
+        rotation: iv::BufferTransform,
+    ) -> Option<Result<FramePayload, String>> {
+        use crate::desktop_wgpu_iosurface::{MAX_PLANES, PlaneSource};
+        if !self.can_import_iosurface(plan.desc.format)
+            || !crate::desktop_wgpu_iosurface::is_iosurface(buffer)
+        {
+            return None;
+        }
+        // the state a real refusal leaves the lane in: latched off for this
+        // stream, with the frame uploaded instead of dropped
+        #[cfg(test)]
+        if FAIL_IMPORTS.load(Ordering::Relaxed) > 0 {
+            FAIL_IMPORTS.fetch_sub(1, Ordering::Relaxed);
+            self.iosurface_import_off = true;
+            return None;
+        }
+        let owned = sample.buffer_owned()?;
+        let mut sources = [PlaneSource::EMPTY; MAX_PLANES];
+        let imported =
+            crate::desktop_wgpu_iosurface::plane_sources(&owned, &plan.info, &mut sources)
+                .map_err(str::to_string)
+                .and_then(|n| {
+                    self.imports
+                        .get_or_import(&self.device, &plan.desc, &sources[..n])
+                });
+        let index = match imported {
+            Ok(index) => index,
+            Err(err) => {
+                self.iosurface_import_off = true;
+                warn!(
+                    %err,
+                    "wgpu video lane: iosurface frame refused the import, uploading instead"
+                );
+                return None;
+            }
+        };
+        self.iosurface_frames += 1;
+        // one line, not one a frame: which route the stream took is the thing
+        // worth reading in a log, and the counters carry the rest
+        if self.iosurface_frames == 1 {
+            info!(
+                width = plan.desc.width,
+                height = plan.desc.height,
+                format = ?plan.desc.format,
+                "wgpu video lane: importing videotoolbox surfaces, no cpu map on the video path"
+            );
+        }
+        let mut slot = self.pool.take();
+        slot.planes.clear();
+        // Refcount clones of the cache's own textures, so the cache is free
+        // to evict the entry while this frame still reads them.
+        slot.planes
+            .extend_from_slice(self.imports.frame(index).planes());
+        slot.buffer = Some(owned);
+        Some(Ok(self.payload(slot, plan.desc, plan.par, rotation)))
+    }
+
     /// Wraps a filled slot as the frame that crosses to the UI thread.
     fn payload(
         &self,
@@ -2092,7 +2248,7 @@ impl Gpu {
     ///
     /// Off linux there is nothing imported, so only the pool goes.
     fn release_held(&mut self) {
-        #[cfg(target_os = "linux")]
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
         self.imports.clear();
         self.pool.clear();
         // The stream is going with them, so the next one announces itself
@@ -2155,10 +2311,15 @@ impl Gpu {
     fn rearm_dmabuf(&mut self) -> Option<gst::Caps> {
         // The software arm's latch belongs to the stream it tripped on too,
         // and unlike the offer it costs nothing to try again: the next item is
-        // a new decoder and a new pool.
+        // a new decoder and a new pool. Same for the mac import, which is the
+        // only latch there is on that side.
         #[cfg(target_os = "linux")]
         {
             self.linear_import_off = false;
+        }
+        #[cfg(target_os = "macos")]
+        {
+            self.iosurface_import_off = false;
         }
         if self.offer_dmabuf || self.dmabuf.is_empty() {
             return None;
@@ -2448,6 +2609,16 @@ impl CueTick {
 
 /// What the two sample callbacks share. Preroll and playing frames take the
 /// same route, so the sink is one method called from both.
+/// What the inspector's card calls the route a frame arriving under plain
+/// system-memory caps can still take without being uploaded: a udmabuf pool's
+/// pages on linux, a VideoToolbox surface on mac.
+#[cfg(target_os = "linux")]
+const IMPORT_ARM: &str = "udmabuf import";
+#[cfg(target_os = "macos")]
+const IMPORT_ARM: &str = "iosurface import";
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+const IMPORT_ARM: &str = "import";
+
 struct Sink {
     /// Only the streaming thread touches it, but the callbacks are `Fn` and
     /// must be Send, so the interior mutability has to be a lock.
@@ -2570,16 +2741,19 @@ impl Sink {
             }
             None => {
                 // A software decoder that took the lane's udmabuf pool writes
-                // into dma_buf pages, and those arrive under these very caps:
-                // the memory type is what opens the import route here, not the
+                // into dma_buf pages, and a VideoToolbox one writes into an
+                // IOSurface; both arrive under these very caps, because the
+                // memory type is what opens the import route here, not the
                 // caps feature. `None` back means this is an ordinary sysmem
                 // frame (or the import refused it) and it is uploaded.
                 #[cfg(target_os = "linux")]
                 let imported = gpu.present_linear(sample, buffer, &plan, rotation);
-                #[cfg(not(target_os = "linux"))]
+                #[cfg(target_os = "macos")]
+                let imported = gpu.present_iosurface(sample, buffer, &plan, rotation);
+                #[cfg(not(any(target_os = "linux", target_os = "macos")))]
                 let imported: Option<Result<FramePayload, String>> = None;
                 match imported {
-                    Some(result) => (result, "udmabuf import"),
+                    Some(result) => (result, IMPORT_ARM),
                     None => {
                         let Ok(frame) =
                             gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &plan.info)
@@ -3148,11 +3322,12 @@ mod tests {
     use super::{alloc_counter::measure, *};
     use std::str::FromStr;
 
-    /// gst plus the plugins linked into the binary. Without the second half no
-    /// VA factory exists and every decoder proof below skips silently, which is
-    /// how the lane shipped a negotiation defect no test could see. The proofs
-    /// that need it are the VA ones, so it is linux only with them.
-    #[cfg(target_os = "linux")]
+    /// gst plus the plugins linked into the binary. Without the second half
+    /// no VA or VideoToolbox factory exists and every decoder proof below
+    /// skips silently, which is how the lane shipped a negotiation defect no
+    /// test could see. Only the decoder proofs need it, so it is built where
+    /// they are.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn init_gst() {
         static ONCE: std::sync::Once = std::sync::Once::new();
         ONCE.call_once(|| {
@@ -3161,6 +3336,7 @@ mod tests {
             // dav1ddec is a rust plugin, so it is not in the static tree the
             // line above registers. The AV1 arm of the udmabuf proof is the
             // only thing here that wants it.
+            #[cfg(target_os = "linux")]
             gstdav1d::plugin_register_static().unwrap();
         });
     }
@@ -3528,7 +3704,7 @@ mod tests {
     /// Eight vertical bars of rising luma over neutral chroma, packed NV12.
     /// A tiling the import read wrong interleaves 32-row bands and breaks the
     /// rise, which is what the bar check downstream grades.
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn nv12_bars(width: u32, height: u32) -> Vec<u8> {
         let (w, h) = (width as usize, height as usize);
         let mut buf = vec![128u8; w * h + w * h / 2];
@@ -4817,6 +4993,634 @@ mod tests {
         };
         assert_eq!(seen, 60, "the whole clip must decode");
         assert_eq!(seen_plain, seen);
+    }
+
+    // -----------------------------------------------------------------
+    // the iosurface input path, on a real VideoToolbox decoder
+    // -----------------------------------------------------------------
+
+    /// A VideoToolbox encode/decode round trip into a plain appsink offering
+    /// `caps`, with every decoded frame handed to `on_sample` as it arrives.
+    ///
+    /// The mac twin of [`decode_each`], the same shape for the same reasons:
+    /// the receiver's GStreamer is the static playback build with no test
+    /// sources, so the bars are pushed in, and frames are consumed inside the
+    /// pull loop rather than collected, or the decoder's pixel buffer pool
+    /// drains and it wedges.
+    ///
+    /// `None` when the box has no VideoToolbox elements.
+    #[cfg(target_os = "macos")]
+    fn vt_decode_each(
+        caps: &gst::Caps,
+        width: u32,
+        height: u32,
+        frames: u64,
+        on_sample: impl FnMut(&gst::Sample),
+    ) -> Option<usize> {
+        vt_decode_each_of(VtClip::H264_8BIT, caps, width, height, frames, on_sample)
+    }
+
+    /// One encode/decode round trip's codec, and the raw format that feeds
+    /// it. The 10-bit arm is what makes vtdec pick P010 over NV12, since it
+    /// reads the parsed bit depth off its input caps.
+    #[cfg(target_os = "macos")]
+    #[derive(Clone, Copy)]
+    struct VtClip {
+        format: &'static str,
+        encoder: &'static str,
+        parser: &'static str,
+        /// What the encoder's output is pinned to. VideoToolbox picks its
+        /// profile off the DOWNSTREAM caps rather than off the raw format it
+        /// is fed, so a 10-bit stream has to be asked for by name or the
+        /// encoder quantizes to Main and the decode comes back NV12.
+        encoded: &'static str,
+    }
+
+    #[cfg(target_os = "macos")]
+    impl VtClip {
+        const H264_8BIT: VtClip = VtClip {
+            format: "NV12",
+            encoder: "vtenc_h264",
+            parser: "h264parse",
+            encoded: "video/x-h264",
+        };
+        const H265_10BIT: VtClip = VtClip {
+            format: "P010_10LE",
+            encoder: "vtenc_h265",
+            parser: "h265parse",
+            encoded: "video/x-h265, profile=(string)main-10",
+        };
+
+        fn bars(&self, width: u32, height: u32) -> Vec<u8> {
+            if self.format == "NV12" {
+                nv12_bars(width, height)
+            } else {
+                p010_bars(width, height)
+            }
+        }
+    }
+
+    /// The same bars as [`nv12_bars`], in P010: ten bits of luma sitting in
+    /// the top of a 16-bit word, neutral chroma interleaved at half
+    /// resolution. An import that read the wide planes as 8-bit would break
+    /// the rise the bar check grades.
+    #[cfg(target_os = "macos")]
+    fn p010_bars(width: u32, height: u32) -> Vec<u8> {
+        let (w, h) = (width as usize, height as usize);
+        let mut buf = vec![0u8; (w * h + w * h / 2) * 2];
+        for row in 0..h {
+            for col in 0..w {
+                let bar = col * 8 / w;
+                // the 8-bit code the other clip uses, left in the top ten
+                // bits of the word
+                let code = ((16 + bar as u16 * 31) << 8).to_le_bytes();
+                let at = (row * w + col) * 2;
+                buf[at] = code[0];
+                buf[at + 1] = code[1];
+            }
+        }
+        // neutral chroma, 512 in ten bits
+        let chroma = (512u16 << 6).to_le_bytes();
+        for at in (w * h * 2..buf.len()).step_by(2) {
+            buf[at] = chroma[0];
+            buf[at + 1] = chroma[1];
+        }
+        buf
+    }
+
+    #[cfg(target_os = "macos")]
+    fn vt_decode_each_of(
+        clip: VtClip,
+        caps: &gst::Caps,
+        width: u32,
+        height: u32,
+        frames: u64,
+        mut on_sample: impl FnMut(&gst::Sample),
+    ) -> Option<usize> {
+        init_gst();
+        let make = |name: &str| {
+            let e = gst::ElementFactory::make(name).build().ok();
+            if e.is_none() {
+                eprintln!("missing element {name}");
+            }
+            e
+        };
+        let src = gst_app::AppSrc::builder()
+            .caps(
+                &gst::Caps::from_str(&format!(
+                    "video/x-raw, format=(string){}, width=(int){width}, \
+                     height=(int){height}, framerate=(fraction)30/1, \
+                     colorimetry=(string)bt709",
+                    clip.format
+                ))
+                .unwrap(),
+            )
+            .format(gst::Format::Time)
+            .is_live(false)
+            .build();
+        let enc = make(clip.encoder)?;
+        // in input order and without a reordering delay, so the pull loop
+        // sees the pool cycle rather than the encoder's lookahead
+        enc.set_property("allow-frame-reordering", false);
+        enc.set_property("realtime", true);
+        let parse = make(clip.parser)?;
+        let encoded = gst::ElementFactory::make("capsfilter")
+            .property("caps", gst::Caps::from_str(clip.encoded).unwrap())
+            .build()
+            .ok()?;
+        let dec = make("vtdec_hw").or_else(|| make("vtdec"))?;
+        let sink = gst_app::AppSink::builder()
+            .caps(caps)
+            .max_buffers(16)
+            .sync(false)
+            .build();
+        // the same arming make_sink does. VideoToolbox pads its rows, and
+        // without the meta the padding would be copied out on the way down.
+        offer_video_meta(&sink.static_pad("sink").unwrap());
+
+        let pipeline = gst::Pipeline::new();
+        let src_element = src.clone().upcast::<gst::Element>();
+        let sink_element = sink.clone().upcast::<gst::Element>();
+        pipeline
+            .add_many([&src_element, &enc, &encoded, &parse, &dec, &sink_element])
+            .unwrap();
+        gst::Element::link_many([&src_element, &enc, &encoded, &parse, &dec, &sink_element])
+            .unwrap();
+        pipeline.set_state(gst::State::Playing).ok()?;
+
+        // identical frames, so the encoder has settled and any decoded one
+        // carries the same picture
+        let pixels = clip.bars(width, height);
+        for i in 0..frames {
+            let mut buffer = gst::Buffer::from_slice(pixels.clone());
+            buffer
+                .get_mut()
+                .unwrap()
+                .set_pts(gst::ClockTime::from_mseconds(i * 33));
+            if src.push_buffer(buffer).is_err() {
+                break;
+            }
+        }
+        let _ = src.end_of_stream();
+
+        let mut seen = 0;
+        while let Ok(sample) = sink.pull_sample() {
+            seen += 1;
+            on_sample(&sample);
+        }
+        if seen == 0 {
+            for msg in pipeline.bus().unwrap().iter() {
+                if let gst::MessageView::Error(e) = msg.view() {
+                    eprintln!("pipeline error: {} ({:?})", e.error(), e.debug());
+                }
+            }
+        }
+        let _ = pipeline.set_state(gst::State::Null);
+        Some(seen)
+    }
+
+    /// The whole mac lane end to end, on a real VideoToolbox decoder: the
+    /// decoder's own IOSurface is imported as metal textures, rendered, and
+    /// graded against the same frame taken through the map-and-upload arm.
+    ///
+    /// One sample feeds both routes, which is a sharper oracle than the VA
+    /// test can build: a dmabuf cannot be mapped for pixels, a CVPixelBuffer
+    /// can, so the two renders come from the same decoded picture and any
+    /// difference is the import's.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_videotoolbox_frame_imports_and_matches_the_uploaded_one() {
+        init_gst();
+        let Some(mut gpu) = texture_gpu() else {
+            eprintln!("no gpu adapter, skipping");
+            return;
+        };
+        if gpu.iosurface.is_empty() {
+            eprintln!("no iosurface import on this device, skipping");
+            return;
+        }
+        let (width, height) = (1280u32, 720u32);
+        let offer = gpu.caps();
+        // the offer is system memory, exactly as it was before the import
+        assert!(
+            !offer.iter().any(|s| s.has_field("drm-format")),
+            "the mac offer must carry no dmabuf structure, got {offer}"
+        );
+        let mut last = None;
+        let Some(seen) = vt_decode_each(&offer, width, height, 8, |sample| {
+            last = Some(sample.clone())
+        }) else {
+            eprintln!("no VideoToolbox elements, skipping");
+            return;
+        };
+        assert!(seen > 0, "the clip must decode");
+        let sample = last.expect("a decoded sample");
+        let caps = sample.caps_owned().expect("the sample carries caps");
+        eprintln!("negotiated: {caps}");
+        let plan = gpu.parse_caps(caps).expect("the decoder caps must map");
+        assert_eq!(plan.desc.format, PixelFormat::Nv12);
+        assert_eq!((plan.desc.width, plan.desc.height), (width, height));
+
+        // the frame arrived under plain system memory caps and is an
+        // IOSurface anyway, which is the whole premise of the route
+        let buffer = sample.buffer().expect("the sample carries a buffer");
+        assert!(
+            crate::desktop_wgpu_iosurface::is_iosurface(buffer),
+            "a VideoToolbox frame must expose its surface"
+        );
+
+        let payload = gpu
+            .present_iosurface(&sample, buffer, &plan, iv::BufferTransform::Normal)
+            .expect("an iosurface frame must take the import route")
+            .expect("the import must succeed");
+        assert_eq!(gpu.iosurface_frames, 1);
+        assert_eq!(gpu.sysmem_frames, 0, "the frame took the cpu upload path");
+        // the decoder's buffer is still held, since the frame's planes read
+        // its surface rather than a copy of it
+        assert!(
+            payload.slot.as_ref().is_some_and(|s| s.buffer.is_some()),
+            "the imported frame did not keep the decoder's buffer"
+        );
+        // the last link, which nothing else on this lane drives with real
+        // VideoToolbox output: the planes an IOSurface imports to satisfy
+        // every check the public constructor makes, the size slint derives
+        // is the one the lane anchors cues against, and the decoder's buffer
+        // is still inside the image.
+        let picture = turned(payload.transform, plan.size);
+        let held: Arc<dyn iv::VideoFrame> = Arc::new(SinkFrame::new(payload));
+        let image = slint::Image::try_from_video_frame(held, iv::VideoProfile::default())
+            .expect("an imported frame's planes must reach slint");
+        assert_eq!((image.size().width, image.size().height), picture);
+        let shown = image.to_video_frame().expect("the image wraps the frame");
+        let iv::FrameSource::Wgpu30 { planes, format, .. } = shown.source() else {
+            panic!("the frame must offer wgpu 30 planes")
+        };
+        assert_eq!(format, iv::PixelFormat::Nv12);
+        assert_eq!(planes.len(), 2, "nv12 is luma + interleaved chroma");
+        assert_eq!(shown.color().matrix, iv::Matrix::Bt709);
+
+        let rendered = i_slint_video_wgpu::Frame::from_planes(plan.desc, planes.to_vec())
+            .expect("the planes must match the description");
+        let out = gpu
+            .renderer
+            .render(
+                &gpu.device,
+                &gpu.queue,
+                &rendered,
+                i_slint_video_wgpu::OutputDesc {
+                    width: picture.0,
+                    height: picture.1,
+                    filter: ScaleFilter::Bilinear,
+                    dither: false,
+                    rotation: i_slint_video_wgpu::Rotation::Rotate0,
+                    deband: None,
+                },
+            )
+            .expect("the conversion must run");
+        let imported = i_slint_video_wgpu::gpu::read_rgba8(
+            &gpu.device,
+            &gpu.queue,
+            &out,
+            picture.0,
+            picture.1,
+        )
+        .expect("readback must succeed");
+
+        // the bars, which a mis-read surface would scramble
+        for row in bar_reds(&imported, width, height) {
+            for pair in row.windows(2) {
+                assert!(
+                    pair[1] > pair[0],
+                    "the luma ramp is not monotonic across the bars, got {row:?}"
+                );
+            }
+            assert!(row[0] < 16, "bar 0 should be black, got {row:?}");
+            assert!(row[7] > 235, "bar 7 should be white, got {row:?}");
+        }
+
+        // the oracle: the same buffer, mapped and uploaded, which is what the
+        // lane did for every mac frame before this route existed
+        let frame = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &plan.info).unwrap();
+        let n = plan.desc.format.plane_count();
+        let mut planes: [&[u8]; UPLOAD_MAX_PLANES] = [&[]; UPLOAD_MAX_PLANES];
+        let mut strides = [0u32; UPLOAD_MAX_PLANES];
+        let pitch = frame.plane_stride();
+        for i in 0..n {
+            planes[i] = frame.plane_data(i as u32).unwrap();
+            strides[i] = pitch[i] as u32;
+        }
+        let uploaded = gpu
+            .present(
+                plan.desc,
+                plan.par,
+                iv::BufferTransform::Normal,
+                &planes[..n],
+                &strides[..n],
+            )
+            .expect("the upload must succeed");
+        let uploaded = read_presented_mac(&gpu, uploaded);
+        let worst = imported
+            .iter()
+            .zip(uploaded.iter())
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap();
+        assert!(
+            worst <= 1,
+            "the imported frame differs from the uploaded one by {worst} codes"
+        );
+    }
+
+    /// Renders a presented frame at its own size and reads it back as rgba8.
+    #[cfg(target_os = "macos")]
+    fn read_presented_mac(gpu: &Gpu, payload: FramePayload) -> Vec<u8> {
+        let tex = as_texture(gpu, &payload);
+        let (w, h) = (tex.width(), tex.height());
+        i_slint_video_wgpu::gpu::read_rgba8(&gpu.device, &gpu.queue, &tex, w, h)
+            .expect("readback must succeed")
+    }
+
+    /// The wide arm of the same proof: a 10-bit stream decodes to P010 and
+    /// its planes import as 16-bit norm textures.
+    ///
+    /// Worth its own run because everything about it is a different code
+    /// path from NV12: vtdec picks the format off the parsed bit depth, the
+    /// plane table asks for R16Unorm and Rg16Unorm, and Metal has to accept
+    /// those over a `kCVPixelFormatType_420YpCbCr10BiPlanar` surface. The
+    /// oracle is the same buffer through the map-and-upload arm, so a wrong
+    /// texel format shows as a mismatch rather than as a plausible picture.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_ten_bit_videotoolbox_frame_imports_as_p010() {
+        init_gst();
+        let Some(mut gpu) = texture_gpu() else {
+            eprintln!("no gpu adapter, skipping");
+            return;
+        };
+        if !gpu.iosurface.contains(&PixelFormat::P010) {
+            eprintln!("no 16-bit norm textures on this device, skipping");
+            return;
+        }
+        let (width, height) = (1280u32, 720u32);
+        let offer = gpu.caps();
+        let mut last = None;
+        let Some(seen) =
+            vt_decode_each_of(VtClip::H265_10BIT, &offer, width, height, 8, |sample| {
+                last = Some(sample.clone())
+            })
+        else {
+            eprintln!("no VideoToolbox hevc elements, skipping");
+            return;
+        };
+        assert!(seen > 0, "the clip must decode");
+        let sample = last.expect("a decoded sample");
+        let caps = sample.caps_owned().expect("the sample carries caps");
+        eprintln!("negotiated: {caps}");
+        let plan = gpu.parse_caps(caps).expect("the decoder caps must map");
+        // the depth-matched pick: an 8-bit format here would mean the
+        // decoder quantized the stream on its way out
+        assert_eq!(plan.desc.format, PixelFormat::P010);
+
+        let buffer = sample.buffer().expect("the sample carries a buffer");
+        let payload = gpu
+            .present_iosurface(&sample, buffer, &plan, iv::BufferTransform::Normal)
+            .expect("a 10-bit iosurface frame must take the import route")
+            .expect("the import must succeed");
+        assert_eq!(gpu.iosurface_frames, 1);
+        assert_eq!(gpu.sysmem_frames, 0, "the frame took the cpu upload path");
+        let imported = read_presented_mac(&gpu, payload);
+        for row in bar_reds(&imported, width, height) {
+            for pair in row.windows(2) {
+                assert!(
+                    pair[1] > pair[0],
+                    "the luma ramp is not monotonic across the bars, got {row:?}"
+                );
+            }
+            assert!(row[0] < 16, "bar 0 should be black, got {row:?}");
+            assert!(row[7] > 235, "bar 7 should be white, got {row:?}");
+        }
+
+        let frame = gst_video::VideoFrameRef::from_buffer_ref_readable(buffer, &plan.info).unwrap();
+        let n = plan.desc.format.plane_count();
+        let mut planes: [&[u8]; UPLOAD_MAX_PLANES] = [&[]; UPLOAD_MAX_PLANES];
+        let mut strides = [0u32; UPLOAD_MAX_PLANES];
+        let pitch = frame.plane_stride();
+        for i in 0..n {
+            planes[i] = frame.plane_data(i as u32).unwrap();
+            strides[i] = pitch[i] as u32;
+        }
+        let uploaded = gpu
+            .present(
+                plan.desc,
+                plan.par,
+                iv::BufferTransform::Normal,
+                &planes[..n],
+                &strides[..n],
+            )
+            .expect("the upload must succeed");
+        let uploaded = read_presented_mac(&gpu, uploaded);
+        let worst = imported
+            .iter()
+            .zip(uploaded.iter())
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap();
+        assert!(
+            worst <= 1,
+            "the imported frame differs from the uploaded one by {worst} codes"
+        );
+    }
+
+    /// The cache's invalidation rule on a live VideoToolbox decoder: entries
+    /// describe one geometry, so a stream that changes size must drop every
+    /// one of them rather than match a key against surfaces of the wrong
+    /// shape. The mac twin of
+    /// [`a_resolution_change_drops_every_import`], which pins the same rule
+    /// for dmabufs.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_resolution_change_drops_every_iosurface_import() {
+        init_gst();
+        let Some(mut gpu) = texture_gpu() else {
+            eprintln!("no gpu adapter, skipping");
+            return;
+        };
+        if gpu.iosurface.is_empty() {
+            eprintln!("no iosurface import on this device, skipping");
+            return;
+        }
+        let mut held = Vec::new();
+        for (i, (width, height)) in [(1280u32, 720u32), (640u32, 480u32)]
+            .into_iter()
+            .enumerate()
+        {
+            let offer = gpu.caps();
+            let mut presented = 0u32;
+            let Some(seen) = vt_decode_each(&offer, width, height, 24, |sample| {
+                let Some(caps) = sample.caps_owned() else {
+                    return;
+                };
+                let plan = gpu.parse_caps(caps).expect("the decoder caps must map");
+                assert_eq!(
+                    (plan.desc.width, plan.desc.height),
+                    (width, height),
+                    "the decoder changed size under the test"
+                );
+                let buffer = sample.buffer().unwrap();
+                let payload = gpu
+                    .present_iosurface(sample, buffer, &plan, iv::BufferTransform::Normal)
+                    .expect("an iosurface frame must take the import route")
+                    .expect("the import must succeed");
+                presented += 1;
+                // A few frames stay alive across the size change, which is
+                // what a real stream does: the sink holds the last picture
+                // while the next one negotiates.
+                if presented <= 2 {
+                    held.push(payload);
+                }
+            }) else {
+                eprintln!("no VideoToolbox elements, skipping");
+                return;
+            };
+            assert!(seen > 2, "too few frames at {width}x{height}, got {seen}");
+            if i == 0 {
+                // the decoder's pool cycled, so more than one surface is cached
+                assert!(
+                    gpu.imports.len() > 1,
+                    "one import for a whole stream, the pool did not cycle"
+                );
+            } else {
+                // the new geometry cleared the old entries and rebuilt its own
+                assert!(
+                    gpu.imports.len() <= (seen).min(32),
+                    "the cache kept more entries than the new stream produced"
+                );
+                assert_eq!(
+                    gpu.imports.evictions, 0,
+                    "a cleared cache must not have evicted anything"
+                );
+            }
+        }
+        // the frames held across the change still own their planes, so
+        // dropping them here is what returns the old surfaces
+        assert_eq!(held.len(), 4, "two frames held from each size");
+    }
+
+    /// The import arm at rest, on a real VideoToolbox pool.
+    ///
+    /// VideoToolbox cycles a fixed set of pixel buffers, so after its first
+    /// pass every frame must find its planes already imported. What a miss
+    /// costs is measured next to what a hit costs, because a miss is what
+    /// every frame would cost without the cache: two MTLTextures, two views
+    /// and a bind group.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn every_videotoolbox_frame_after_the_first_pass_is_a_cached_import() {
+        init_gst();
+        let Some(mut gpu) = texture_gpu() else {
+            eprintln!("no gpu adapter, skipping");
+            return;
+        };
+        if gpu.iosurface.is_empty() {
+            eprintln!("no iosurface import on this device, skipping");
+            return;
+        }
+        let (width, height) = (640u32, 480u32);
+        let offer = gpu.caps();
+        let mut miss_cost = Vec::new();
+        let mut hit_cost = Vec::new();
+        let mut lookup_cost = Vec::new();
+        let Some(seen) = vt_decode_each(&offer, width, height, 60, |sample| {
+            let Some(caps) = sample.caps_owned() else {
+                return;
+            };
+            let plan = gpu.parse_caps(caps).expect("the decoder caps must map");
+            let buffer = sample.buffer().unwrap();
+            let before = gpu.imports.misses;
+            let (result, allocs) = measure(|| {
+                gpu.present_iosurface(sample, buffer, &plan, iv::BufferTransform::Normal)
+            });
+            result
+                .expect("an iosurface frame must take the import route")
+                .expect("the import must succeed");
+            if gpu.imports.misses > before {
+                miss_cost.push(allocs);
+                return;
+            }
+            hit_cost.push(allocs);
+            // the lane's own share of a cached frame, with the render left
+            // out: read the surfaces off the memories and match a key.
+            // Nothing else on this path is ours, so this is the number that
+            // has to be zero.
+            let (_, lookup) = measure(|| {
+                let mut sources = [crate::desktop_wgpu_iosurface::PlaneSource::EMPTY;
+                    crate::desktop_wgpu_iosurface::MAX_PLANES];
+                let n =
+                    crate::desktop_wgpu_iosurface::plane_sources(buffer, &plan.info, &mut sources)
+                        .expect("the surfaces must read back");
+                gpu.imports
+                    .get_or_import(&gpu.device, &plan.desc, &sources[..n])
+                    .expect("the entry is already there")
+            });
+            lookup_cost.push(lookup);
+        }) else {
+            eprintln!("no VideoToolbox elements, skipping");
+            return;
+        };
+        assert!(seen > 16, "too few frames to see a pool cycle, got {seen}");
+
+        // counted off the presents, not off the cache, since the lookups
+        // measured above hit it a second time
+        let (hits, misses) = (hit_cost.len() as u64, miss_cost.len() as u64);
+        eprintln!(
+            "{seen} frames, {hits} cached imports, {misses} built, \
+             pool {}; allocations on a miss {miss_cost:?}, on a hit {hit_cost:?}, \
+             on the lookup alone {lookup_cost:?}",
+            gpu.imports.len()
+        );
+        assert_eq!(hits + misses, gpu.iosurface_frames);
+        assert_eq!(gpu.sysmem_frames, 0, "a frame took the cpu upload path");
+        // the pool is bounded, so the imports stop after its first cycle
+        assert!(
+            misses <= crate::desktop_wgpu_iosurface::MAX_IMPORTS as u64,
+            "{misses} imports for one stream, the pool is not being reused"
+        );
+        assert_eq!(gpu.imports.len() as u64, misses);
+        assert_eq!(
+            gpu.imports.evictions, 0,
+            "the cache is smaller than the pool"
+        );
+        assert!(hits >= seen as u64 - misses);
+        // the lane's own share of a steady-state frame
+        assert!(
+            lookup_cost.iter().all(|c| *c == 0),
+            "finding a cached import allocated: {lookup_cost:?}"
+        );
+        let worst_hit = *hit_cost.iter().max().unwrap();
+        let best_miss = *miss_cost.iter().min().unwrap();
+        assert!(
+            worst_hit <= FRAME_ALLOC_BUDGET,
+            "a cached import frame allocates {worst_hit}, over the {FRAME_ALLOC_BUDGET} wgpu leaves"
+        );
+        assert!(
+            worst_hit < best_miss,
+            "the cache saves nothing: hit {worst_hit}, miss {best_miss}"
+        );
+    }
+
+    /// What the import will describe to the renderer. The wide layout rides
+    /// the device feature, since its planes are 16-bit norms.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn only_the_biplanar_videotoolbox_layouts_import() {
+        use crate::desktop_wgpu_iosurface::importable;
+        assert!(importable(PixelFormat::Nv12, false));
+        assert!(importable(PixelFormat::P010, true));
+        assert!(!importable(PixelFormat::P010, false));
+        // decoded by software, never by VideoToolbox into a surface the lane
+        // knows how to describe
+        assert!(!importable(PixelFormat::I420, true));
+        assert!(!importable(PixelFormat::Bgra, true));
     }
 
     /// Renders a presented frame at its own size and reads it back as rgba8.

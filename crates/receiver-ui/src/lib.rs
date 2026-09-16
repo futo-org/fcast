@@ -6,6 +6,12 @@
 //! the split this way round is what makes `cargo test -p receiver-core` free of
 //! slint (and of compiling the `.slint` sources).
 
+// The `Send`/`Sync` solver walks wgpu's whole context graph to answer for the
+// one `OnceLock<SharedDevice>` the lane keeps, and that walk is deeper than
+// the default 128. Overrunning it is a future hard error (rust#159228), not a
+// style warning, so the limit is raised here rather than left to fire.
+#![recursion_limit = "256"]
+
 // Forces the static GStreamer link line and isolates the process from on-disk
 // plugins before main.
 use gst_static_env as _;
@@ -70,6 +76,10 @@ mod cue_overlay;
 /// Zero-copy import of the decoder's dmabuf planes for the lane below.
 #[cfg(target_os = "linux")]
 mod desktop_wgpu_dmabuf;
+/// The mac counterpart: VideoToolbox's frames are IOSurfaces, imported as
+/// metal textures instead of mapped and uploaded.
+#[cfg(target_os = "macos")]
+mod desktop_wgpu_iosurface;
 /// The other half of that import: a udmabuf pool proposed to software
 /// decoders, so their frames arrive as dmabufs too instead of as sysmem the
 /// lane has to upload.
