@@ -39,7 +39,7 @@ tokio-rustls = { workspace = true, default-features = false, features = [ "loggi
 # which is what makes the single-wgpu property structural: dodvg depends on
 # the same path.
 gst-app = { workspace = true, optional = true }
-i-slint-video-wgpu = { path = "../../../slint-forked/internal/video-wgpu", optional = true }
+i-slint-video-wgpu = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "24d86388d178b8cee5014720b1ff62f91bf5c64e", optional = true }
 # Shader language only. The backend features are per-OS in the sections below,
 # and cargo unions the features of every target section that matches, so a mac
 # build gets `wgsl` from here and `metal` from its own.
@@ -66,7 +66,7 @@ ndk-context = "0.1"
 # the slint android backend already pulls in, so nothing is duplicated.
 ndk-sys = "0.6"
 # the video surface behind the window (fork addition)
-i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "8796fa98619e560970a3ab82bc97efa0a5894778" }
+i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "24d86388d178b8cee5014720b1ff62f91bf5c64e" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 # The lane's dmabuf import. `ash` must resolve to the same crate
