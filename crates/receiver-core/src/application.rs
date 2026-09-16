@@ -2663,8 +2663,8 @@ impl Application {
         match action {
             FreezeAction::None => (),
             FreezeAction::Seek { .. } => {
-                let seqnum = self.player.freeze_recovery_seek();
-                self.freeze_watchdog.note_recovery_seek(seqnum);
+                let op = self.player.freeze_recovery_seek();
+                self.freeze_watchdog.note_recovery_seek(op);
             }
             FreezeAction::Reload { .. } => {
                 let rate = self.player.rate() as f32;
@@ -4510,14 +4510,6 @@ impl Application {
                 self.clear_source_backoff();
             }
             player::PlayerEvent::RequestState(state) => self.player.request_state(state),
-            player::PlayerEvent::SubtitleRefreshFailed { seqnum } => {
-                // The freeze watchdog's recovery seek rides the same job; a refusal means
-                // only the escalation can recover.
-                if self.freeze_watchdog.is_recovery_seek(seqnum) {
-                    warn!("FREEZE WATCHDOG: the recovery seek was refused by the pipeline");
-                }
-                self.player.subtitle_refresh_failed(seqnum)
-            }
             player::PlayerEvent::StreamsSelected {
                 video,
                 audio,
@@ -4544,11 +4536,21 @@ impl Application {
                     self.video_stream_unavailable();
                 }
             }
-            player::PlayerEvent::SeekFailed => {
-                self.player.seek_failed();
+            player::PlayerEvent::SeekFailed { op } => {
+                // The freeze watchdog's recovery seek rides flapjack's refresh
+                // seek and comes back under its own op; only the escalation can
+                // recover from its refusal, and the transport state machine has
+                // no seek of its own to fail for it.
+                if op.is_some_and(|op| self.freeze_watchdog.is_recovery_seek(op)) {
+                    warn!("FREEZE WATCHDOG: the recovery seek was refused by the pipeline");
+                    self.player.subtitle_refresh_failed();
+                } else {
+                    self.player.seek_failed();
+                }
             }
             player::PlayerEvent::ClockLost => {
-                self.player.recover_clock();
+                // a report only, flapjack re-elects the clock itself
+                debug!("pipeline clock lost, the player re-elects one");
             }
             player::PlayerEvent::RateChanged(new_rate) => {
                 self.player.set_rate_changed(new_rate);

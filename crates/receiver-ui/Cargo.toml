@@ -113,7 +113,7 @@ wgpu = { version = "30", default-features = false, features = [
 # that feature is off in the lane's own test runs, so the plugin is registered
 # here instead and the test never silently skips. Same rev and same bundled
 # dav1d wiring as receiver-core, or the two would resolve to different copies.
-gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", features = [ "static" ] }
+gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "518b3b9b49ad23c659aa6ea3e587e1846f02b056", features = [ "static" ] }
 dav1d-sys = { version = "0.8", features = ["bundled"] }
 
 [dev-dependencies]

@@ -7415,7 +7415,9 @@ mod transitions {
         time::{Duration, Instant},
     };
 
-    use flapjack::{AudioSink, MediaInput, Player, PlayerEvent, SelectionGate, Sinks, StartPoint};
+    use flapjack::{
+        AudioSink, MediaInput, Player, PlayerEvent, SelectionGate, Sinks, StartPoint, VideoSink,
+    };
     use simulator::sink::FTestSink;
     use gst::prelude::*;
 
@@ -7641,7 +7643,7 @@ mod transitions {
 
         let player = StdArc::new(
             Player::new(Sinks {
-                video: Some(video_sink),
+                video: VideoSink::Element(video_sink),
                 audio: AudioSink::Factory(Box::new(|| Ok(FTestSink::new().upcast()))),
                 subtitle: flapjack::SubtitleSink::None,
             })
@@ -7655,8 +7657,8 @@ mod transitions {
             let errors = StdArc::clone(&errors);
             let loaded = StdArc::clone(&loaded);
             let activated = StdArc::clone(&activated);
-            player.set_event_handler(None, move |event, _| match event {
-                PlayerEvent::Error { error, .. } => errors.lock().unwrap().push(error.to_string()),
+            player.set_event_handler(None, move |flapjack::Event { kind: event, .. }| match event {
+                PlayerEvent::Error { message, .. } => errors.lock().unwrap().push(message),
                 PlayerEvent::Loaded { .. } => loaded.store(true, Ordering::Release),
                 PlayerEvent::PreparedActivated { .. } => {
                     activated.fetch_add(1, Ordering::AcqRel);
@@ -7678,10 +7680,7 @@ mod transitions {
 
         player.load(
             MediaInput::uri(uri(&clips[pick(0)])),
-            StartPoint::Seek {
-                position: gst::ClockTime::ZERO,
-                rate: 1.0,
-            },
+            StartPoint::at(gst::ClockTime::ZERO),
         );
         let deadline = Instant::now() + Duration::from_secs(30);
         while !loaded.load(Ordering::Acquire) {
@@ -7689,7 +7688,7 @@ mod transitions {
             pump();
             std::thread::sleep(Duration::from_millis(10));
         }
-        player.play();
+        player.play(player.allocate_op());
 
         let rounds = rounds();
         let mut gapless_done = 0usize;
@@ -7728,10 +7727,7 @@ mod transitions {
                 loaded.store(false, Ordering::Release);
                 player.load(
                     MediaInput::uri(next),
-                    StartPoint::Seek {
-                        position: gst::ClockTime::ZERO,
-                        rate: 1.0,
-                    },
+                    StartPoint::at(gst::ClockTime::ZERO),
                 );
                 while !loaded.load(Ordering::Acquire) {
                     assert!(
@@ -7741,7 +7737,7 @@ mod transitions {
                     pump();
                     std::thread::sleep(Duration::from_millis(10));
                 }
-                player.play();
+                player.play(player.allocate_op());
                 // Wait for the new item's caps to actually land, so the round
                 // really did renegotiate rather than just change state. An
                 // audio-only item never negotiates video caps.

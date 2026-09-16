@@ -838,7 +838,7 @@ mod pipeline_proof {
     };
     use flapjack::{
         AudioSink, MediaInput, Player, PlayerEvent, SelectionGate, Sinks, StartPoint,
-        SubtitleFeedItem, TrackSlot, TrackTarget,
+        SubtitleFeedItem, SubtitleTrack, TrackSlot, VideoSink,
     };
     use simulator::{
         caps as tcaps,
@@ -866,7 +866,7 @@ mod pipeline_proof {
         sid.strip_prefix("stream#")?
             .parse()
             .ok()
-            .map(flapjack::StreamId)
+            .map(flapjack::StreamId::from_raw)
     }
 
     /// A display set, then the empty composition that takes it down. Both are
@@ -918,7 +918,7 @@ mod pipeline_proof {
         let frames = video_sink.recording();
         let player = StdArc::new(
             Player::new(Sinks {
-                video: Some(video_sink.upcast()),
+                video: VideoSink::Element(video_sink.upcast()),
                 audio: AudioSink::Factory(Box::new(|| Ok(FTestSink::new().upcast()))),
                 subtitle: flapjack::SubtitleSink::None,
             })
@@ -976,8 +976,8 @@ mod pipeline_proof {
             let errors = StdArc::clone(&errors);
             let loaded = StdArc::clone(&loaded);
             let sids = StdArc::clone(&text_sids);
-            player.set_event_handler(None, move |event, _| match event {
-                PlayerEvent::Error { error, .. } => errors.lock().unwrap().push(error.to_string()),
+            player.set_event_handler(None, move |flapjack::Event { kind: event, .. }| match event {
+                PlayerEvent::Error { message, .. } => errors.lock().unwrap().push(message),
                 PlayerEvent::Loaded { .. } => loaded.store(true, Ordering::Release),
                 PlayerEvent::StreamCollection(collection) => {
                     *sids.lock().unwrap() = collection
@@ -1006,10 +1006,7 @@ mod pipeline_proof {
 
         player.load(
             MediaInput::uri(scenario.uri()),
-            StartPoint::Seek {
-                position: gst::ClockTime::ZERO,
-                rate: 1.0,
-            },
+            StartPoint::at(gst::ClockTime::ZERO),
         );
         let deadline = Instant::now() + Duration::from_secs(30);
         while !loaded.load(Ordering::Acquire) {
@@ -1017,7 +1014,7 @@ mod pipeline_proof {
             pump();
             std::thread::sleep(Duration::from_millis(10));
         }
-        player.play();
+        player.play(player.allocate_op());
 
         let deadline = Instant::now() + Duration::from_secs(30);
         while text_sids.lock().unwrap().is_empty() {
@@ -1029,7 +1026,7 @@ mod pipeline_proof {
             std::thread::sleep(Duration::from_millis(10));
         }
         let sid = text_sids.lock().unwrap()[0].clone();
-        player.request_track(TrackSlot::Subtitle, TrackTarget::Stream(sid_of(&sid)));
+        player.set_subtitle_track(sid_of(&sid).map_or(SubtitleTrack::Off, SubtitleTrack::Stream));
 
         let deadline = Instant::now() + Duration::from_secs(60);
         while packets.load(Ordering::Acquire) < 4 {

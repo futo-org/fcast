@@ -67,7 +67,7 @@ use std::{
 use fcast_video::cue::{CueEngine, CueInput, TextFormat};
 use flapjack::{
     AudioSink, MediaInput, Player, PlayerEvent, Seek, SelectionGate, Sinks, StartPoint,
-    SubtitleFeedItem, TrackSlot, TrackTarget,
+    SubtitleFeedItem, SubtitleTrack, VideoSink,
 };
 use parking_lot::Mutex;
 
@@ -159,7 +159,7 @@ impl Probe {
         });
 
         let player = Player::new(Sinks {
-            video: Some(video_sink.clone()),
+            video: VideoSink::Element(video_sink.clone()),
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
                     .property("sync", true)
@@ -202,8 +202,8 @@ impl Probe {
         });
 
         let (tx, events) = mpsc::channel();
-        player.set_event_handler(None, move |event, _| {
-            let _ = tx.send(event);
+        player.set_event_handler(None, move |flapjack::Event { kind, .. }| {
+            let _ = tx.send(kind);
         });
 
         Self {
@@ -301,10 +301,7 @@ fn probe_the_paused_seek_chain() {
     let p = Probe::new(t0);
     p.player.load(
         MediaInput::uri(uri),
-        StartPoint::Seek {
-            position: gst::ClockTime::ZERO,
-            rate: 1.0,
-        },
+        StartPoint::beginning(),
     );
     if !p.wait_for("a text stream to be advertised", |p| {
         !p.text_sids().is_empty()
@@ -314,9 +311,13 @@ fn probe_the_paused_seek_chain() {
     }
     let sids = p.text_sids();
     println!("text sids: {sids:?}");
-    p.player.request_track(
-        TrackSlot::Subtitle,
-        TrackTarget::Stream(sids[0].strip_prefix("stream#").and_then(|n| n.parse().ok()).map(flapjack::StreamId)),
+    p.player.set_subtitle_track(
+        sids[0]
+            .strip_prefix("stream#")
+            .and_then(|n| n.parse().ok())
+            .map_or(SubtitleTrack::Off, |raw| {
+                SubtitleTrack::Stream(flapjack::StreamId::from_raw(raw))
+            }),
     );
     // `FCAST_PROBE_NO_PLAY=1`: never leave PAUSED at all. The field gesture
     // "open the file and drag the scrubber" seeks from a pipeline that has only
@@ -345,14 +346,14 @@ fn probe_the_paused_seek_chain() {
             p.cue_count()
         );
     } else {
-        p.player.play();
+        p.player.play(p.player.allocate_op());
         p.paused.set(false);
         p.wait_for("the first cue", |p| p.cue_count() > 0);
         p.wait_for("playback to reach the pause point", |p| {
             p.player.position().is_some_and(|pos| pos > play_to)
         });
 
-        p.player.pause();
+        p.player.pause(p.player.allocate_op());
     }
     p.paused.set(true);
     p.wait_for("a settled PAUSED", |p| {
@@ -367,7 +368,7 @@ fn probe_the_paused_seek_chain() {
     let repaints_before = p.repaints.load(Ordering::Acquire);
 
     println!("\n--- the PAUSED seek ---");
-    let _ = p.player.seek(Seek::new(Some(seek_to), None));
+    p.player.seek(Seek::to(seek_to), p.player.allocate_op());
     let deadline = Instant::now() + Duration::from_secs(12);
     while Instant::now() < deadline {
         p.pump();

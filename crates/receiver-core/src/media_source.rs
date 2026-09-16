@@ -388,7 +388,7 @@ mod tests {
     fn gapless_fcomp_next_item_plays_to_its_end() {
         use fcast_protocol::companion;
         use flapjack::{
-            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint,
+            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint, VideoSink,
         };
         use std::{
             sync::mpsc,
@@ -411,7 +411,7 @@ mod tests {
         );
 
         let player = Player::new(Sinks {
-            video: None,
+            video: VideoSink::Fake,
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
                     .property("sync", true)
@@ -442,7 +442,7 @@ mod tests {
         });
 
         let (tx, rx) = mpsc::channel();
-        player.set_event_handler(Some(hook), move |event, _generation| match event {
+        player.set_event_handler(Some(hook), move |flapjack::Event { kind: event, .. }| match event {
             PlayerEvent::PreparedActivated => {
                 let _ = tx.send("activated");
             }
@@ -474,7 +474,7 @@ mod tests {
         // Pre-arm up front so `pending` is set before A's EOS reaches the hold.
         player.prepare_next(MediaInput::Element(b_src));
         let t0 = Instant::now();
-        player.play();
+        player.play(player.allocate_op());
 
         let mut activated = false;
         let eos_elapsed = loop {
@@ -506,7 +506,7 @@ mod tests {
     fn gapless_fcomp_survives_a_midplayback_prearm() {
         use fcast_protocol::companion;
         use flapjack::{
-            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint,
+            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint, VideoSink,
         };
         use std::{
             sync::mpsc,
@@ -527,7 +527,7 @@ mod tests {
         );
 
         let player = Player::new(Sinks {
-            video: None,
+            video: VideoSink::Fake,
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
                     .property("sync", true)
@@ -559,7 +559,7 @@ mod tests {
             false
         });
         let (tx, rx) = mpsc::channel();
-        player.set_event_handler(Some(hook), move |event, _g| match event {
+        player.set_event_handler(Some(hook), move |flapjack::Event { kind: event, .. }| match event {
             PlayerEvent::PreparedActivated => {
                 let _ = tx.send("activated");
             }
@@ -580,7 +580,7 @@ mod tests {
         player
             .load(MediaInput::Element(a_src), StartPoint::Live);
         let t0 = Instant::now();
-        player.play();
+        player.play(player.allocate_op());
 
         // Pre-arm MID-playback (2s into A's 5s): the swap and activation land
         // while A's decoded tail is still draining.

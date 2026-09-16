@@ -148,15 +148,16 @@ pub(crate) fn sid_out(id: flapjack::StreamId) -> StreamId {
 }
 
 pub(crate) fn sid_in(sid: &str) -> Option<flapjack::StreamId> {
-    sid.strip_prefix("stream#")?.parse().ok().map(flapjack::StreamId)
+    sid.strip_prefix("stream#")?.parse().ok().map(flapjack::StreamId::from_raw)
 }
 
-/// User-meaningful buckets for fatal playback errors. Classified from the
-/// gst error domain/code plus which side failed (`from_source` is
-/// `failed_uri.is_some()`, i.e. the failing element was an input). `Frozen`
-/// and `ImageDownloadFailed` are app-level, never produced here. `Frozen`,
-/// `Unexpected` and `MissingCodec` surface as the report-bug popup,
-/// everything else as a localized toast.
+/// User-meaningful buckets for fatal playback errors. Folded from
+/// flapjack's `ErrorKind`, which classifies the gst error domain/code and
+/// which side failed (see `from_flapjack`). `ImageDownloadFailed` is
+/// app-level, never produced here; `Frozen` is the receiver's own watchdog
+/// verdict and flapjack's `Stalled` alike. `Frozen`, `Unexpected` and
+/// `MissingCodec` surface as the report-bug popup, everything else as a
+/// localized toast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaErrorKind {
     NotFound,
@@ -192,42 +193,24 @@ impl MediaErrorKind {
         }
     }
 
-    fn from_glib_error(err: &gst::glib::Error, from_source: bool) -> Self {
-        use gst::{CoreError, ResourceError, StreamError};
-        if let Some(err) = err.kind::<ResourceError>() {
-            return match err {
-                ResourceError::NotFound => Self::NotFound,
-                ResourceError::NotAuthorized => Self::AccessDenied,
-                ResourceError::OpenRead
-                | ResourceError::OpenReadWrite
-                | ResourceError::Read
-                | ResourceError::Seek
-                | ResourceError::Sync
-                | ResourceError::Busy
-                    if from_source =>
-                {
-                    Self::NetworkFailure
-                }
-                _ if !from_source => Self::OutputFailure,
-                _ => Self::Unexpected,
-            };
+    /// flapjack classifies the bus error itself now; this only folds its
+    /// classes onto the receiver's codes.
+    fn from_flapjack(kind: flapjack::ErrorKind) -> Self {
+        use flapjack::ErrorKind as K;
+        match kind {
+            K::NotFound => Self::NotFound,
+            K::AccessDenied => Self::AccessDenied,
+            K::NetworkFailed => Self::NetworkFailure,
+            K::UnsupportedFormat => Self::UnsupportedFormat,
+            K::MissingCodec => Self::MissingCodec,
+            K::DecodeFailed => Self::DecodeFailed,
+            K::Encrypted => Self::DrmProtected,
+            K::OutputFailed => Self::OutputFailure,
+            K::Stalled => Self::Frozen,
+            // the crate's enum is non-exhaustive, a class it grows later is
+            // unexpected here until it gets a code of its own
+            K::Other | _ => Self::Unexpected,
         }
-        if let Some(err) = err.kind::<StreamError>() {
-            return match err {
-                StreamError::TypeNotFound
-                | StreamError::WrongType
-                | StreamError::Format
-                | StreamError::Demux => Self::UnsupportedFormat,
-                StreamError::CodecNotFound => Self::MissingCodec,
-                StreamError::Decode => Self::DecodeFailed,
-                StreamError::Decrypt | StreamError::DecryptNokey => Self::DrmProtected,
-                _ => Self::Unexpected,
-            };
-        }
-        if err.matches(CoreError::MissingPlugin) {
-            return Self::MissingCodec;
-        }
-        Self::Unexpected
     }
 }
 
@@ -261,33 +244,28 @@ impl MediaWarningKind {
     }
 }
 
-/// The raw gst domain and code of a bus error/warning, for the diagnostic
-/// text. `{:?}` names the code within a known domain (`__Unknown(n)` for
-/// codes newer than the bindings), the quark covers foreign domains.
-fn gst_error_domain_code(err: &gst::glib::Error) -> String {
-    if let Some(code) = err.kind::<gst::ResourceError>() {
-        return format!("resource {code:?}");
+/// The bus text plus flapjack's diagnostic (the gst domain and code, and
+/// the debug string when there is one), the shape the logs and the bug
+/// reports already match on.
+fn with_diagnostic(message: String, diagnostic: Option<String>) -> String {
+    match diagnostic {
+        Some(diagnostic) => format!("{message} [{diagnostic}]"),
+        None => message,
     }
-    if let Some(code) = err.kind::<gst::StreamError>() {
-        return format!("stream {code:?}");
-    }
-    if let Some(code) = err.kind::<gst::CoreError>() {
-        return format!("core {code:?}");
-    }
-    if let Some(code) = err.kind::<gst::LibraryError>() {
-        return format!("library {code:?}");
-    }
-    format!("domain {}", err.domain().as_str())
 }
 
 fn classify_warning(
-    error: &gst::glib::Error,
+    kind: flapjack::WarningKind,
     missing_desc: Option<String>,
 ) -> (MediaWarningKind, Option<String>) {
-    if error.matches(gst::CoreError::MissingPlugin) {
-        return (MediaWarningKind::MissingCodecForTrack, missing_desc);
+    match kind {
+        flapjack::WarningKind::MissingCodecForTrack => {
+            (MediaWarningKind::MissingCodecForTrack, missing_desc)
+        }
+        // `SelectionNotApplied` and whatever the crate adds later: the text
+        // goes to the log, the toast is the generic line
+        _ => (MediaWarningKind::Unknown, None),
     }
-    (MediaWarningKind::Unknown, None)
 }
 
 /// Receiver-facing playback events, forwarded into the application loop.
@@ -337,15 +315,16 @@ pub enum PlayerEvent {
         /// stamps it onto the message).
         seqnum: gst::Seqnum,
     },
-    /// A subtitle refresh seek could not be performed.
-    SubtitleRefreshFailed {
-        seqnum: gst::Seqnum,
-    },
     RateChanged(f64),
-    SeekFailed,
-    /// The element providing the pipeline clock went away (e.g. the audio
-    /// sink after the audio track was deselected). User must call
-    /// `Player::recover_clock()`.
+    /// A seek did not reach the pipeline. `op` names the receiver's own
+    /// request when it was one (the freeze watchdog keys its recovery seek
+    /// on it), `None` for a seek the crate issued on its own behalf.
+    SeekFailed {
+        op: Option<flapjack::OpId>,
+    },
+    /// The element providing the pipeline clock went away. A report only:
+    /// flapjack re-elects the clock itself whenever the transport is running
+    /// toward PLAYING, nothing is owed back.
     ClockLost,
     Error {
         /// Which input the error came from (flapjack's generation-tagged
@@ -598,11 +577,23 @@ impl Player {
 
         // Subtitles use the consumer installed below, the constructor-time
         // sink stays empty until the cue engine exists.
-        let fcast = flapjack::Player::new(flapjack::Sinks {
-            video: video_sink,
-            audio,
-            subtitle: flapjack::SubtitleSink::None,
-        })?;
+        // ONE runtime in the process: flapjack's network elements (rshttpsrc,
+        // rsadaptivesrc) run on the receiver's pool instead of standing up the
+        // crate's own fallback. `RUNTIME` is a `LazyLock` static and so is
+        // never dropped, which is the lifetime `new_with_runtime` requires: a
+        // runtime dropped under a load cancels the elements' spawns silently.
+        let fcast = flapjack::Player::new_with_runtime(
+            flapjack::Sinks {
+                video: match video_sink {
+                    Some(sink) => flapjack::VideoSink::Element(sink),
+                    // headless: every frame is decoded and dropped (`VideoSink::Fake`)
+                    None => flapjack::VideoSink::Fake,
+                },
+                audio,
+                subtitle: flapjack::SubtitleSink::None,
+            },
+            fcast_runtime::RUNTIME.handle().clone(),
+        )?;
 
         // CUE-IR SELECTION happens inside flapjack now: its one-time setup
         // registers the Rust subtitle parsers and flips them to cue-ir
@@ -774,8 +765,8 @@ impl Player {
         // worker feedback alike), mapped onto the protocol-facing
         // `PlayerEvent` and forwarded into the application loop.
         let event_tx = msg_tx.clone();
-        fcast.set_event_handler(Some(hook), move |event, generation| {
-            Self::relay_event(&event_tx, event, generation, &missing_plugins_relay);
+        fcast.set_event_handler(Some(hook), move |event| {
+            Self::relay_event(&event_tx, event, &missing_plugins_relay);
         });
 
         Ok(Self {
@@ -800,12 +791,16 @@ impl Player {
     /// thread or the player worker). It only sends.
     fn relay_event(
         msg_tx: &MessageSender,
-        event: flapjack::PlayerEvent,
-        generation: u64,
+        event: flapjack::Event,
         missing_plugins: &MissingPluginTracker,
     ) {
         use flapjack::PlayerEvent as E;
-        let event = match event {
+        let flapjack::Event {
+            generation,
+            op,
+            kind,
+        } = event;
+        let event = match kind {
             E::EndOfStream => PlayerEvent::EndOfStream,
             E::Loaded { live } => {
                 if live {
@@ -814,7 +809,7 @@ impl Player {
                 PlayerEvent::UriLoaded
             }
             E::Tags(tags) => PlayerEvent::Tags(tags),
-            E::VolumeChanged(volume) => PlayerEvent::VolumeChanged(volume),
+            E::VolumeChanged(volume) => PlayerEvent::VolumeChanged(volume.get()),
             E::StreamCollection(collection) => PlayerEvent::StreamCollection(collection),
             E::AsyncDone => PlayerEvent::AsyncDone,
             E::DurationChanged => PlayerEvent::DurationChanged,
@@ -854,19 +849,24 @@ impl Player {
                 subtitle: subtitle.map(sid_out),
                 seqnum,
             },
-            E::RefreshSeekFailed { seqnum } => PlayerEvent::SubtitleRefreshFailed { seqnum },
-            E::RateChanged { rate, op: _ } => PlayerEvent::RateChanged(rate),
-            E::SeekFailed { op: _ } => PlayerEvent::SeekFailed,
-            // newer work discarded the command before it acted; the receiver
-            // keys nothing on OpIds yet, so this resolves silently
-            E::OpSuperseded { .. } => return,
+            E::RateChanged(rate) => PlayerEvent::RateChanged(rate.get()),
+            // `op` tells the receiver's own seeks apart: the freeze watchdog
+            // keys its recovery seek on it, the transport seeks resolve through
+            // the state machine's edges
+            E::SeekFailed => PlayerEvent::SeekFailed { op },
+            // a seek's success and a command discarded before it acted; the
+            // receiver derives both from StateChanged and keys nothing else on
+            // op ids, so they resolve silently
+            E::SeekSettled { .. } | E::Superseded { .. } => return,
             E::ClockLost => PlayerEvent::ClockLost,
             E::Error {
                 origin,
-                error,
+                kind,
+                message,
+                detail: diagnostic,
                 failed_uri,
             } => {
-                let kind = MediaErrorKind::from_glib_error(&error, failed_uri.is_some());
+                let kind = MediaErrorKind::from_flapjack(kind);
                 // Consume the pending codec description only for its own
                 // error, same rule as the warning arm below.
                 let detail = if kind == MediaErrorKind::MissingCodec {
@@ -878,7 +878,7 @@ impl Player {
                     origin,
                     kind,
                     detail,
-                    message: format!("{} [{}]", error.message(), gst_error_domain_code(&error)),
+                    message: with_diagnostic(message, diagnostic),
                     failed_uri,
                 }
             }
@@ -900,29 +900,36 @@ impl Player {
             E::PreparedCancelDeclined { generation } => {
                 PlayerEvent::GaplessCancelDeclined { generation }
             }
-            E::Warning { error, src, debug } => {
+            E::Warning {
+                kind,
+                message,
+                src,
+                detail: diagnostic,
+            } => {
                 // Consume the pending codec description only for the warning
                 // it belongs to, an interleaved unrelated warning must not
                 // eat it.
-                let missing_desc = if error.matches(gst::CoreError::MissingPlugin) {
+                let missing_desc = if kind == flapjack::WarningKind::MissingCodecForTrack {
                     missing_plugins.desc.lock().take()
                 } else {
                     None
                 };
-                let (kind, detail) = classify_warning(&error, missing_desc);
-                let mut message =
-                    format!("{} [{}]", error.message(), gst_error_domain_code(&error));
+                let (kind, detail) = classify_warning(kind, missing_desc);
+                let mut message = with_diagnostic(message, diagnostic);
                 if let Some(src) = src {
                     message.push_str(&format!(" (from {src})"));
-                }
-                if let Some(debug) = debug {
-                    message.push_str(&format!(" ({debug})"));
                 }
                 PlayerEvent::Warning {
                     kind,
                     detail,
                     message,
                 }
+            }
+            // the crate's enum is non-exhaustive; an event it grows later has
+            // no protocol mapping until someone writes one
+            other => {
+                debug!(event = other.name(), "unmapped player event");
+                return;
             }
         };
         msg_tx.player(event, Some(generation));
@@ -1139,16 +1146,11 @@ impl Player {
                 // assert rate != 0.0 and the binding panics on the NULL
                 // event, killing the playback worker. Play at 1.0x instead;
                 // "start paused" travels as SetPlaybackState, not speed.
-                let rate = if Seek::rate_is_safe(rp.rate) {
-                    rp.rate as f64
-                } else {
+                let rate = flapjack::PlaybackRate::new(f64::from(rp.rate)).unwrap_or_else(|| {
                     warn!(rate = rp.rate, "invalid start speed, playing at 1.0x");
-                    1.0
-                };
-                flapjack::StartPoint::Seek {
-                    position: rp.position,
-                    rate,
-                }
+                    flapjack::PlaybackRate::NORMAL
+                });
+                flapjack::StartPoint::at_rate(rp.position, rate)
             }
             None => flapjack::StartPoint::Live,
         };
@@ -1156,13 +1158,6 @@ impl Player {
     }
 
     fn seek_internal(&mut self, seek: Seek) {
-        if let Some(rate) = seek.rate
-            && !Seek::rate_is_safe(rate)
-        {
-            warn!(rate, "Ignoring invalid seek rate");
-            return;
-        }
-
         // An unresolved seekability query (`!seekable_known`) is not a
         // refusal: let the seek through. The state machine queues seeks that
         // land mid-preroll, so it runs once the pipeline settles. Only a
@@ -1172,7 +1167,7 @@ impl Player {
             // subtitle cue, a separately queued refresh flush is redundant.
             self.fcast.cancel_selection_refresh();
             if let Some(seek) = self.state_machine.seek_internal(seek) {
-                let _ = self.fcast.seek(seek);
+                self.fcast.seek(seek, self.fcast.allocate_op());
             }
         } else {
             warn!(?seek, "Attempted to seek on a non seekable stream");
@@ -1180,16 +1175,13 @@ impl Player {
     }
 
     pub fn seek(&mut self, position: gst::ClockTime) {
-        self.seek_internal(Seek {
-            position: Some(position),
-            rate: None,
-        });
+        self.seek_internal(Seek::to(position));
     }
 
     /// The freeze watchdog's recovery seek: a FLUSHING, ACCURATE seek to the
     /// pipeline's current position at the current rate, performed IN PLACE
-    /// (no transport change). Returns the fresh seqnum it is stamped with, so
-    /// a refusal report can be attributed to it.
+    /// (no transport change). Returns the op it runs under, so its
+    /// `SeekFailed` can be attributed to it.
     ///
     /// Deliberately not [`Self::seek`]. That path refuses unless the pipeline
     /// is settled at PAUSED and drives it there first (`Job::Seek` in
@@ -1202,10 +1194,11 @@ impl Player {
     /// crate's refresh seek is the one API that sends the flush in place: the
     /// FLUSH flag is mandatory and the seqnum must be fresh, or the demuxer
     /// drops the seek.
-    pub fn freeze_recovery_seek(&self) -> gst::Seqnum {
-        let seqnum = gst::Seqnum::next();
-        self.fcast.refresh_seek(seqnum);
-        seqnum
+    pub fn freeze_recovery_seek(&self) -> flapjack::OpId {
+        let op = self.fcast.allocate_op();
+        let id = op.id();
+        self.fcast.refresh_seek(op);
+        id
     }
 
     fn applied_track_selection(&self) -> TrackSelection {
@@ -1223,16 +1216,16 @@ impl Player {
         let applied = self.applied_track_selection();
         let stale_cue =
             kind == TrackKind::Subtitle && applied.subtitle.is_some() && sid != applied.subtitle;
-        let slot = match kind {
-            TrackKind::Video => flapjack::TrackSlot::Video,
-            TrackKind::Audio => flapjack::TrackSlot::Audio,
-            TrackKind::Subtitle => flapjack::TrackSlot::Subtitle,
-        };
         // an unparseable sid names nothing, the engine treats None as
         // "disable the slot" which is also what a stale handle deserves
         let handle = sid.as_deref().and_then(sid_in);
-        self.fcast
-            .request_track(slot, flapjack::TrackTarget::Stream(handle));
+        match kind {
+            TrackKind::Video => self.fcast.set_video_track(handle),
+            TrackKind::Audio => self.fcast.set_audio_track(handle),
+            TrackKind::Subtitle => self.fcast.set_subtitle_track(
+                handle.map_or(flapjack::SubtitleTrack::Off, flapjack::SubtitleTrack::Stream),
+            ),
+        }
         self.pump_selection();
         stale_cue
     }
@@ -1243,10 +1236,8 @@ impl Player {
     /// against decodebin3's collection-default auto-select. Replaces the
     /// application's parked-desire enforcement.
     pub fn request_external_subtitle(&mut self, handle: flapjack::ExternalSubId) {
-        self.fcast.request_track(
-            flapjack::TrackSlot::Subtitle,
-            flapjack::TrackTarget::ExternalSubtitle(handle),
-        );
+        self.fcast
+            .set_subtitle_track(flapjack::SubtitleTrack::External(handle));
         self.pump_selection();
     }
 
@@ -1292,9 +1283,10 @@ impl Player {
         self.pump_selection();
     }
 
-    /// The refresh seek job could not perform its seek (already recorded by
-    /// the crate; this is the pump trigger).
-    pub fn subtitle_refresh_failed(&mut self, _seqnum: gst::Seqnum) {
+    /// The receiver's own refresh seek (the freeze watchdog's recovery) could
+    /// not perform its seek, already recorded by the crate; this is the pump
+    /// trigger. The engine's own refreshes report nothing.
+    pub fn subtitle_refresh_failed(&mut self) {
         self.pump_selection();
     }
 
@@ -1312,7 +1304,7 @@ impl Player {
     pub fn volume(&self) -> f32 {
         match self.pending_volume {
             Some(volume) => volume.clamp(0.0, 1.0),
-            None => self.fcast.volume() as f32,
+            None => self.fcast.volume().get() as f32,
         }
     }
 
@@ -1333,7 +1325,7 @@ impl Player {
         }
 
         let target = (volume as f64).clamp(0.0, 1.0);
-        if (self.fcast.volume() - target).abs() < 1e-9 {
+        if (self.fcast.volume().get() - target).abs() < 1e-9 {
             // Setting the property to its current value emits no notify,
             // but senders expect a confirmation for an idempotent set too.
             // Re-emit it manually through the same VolumeChanged path.
@@ -1342,6 +1334,12 @@ impl Player {
             return;
         }
 
+        // the crate's type clamps to 0..1 itself and refuses only a
+        // non-finite value, which the clamp above lets through as NaN
+        let Some(target) = flapjack::Volume::new(target) else {
+            warn!(volume, "Ignoring a non-finite volume");
+            return;
+        };
         self.fcast.set_volume(target);
         self.volume_confirm_in_flight = true;
     }
@@ -1356,26 +1354,34 @@ impl Player {
     }
 
     pub fn set_rate(&mut self, rate: f32) {
-        self.seek_internal(Seek {
-            position: None,
-            rate: Some(rate),
-        });
-    }
-
-    pub fn update_media_info(&mut self) {
-        if let Some(seekable) = self.fcast.query_seekable() {
-            let dur = self.get_duration();
-            debug!(?dur, seekable, "Seek query returned");
-            self.seekable = seekable && dur.is_some();
-            self.seekable_known = true;
+        // the crate's rate type refuses zero and non-finite values, the
+        // validation `Seek::rate_is_safe` used to do here
+        match flapjack::PlaybackRate::new(f64::from(rate)) {
+            Some(rate) => self.seek_internal(Seek::at_rate(rate)),
+            None => warn!(rate, "Ignoring invalid seek rate"),
         }
     }
 
+    pub fn update_media_info(&mut self) {
+        // `Unknown` is "not answerable yet", not a refusal: ask again later
+        let seekable = match self.fcast.seekable() {
+            flapjack::Seekable::Unknown => return,
+            flapjack::Seekable::Yes => true,
+            flapjack::Seekable::No => false,
+        };
+        let dur = self.get_duration();
+        debug!(?dur, seekable, "Seek query returned");
+        self.seekable = seekable && dur.is_some();
+        self.seekable_known = true;
+    }
+
     fn set_state_async(&self, target_state: gst::State) {
-        // the raw state API is gone, flapjack speaks transport verbs
+        // the raw state API is gone, flapjack speaks transport verbs; their
+        // completions ride PlaybackChanged, which the receiver's own state
+        // machine over StateChanged makes redundant (see relay_event)
         match target_state {
-            gst::State::Playing => self.fcast.play(),
-            gst::State::Paused => self.fcast.pause(),
+            gst::State::Playing => self.fcast.play(self.fcast.allocate_op()),
+            gst::State::Paused => self.fcast.pause(self.fcast.allocate_op()),
             _ => self.fcast.stop(),
         }
     }
@@ -1391,17 +1397,6 @@ impl Player {
     /// change to the worker thread (off the streaming thread it arrived on).
     pub fn request_state(&self, state: gst::State) {
         self.set_state_async(state);
-    }
-
-    /// Handle `ClockLost`: the element providing the pipeline clock went away
-    /// (typically the audio sink after the audio track was deselected).
-    pub fn recover_clock(&mut self) {
-        if !matches!(self.player_state(), PlayerState::Playing) {
-            debug!("Ignoring clock loss while not playing");
-            return;
-        }
-        debug!("Pipeline clock lost; cycling through Paused to elect a new one");
-        self.fcast.recover_clock();
     }
 
     /// The host saw its network change (an address came or went), so flapjack
@@ -1651,7 +1646,7 @@ impl Player {
             BufferingStateResult::Buffering => false,
             BufferingStateResult::FinishedWithSeek(seek) => {
                 debug!("Buffering finished, dispatching seek");
-                let _ = self.fcast.seek(seek);
+                self.fcast.seek(seek, self.fcast.allocate_op());
                 true
             }
             BufferingStateResult::Finished(state) => {
@@ -1682,8 +1677,9 @@ impl Player {
     /// `PlayerEvent::ExternalSubtitleFailed` with the input already
     /// detached.
     pub fn attach_external_subtitle(&mut self, url: &str) -> flapjack::ExternalSubId {
-        let id = self.fcast.allocate_subtitle_id();
-        self.fcast.attach_subtitle(id, url.to_string());
+        let slot = self.fcast.allocate_subtitle_id();
+        let id = slot.id();
+        self.fcast.attach_subtitle(slot, url.to_string());
         id
     }
 
@@ -1741,7 +1737,7 @@ impl Player {
                 })
             }
             StateChangeResult::Seek(seek) => {
-                let _ = self.fcast.seek(seek);
+                self.fcast.seek(seek, self.fcast.allocate_op());
                 None
             }
             StateChangeResult::Waiting => None,
@@ -1829,7 +1825,7 @@ impl Player {
     }
 
     pub fn rate(&self) -> f64 {
-        self.state_machine.rate
+        self.state_machine.rate.get()
     }
 
     #[instrument(skip_all)]
@@ -1841,7 +1837,10 @@ impl Player {
     }
 
     pub fn set_rate_changed(&mut self, rate: f64) {
-        self.state_machine.rate = rate;
+        // a reported rate is one the crate accepted
+        if let Some(rate) = flapjack::PlaybackRate::new(rate) {
+            self.state_machine.rate = rate;
+        }
     }
 }
 
@@ -2266,7 +2265,7 @@ mod tests {
         use fcast_video::cue::{CueEngine, CueInput, TextFormat};
         use flapjack::{
             AudioSink, Player, PlayerEvent, SelectionGate, Sinks, StartPoint, SubtitleFeedItem,
-            TrackSlot, TrackTarget,
+            SubtitleTrack, VideoSink,
         };
         use simulator::{
             scenario::ScenarioBuilder,
@@ -2326,7 +2325,7 @@ mod tests {
         let frames = video_sink.recording();
         let player = Arc::new(
             Player::new(Sinks {
-                video: Some(video_sink.upcast()),
+                video: VideoSink::Element(video_sink.upcast()),
                 audio: AudioSink::Factory(Box::new(|| Ok(FTestSink::new().upcast()))),
                 subtitle: flapjack::SubtitleSink::None,
             })
@@ -2379,8 +2378,8 @@ mod tests {
         let sink = errors.clone();
         let flag = loaded.clone();
         let sids = text_sids.clone();
-        player.set_event_handler(None, move |event, _| match event {
-            PlayerEvent::Error { error, .. } => sink.lock().push(error.to_string()),
+        player.set_event_handler(None, move |flapjack::Event { kind: event, .. }| match event {
+            PlayerEvent::Error { message, .. } => sink.lock().push(message),
             PlayerEvent::Loaded { .. } => {
                 flag.store(true, Ordering::Release);
             }
@@ -2410,10 +2409,7 @@ mod tests {
 
         player.load(
             MediaInput::uri(scenario.uri()),
-            StartPoint::Seek {
-                position: gst::ClockTime::ZERO,
-                rate: 1.0,
-            },
+            StartPoint::beginning(),
         );
         let load_deadline = Instant::now() + Duration::from_secs(30);
         while !loaded.load(Ordering::Acquire) {
@@ -2421,7 +2417,7 @@ mod tests {
             pump();
             std::thread::sleep(Duration::from_millis(10));
         }
-        player.play();
+        player.play(player.allocate_op());
 
         // The subtitle track is off until something asks for it, exactly as in
         // the app, and the request only takes once the pipeline is running.
@@ -2435,7 +2431,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let sid = text_sids.lock()[0].clone();
-        player.request_track(TrackSlot::Subtitle, TrackTarget::Stream(sid_in(&sid)));
+        player.set_subtitle_track(sid_in(&sid).map_or(SubtitleTrack::Off, SubtitleTrack::Stream));
         // The branch has to actually carry a cue before the walk can claim
         // anything: a run where selection never landed would show a clean sweep
         // of blank frames and call it a pass.
@@ -2617,7 +2613,7 @@ mod tests {
 
     fn stream(id: u32, slot: flapjack::TrackSlot) -> flapjack::StreamInfo {
         flapjack::StreamInfo {
-            id: flapjack::StreamId(id),
+            id: flapjack::StreamId::from_raw(id),
             slot,
             language: None,
             title: None,
@@ -2627,7 +2623,7 @@ mod tests {
     }
 
     fn ids(streams: &[Stream]) -> Vec<u32> {
-        streams.iter().map(|s| s.info.id.0).collect()
+        streams.iter().map(|s| s.info.id.raw()).collect()
     }
 
     #[test]
@@ -2654,72 +2650,26 @@ mod tests {
         assert_eq!(ids(&third), [0, 1]);
     }
 
-    fn kind_of<T: gst::glib::error::ErrorDomain>(code: T, from_source: bool) -> MediaErrorKind {
-        MediaErrorKind::from_glib_error(&gst::glib::Error::new(code, "x"), from_source)
-    }
-
     #[test]
-    fn error_kind_resource_domain() {
-        use gst::ResourceError as R;
-        // Side-independent identities.
-        assert_eq!(kind_of(R::NotFound, true), MediaErrorKind::NotFound);
-        assert_eq!(kind_of(R::NotFound, false), MediaErrorKind::NotFound);
-        assert_eq!(
-            kind_of(R::NotAuthorized, true),
-            MediaErrorKind::AccessDenied
-        );
-        // Source side reads/seeks are network trouble.
-        for code in [
-            R::OpenRead,
-            R::OpenReadWrite,
-            R::Read,
-            R::Seek,
-            R::Sync,
-            R::Busy,
-        ] {
-            assert_eq!(kind_of(code, true), MediaErrorKind::NetworkFailure);
+    fn error_kind_folds_flapjack_classes() {
+        use flapjack::ErrorKind as K;
+        // The domain/code table lives in flapjack now (tested there); this
+        // is the fold onto the receiver's codes, one class each.
+        let table = [
+            (K::NotFound, MediaErrorKind::NotFound),
+            (K::AccessDenied, MediaErrorKind::AccessDenied),
+            (K::NetworkFailed, MediaErrorKind::NetworkFailure),
+            (K::UnsupportedFormat, MediaErrorKind::UnsupportedFormat),
+            (K::MissingCodec, MediaErrorKind::MissingCodec),
+            (K::DecodeFailed, MediaErrorKind::DecodeFailed),
+            (K::Encrypted, MediaErrorKind::DrmProtected),
+            (K::OutputFailed, MediaErrorKind::OutputFailure),
+            (K::Stalled, MediaErrorKind::Frozen),
+            (K::Other, MediaErrorKind::Unexpected),
+        ];
+        for (kind, expected) in table {
+            assert_eq!(MediaErrorKind::from_flapjack(kind), expected, "{kind:?}");
         }
-        // The same codes on a sink are an output failure, as is anything
-        // else resource-flavored there.
-        assert_eq!(kind_of(R::Read, false), MediaErrorKind::OutputFailure);
-        assert_eq!(kind_of(R::Busy, false), MediaErrorKind::OutputFailure);
-        assert_eq!(kind_of(R::Failed, false), MediaErrorKind::OutputFailure);
-        // A source failing with a non-transfer resource code is not a story
-        // we can tell the user, it goes to the popup.
-        assert_eq!(kind_of(R::Failed, true), MediaErrorKind::Unexpected);
-        assert_eq!(kind_of(R::NoSpaceLeft, true), MediaErrorKind::Unexpected);
-    }
-
-    #[test]
-    fn error_kind_stream_domain() {
-        use gst::StreamError as S;
-        for code in [S::TypeNotFound, S::WrongType, S::Format, S::Demux] {
-            assert_eq!(kind_of(code, true), MediaErrorKind::UnsupportedFormat);
-        }
-        assert_eq!(
-            kind_of(S::CodecNotFound, true),
-            MediaErrorKind::MissingCodec
-        );
-        assert_eq!(kind_of(S::Decode, false), MediaErrorKind::DecodeFailed);
-        assert_eq!(kind_of(S::Decrypt, true), MediaErrorKind::DrmProtected);
-        assert_eq!(kind_of(S::DecryptNokey, true), MediaErrorKind::DrmProtected);
-        assert_eq!(kind_of(S::Failed, true), MediaErrorKind::Unexpected);
-    }
-
-    #[test]
-    fn error_kind_core_and_unknown_domains() {
-        assert_eq!(
-            kind_of(gst::CoreError::MissingPlugin, false),
-            MediaErrorKind::MissingCodec
-        );
-        assert_eq!(
-            kind_of(gst::CoreError::StateChange, false),
-            MediaErrorKind::Unexpected
-        );
-        assert_eq!(
-            kind_of(gst::LibraryError::Init, true),
-            MediaErrorKind::Unexpected
-        );
     }
 
     #[test]
@@ -2765,28 +2715,26 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_names_domain_and_code() {
-        let err = gst::glib::Error::new(gst::ResourceError::NotFound, "x");
-        assert_eq!(gst_error_domain_code(&err), "resource NotFound");
-        let err = gst::glib::Error::new(gst::StreamError::Decode, "x");
-        assert_eq!(gst_error_domain_code(&err), "stream Decode");
-        let err = gst::glib::Error::new(gst::CoreError::MissingPlugin, "x");
-        assert_eq!(gst_error_domain_code(&err), "core MissingPlugin");
-        let err = gst::glib::Error::new(gst::LibraryError::Init, "x");
-        assert_eq!(gst_error_domain_code(&err), "library Init");
+    fn diagnostic_is_appended_in_brackets() {
+        assert_eq!(
+            with_diagnostic("x".into(), Some("resource NotFound".into())),
+            "x [resource NotFound]"
+        );
+        assert_eq!(with_diagnostic("x".into(), None), "x");
     }
 
     #[test]
     fn warning_classification() {
-        let missing = gst::glib::Error::new(gst::CoreError::MissingPlugin, "no decoder");
-        let (kind, detail) = classify_warning(&missing, Some("H.265 (Main)".into()));
+        let (kind, detail) = classify_warning(
+            flapjack::WarningKind::MissingCodecForTrack,
+            Some("H.265 (Main)".into()),
+        );
         assert_eq!(kind, MediaWarningKind::MissingCodecForTrack);
         assert_eq!(detail.as_deref(), Some("H.265 (Main)"));
 
         // Anything else is Unknown and carries no detail, even with a stale
         // missing-plugin description pending.
-        let other = gst::glib::Error::new(gst::StreamError::Failed, "clock problem");
-        let (kind, detail) = classify_warning(&other, Some("stale".into()));
+        let (kind, detail) = classify_warning(flapjack::WarningKind::Other, Some("stale".into()));
         assert_eq!(kind, MediaWarningKind::Unknown);
         assert_eq!(detail, None);
     }
