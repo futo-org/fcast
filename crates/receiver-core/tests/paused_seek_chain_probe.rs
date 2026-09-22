@@ -20,8 +20,8 @@
 //!
 //! # The chain, and what a break looks like
 //!
-//! The whole path is here: `flapjack`'s transport into `fcast-video`'s
-//! [`FSink`] and the [`CueEngine`] it owns, wired exactly as
+//! The whole path is here: `flapjack`'s transport into a clocked headless
+//! sink and the [`CueEngine`] beside it, wired exactly as
 //! `receiver-core::player` wires it.
 //!
 //! 1. **DELIVERY**, does the covering cue reach the subtitle consumer while
@@ -64,15 +64,11 @@ use std::{
     time::{Duration, Instant},
 };
 
-use fcast_video::{
-    cue::{CueInput, TextFormat},
-    video::FSink,
-};
+use fcast_video::cue::{CueEngine, CueInput, TextFormat};
 use flapjack::{
     AudioSink, MediaInput, Player, PlayerEvent, Seek, SelectionGate, Sinks, StartPoint,
-    SubtitleFeedItem, TrackSlot, TrackTarget,
+    SubtitleFeedItem, SubtitleTrack, VideoSink,
 };
-use gst::prelude::*;
 use parking_lot::Mutex;
 
 const TIMEOUT: Duration = Duration::from_secs(60);
@@ -142,29 +138,34 @@ struct Probe {
     events: mpsc::Receiver<PlayerEvent>,
     log: Mutex<Vec<PlayerEvent>>,
     paused: std::cell::Cell<bool>,
-    parked: std::cell::Cell<Option<Seek>>,
 }
 
 impl Probe {
     fn new(t0: Instant) -> Self {
-        let video_sink = FSink::new();
-        let engine = video_sink.cue_engine();
+        // Synchronous so the pipeline runs at field pace, like the shipped
+        // appsink lane.
+        let video_sink = gst::ElementFactory::make("fakesink")
+            .property("sync", true)
+            .build()
+            .expect("fakesink");
+        let engine = CueEngine::new();
         engine.set_canvas(1280, 720);
 
+        // The engine's own change hook is what the UI lane repaints on.
         let repaints = Arc::new(AtomicUsize::new(0));
         let counter = repaints.clone();
-        video_sink.connect("overlays-changed", false, move |_values| {
+        engine.set_on_change(move || {
             counter.fetch_add(1, Ordering::Release);
-            None
         });
 
         let player = Player::new(Sinks {
-            video: Some(video_sink.clone().upcast()),
+            video: VideoSink::Element(video_sink.clone()),
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
                     .property("sync", true)
                     .build()?)
             })),
+            subtitle: flapjack::SubtitleSink::None,
         })
         .expect("building flapjack");
 
@@ -201,8 +202,8 @@ impl Probe {
         });
 
         let (tx, events) = mpsc::channel();
-        player.set_event_handler(None, move |event, _| {
-            let _ = tx.send(event);
+        player.set_event_handler(None, move |flapjack::Event { kind, .. }| {
+            let _ = tx.send(kind);
         });
 
         Self {
@@ -213,24 +214,15 @@ impl Probe {
             events,
             log: Mutex::new(Vec::new()),
             paused: std::cell::Cell::new(true),
-            parked: std::cell::Cell::new(None),
         }
     }
 
-    /// One settle-point pass: absorb events, put back a seek the driver parked
-    /// (`Job::Seek` refuses one that did not arrive at a settled PAUSED), and
-    /// give the link policy its chance, what the receiver does on every edge.
+    /// One settle-point pass: absorb events and give the link policy its
+    /// chance, what the receiver does on every edge. Seeks park inside
+    /// flapjack now, there is nothing to put back.
     fn pump(&self) {
         while let Ok(event) = self.events.try_recv() {
-            if let PlayerEvent::QueueSeek(seek) = &event {
-                self.parked.set(Some(*seek));
-            }
             self.log.lock().push(event);
-        }
-        if self.player.is_settled()
-            && let Some(seek) = self.parked.take()
-        {
-            self.player.seek_async(seek);
         }
         self.player.pump_selection(SelectionGate {
             quiet: true,
@@ -263,8 +255,8 @@ impl Probe {
                 PlayerEvent::StreamCollection(collection) => Some(
                     collection
                         .iter()
-                        .filter(|s| s.stream_type().contains(gst::StreamType::TEXT))
-                        .filter_map(|s| s.stream_id().map(|id| id.to_string()))
+                        .filter(|s| s.slot == flapjack::TrackSlot::Subtitle)
+                        .map(|s| s.id.to_string())
                         .collect::<Vec<_>>(),
                 ),
                 _ => None,
@@ -307,16 +299,10 @@ fn probe_the_paused_seek_chain() {
 
     let t0 = Instant::now();
     let p = Probe::new(t0);
-    if let Err(error) = p.player.load(
-        MediaInput::Uri(uri),
-        StartPoint::Seek {
-            position: gst::ClockTime::ZERO,
-            rate: 1.0,
-        },
-    ) {
-        println!("!! the load failed: {error}");
-        return;
-    }
+    p.player.load(
+        MediaInput::uri(uri),
+        StartPoint::beginning(),
+    );
     if !p.wait_for("a text stream to be advertised", |p| {
         !p.text_sids().is_empty()
     }) {
@@ -325,9 +311,13 @@ fn probe_the_paused_seek_chain() {
     }
     let sids = p.text_sids();
     println!("text sids: {sids:?}");
-    p.player.request_track(
-        TrackSlot::Subtitle,
-        TrackTarget::Stream(Some(sids[0].clone())),
+    p.player.set_subtitle_track(
+        sids[0]
+            .strip_prefix("stream#")
+            .and_then(|n| n.parse().ok())
+            .map_or(SubtitleTrack::Off, |raw| {
+                SubtitleTrack::Stream(flapjack::StreamId::from_raw(raw))
+            }),
     );
     // `FCAST_PROBE_NO_PLAY=1`: never leave PAUSED at all. The field gesture
     // "open the file and drag the scrubber" seeks from a pipeline that has only
@@ -356,14 +346,14 @@ fn probe_the_paused_seek_chain() {
             p.cue_count()
         );
     } else {
-        p.player.play().expect("play");
+        p.player.play(p.player.allocate_op());
         p.paused.set(false);
         p.wait_for("the first cue", |p| p.cue_count() > 0);
         p.wait_for("playback to reach the pause point", |p| {
             p.player.position().is_some_and(|pos| pos > play_to)
         });
 
-        p.player.pause().expect("pause");
+        p.player.pause(p.player.allocate_op());
     }
     p.paused.set(true);
     p.wait_for("a settled PAUSED", |p| {
@@ -378,7 +368,7 @@ fn probe_the_paused_seek_chain() {
     let repaints_before = p.repaints.load(Ordering::Acquire);
 
     println!("\n--- the PAUSED seek ---");
-    p.player.seek_async(Seek::new(Some(seek_to), None));
+    p.player.seek(Seek::to(seek_to), p.player.allocate_op());
     let deadline = Instant::now() + Duration::from_secs(12);
     while Instant::now() < deadline {
         p.pump();

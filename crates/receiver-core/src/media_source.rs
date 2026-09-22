@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use flapjack::HttpHeaders;
 use gst::prelude::*;
 use parking_lot::Mutex;
 use tracing::warn;
@@ -11,34 +12,34 @@ use crate::user_agent;
 /// Bytes handed downstream per `need-data` pull.
 const BYTES_CHUNK: u64 = 256 * 1024;
 
-/// Apply request headers + a browser user-agent to an `fcasthttpsrc`.
-pub fn configure_http_source(elem: &gst::Element, headers: Option<&HashMap<String, String>>) {
-    let mut did_set_user_agent = false;
+/// The request headers for a load: the sender's, plus a browser user-agent
+/// when the sender did not name one. They ride on the item as
+/// [`flapjack::MediaInput::uri_with_headers`], so flapjack's HTTP source
+/// sends them with every request the item makes.
+pub fn request_headers(headers: Option<&HashMap<String, String>>) -> HttpHeaders {
+    let mut out = HttpHeaders::new();
+    let mut has_user_agent = false;
     if let Some(headers) = headers {
-        let mut extra = gst::Structure::builder("reqwesthttpsrc-extra-headers");
-        for (k, v) in headers {
-            if k.eq_ignore_ascii_case("user-agent") {
-                elem.set_property("user-agent", v);
-                did_set_user_agent = true;
-            } else {
-                extra = extra.field(k, v);
-            }
+        for (name, value) in headers {
+            has_user_agent |= name.eq_ignore_ascii_case("user-agent");
+            out.push(name.clone(), value.clone());
         }
-        elem.set_property("extra-headers", extra.build());
     }
-    if !did_set_user_agent {
-        elem.set_property("user-agent", user_agent::random_browser_user_agent(None));
+    if !has_user_agent {
+        out.push("User-Agent", user_agent::random_browser_user_agent(None));
     }
+    out
 }
 
-/// Build a urisourcebin for an HTTP/file/DASH/HLS/`data:` URI, applying
-/// `headers` per-load to THIS urisourcebin's `fcasthttpsrc` (no global side
-/// channel). It parses its streams, so its src pads feed decodebin3 directly.
-pub fn build_uri_source(
-    uri: &str,
-    headers: Option<HashMap<String, String>>,
-) -> Result<gst::Element> {
-    build_uri_source_with_head(uri, headers, None)
+/// The `extra-headers` structure flapjack's HTTP source reads, for a source
+/// this crate builds itself: flapjack applies an item's headers only to the
+/// urisourcebin it builds.
+fn extra_headers(headers: &HttpHeaders) -> gst::Structure {
+    let mut structure = gst::Structure::new_empty("extra-headers");
+    for (name, value) in headers.iter() {
+        structure.set(name, value.to_string());
+    }
+    structure
 }
 
 /// A prefetched head of the resource, injected into the per-load source
@@ -49,12 +50,16 @@ pub struct PreloadedHead {
     pub total: Option<u64>,
 }
 
-/// `build_uri_source` plus an optional prefetched head for the source element
-/// urisourcebin creates (fcasthttpsrc or fcompsrc).
+/// Build a urisourcebin for an HTTP/file/DASH/HLS/`data:` URI with a
+/// prefetched head for the source element urisourcebin creates (rshttpsrc or
+/// fcompsrc). `headers` apply to THIS urisourcebin's rshttpsrc (no global side
+/// channel). It parses its streams, so its src pads feed decodebin3 directly.
+/// A load without a head is [`flapjack::MediaInput::uri_with_headers`]
+/// instead, and flapjack builds the bin.
 pub fn build_uri_source_with_head(
     uri: &str,
-    headers: Option<HashMap<String, String>>,
-    head: Option<PreloadedHead>,
+    headers: HttpHeaders,
+    head: PreloadedHead,
 ) -> Result<gst::Element> {
     let usb = gst::ElementFactory::make("urisourcebin")
         .property("uri", uri)
@@ -63,14 +68,13 @@ pub fn build_uri_source_with_head(
         .build()
         .context("creating urisourcebin")?;
     if let Some(bin) = usb.downcast_ref::<gst::Bin>() {
+        let extra = extra_headers(&headers);
         bin.connect_deep_element_added(move |_, _, elem| {
             match elem.factory().map(|f| f.name()).as_deref() {
-                Some("fcasthttpsrc") => {
-                    configure_http_source(elem, headers.as_ref());
+                Some("rshttpsrc") => {
+                    elem.set_property("extra-headers", &extra);
                     // http needs the total up front; without it the head is unusable.
-                    if let Some(head) = head.as_ref()
-                        && let Some(total) = head.total
-                    {
+                    if let Some(total) = head.total {
                         elem.set_property(
                             "preloaded-head",
                             gst::glib::Bytes::from_owned(head.bytes.clone()),
@@ -79,12 +83,10 @@ pub fn build_uri_source_with_head(
                     }
                 }
                 Some("fcompsrc") => {
-                    if let Some(head) = head.as_ref() {
-                        elem.set_property(
-                            "preloaded-head",
-                            gst::glib::Bytes::from_owned(head.bytes.clone()),
-                        );
-                    }
+                    elem.set_property(
+                        "preloaded-head",
+                        gst::glib::Bytes::from_owned(head.bytes.clone()),
+                    );
                 }
                 _ => {}
             }
@@ -386,7 +388,7 @@ mod tests {
     fn gapless_fcomp_next_item_plays_to_its_end() {
         use fcast_protocol::companion;
         use flapjack::{
-            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint,
+            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint, VideoSink,
         };
         use std::{
             sync::mpsc,
@@ -409,12 +411,13 @@ mod tests {
         );
 
         let player = Player::new(Sinks {
-            video: None,
+            video: VideoSink::Fake,
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
                     .property("sync", true)
                     .build()?)
             })),
+            subtitle: flapjack::SubtitleSink::None,
         })
         .unwrap();
 
@@ -439,7 +442,7 @@ mod tests {
         });
 
         let (tx, rx) = mpsc::channel();
-        player.set_event_handler(Some(hook), move |event, _generation| match event {
+        player.set_event_handler(Some(hook), move |flapjack::Event { kind: event, .. }| match event {
             PlayerEvent::PreparedActivated => {
                 let _ = tx.send("activated");
             }
@@ -449,32 +452,29 @@ mod tests {
             _ => {}
         });
 
-        let head = |bytes: Bytes, total: u64| {
-            Some(super::PreloadedHead {
-                bytes,
-                total: Some(total),
-            })
+        let head = |bytes: Bytes, total: u64| super::PreloadedHead {
+            bytes,
+            total: Some(total),
         };
         let a_src = super::build_uri_source_with_head(
             &companion::create_url(0, 0),
-            None,
+            flapjack::HttpHeaders::new(),
             head(a_bytes, a_len),
         )
         .unwrap();
         let b_src = super::build_uri_source_with_head(
             &companion::create_url(0, 1),
-            None,
+            flapjack::HttpHeaders::new(),
             head(b_bytes, b_len),
         )
         .unwrap();
 
         player
-            .load(MediaInput::Element(a_src), StartPoint::Live)
-            .unwrap();
+            .load(MediaInput::Element(a_src), StartPoint::Live);
         // Pre-arm up front so `pending` is set before A's EOS reaches the hold.
-        player.prepare_next_async(MediaInput::Element(b_src));
+        player.prepare_next(MediaInput::Element(b_src));
         let t0 = Instant::now();
-        player.play().unwrap();
+        player.play(player.allocate_op());
 
         let mut activated = false;
         let eos_elapsed = loop {
@@ -506,7 +506,7 @@ mod tests {
     fn gapless_fcomp_survives_a_midplayback_prearm() {
         use fcast_protocol::companion;
         use flapjack::{
-            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint,
+            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint, VideoSink,
         };
         use std::{
             sync::mpsc,
@@ -527,12 +527,13 @@ mod tests {
         );
 
         let player = Player::new(Sinks {
-            video: None,
+            video: VideoSink::Fake,
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
                     .property("sync", true)
                     .build()?)
             })),
+            subtitle: flapjack::SubtitleSink::None,
         })
         .unwrap();
         // Audio-only, so flapjack's decoupling queue is shallow (the deep
@@ -558,7 +559,7 @@ mod tests {
             false
         });
         let (tx, rx) = mpsc::channel();
-        player.set_event_handler(Some(hook), move |event, _g| match event {
+        player.set_event_handler(Some(hook), move |flapjack::Event { kind: event, .. }| match event {
             PlayerEvent::PreparedActivated => {
                 let _ = tx.send("activated");
             }
@@ -569,18 +570,17 @@ mod tests {
         });
         let a_src = super::build_uri_source_with_head(
             &companion::create_url(0, 0),
-            None,
-            Some(super::PreloadedHead {
+            flapjack::HttpHeaders::new(),
+            super::PreloadedHead {
                 bytes: a_bytes,
                 total: Some(a_len),
-            }),
+            },
         )
         .unwrap();
         player
-            .load(MediaInput::Element(a_src), StartPoint::Live)
-            .unwrap();
+            .load(MediaInput::Element(a_src), StartPoint::Live);
         let t0 = Instant::now();
-        player.play().unwrap();
+        player.play(player.allocate_op());
 
         // Pre-arm MID-playback (2s into A's 5s): the swap and activation land
         // while A's decoded tail is still draining.
@@ -589,14 +589,14 @@ mod tests {
             std::thread::sleep(Duration::from_secs(2));
             let b_src = super::build_uri_source_with_head(
                 &companion::create_url(0, 1),
-                None,
-                Some(super::PreloadedHead {
+                flapjack::HttpHeaders::new(),
+                super::PreloadedHead {
                     bytes: b_bytes,
                     total: Some(b_len),
-                }),
+                },
             )
             .unwrap();
-            pb2.prepare_next_async(MediaInput::Element(b_src));
+            pb2.prepare_next(MediaInput::Element(b_src));
         });
 
         let mut activated = false;

@@ -19,7 +19,7 @@
 #![no_main]
 
 use fcast_video::subpic::{
-    BitmapFormat, SubpicDecoder,
+    BitmapSubFormat, SubpicDecoder,
     dvb::{DvbDecoder, fixtures},
     pgs::ALLOCATION_BUDGET,
 };
@@ -165,7 +165,7 @@ fuzz_target!(|input: Input| {
         for segment in segments.iter().take(64) {
             bytes.extend_from_slice(&segment.bytes());
         }
-        let packet = harness::packet(BitmapFormat::Dvb, &bytes, index as u64 / 2);
+        let packet = harness::packet(BitmapSubFormat::Dvb, &bytes, index as u64 / 2);
         harness::push_and_check(
             &mut decoder,
             &packet,
@@ -187,7 +187,7 @@ fuzz_target!(|input: Input| {
     // panic" is passed by a decoder wedged into drawing nothing.
     harness::assert_survives(
         &mut decoder,
-        BitmapFormat::Dvb,
+        BitmapSubFormat::Dvb,
         &fixtures::grounded_display_set(),
         1,
         video,
@@ -203,7 +203,7 @@ fuzz_target!(|input: Input| {
     // set comes out beside the good one.
     harness::assert_recovers_last(
         &mut decoder,
-        BitmapFormat::Dvb,
+        BitmapSubFormat::Dvb,
         &fixtures::acquisition_display_set(),
         1,
         video,

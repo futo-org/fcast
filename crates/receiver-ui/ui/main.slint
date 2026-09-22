@@ -40,12 +40,36 @@ export {
 export component MainWindow inherits Window {
     title: @tr("FCast Receiver");
 
+    // On android the video surface lives BEHIND this window and a
+    // transparent scene region is a real hole onto it. Every non-video
+    // scene paints its own full-bleed background, so nothing else leaks.
+    // Opaque background pixels in the hole read as a gray screen wherever
+    // the compositor blends the window per pixel (Amlogic TV boxes).
+    background: Bridge.behind-window-video || Bridge.touch-mode ? transparent : Palette.background;
+
     default-font-family: "Outfit";
     default-font-size: 15px;
     default-font-weight: 400;
 
     public function device-connected() {
         Bridge.connected_devices += 1;
+    }
+
+    // slint's own inset tracking (fed by the android backend), mirrored
+    // into the Bridge for the views
+    property <length> sai-left: self.safe-area-insets.left;
+    property <length> sai-top: self.safe-area-insets.top;
+    property <length> sai-right: self.safe-area-insets.right;
+    property <length> sai-bottom: self.safe-area-insets.bottom;
+    changed sai-left => { Bridge.safe-area-left = self.sai-left; }
+    changed sai-top => { Bridge.safe-area-top = self.sai-top; }
+    changed sai-right => { Bridge.safe-area-right = self.sai-right; }
+    changed sai-bottom => { Bridge.safe-area-bottom = self.sai-bottom; }
+    init => {
+        Bridge.safe-area-left = self.sai-left;
+        Bridge.safe-area-top = self.sai-top;
+        Bridge.safe-area-right = self.sai-right;
+        Bridge.safe-area-bottom = self.sai-bottom;
     }
 
     property <bool> video-obstructed: Bridge.video-obstructed;
@@ -92,6 +116,8 @@ export component MainWindow inherits Window {
     property <bool> settings-open: Bridge.show-settings;
     changed settings-open => {
         if (!self.settings-open) {
+            // a field destroyed with the drawer never reports losing focus
+            Bridge.text-edit-focused = false;
             fs.focus();
         }
     }
@@ -133,6 +159,20 @@ export component MainWindow inherits Window {
 
     fs := FocusScope {
         key-pressed(event) => Bridge.global-key-pressed(event);
+
+        // A focused text field consumes arrows as cursor movement before
+        // they can bubble. On TV, Up/Down must stay navigation or the
+        // remote has no way out of the field, so take them in the capture
+        // phase. Left/Right keep moving the cursor.
+        capture-key-pressed(event) => {
+            if Bridge.tv-mode && Bridge.text-edit-focused
+                && (event.text == Key.UpArrow || event.text == Key.DownArrow) {
+                Bridge.tab-nav-serial += 1;
+                Bridge.remote-nav(event.text == Key.DownArrow);
+                return accept;
+            }
+            reject
+        }
 
         if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Video: VideoPlayerView { }
 
@@ -195,8 +235,13 @@ export component MainWindow inherits Window {
             opacity: Bridge.starting-up ? 100% : 0%;
             visible: self.opacity > 0%;
 
+            // The delay keeps this fully opaque until the idle view under
+            // it finished fading in; both paint the same background art, so
+            // the handoff is invisible. Without it the two half-opaque
+            // layers over the translucent window dip to near black.
             animate opacity {
                 duration: 250ms;
+                delay: 120ms;
                 easing: ease-in-out;
             }
         }

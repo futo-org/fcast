@@ -414,6 +414,8 @@ enum CompanionResponse {
 #[derive(Debug, PartialEq)]
 enum Action {
     None,
+    /// The sender introduced itself, see [`crate::gui::SenderInfo`].
+    SenderIntroduced(crate::gui::SenderInfo),
     Ping,
     Pong,
     EndSession,
@@ -718,8 +720,12 @@ impl State {
 
         Ok(match opcode {
             Opcode::Initial => {
-                let _msg = err_json!(v3::InitialSenderMessage, err_body!(body));
-                Action::None
+                let msg = err_json!(v3::InitialSenderMessage, err_body!(body));
+                Action::SenderIntroduced(crate::gui::SenderInfo {
+                    display_name: msg.display_name.unwrap_or_default(),
+                    app_name: msg.app_name.unwrap_or_default(),
+                    app_version: msg.app_version.unwrap_or_default(),
+                })
             }
             Opcode::SetPlaylistItem => {
                 let msg = err_json!(v3::SetPlaylistItemMessage, err_body!(body));
@@ -821,9 +827,12 @@ impl State {
                 union!(packet.payload_as_speed_changed()).speed(),
             )),
             v4::flat::Message::SenderIntroduction => {
-                // TODO: do something with the payload
-                debug!("Got inital sender message");
-                Action::None
+                let info = union!(packet.payload_as_sender_introduction()).device_info();
+                Action::SenderIntroduced(crate::gui::SenderInfo {
+                    display_name: info.display_name().unwrap_or_default().to_owned(),
+                    app_name: info.app_name().unwrap_or_default().to_owned(),
+                    app_version: info.app_version().unwrap_or_default().to_owned(),
+                })
             }
             v4::flat::Message::Load => Action::Op(Operation::PlayNew(WrappedPlayMessage::V4(
                 FlatLoadMessage::try_new(body.to_owned(), |buf| {
@@ -1147,10 +1156,9 @@ enum CompanionQueueItem {
     GetResource(FeedbackSender<companion::ResourceResponse>),
 }
 
-// Both live with the signaller that consumes them
-// (fcast-gst-elements::fwebrtcsrc); re-exported so
-// `crate::fcast::InternalMessage` and friends still resolve.
-pub use fcast_gst_elements::fwebrtcsrc::{InternalMessage, MirroringOfferRx};
+// Both live with the element that consumes them (fcast-webrtc); re-exported
+// so `crate::fcast::InternalMessage` and friends still resolve.
+pub use fcast_webrtc::{InternalMessage, MirroringOfferRx};
 
 pub struct InitialV4State {
     pub play_data: Arc<WrappedPlayMessage>,
@@ -1377,6 +1385,11 @@ impl SessionDriver {
         match res {
             Ok(action) => match action {
                 Action::None => (),
+                Action::SenderIntroduced(info) => {
+                    if let PacketOrigin::FCast { sender_id, .. } = origin {
+                        msg_tx.send(crate::message::Message::SenderIntroduced { sender_id, info });
+                    }
+                }
                 Action::Ping => self.write_simple(Opcode::Ping).await?,
                 Action::Pong => self.write_simple(Opcode::Pong).await?,
                 Action::EndSession => return Ok(true),

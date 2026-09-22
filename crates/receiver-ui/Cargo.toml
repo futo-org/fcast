@@ -7,19 +7,19 @@ license = "GPL-3.0-only"
 [dependencies]
 gst-static-env.workspace = true
 gstreamer-src.workspace = true
-# This crate owns the GL/render loop, so it is where `render` is switched on —
-# for itself and for the surface receiver-core re-exports to the binaries.
-receiver-core = { path = "../receiver-core", features = ["render"] }
-fcast-video = { path = "../fcast-video", features = ["slint", "render"] }
+receiver-core = { path = "../receiver-core" }
+fcast-video = { path = "../fcast-video" }
+# The hop from a cue's display list to the dodvg renderer's overlay slot, on
+# the lane that draws them. Pulled in by `scene-cues`, not named here, so a
+# build without that lane links neither it nor the renderer through it.
+i-slint-cue = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba", optional = true, default-features = false }
 fcast-protocol = { path = "../fcast-protocol", features = ["tokio-receiver"] }
 fcast-runtime = { path = "../fcast-runtime" }
-libplacebo.path = "../libplacebo"
 anyhow.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 parking_lot.workspace = true
 oneshot = { version = "0.2", features = ["std"] }
-glow.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
 gst-base.workspace = true
 gst-video.workspace = true
@@ -32,15 +32,58 @@ features = [
 ]
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
+tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "aws-lc-rs", "tls12" ] }
+# Video is the shared `slintvideosink`, which owns presentation end to end:
+# the device, the caps, the platform imports and the draw. Nothing about a
+# video buffer is written here, so none of the crates that describe one are
+# named here either.
+#
+# By rev like every other fork now that the repo is pushed. It names the same
+# slint rev this crate does, and the workspace patch redirects both ends, so
+# the graph carries one i-slint-core and one wgpu.
+slint-gstreamer-video = { git = "https://gitlab.futo.org/fcast/slint-gstreamer-video.git", rev = "d2e46a317ef605f15a5198f0eef5750518a2c3bf" }
 
+[target.'cfg(target_os = "android")'.dependencies]
+# the software video bridge's appsink
+gst-app.workspace = true
+# the immersive toggle's call into the activity
+jni = "0.21"
+ndk-context = "0.1"
+# AHardwareBuffer, for the zero-copy software video lane. Raw bindings, not
+# the safe `ndk` wrapper: its HardwareBuffer is behind an api-level feature
+# and does not expose lockPlanes, which is the whole point here. Same version
+# the slint android backend already pulls in, so nothing is duplicated.
+ndk-sys = "0.6"
+# the video surface behind the window (fork addition)
+i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba" }
+
+# `v1_28` is the floor the element's software-decode arm needs: gst 1.28 is
+# where GstUdmabufAllocator and GstVideoDmabufPool landed, and the sink
+# proposes that pair to software decoders. Linux only, which is also the only
+# place the bindings exist.
 [target.'cfg(target_os = "linux")'.dependencies]
-glutin_egl_sys = { version = "0.7.1" }
-i-slint-backend-winit = { workspace = true, optional = true }
+gst-video = { workspace = true, features = [ "v1_28" ] }
 
 # The cursor-hide callback in gui.rs sets the macOS cursor directly.
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2-app-kit = { version = "0.3.2", features = ["NSCursor"] }
+
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# The AV1 arm of the udmabuf proof needs dav1ddec in the test binary. The
+# shipping receivers get it through receiver-core's `static-gst-plugins`, but
+# that feature is off in the lane's own test runs, so the plugin is registered
+# here instead and the test never silently skips. Same rev and same bundled
+# dav1d wiring as receiver-core, or the two would resolve to different copies.
+gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "518b3b9b49ad23c659aa6ea3e587e1846f02b056", features = [ "static" ] }
+dav1d-sys = { version = "0.8", features = ["bundled"] }
+
+[dev-dependencies]
+# The end-to-end subtitle proof drives the real player and the real text
+# branch: flapjack owns the pipeline, the simulator synthesizes the streams.
+flapjack.workspace = true
+simulator.workspace = true
+# The transition soak prints the lane's own log lines when RUST_LOG is set.
+tracing-subscriber = { workspace = true, features = [ "env-filter" ] }
 
 [build-dependencies]
 gst-static-link.workspace = true
@@ -53,15 +96,22 @@ desktop = [
     "slint/backend-winit",
     "slint/renderer-dodvg",
     "receiver-core/desktop",
-    "wayland-subsurface",
+    "scene-cues",
+    # Video is `slintvideosink`, which needs slint itself on wgpu 30, so the
+    # dodvg renderer's wgpu backend rides along. The OpenGL one above stays
+    # for a box where no wgpu device comes up, which then plays without video.
+    "slint/unstable-wgpu-30",
+    "slint/renderer-dodvg-wgpu",
 ]
-wayland-subsurface = [
-    "dep:i-slint-backend-winit",
-    "fcast-video/wayland-subsurface",
-]
+# The route from the application to the dodvg renderer, which is where the
+# subtitle cue overlay slot lives.
+scene-cues = ["slint/unstable-winit-030", "i-slint-cue/dodvg"]
 systray = ["slint/system-tray", "receiver-core/systray"]
 kms-backend = ["slint/backend-linuxkms"]
-android = ["slint/backend-android-activity-06", "slint/renderer-skia", "receiver-core/android"]
+# No renderer feature: the android backend carries dodvg on wgpu 30 itself,
+# where it used to name skia here. `backend-android-activity-06` pulls no
+# renderer of its own, so this list is the whole choice.
+android = ["slint/backend-android-activity-06", "receiver-core/android"]
 tracy = ["receiver-core/tracy"]
 # Forwarded to the core so a receiver binary keeps naming one dependency.
 static-gst-plugins = ["receiver-core/static-gst-plugins"]

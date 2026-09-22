@@ -46,7 +46,7 @@ mavenPublishing {
         signAllPublications()
     }
 
-    val sdkVersion = (project.findProperty("sdkVersion") as String?) ?: "0.4.1"
+    val sdkVersion = (project.findProperty("sdkVersion") as String?) ?: "0.6.1"
     coordinates("org.fcast", "sender-sdk", sdkVersion)
 
     configure(

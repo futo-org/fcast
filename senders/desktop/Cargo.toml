@@ -37,7 +37,7 @@ url = "2"
 file-server = { path = "../../crates/file-server" }
 num_cpus.workspace = true
 mimalloc.workspace = true
-rustls = { version = "0.23.36", default-features = false, features = [ "tls12", "std", "ring" ]}
+rustls = { version = "0.23.36", default-features = false, features = [ "tls12", "std", "aws_lc_rs" ]}
 isolang.workspace = true
 
 [dependencies.fcast-sender-sdk]

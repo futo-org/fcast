@@ -1,3 +1,0 @@
-[submodule "crates/libplacebo-sys/libplacebo"]
-	path = crates/libplacebo-sys/libplacebo
-	url = https://code.videolan.org/videolan/libplacebo.git

@@ -359,6 +359,7 @@ cases!(
     connect_version_4,
     heartbeat_v4,
     cast_video_v4,
+    cast_video_hold_v4,
     cast_fake_image_url_resource_not_found_v4,
     cast_fake_video_url_resource_not_found_v4,
     cast_queue_v4,
@@ -1044,6 +1045,22 @@ define_test_case!(
         serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
         send!(Send::PlayV4 { file_id: 0 }),
         Step::SleepMillis(750),
+        send!(Send::StopV4),
+    ]
+);
+
+// Long steady-playback hold for profiling, not conformance. Plays for 30 s so
+// a perf/heaptrack window catches the steady decode+render path.
+define_test_case!(
+    cast_video_hold_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::SleepMillis(30000),
         send!(Send::StopV4),
     ]
 );

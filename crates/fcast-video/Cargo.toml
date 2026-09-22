@@ -10,83 +10,44 @@ gstreamer-src.workspace = true
 gst = { workspace = true, features = ["v1_26"] }
 gst-base.workspace = true
 gst-video.workspace = true
-# GPU renderer only — see the `render` feature.
-glow = { workspace = true, optional = true }
-libplacebo = { path = "../libplacebo", optional = true }
-drm-fourcc = "2.2.0"
 tracing.workspace = true
+# `OverlaySpace` and the placement vocabulary, so the renderer that honours the
+# distinction is the one that defines it. No GStreamer and no wgpu in it.
+i-slint-video = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba" }
 parking_lot.workspace = true
-# The one text rasterizer (src/cue_ir.rs): parley + vello_cpu render every
-# arm, pango-markup cues included (parsed by gst-subparse's pure-Rust
-# pango-markup reimplementation). Nothing here links pango or cairo.
-#
-# gst-subparse is here for its `subparse_formats` + `pango_markup` re-exports
-# alone; the plugin's elements are registered by receiver-core, not by us.
-gst-subparse.workspace = true
-parley.workspace = true
-peniko.workspace = true
-vello_cpu.workspace = true
+# The text rasterizer, which moved to the slint fork: parley lays a cue out
+# and ends at a display list, vello_cpu paints one when a consumer needs
+# pixels rather than primitives. Nothing here links pango or cairo.
+i-slint-cue = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba", features = [ "engine", "raster" ] }
+# flapjack-subparse is here for its `pango_markup` re-export alone; the
+# plugin's elements are registered by receiver-core, not by us.
+flapjack-subparse.workspace = true
+# The bitmap subtitle decoders (src/subpic.rs). They live with the transport
+# that delivers their packets, so this crate and the driver no longer each
+# carry a copy and a mirrored format enum.
+flapjack.workspace = true
 anyhow.workspace = true
 smallvec.workspace = true
 thiserror.workspace = true
 clap.workspace = true
-slint = { workspace = true, optional = true, features = [ "compat-1-2", "std" ] }
 
 [dev-dependencies]
 # tests/cue_ir_engine.rs drives the REAL parser element into the engine, so it
 # needs an appsrc/appsink pair to bracket it.
 gst-app.workspace = true
 
-[target.'cfg(not(target_os = "windows"))'.dependencies]
-gst-allocators = { package = "gstreamer-allocators", version = "0.25" }
-
-[target.'cfg(target_os = "linux")'.dependencies]
-egl-sys = { path = "../egl-sys", optional = true }
-glutin_egl_sys = { version = "0.7.1", optional = true }
-wayland-client = { version = "0.31", optional = true }
-wayland-backend = { version = "0.3", features = ["client_system"], optional = true }
-wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"], optional = true }
-raw-window-handle = { version = "0.6", optional = true }
-i-slint-backend-winit = { workspace = true, optional = true }
-libplacebo-vulkan = { path = "../libplacebo-vulkan", optional = true }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-objc2-app-kit = "0.3.2"
-
-[target.'cfg(target_os = "android")'.dependencies]
-gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.25" }
-glutin_egl_sys = { version = "0.7.1", optional = true }
-
 [features]
 default = []
-# The GPU renderer: libplacebo (which builds the C library from the git
-# submodule), OpenGL and EGL, plus the sink traits built on them
-# (`placebo`/`opengl`/`video_sink`/`egl`/`dmabuf`).
-#
-# OFF by default. Nothing under test here renders: the cue, cue-IR and
-# subpicture engines — what `tests/` and `fuzz/` drive — are pure CPU
-# rasterization, so a test build has no business compiling libplacebo. The
-# products that DO render (receiver-ui, and receiver-core's re-export surface
-# via its own `render`) ask for it by name.
-render = [
-    "dep:libplacebo",
-    "dep:glow",
-    "dep:egl-sys",
-    "dep:glutin_egl_sys",
-]
-# Mirrors receiver-core's feature of the same name: pulls in the Wayland
-# subsurface sink and its winit / vulkan dependencies.
-wayland-subsurface = [
-    "render",
-    "dep:wayland-client",
-    "dep:wayland-backend",
-    "dep:wayland-protocols",
-    "dep:raw-window-handle",
-    "dep:i-slint-backend-winit",
-    "dep:libplacebo-vulkan",
-    "slint/backend-winit",
-    "slint/renderer-dodvg",
-]
+# The dodvg subtitle oracle fixtures. Gates
+# the `cue_dodvg_fixture` example, which dumps `CueScene`s plus the pixels the
+# vello_cpu backend paints from them, so the dodvg consumer in the slint fork
+# can draw the same display list and be diffed against it. Adds no dependency
+# and nothing links it in a normal build.
+cue-ir-spike = []
+
+[[example]]
+name = "cue_dodvg_fixture"
+required-features = ["cue-ir-spike"]
 
 [build-dependencies]
 gst-static-link.workspace = true

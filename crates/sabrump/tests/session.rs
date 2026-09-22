@@ -1078,3 +1078,487 @@ async fn honours_a_server_backoff_before_the_next_request() {
 
     session.release();
 }
+
+// --- regression fixtures: client restarts racing server directives ---
+
+/// A response carrying `count` consecutive `dur_ms` segments for `itag` from
+/// `start_ms`, behind an init segment and a FormatInitializationMetadata that
+/// declares no end (so nothing ever reads as complete).
+fn long_response(itag: i32, lmt: u64, count: i32, dur_ms: i64) -> Vec<u8> {
+    let mut out = Vec::new();
+    let init = FormatInitializationMetadata {
+        video_id: "vid".into(),
+        format_id: Some(FormatId {
+            itag,
+            lmt,
+            xtags: String::new(),
+        }),
+        mime_type: "video/mp4".into(),
+        ..Default::default()
+    };
+    ump_part(
+        &mut out,
+        PartType::FormatInitializationMetadata,
+        &init.encode_to_vec(),
+    );
+    emit_segment(&mut out, itag, lmt, 1, 0, true, 0, 0, b"INIT");
+    for seq in 0..count {
+        emit_segment(
+            &mut out,
+            itag,
+            lmt,
+            2 + seq,
+            seq,
+            false,
+            seq as i64 * dur_ms,
+            dur_ms,
+            b"SEG",
+        );
+    }
+    out
+}
+
+/// One media segment at `start_ms` for the default video format, behind its
+/// init and format metadata.
+fn segment_at(seq: i32, start_ms: i64) -> Vec<u8> {
+    let mut out = Vec::new();
+    let init = FormatInitializationMetadata {
+        video_id: "vid".into(),
+        format_id: Some(FormatId {
+            itag: ITAG,
+            lmt: LMT,
+            xtags: String::new(),
+        }),
+        mime_type: "video/mp4".into(),
+        ..Default::default()
+    };
+    ump_part(
+        &mut out,
+        PartType::FormatInitializationMetadata,
+        &init.encode_to_vec(),
+    );
+    emit_segment(&mut out, ITAG, LMT, 1, 0, true, 0, 0, b"INIT");
+    emit_segment(&mut out, ITAG, LMT, 2, seq, false, start_ms, 1000, b"SEG");
+    out
+}
+
+fn format_init_only() -> Vec<u8> {
+    let mut out = Vec::new();
+    let init = FormatInitializationMetadata {
+        video_id: "vid".into(),
+        format_id: Some(FormatId {
+            itag: ITAG,
+            lmt: LMT,
+            xtags: String::new(),
+        }),
+        ..Default::default()
+    };
+    ump_part(
+        &mut out,
+        PartType::FormatInitializationMetadata,
+        &init.encode_to_vec(),
+    );
+    out
+}
+
+/// A spec long enough that no frontier check reads the stream as finished.
+fn long_spec() -> SabrStreamSpec {
+    SabrStreamSpec {
+        duration_us: 600_000_000,
+        ..spec()
+    }
+}
+
+/// Install a listener that calls `session.restart(to_us)` once, from inside
+/// the pump, the first time a FormatInitializationMetadata part is consumed.
+/// That is the one hook that lets a test land a client restart at a
+/// deterministic point INSIDE a response.
+fn restart_on_first_format_init(session: &SabrSession, to_us: i64) {
+    let fired = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let target = session.clone();
+    session.set_listener(Some(Arc::new(move |event| {
+        if let SabrSessionEvent::FormatInitialization(_) = event
+            && !fired.swap(true, std::sync::atomic::Ordering::AcqRel)
+        {
+            target.restart(to_us, true);
+        }
+    })));
+}
+
+#[tokio::test]
+async fn a_client_restart_cancels_a_pending_server_seek() {
+    // A genuine SABR_SEEK parks `seek_pending` until a covering segment
+    // lands. A client seek that arrives before then is the newer intent, and
+    // once its own resume request has been answered the pending server seek
+    // must not take the request position back to the server's target.
+    let mut server_seek = Vec::new();
+    sabr_seek_part(&mut server_seek, 3_000_000, 1000);
+
+    let (transport, requests) = SabrTransport::canned(vec![
+        server_seek,
+        format_init_only(),
+        segment_at(200, 1_000_000),
+        Vec::new(),
+    ]);
+    let session = SabrSession::new(long_spec(), transport);
+    let video = video_format();
+    // Fires while response 2 is consumed, after the server seek is pending.
+    restart_on_first_format_init(&session, 1_000_000_000);
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(5), || requests.lock().len() >= 4).await,
+        "the session never reached its fourth request"
+    );
+    let bodies = requests.lock().clone();
+    assert_eq!(
+        player_time_ms(&bodies[1]),
+        Some(3_000_000),
+        "server seek honoured"
+    );
+    assert_eq!(
+        player_time_ms(&bodies[2]),
+        Some(1_000_000),
+        "client restart honoured"
+    );
+    assert_eq!(
+        player_time_ms(&bodies[3]),
+        Some(1_001_000),
+        "the request after the restart's media landed went back to the stale server seek"
+    );
+
+    session.release();
+}
+
+#[tokio::test]
+async fn a_server_seek_parsed_before_a_restart_is_not_applied_after_it() {
+    // The seek directive is parsed early in a response and applied when the
+    // response ends. A client restart landing in between makes it stale: it
+    // was the server's answer to a position the client has since abandoned.
+    // Applying it anyway re-anchors the demands and the request position to
+    // the old target.
+    let mut r1 = Vec::new();
+    sabr_seek_part(&mut r1, 3_000_000, 1000);
+    // Parsed after the seek; the listener restarts the session here.
+    let fmt = format_init_only();
+    r1.extend_from_slice(&fmt);
+
+    let (transport, requests) =
+        SabrTransport::canned(vec![r1, segment_at(200, 1_000_000), Vec::new()]);
+    let session = SabrSession::new(long_spec(), transport);
+    let video = video_format();
+    restart_on_first_format_init(&session, 1_000_000_000);
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(5), || requests.lock().len() >= 3).await,
+        "the session never reached its third request"
+    );
+    let bodies = requests.lock().clone();
+    assert_eq!(
+        player_time_ms(&bodies[1]),
+        Some(1_000_000),
+        "client restart honoured"
+    );
+    assert_eq!(
+        player_time_ms(&bodies[2]),
+        Some(1_001_000),
+        "a stale server seek hijacked the position after the client restart"
+    );
+    assert_eq!(
+        session.server_seek_generation(),
+        0,
+        "a stale server seek was reported to consumers as a discontinuity"
+    );
+
+    session.release();
+}
+
+#[tokio::test]
+async fn a_redirect_parsed_before_a_restart_keeps_the_restart_position() {
+    // A redirect re-issues the request it interrupted, on the new host. When a
+    // client restart landed mid-response that re-issue must target the
+    // restart's position, not the position the redirected request carried.
+    let mut r1 = Vec::new();
+    let redirect = sabrump::proto::SabrRedirect {
+        url: "https://elsewhere.test/videoplayback".into(),
+    };
+    ump_part(&mut r1, PartType::SabrRedirect, &redirect.encode_to_vec());
+    let fmt = format_init_only();
+    r1.extend_from_slice(&fmt);
+
+    let (transport, requests) = SabrTransport::canned(vec![r1, Vec::new()]);
+    let session = SabrSession::new(long_spec(), transport);
+    let video = video_format();
+    restart_on_first_format_init(&session, 1_000_000_000);
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(5), || requests.lock().len() >= 2).await,
+        "the redirected request never fired"
+    );
+    let bodies = requests.lock().clone();
+    assert_eq!(player_time_ms(&bodies[0]), Some(0));
+    assert_eq!(
+        player_time_ms(&bodies[1]),
+        Some(1_000_000),
+        "the redirect re-issued the pre-restart position instead of the restart's"
+    );
+
+    session.release();
+}
+
+// --- regression fixtures: eviction ---
+
+#[tokio::test]
+async fn eviction_keeps_up_with_playback_after_a_restart() {
+    // Every playback starts with a restart (appsrc's seek-data at 0) and every
+    // seek is one. The eviction floor must follow the playhead afterwards, or
+    // everything fetched since the last seek is held for the rest of the item.
+    let (transport, requests) =
+        SabrTransport::canned(vec![long_response(ITAG, LMT, 10, 10_000), Vec::new()]);
+    let session = SabrSession::new(long_spec(), transport);
+    let video = video_format();
+    let buffer = session.buffer_for(&video);
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    session.restart(0, true);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            buffer.get(9).map(|s| s.is_complete()).unwrap_or(false)
+        })
+        .await,
+        "segments did not arrive"
+    );
+    // The consumer has pushed up to 90s. The next request evicts first.
+    session.set_playback_position(90_000_000);
+    session.advance_demand(Role::Video, 90_000_000);
+    assert!(
+        wait_until(Duration::from_secs(3), || requests.lock().len() >= 2).await,
+        "the follow-up request never fired"
+    );
+
+    assert!(
+        buffer.get(0).is_none(),
+        "segment 0 (0s-10s) survived with the playhead at 90s and 30s keep-behind"
+    );
+    assert!(buffer.get(4).is_none(), "segment 4 (40s-50s) survived");
+    assert!(
+        buffer.get(6).is_some(),
+        "segment 6 (60s-70s) was evicted inside keep-behind"
+    );
+    assert!(buffer.get(9).is_some());
+
+    session.release();
+}
+
+#[tokio::test]
+async fn eviction_never_passes_the_slowest_consumer() {
+    // Video and audio feeders each report their own frontier as the playback
+    // position, last writer wins. An audio feeder well ahead of the video
+    // feeder must not let eviction remove video the video feeder has yet to
+    // push: the feeder then waits forever for a sequence that is gone, while
+    // the pump believes the run from the first remaining segment is enough.
+    let mut r1 = long_response(ITAG, LMT, 10, 10_000);
+    let audio = build_audio_long(10, 10_000);
+    r1.extend_from_slice(&audio);
+
+    let (transport, requests) = SabrTransport::canned(vec![r1, Vec::new()]);
+    let session = SabrSession::new(
+        SabrStreamSpec {
+            audio_formats: vec![audio_format()],
+            ..long_spec()
+        },
+        transport,
+    );
+    let video = video_format();
+    let audio_fmt = audio_format();
+    let video_buffer = session.buffer_for(&video);
+    let audio_buffer = session.buffer_for(&audio_fmt);
+
+    session.set_demand(Role::Video, video.clone(), 0);
+    session.set_demand(Role::Audio, audio_fmt.clone(), 0);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            video_buffer
+                .get(9)
+                .map(|s| s.is_complete())
+                .unwrap_or(false)
+                && audio_buffer
+                    .get(9)
+                    .map(|s| s.is_complete())
+                    .unwrap_or(false)
+        })
+        .await,
+        "segments did not arrive"
+    );
+    // Audio pushed through 95s, video only through 5s.
+    session.advance_demand(Role::Video, 5_000_000);
+    session.set_playback_position(95_000_000);
+    session.advance_demand(Role::Audio, 95_000_000);
+    assert!(
+        wait_until(Duration::from_secs(3), || requests.lock().len() >= 2).await,
+        "the follow-up request never fired"
+    );
+
+    assert!(
+        video_buffer.get(1).is_some(),
+        "video segment 1 (10s-20s) was evicted while the video consumer was at 5s"
+    );
+    assert!(video_buffer.get(5).is_some());
+
+    session.release();
+}
+
+/// `count` audio segments of `dur_ms` with the audio format's init, appended
+/// to a response.
+fn build_audio_long(count: i32, dur_ms: i64) -> Vec<u8> {
+    let mut out = Vec::new();
+    let init = FormatInitializationMetadata {
+        video_id: "vid".into(),
+        format_id: Some(FormatId {
+            itag: AUDIO_ITAG,
+            lmt: AUDIO_LMT,
+            xtags: String::new(),
+        }),
+        mime_type: "audio/mp4".into(),
+        ..Default::default()
+    };
+    ump_part(
+        &mut out,
+        PartType::FormatInitializationMetadata,
+        &init.encode_to_vec(),
+    );
+    // Header ids continue past the video response's so they never collide.
+    emit_segment(
+        &mut out, AUDIO_ITAG, AUDIO_LMT, 100, 0, true, 0, 0, b"AINIT",
+    );
+    for seq in 0..count {
+        emit_segment(
+            &mut out,
+            AUDIO_ITAG,
+            AUDIO_LMT,
+            101 + seq,
+            seq,
+            false,
+            seq as i64 * dur_ms,
+            dur_ms,
+            b"ASEG",
+        );
+    }
+    out
+}
+
+// --- regression fixtures: server-side format switch ---
+
+#[tokio::test]
+async fn a_server_format_switch_is_not_an_empty_response() {
+    // With alternates offered, the server may answer with another rung. The
+    // session adopts it, but the response is judged against the rung that was
+    // active when the request went out, so media for the adopted rung reads
+    // as "no media" and earns an empty-response backoff on every switch.
+    let alternate = SabrFormat {
+        itag: 136,
+        last_modified: LMT + 1,
+        height: 720,
+        ..video_format()
+    };
+    let mut r1 = Vec::new();
+    let init = FormatInitializationMetadata {
+        video_id: "vid".into(),
+        format_id: Some(FormatId {
+            itag: alternate.itag,
+            lmt: alternate.last_modified,
+            xtags: String::new(),
+        }),
+        mime_type: "video/mp4".into(),
+        ..Default::default()
+    };
+    ump_part(
+        &mut r1,
+        PartType::FormatInitializationMetadata,
+        &init.encode_to_vec(),
+    );
+    emit_segment(&mut r1, 136, LMT + 1, 1, 0, true, 0, 0, b"INIT");
+    emit_segment(&mut r1, 136, LMT + 1, 2, 0, false, 0, 1000, b"B0");
+    emit_segment(&mut r1, 136, LMT + 1, 3, 1, false, 1000, 1000, b"B1");
+    emit_segment(&mut r1, 136, LMT + 1, 4, 2, false, 2000, 1000, b"B2");
+
+    let (transport, requests) = SabrTransport::canned(vec![r1, Vec::new()]);
+    let session = SabrSession::new(long_spec(), transport);
+    let preferred = video_format();
+    let buffer = session.buffer_for(&alternate);
+
+    session.set_demand_alternates(Role::Video, vec![preferred, alternate.clone()], 0);
+    let _pump = spawn_pump(&session);
+
+    assert!(
+        wait_until(Duration::from_secs(3), || {
+            buffer.get(2).map(|s| s.is_complete()).unwrap_or(false)
+        })
+        .await,
+        "the adopted rung's segments did not arrive"
+    );
+    assert_eq!(
+        session.active_format_key(Role::Video),
+        Some(alternate.key()),
+        "the server's rung was not adopted"
+    );
+    // Three seconds buffered against a 20s readahead: the next request is due
+    // at once. An empty-response backoff would hold it for 500ms.
+    assert!(
+        wait_until(Duration::from_millis(250), || requests.lock().len() >= 2).await,
+        "the request after a server format switch was held back by an empty-response backoff"
+    );
+
+    session.release();
+}
+
+// --- regression fixtures: listener re-entrancy ---
+
+#[test]
+fn a_listener_may_release_the_session() {
+    // The obvious reaction to a SessionError is to release the session. The
+    // listener runs on the pump; releasing from there must not deadlock it.
+    // Own thread and runtime so a deadlocked pump cannot hang the test's own
+    // polling, and is left behind rather than joined if it does.
+    let session = SabrSession::new(spec(), SabrTransport::canned_status(500));
+    let video = video_format();
+    session.set_demand(Role::Video, video, 0);
+    {
+        let target = session.clone();
+        session.set_listener(Some(Arc::new(move |event| {
+            if let SabrSessionEvent::SessionError(_) = event {
+                target.release();
+            }
+        })));
+    }
+    let pump = session.clone();
+    let (done, returned) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("runtime");
+        runtime.block_on(pump.run());
+        let _ = done.send(());
+    });
+
+    // `is_released()` flips before `release()` re-takes the listener lock, so
+    // only the pump RETURNING proves it did not deadlock behind its own lock.
+    assert!(
+        returned.recv_timeout(Duration::from_secs(3)).is_ok(),
+        "the pump deadlocked on its listener lock when the listener released the session"
+    );
+    assert!(session.is_released());
+}

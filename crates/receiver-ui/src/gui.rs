@@ -109,7 +109,6 @@ impl From<ui_types::UiToastKind> for UiToastKind {
             K::OutputFailure => UiToastKind::OutputFailure,
             K::ImageDownloadFailed => UiToastKind::ImageDownloadFailed,
             K::MissingCodecForTrack => UiToastKind::MissingCodecForTrack,
-            K::StuckStream => UiToastKind::StuckStream,
             K::SubtitleFormatUnsupported => UiToastKind::SubtitleFormatUnsupported,
             K::GenericWarning => UiToastKind::GenericWarning,
         }
@@ -121,7 +120,7 @@ fn toast_kind_is_warning(kind: ui_types::UiToastKind) -> bool {
     use ui_types::UiToastKind as K;
     matches!(
         kind,
-        K::MissingCodecForTrack | K::StuckStream | K::SubtitleFormatUnsupported | K::GenericWarning
+        K::MissingCodecForTrack | K::SubtitleFormatUnsupported | K::GenericWarning
     )
 }
 
@@ -194,9 +193,20 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
             let ui = ui_weak
                 .upgrade()
                 .expect("callbacks always get called from the event loop");
-            let is_fullscreen = !ui.window().is_fullscreen();
-            ui.window().set_fullscreen(is_fullscreen);
-            ui.global::<Bridge>().set_is_fullscreen(is_fullscreen);
+            // android has no windowed state, fullscreen means immersive
+            // (system bars hidden); the bridge tracks it since the slint
+            // window knows nothing about it
+            #[cfg(target_os = "android")]
+            {
+                let fullscreen = !ui.global::<Bridge>().get_is_fullscreen();
+                set_android_fullscreen(&ui, fullscreen);
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                let is_fullscreen = !ui.window().is_fullscreen();
+                ui.window().set_fullscreen(is_fullscreen);
+                ui.global::<Bridge>().set_is_fullscreen(is_fullscreen);
+            }
         }
     });
 
@@ -209,6 +219,34 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
 
     bridge.on_force_quit(move || {
         log_if_err!(slint::quit_event_loop());
+    });
+
+    bridge.on_remote_nav({
+        let ui_weak = ui.as_weak();
+        move |forward| {
+            let ui_weak = ui_weak.clone();
+            // A synthetic Tab walks the same focus chain a keyboard would.
+            // Deferred a tick so it never re-enters the key dispatch the
+            // arrow is still unwinding through.
+            slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+                let Some(ui) = ui_weak.upgrade() else { return };
+                let key = if forward {
+                    slint::platform::Key::Tab
+                } else {
+                    slint::platform::Key::Backtab
+                };
+                let text: slint::SharedString = key.into();
+                ui.window()
+                    .dispatch_event(slint::platform::WindowEvent::KeyPressed { text: text.clone() });
+                ui.window()
+                    .dispatch_event(slint::platform::WindowEvent::KeyReleased { text });
+            });
+        }
+    });
+
+    bridge.on_background_app(move || {
+        #[cfg(target_os = "android")]
+        crate::android_immersive::move_task_to_back();
     });
 
     bridge.on_port_conflict_retry({
@@ -261,15 +299,13 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
                         });
             }
 
-            // The subsurface sink occludes the winit window once controls hide, so Slint's
-            // redraw-applied cursor change never lands: set it on the winit window, hide
-            // and unhide.
-            #[cfg(all(target_os = "linux", feature = "wayland-subsurface"))]
+            // The winit window's own cursor visibility as well: slint only
+            // re-applies a mouse-cursor when the pointer moves, so this is
+            // what makes the hide land on a still pointer.
+            #[cfg(feature = "scene-cues")]
             {
-                use i_slint_backend_winit::WinitWindowAccessor;
-                ui.window().with_winit_window(|win| {
-                    win.set_cursor_visible(!hidden);
-                });
+                use slint::winit_030::WinitWindowAccessor;
+                ui.window().with_winit_window(|win| win.set_cursor_visible(!hidden));
             }
 
             #[cfg(target_os = "macos")]
@@ -369,22 +405,95 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
     });
 }
 
-pub enum RendererMessage {
-    CreateBluredAudioTrackCover(DecodedImage),
-    ClearBluredAudioTrackCover,
-    ClearVideoOverlays,
+/// Damper for the 5 Hz player tick. Every slint property write schedules a
+/// frame even when nothing visible depends on it, which kept the renderer
+/// producing ~10 fps of full-window passes over a parked player UI (progress
+/// and buffered ranges land as two commands per tick). Progress quantizes to
+/// whole seconds, the finest granularity anything on screen shows, and both
+/// skip entirely while the video OSD is hidden; the next tick after a reveal
+/// refreshes within 200 ms.
+#[derive(Default)]
+pub struct TickDamper {
+    last_progress: f32,
+    last_ranges: Vec<(f32, f32)>,
 }
 
-type RendererMsgSender = std::sync::mpsc::Sender<RendererMessage>;
-
-fn set_playback_progress(bridge: &Bridge, prog_sec: Seconds, dur_sec: Seconds) {
-    if !bridge.get_is_scrubbing_position() && !bridge.get_seek_pending() {
-        bridge.set_progress_secs(prog_sec);
+/// Fullscreen on android means immersive (system bars hidden); the slint
+/// window knows nothing about it, the Bridge tracks the state. Overlay bars
+/// do not resize the window, so the geometry hook never fires on its own;
+/// the safe-area insets still changed. Invoked once now, once after the
+/// bars settle.
+#[cfg(target_os = "android")]
+fn set_android_fullscreen(ui: &MainWindow, fullscreen: bool) {
+    let bridge = ui.global::<Bridge>();
+    if bridge.get_is_fullscreen() == fullscreen {
+        return;
     }
-    bridge.set_duration_secs(dur_sec);
+    crate::android_immersive::set(fullscreen);
+    bridge.set_is_fullscreen(fullscreen);
+    bridge.invoke_window_geometry_changed();
+    let ui_weak = ui.as_weak();
+    slint::Timer::single_shot(std::time::Duration::from_millis(400), move || {
+        if let Some(ui) = ui_weak.upgrade() {
+            ui.global::<Bridge>().invoke_window_geometry_changed();
+        }
+    });
 }
 
-fn set_buffered_ranges(bridge: &Bridge, ranges: Vec<(f32, f32)>) {
+fn video_osd_hidden(bridge: &Bridge) -> bool {
+    bridge.get_player_variant() == UiPlayerVariant::Video
+        && !bridge.get_controls_overlay_visible()
+}
+
+fn set_playback_progress(
+    bridge: &Bridge,
+    damper: &mut TickDamper,
+    prog_sec: Seconds,
+    dur_sec: Seconds,
+    forced: bool,
+) {
+    if bridge.get_duration_secs() != dur_sec {
+        bridge.set_duration_secs(dur_sec);
+    }
+    if !forced {
+        if bridge.get_is_scrubbing_position() || bridge.get_seek_pending() {
+            return;
+        }
+        if video_osd_hidden(bridge) {
+            // Not fully parked: a reveal renders one frame with the stale
+            // property before the next tick corrects it, so cap the drift
+            // that frame can show. One write per 5s is render noise.
+            if (prog_sec - damper.last_progress).abs() < 5.0 {
+                return;
+            }
+        } else {
+            let same_second = prog_sec.floor() == damper.last_progress.floor();
+            if same_second && prog_sec >= damper.last_progress {
+                return;
+            }
+        }
+    }
+    damper.last_progress = prog_sec;
+    bridge.set_progress_secs(prog_sec);
+}
+
+fn set_buffered_ranges(
+    bridge: &Bridge,
+    damper: &mut TickDamper,
+    ranges: Vec<(f32, f32)>,
+    forced: bool,
+) {
+    if !forced {
+        if damper.last_ranges == ranges {
+            return;
+        }
+        // last_ranges stays untouched here, so the compare above pushes
+        // the fresh state on the first visible tick after a reveal
+        if video_osd_hidden(bridge) {
+            return;
+        }
+    }
+    damper.last_ranges = ranges.clone();
     let model: Vec<crate::UiBufferedRange> = ranges
         .into_iter()
         .map(|(start, stop)| crate::UiBufferedRange { start, stop })
@@ -392,9 +501,47 @@ fn set_buffered_ranges(bridge: &Bridge, ranges: Vec<(f32, f32)>) {
     bridge.set_buffered_ranges(Rc::new(VecModel::from(model)).into());
 }
 
-fn clear_audio_covers(bridge: &Bridge, renderer_tx: &RendererMsgSender) {
+/// Stamps cover-blur jobs so a worker finishing after the track changed
+/// cannot overwrite the newer cover (or a clear) with a stale one.
+static COVER_BLUR_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn clear_audio_covers(bridge: &Bridge) {
+    // Bumped so a blur still in flight lands nowhere.
+    COVER_BLUR_GEN.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     bridge.set_audio_track_cover(CompoundImage::default());
-    let _ = renderer_tx.send(RendererMessage::ClearBluredAudioTrackCover);
+    bridge.set_blured_audio_track_cover(CompoundImage::default());
+}
+
+/// The desktop lane downscales on the shared device when there is one (a 4K+
+/// cover costs real cpu time to shrink) and cpu-blurs the 96px result,
+/// android does both on the cpu. The worker lands its result only if still
+/// current.
+fn spawn_cover_blur(ui: &MainWindow, img: DecodedImage) {
+    use std::sync::atomic::Ordering;
+    let generation = COVER_BLUR_GEN.fetch_add(1, Ordering::Relaxed) + 1;
+    let ui_weak = ui.as_weak();
+    std::thread::spawn(move || {
+        #[cfg(not(target_os = "android"))]
+        let small = crate::element_video::has_device()
+            .then(|| crate::element_video::downscale_cover(&img.image, 96))
+            .flatten();
+        #[cfg(target_os = "android")]
+        let small: Option<receiver_core::image::RgbaImage> = None;
+        // blur_cover skips its own downscale when the input is already small
+        let blurred = receiver_core::image::blur_cover(small.as_ref().unwrap_or(&img.image));
+        let pixbuf = to_slint_pixbuf(&blurred);
+        let rotation = receiver_core::image::orientation_to_degs(img.orientation);
+        let _ = ui_weak.upgrade_in_event_loop(move |ui| {
+            if COVER_BLUR_GEN.load(Ordering::Relaxed) != generation {
+                return;
+            }
+            ui.global::<Bridge>()
+                .set_blured_audio_track_cover(CompoundImage {
+                    img: slint::Image::from_rgba8(pixbuf),
+                    rotation,
+                });
+        });
+    });
 }
 
 /// Re-assert a visible cursor whenever the video scene is NOT up.
@@ -416,7 +563,15 @@ fn unhide_cursor_outside_video_scene(ui: &MainWindow) {
     }
 }
 
-fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererMsgSender) {
+fn ui_sender(info: receiver_core::gui::SenderInfo) -> crate::UiSender {
+    crate::UiSender {
+        name: info.display_name.to_shared_string(),
+        app: info.app_name.to_shared_string(),
+        version: info.app_version.to_shared_string(),
+    }
+}
+
+fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper) {
     let bridge = ui.global::<Bridge>();
 
     match cmd {
@@ -426,39 +581,83 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             fullscreen,
             prev_tx,
         } => {
-            let window = ui.window();
-            let _ = prev_tx.send(window.is_fullscreen());
-            window.set_fullscreen(fullscreen);
+            #[cfg(target_os = "android")]
+            {
+                let _ = prev_tx.send(bridge.get_is_fullscreen());
+                set_android_fullscreen(&ui, fullscreen);
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                let window = ui.window();
+                let _ = prev_tx.send(window.is_fullscreen());
+                window.set_fullscreen(fullscreen);
+            }
         }
         UpdateGuiCommand::SetAppState(state) => {
+            // A load is coming: get the video surface up before the codec
+            // builds, a window handed late costs a rebuild and a keyframe
+            // wait (frozen first seconds)
+            #[cfg(target_os = "android")]
+            if matches!(state, ui_types::AppState::LoadingMedia) {
+                crate::android_surface_video::preopen_current();
+            }
+            // Idle means no load in flight: a pre-open left pending (a stop
+            // or failed load that beat the caps) would re-open a fullscreen
+            // EMPTY surface at teardown, whose punch culls the whole UI
+            // (black screen). Park it.
+            #[cfg(target_os = "android")]
+            if matches!(state, ui_types::AppState::Idle) {
+                crate::android_surface_video::park_current();
+            }
+            // the sw frame belongs to the leaving item, a retained image
+            // would flash it when the next video starts
+            if matches!(
+                state,
+                ui_types::AppState::LoadingMedia | ui_types::AppState::Idle
+            ) {
+                bridge.set_sw_video_frame(slint::Image::default());
+                bridge.set_sw_video_active(false);
+                // The zero-copy android arm also holds gst buffers behind
+                // that image, and those are pool slots the next item's
+                // decoder wants back.
+                #[cfg(target_os = "android")]
+                crate::android_video::release_frames();
+                // and so does its bitmap subtitle
+                bridge.set_bitmap_subtitle(crate::SubtitleOverlay::default());
+                // and the text cues, engine memory included
+                #[cfg(target_os = "android")]
+                crate::android_subtitles::clear_current();
+            }
             bridge.set_app_state(state.into());
             unhide_cursor_outside_video_scene(&ui);
         }
         UpdateGuiCommand::UpdatePlaylist { start_idx, length } => {
             bridge.set_playlist_idx(start_idx);
-            bridge.set_playlist_idx(length);
+            bridge.set_playlist_length(length);
         }
         UpdateGuiCommand::SetImage { typ, img } => match typ {
             ImageType::Preview => bridge.set_image_preview(as_compound(&img.0)),
             ImageType::AudioTrackCover => {
                 bridge.set_audio_track_cover(as_compound(&img.0));
-                let _ = renderer_tx.send(RendererMessage::CreateBluredAudioTrackCover(img.0));
+                spawn_cover_blur(&ui, img.0);
             }
         },
         UpdateGuiCommand::UpdatePlaybackProgress {
             progress_s,
             duration_s,
         } => {
-            set_playback_progress(&bridge, progress_s, duration_s);
+            set_playback_progress(&bridge, damper, progress_s, duration_s, false);
         }
-        UpdateGuiCommand::SetBufferedRanges(ranges) => set_buffered_ranges(&bridge, ranges),
+        UpdateGuiCommand::SetBufferedRanges(ranges) => {
+            set_buffered_ranges(&bridge, damper, ranges, false)
+        }
         UpdateGuiCommand::SetMediaTitle(title) => bridge.set_media_title(title.to_shared_string()),
         UpdateGuiCommand::SetArtistName(name) => bridge.set_artist_name(name.to_shared_string()),
-        UpdateGuiCommand::ClearAudioCovers => clear_audio_covers(&bridge, renderer_tx),
+        UpdateGuiCommand::ClearAudioCovers => clear_audio_covers(&bridge),
         UpdateGuiCommand::ClearCommonPlaybackState => {
-            clear_audio_covers(&bridge, renderer_tx);
-            set_playback_progress(&bridge, 0.0, 0.0);
-            set_buffered_ranges(&bridge, Vec::new());
+            clear_audio_covers(&bridge);
+            set_playback_progress(&bridge, damper, 0.0, 0.0, true);
+            set_buffered_ranges(&bridge, damper, Vec::new(), true);
         }
         UpdateGuiCommand::SetPlayerType(typ) => {
             bridge.set_player_variant(typ.into());
@@ -488,10 +687,9 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
             bridge.set_current_audio_track(audio);
             bridge.set_current_subtitle_track(subtitle);
         }
-        UpdateGuiCommand::ClearVideoOverlays => {
-            let _ = renderer_tx.send(RendererMessage::ClearVideoOverlays);
-            ui.window().request_redraw();
-        }
+        // The video lane draws its cues straight off the engine, which the
+        // application clears alongside this, so the repaint is all it takes.
+        UpdateGuiCommand::ClearVideoOverlays => ui.window().request_redraw(),
         UpdateGuiCommand::SetConnectionDetails { qr_code, addrs } => {
             bridge.set_qr_code(slint::Image::from_rgb8(qr_pixbuf(&qr_code.0)));
             bridge.set_local_ip_addrs(addrs.to_shared_string());
@@ -535,11 +733,27 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
         UpdateGuiCommand::SetPlaybackState(state) => bridge.set_playback_state(state.into()),
         UpdateGuiCommand::ClearImageState => {
             bridge.set_image_preview(CompoundImage::default());
-            clear_audio_covers(&bridge, renderer_tx);
+            clear_audio_covers(&bridge);
         }
         UpdateGuiCommand::SetImageViaPlayer(via_player) => bridge.set_image_via_player(via_player),
         UpdateGuiCommand::SetIsLive(is_live) => bridge.set_is_live(is_live),
         UpdateGuiCommand::SetSeekPending(pending) => bridge.set_seek_pending(pending),
+        UpdateGuiCommand::TransportFromSender { kind, by } => {
+            use receiver_core::gui::TransportKind;
+            bridge.invoke_transport_from_sender(
+                match kind {
+                    TransportKind::Pause => crate::UiTransport::Pause,
+                    TransportKind::Resume => crate::UiTransport::Resume,
+                    TransportKind::Seek => crate::UiTransport::Seek,
+                },
+                by.unwrap_or_default().to_shared_string(),
+            );
+        }
+        UpdateGuiCommand::SetSenders(senders) => {
+            let senders: Vec<crate::UiSender> = senders.into_iter().map(ui_sender).collect();
+            bridge.set_senders(Rc::new(VecModel::from(senders)).into());
+        }
+
         UpdateGuiCommand::SetSourceBackoff {
             remaining_ms,
             total_ms,
@@ -621,7 +835,6 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, renderer_tx: &RendererM
                     .unwrap_or_else(|| receiver_core::ui_scaling::DEFAULT_MODE_NAME.to_owned())
                     .into(),
             );
-            bridge.set_cfg_video_hdr_output(config.video.hdr_output);
             bridge.set_cfg_video_render_profile(
                 config
                     .video
@@ -832,12 +1045,12 @@ fn set_graph_dump(ui: &MainWindow, dump: GraphDumpData) {
 pub fn spawn_command_handler(
     ui_weak: slint::Weak<MainWindow>,
     mut cmd_rx: UnboundedReceiver<UpdateGuiCommand>,
-    renderer_tx: RendererMsgSender,
     // Runs on the event-loop thread; the tray handle is `!Send`. A no-op when there is no tray.
     on_show_tray: Box<dyn FnOnce()>,
 ) {
     slint::spawn_local(async move {
         let mut on_show_tray = Some(on_show_tray);
+        let mut damper = TickDamper::default();
         loop {
             if let Some(cmd) = cmd_rx.recv().await
                 && let Some(ui) = ui_weak.upgrade()
@@ -855,7 +1068,7 @@ pub fn spawn_command_handler(
                     }
                     continue;
                 }
-                handle_command(ui, cmd, &renderer_tx);
+                handle_command(ui, cmd, &mut damper);
             } else {
                 debug!("Stopping");
                 break;

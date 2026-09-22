@@ -15,7 +15,7 @@ use std::{
 };
 
 use fcast_video::subpic::{
-    BitmapFormat, BitmapPacket, SubpicDecoder,
+    BitmapSubFormat, BitmapPacket, SubpicDecoder,
     dvb::{DvbDecoder, fixtures},
     pgs::ALLOCATION_BUDGET,
 };
@@ -75,7 +75,7 @@ fn peak() -> usize {
 
 fn packet(bytes: &[u8], rt_ms: u64) -> BitmapPacket {
     BitmapPacket {
-        format: BitmapFormat::Dvb,
+        format: BitmapSubFormat::Dvb,
         data: gst::Buffer::from_slice(bytes.to_vec()),
         codec_data: None,
         rt: gst::ClockTime::from_mseconds(rt_ms),

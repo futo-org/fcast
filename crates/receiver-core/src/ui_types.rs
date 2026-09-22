@@ -69,7 +69,6 @@ pub enum UiToastKind {
     OutputFailure,
     ImageDownloadFailed,
     MissingCodecForTrack,
-    StuckStream,
     SubtitleFormatUnsupported,
     GenericWarning,
 }

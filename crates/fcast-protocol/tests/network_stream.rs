@@ -93,7 +93,7 @@ fn server_tls() -> (TlsAcceptor, Vec<u8>) {
 
     let fingerprint = sha2::Sha256::digest(key_pair.subject_public_key_info()).to_vec();
 
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let config = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()
@@ -105,7 +105,7 @@ fn server_tls() -> (TlsAcceptor, Vec<u8>) {
 }
 
 fn client_tls(fingerprint: Vec<u8>) -> TlsConnector {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider.clone())
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()

@@ -1,0 +1,15 @@
+<resources>
+    <!-- Android 12+ shows the system SplashScreen regardless of
+         windowDisablePreview, so give it the app colors instead of the
+         default white flash. The base theme's disable-preview fix targets
+         the Samsung starting-window animation on older releases. -->
+    <style name="Theme.FCastReceiver" parent="android:Theme.Material.NoActionBar">
+        <item name="android:windowBackground">@drawable/splash_window</item>
+        <item name="android:statusBarColor">#0E0F10</item>
+        <item name="android:navigationBarColor">#0E0F10</item>
+        <item name="android:windowSplashScreenBackground">#0E0F10</item>
+        <!-- Explicit mark, the default would inset the adaptive launcher
+             icon to a dot. Bare bg reads as a hung black screen on TV. -->
+        <item name="android:windowSplashScreenAnimatedIcon">@drawable/ic_splash_logo</item>
+    </style>
+</resources>

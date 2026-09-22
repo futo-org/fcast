@@ -1048,7 +1048,7 @@ fn server_tls() -> (TlsAcceptor, Vec<u8>) {
     let cert = params.self_signed(&key_pair).unwrap();
     let fingerprint = sha2::Sha256::digest(key_pair.subject_public_key_info()).to_vec();
 
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
     let config = rustls::ServerConfig::builder_with_provider(provider)
         .with_protocol_versions(&[&rustls::version::TLS13])
         .unwrap()

@@ -7,7 +7,9 @@ export component PositionScrubber inherits Slider {
     // and fight the live progress updates): rejected arrow keys bubble up to
     // the global handler, which does the real 10s seek.
     step: 0;
-    hide-thumb: true;
+    // The thumb doubles as the focus indicator for keyboard and remote
+    // traversal, pointer users get hover feedback instead.
+    hide-thumb: !self.has-focus;
     maximum: Bridge.duration-secs;
     minimum: 0.0;
     value <=> Bridge.progress-secs;
@@ -61,11 +63,20 @@ export component ProgressLabels inherits HorizontalLayout {
 export component ScrubbyMcScrub {
     in property <float> fade: 1.0;
 
+    // The remote's landing spot: revealing the chrome focuses the scrubber
+    // so Left/Right seek immediately, the Kotlin receiver's model.
+    public function focus-scrubber() {
+        scrubber.focus();
+    }
+
     main-vlayout := VerticalLayout {
         spacing: 8px;
 
         scrubber := PositionScrubber {
             opacity: root.fade;
+            changed has-focus => {
+                Bridge.scrubber-focused = self.has-focus;
+            }
             changed(_) => {
                 Bridge.is-scrubbing-position = true;
             }

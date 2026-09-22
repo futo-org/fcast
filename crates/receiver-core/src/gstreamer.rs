@@ -20,21 +20,39 @@ pub fn init_and_load_plugins() {
     gstreamer_src::init_static_plugins();
     debug!(gstreamer_version = %gst::version_string());
 
-    fcast_gst_elements::fcastwhepsrcbin::plugin_init().unwrap();
-    fcast_gst_elements::fcasthttpsrc::plugin_init().unwrap();
+    // The surface sink is built before the first player load, so the
+    // MediaCodec plugin cannot wait for flapjack's lazy registration.
+    #[cfg(target_os = "android")]
+    {
+        // Hand the VM over BEFORE registering: the decoder builds its pad
+        // template from a MediaCodecList probe, and that is a JNI call. The
+        // probe degrades to "everything is supported" when it cannot run, so
+        // without a VM the element goes back to claiming codecs the device
+        // does not have and losing streams that had a software decoder
+        // waiting. Nothing else in the receiver needed the VM, because the
+        // decode path itself is NDK.
+        let ctx = ndk_context::android_context();
+        match unsafe { jni::JavaVM::from_raw(ctx.vm().cast()) } {
+            Ok(vm) => flapjack::android::set_java_vm(vm),
+            Err(err) => tracing::error!(%err, "no JavaVM, MediaCodec probing is off"),
+        }
+        flapjack::android::register_plugin().unwrap();
+    }
+
     flapjack::audiostretch::plugin_init().unwrap();
-    #[cfg(target_os = "linux")]
-    fcast_gst_elements::pwaudiosink::plugin_init().unwrap();
     fcast_gst_elements::fcompsrc::plugin_init().unwrap();
     fcast_gst_elements::sabrumpsrc::plugin_init().unwrap();
     #[cfg(feature = "airplay")]
     crate::airplay::source::plugin_init().unwrap();
-    fcast_gst_elements::fwebrtcsrc::plugin_init().unwrap();
     fcast_gst_elements::imagetypefind::plugin_init().unwrap();
     fcast_gst_elements::imagedec::plugin_init().unwrap();
     #[cfg(target_os = "linux")]
     fcast_gst_elements::vajpegdec::plugin_init().unwrap();
-    gstrswebrtc::plugin_register_static().unwrap();
+    // Mirroring and WHEP: webrtcbin2 (webrtcsend/webrtcrecv on rtpbin2, librice
+    // ICE, dimpl DTLS) and fcast's bins on it, the same element names the
+    // C-webrtcbin bins had, so nothing downstream of the registry changes.
+    gstrswebrtcbin2::plugin_register_static().unwrap();
+    fcast_webrtc::plugin_init().unwrap();
     gstrssubparse::plugin_register_static().unwrap();
 
     // Swap ranks so decodebin3/parsebin autoplug the Rust subtitle parsers, which
@@ -53,14 +71,25 @@ pub fn init_and_load_plugins() {
                 .expect("registered by gstrssubparse above")
                 .set_rank(gst::Rank::PRIMARY);
         }
+        // flapjack's adaptive engine ahead of the C dashdemux2/hlsdemux2 pair
+        // (both PRIMARY + 1). It registers at MARGINAL on purpose so the
+        // consumer makes this call; the C pair stays linked as the fallback
+        // when the Rust one refuses a manifest.
+        flapjack::plugins::rsadaptivesrc::plugin_init().unwrap();
+        registry
+            .lookup_feature("rsadaptivesrc")
+            .expect("registered by rsadaptivesrc::plugin_init above")
+            .set_rank(gst::Rank::PRIMARY + 2);
     }
 
-    #[cfg(feature = "static-gst-plugins")]
-    {
-        #[cfg(not(target_os = "android"))]
-        gstrsrtp::plugin_register_static().unwrap();
-        gstdav1d::plugin_register_static().unwrap();
-    }
+    // rtprecv for webrtcrecv, and the depayloaders, every platform.
+    gstrsrtp::plugin_register_static().unwrap();
+
+    // The only AV1 decoder on android. Hardware AV1 is far from universal and
+    // the build carries no other software fallback, so without this an AV1
+    // stream on a device that lacks it simply fails.
+    #[cfg(feature = "dav1d-plugin")]
+    gstdav1d::plugin_register_static().unwrap();
 }
 
 #[cfg(test)]

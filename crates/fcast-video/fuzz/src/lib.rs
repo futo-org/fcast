@@ -22,7 +22,7 @@
 //!     [`assert_recovers`] feeds a known-good display set at the end of every
 //!     run.
 
-use fcast_video::subpic::{BitmapFormat, BitmapPacket, DisplayUpdate, SubpicDecoder};
+use fcast_video::subpic::{BitmapSubFormat, BitmapPacket, DisplayUpdate, SubpicDecoder};
 
 /// The video size every target teaches its decoder unless it fuzzes one.
 pub const DEFAULT_VIDEO: (u32, u32) = (1920, 1080);
@@ -48,7 +48,7 @@ pub fn video_size(width: u16, height: u16) -> (u32, u32) {
     (1 + u32::from(width) % 4096, 1 + u32::from(height) % 4096)
 }
 
-pub fn packet(format: BitmapFormat, bytes: &[u8], rt_ms: u64) -> BitmapPacket {
+pub fn packet(format: BitmapSubFormat, bytes: &[u8], rt_ms: u64) -> BitmapPacket {
     BitmapPacket {
         format,
         data: gst::Buffer::from_slice(bytes.to_vec()),
@@ -169,7 +169,7 @@ pub fn push_and_check<D: SubpicDecoder>(
 /// showing no subtitles at all.
 pub fn assert_recovers<D: SubpicDecoder>(
     decoder: &mut D,
-    format: BitmapFormat,
+    format: BitmapSubFormat,
     good: &[u8],
     regions: usize,
     video: (u32, u32),
@@ -187,7 +187,7 @@ pub fn assert_recovers<D: SubpicDecoder>(
 /// updates does not stop noticing when a format grows one.
 pub fn assert_recovers_last<D: SubpicDecoder>(
     decoder: &mut D,
-    format: BitmapFormat,
+    format: BitmapSubFormat,
     good: &[u8],
     regions: usize,
     video: (u32, u32),
@@ -198,7 +198,7 @@ pub fn assert_recovers_last<D: SubpicDecoder>(
 
 fn recovers<D: SubpicDecoder>(
     decoder: &mut D,
-    format: BitmapFormat,
+    format: BitmapSubFormat,
     good: &[u8],
     regions: usize,
     video: (u32, u32),
@@ -243,7 +243,7 @@ fn recovers<D: SubpicDecoder>(
 /// fuzzer left open, and that abandoned set comes out first.
 pub fn assert_survives<D: SubpicDecoder>(
     decoder: &mut D,
-    format: BitmapFormat,
+    format: BitmapSubFormat,
     input: &[u8],
     regions: usize,
     video: (u32, u32),

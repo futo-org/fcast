@@ -13,7 +13,7 @@
 #![no_main]
 
 use fcast_video::subpic::{
-    BitmapFormat, SubpicDecoder,
+    BitmapSubFormat, SubpicDecoder,
     pgs::ALLOCATION_BUDGET,
     vobsub::{VobsubDecoder, fixtures},
 };
@@ -45,7 +45,7 @@ fuzz_target!(|input: Input<'_>| {
     for (index, bytes) in input.packets.iter().enumerate() {
         // A subpicture unit is self-contained, so every packet is its own
         // display. The running times only have to be distinct.
-        let packet = harness::packet(BitmapFormat::Vobsub, bytes, index as u64 * 100);
+        let packet = harness::packet(BitmapSubFormat::Vobsub, bytes, index as u64 * 100);
         harness::push_and_check(
             &mut decoder,
             &packet,
@@ -62,7 +62,7 @@ fuzz_target!(|input: Input<'_>| {
     decoder.set_codec_data(fixtures::SAMPLE_IDX);
     harness::assert_recovers(
         &mut decoder,
-        BitmapFormat::Vobsub,
+        BitmapSubFormat::Vobsub,
         &fixtures::minimal_unit(),
         1,
         video,
