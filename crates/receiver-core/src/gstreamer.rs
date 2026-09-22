@@ -41,7 +41,7 @@ pub fn init_and_load_plugins() {
 
     flapjack::audiostretch::plugin_init().unwrap();
     fcast_gst_elements::fcompsrc::plugin_init().unwrap();
-    fcast_gst_elements::sabrumpsrc::plugin_init().unwrap();
+    flapjack::plugins::sabrumpsrc::plugin_init().unwrap();
     #[cfg(feature = "airplay")]
     crate::airplay::source::plugin_init().unwrap();
     fcast_gst_elements::imagetypefind::plugin_init().unwrap();

@@ -14,9 +14,9 @@
 //! waiting, and no dependency on a new video buffer to change what is shown,
 //! which is what makes a paused subtitle switch possible.
 //!
-//! Timing semantics match `fcasttextoverlay`'s `wait_for_text_buf`, as the
-//! pure functions [`cue_is_too_old`] and [`cue_is_in_future`]. Its blocking
-//! handoff is deliberately not lifted.
+//! Timing semantics are the retired `fcasttextoverlay` element's
+//! `wait_for_text_buf`, as the pure functions [`cue_is_too_old`] and
+//! [`cue_is_in_future`]. Its blocking handoff is deliberately not lifted.
 
 use std::{
     collections::VecDeque,
@@ -132,7 +132,7 @@ fn parsed(mut cue: CueInput) -> CueInput {
 
 /// Whether the engine shows one cue at a time.
 ///
-/// Lever: `FCAST_SINGLE_ACTIVE_CUE=1` (set = on). It restores the
+/// Lever: `FCAST_SINGLE_ACTIVE_CUE=1` (set = on). It restores the retired
 /// `fcasttextoverlay` behaviour of holding exactly one text buffer: a cue
 /// whose turn comes replaces whatever is showing. Overlapping cues then show
 /// one at a time, but existing pixel and timing expectations were written
@@ -1452,10 +1452,10 @@ mod tests {
         condition()
     }
 
-    // ---- timing, ported from fcasttextoverlay's harness tests ----
+    // ---- timing, ported from the retired fcasttextoverlay's harness tests ----
 
-    /// `test_basic_passthrough` (`fcasttextoverlay.rs:1036`): a frame with no
-    /// cue in flight carries nothing.
+    /// Its `test_basic_passthrough`: a frame with no cue in flight carries
+    /// nothing.
     #[test]
     fn no_cue_means_no_overlay() {
         let engine = CueEngine::new();

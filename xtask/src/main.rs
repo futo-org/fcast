@@ -81,13 +81,11 @@ fn main() {
             // Named packages, not `--workspace --exclude …`: the exclusion list had
             // grown to fifteen entries and still swept in the whole sender tree.
             // This is the receiver side plus the crates it shares (fcast-protocol,
-            // sabrump, google-cast-protocol); `test-sender` has the rest.
+            // google-cast-protocol); `test-sender` has the rest.
             //
-            // No `--all-features` either. The three features that actually gate tests
-            // are named instead: fcast-protocol's tokio-{sender,receiver} (all of
-            // tests/network_stream.rs is `#![cfg]`'d on both) and
-            // fcast-gst-elements' textoverlay (the fcasttextoverlay unit tests).
-            // sabrump/serde gates no test but is how every dependent builds it.
+            // No `--all-features` either. The features that actually gate tests are
+            // named instead: fcast-protocol's tokio-{sender,receiver}, all of
+            // tests/network_stream.rs being `#![cfg]`'d on both.
             //
             // nextest when installed: the suites are dominated by wall-clock
             // waits (realtime-paced pipelines, protocol cadences), and cargo
@@ -108,6 +106,9 @@ fn main() {
                 "test"
             };
             let subcommand: Vec<&str> = subcommand.split(' ').collect();
+            // Both invocations below run it, and the splat consumes what it is
+            // given.
+            let ui_subcommand = subcommand.clone();
             // receiver-core rides in the same batch: its default features are
             // empty and its deps are plain, so it changes nothing about what
             // the shared crates compile with.
@@ -115,10 +116,10 @@ fn main() {
                 sh,
                 "cargo {subcommand...} --all-targets
                  -p fcast-video -p fcast-gst-elements
-                 -p fcast-runtime -p fcast-protocol -p sabrump -p google-cast-protocol
+                 -p fcast-runtime -p fcast-protocol -p google-cast-protocol
                  -p apple-fairplay -p app-updater -p inhibit-screensaver -p xtask
                  -p receiver-core
-                 --features fcast-protocol/tokio-receiver,fcast-protocol/tokio-sender,fcast-gst-elements/textoverlay,sabrump/serde"
+                 --features fcast-protocol/tokio-receiver,fcast-protocol/tokio-sender"
             )
             .run()
             .unwrap();
@@ -131,7 +132,7 @@ fn main() {
             // precisely so that cannot drift.
             cmd!(
                 sh,
-                "cargo {subcommand...} --all-targets -p receiver-ui --features desktop"
+                "cargo {ui_subcommand...} --all-targets -p receiver-ui --features desktop"
             )
             .run()
             .unwrap();

@@ -211,6 +211,10 @@ fn wrap_with_parsebin(source: gst::Element, name: &str) -> Result<gst::Element> 
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let bin = gst::Bin::builder().name(format!("{name}-{seq}")).build();
+    // Whatever parsebin autoplugs below here, before it is brought up:
+    // `deep-element-added` fires on `gst_bin_add` for every descendant, which
+    // is the only moment this crate sees an element it did not create.
+    bin.connect_deep_element_added(|_, _, element| repair_rtp_depayloader(element));
     bin.add(&source).context("adding source to the parse bin")?;
     source.connect_pad_added({
         let bin = bin.downgrade();
@@ -228,6 +232,45 @@ fn wrap_with_parsebin(source: gst::Element, name: &str) -> Result<gst::Element> 
         }
     }
     Ok(bin.upcast())
+}
+
+/// Let a depayloader repair a stream it has lost part of, which by default it
+/// does not even try to do.
+///
+/// `request-keyframe` and `wait-for-keyframe` are both FALSE out of the box,
+/// in the C depayloaders (`gstrtpvp8depay.c`, `gstrtph264depay.c`) and in the
+/// Rust ones alike. With them off, a single lost packet is permanent: nothing
+/// asks the sender for a fresh keyframe, and the depayloader keeps pushing
+/// frames that reference data it never received, so the decoder paints
+/// smears and stale rectangles until the sender happens to send a keyframe of
+/// its own accord. On a screen share that can be a long time, and the
+/// negotiated feedback carries no NACK, so a retransmission will not save it
+/// either: a keyframe is the only repair there is.
+///
+/// Both on, the two halves are one recovery: ask upstream for a keyframe, and
+/// drop what cannot be decoded until it arrives. The request becomes a PLI at
+/// `rtprecv`, which is machinery this receiver already has and never
+/// triggered.
+///
+/// Keyed on the PROPERTIES rather than on the element type, because every
+/// depayloader that can do this spells them the same, and an element without
+/// them has nothing to turn on. That also makes it a no-op on the container
+/// sources that share this wrapper, whose parsebin autoplugs demuxers and
+/// parsers instead.
+///
+/// `wait-for-keyframe` is only safe because the request can now be ANSWERED.
+/// It could not before: a receive-only WebRTC session was a `webrtcrecv`
+/// alone, and `rtprecv` has no RTCP source pad, so nothing this endpoint asked
+/// for ever left it. Waiting on an answer that cannot come is a frozen picture
+/// rather than a smeared one, which is what this looked like until
+/// `fcast-webrtc`'s receive core started pairing a `webrtcsend` with its
+/// `webrtcrecv` to carry the RTCP out.
+fn repair_rtp_depayloader(element: &gst::Element) {
+    for property in ["request-keyframe", "wait-for-keyframe"] {
+        if element.has_property_with_type(property, bool::static_type()) {
+            element.set_property(property, true);
+        }
+    }
 }
 
 /// Add a `parsebin` for one source pad and ghost its parsed output out of
@@ -778,5 +821,42 @@ mod tests {
         );
 
         pipeline.set_state(gst::State::Null).unwrap();
+    }
+
+    /// A depayloader added anywhere under the wrapper comes up able to repair
+    /// itself, however deep parsebin put it.
+    ///
+    /// The element is added by hand rather than autoplugged, because the point
+    /// under test is the hook and not parsebin: what this catches is the hook
+    /// going away, the properties being renamed, or a build that no longer
+    /// carries the depayloader at all. A mirroring session without it decodes
+    /// a lost frame into smears that never clear.
+    #[test]
+    fn a_depayloader_under_the_wrapper_repairs_itself() {
+        init();
+        let Ok(depay) = gst::ElementFactory::make("rtpvp8depay").build() else {
+            panic!("this build carries no rtpvp8depay, which mirroring needs");
+        };
+        assert!(
+            !depay.property::<bool>("request-keyframe"),
+            "the default changed upstream, so this hook may be redundant now"
+        );
+
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let wrapper = super::wrap_with_parsebin(source, "test-depay-repair").unwrap();
+        let wrapper = wrapper.downcast::<gst::Bin>().expect("the wrapper is a bin");
+        // One level down, which is where parsebin's own children land.
+        let nested = gst::Bin::builder().name("test-nested").build();
+        wrapper.add(&nested).unwrap();
+        nested.add(&depay).unwrap();
+
+        assert!(
+            depay.property::<bool>("request-keyframe"),
+            "a lost packet would never be repaired"
+        );
+        assert!(
+            depay.property::<bool>("wait-for-keyframe"),
+            "undecodable frames would still reach the decoder"
+        );
     }
 }

@@ -15,6 +15,19 @@ pub const GST_ANDROID_PATH: &str = "thirdparty/gstreamer-1.0-android-universal-1
 
 pub const NDK_PATH: &str = "thirdparty/android-ndk-r25c";
 
+/// The API level the whole android lane compiles against. MUST match
+/// `compileSdk` in receivers/experimental/android/app/build.gradle: the java
+/// glue in the native lane and gradle build against one android.jar or the
+/// two disagree about what the platform offers.
+pub const ANDROID_PLATFORM: &str = "android-36";
+/// The API level the native libraries link against. cargo-ndk picks the
+/// sysroot from it, and its own default of 21 has no libnativewindow and no
+/// libaaudio, both of which the video and audio lanes call. Matches the
+/// GSTREAMER_SRC_ANDROID_API default in the android-linker-* wrappers, which
+/// is what the C build uses, and `minSdk` in the app's build.gradle.
+pub const ANDROID_API: u32 = 28;
+const ANDROID_BUILD_TOOLS: &str = "36.0.0";
+
 fn sdk_paths() -> (String, String) {
     let os = if cfg!(target_os = "macos") {
         "mac"
@@ -80,8 +93,10 @@ impl AndroidArgs {
                 let shell_code = format!("yes | {ANDROID_SDK_PATH}/cmdline-tools/bin/{sdkmanager} --sdk_root={ANDROID_HOME_PATH} --licenses");
                 cmd!(sh, "sh -c {shell_code}").run()?;
 
-                cmd!(sh, "{ANDROID_SDK_PATH}/cmdline-tools/bin/{sdkmanager} --sdk_root={ANDROID_HOME_PATH} --install platforms;android-35").run()?;
-                cmd!(sh, "{ANDROID_SDK_PATH}/cmdline-tools/bin/{sdkmanager} --sdk_root={ANDROID_HOME_PATH} --install build-tools;35.0.0").run()?;
+                let platform = format!("platforms;{ANDROID_PLATFORM}");
+                let build_tools = format!("build-tools;{ANDROID_BUILD_TOOLS}");
+                cmd!(sh, "{ANDROID_SDK_PATH}/cmdline-tools/bin/{sdkmanager} --sdk_root={ANDROID_HOME_PATH} --install {platform}").run()?;
+                cmd!(sh, "{ANDROID_SDK_PATH}/cmdline-tools/bin/{sdkmanager} --sdk_root={ANDROID_HOME_PATH} --install {build_tools}").run()?;
             }
             AndroidCommand::DownloadGstreamer => {
                 cmd!(sh, "wget {GST_ANDROID_URL} -O {GST_ANDROID_AR_PATH}").run()?;

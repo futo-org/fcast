@@ -489,7 +489,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
  "wl-clipboard-rs",
  "x11rb",
 ]
@@ -1690,6 +1690,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset"
 version = "0.2.1"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "const-field-offset-macro",
  "field-offset",
@@ -1698,6 +1699,7 @@ dependencies = [
 [[package]]
 name = "const-field-offset-macro"
 version = "0.2.1"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2738,7 +2740,6 @@ dependencies = [
 name = "fcast-gst-elements"
 version = "0.1.0"
 dependencies = [
- "base64 0.22.1",
  "bytes",
  "fcast-protocol 0.2.0",
  "fcast-runtime",
@@ -2749,7 +2750,6 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-audio",
  "gstreamer-base",
- "gstreamer-check",
  "gstreamer-src",
  "gstreamer-video",
  "hayro-jpeg2000",
@@ -2761,10 +2761,7 @@ dependencies = [
  "mime",
  "parking_lot",
  "pin-project-lite",
- "reqwest",
- "sabrump",
  "self_cell",
- "serde_json",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -2905,7 +2902,7 @@ dependencies = [
 [[package]]
 name = "fcast-webrtc"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/webrtcbin2.git?rev=14833cc2b278fff935657bbe02f46f23c45b114b#14833cc2b278fff935657bbe02f46f23c45b114b"
+source = "git+https://gitlab.futo.org/fcast/webrtcbin2.git?rev=827eed7e10188e59e19ce894ab9fe2199cea0a66#827eed7e10188e59e19ce894ab9fe2199cea0a66"
 dependencies = [
  "bytes",
  "gst-plugin-webrtcbin2",
@@ -2927,7 +2924,7 @@ checksum = "0ce92ff622d6dadf7349484f42c93271a0d49b7cc4d466a936405bacbe10aa78"
 dependencies = [
  "cfg-if",
  "rustix 1.1.4",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3034,7 +3031,7 @@ checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 [[package]]
 name = "flapjack"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3049,8 +3046,10 @@ dependencies = [
  "flapjack-rsadaptivesrc",
  "flapjack-rsfilesrc",
  "flapjack-rshttpsrc",
+ "flapjack-sabrump",
+ "flapjack-sabrumpsrc",
  "flapjack-subparse",
- "gst-plugin-dav1d 0.15.2 (git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=a35f7d35ecd37a0627983c9235e8417457805618)",
+ "gst-plugin-dav1d",
  "gst-static-env",
  "gst-static-link",
  "gstreamer",
@@ -3064,7 +3063,7 @@ dependencies = [
 [[package]]
 name = "flapjack-androidmedia"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3080,7 +3079,7 @@ dependencies = [
 [[package]]
 name = "flapjack-audiostretch"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3093,7 +3092,7 @@ dependencies = [
 [[package]]
 name = "flapjack-core"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3110,7 +3109,7 @@ dependencies = [
 [[package]]
 name = "flapjack-decode"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "flapjack-decodebin-core",
  "flapjack-decodebin-owner",
@@ -3123,12 +3122,12 @@ dependencies = [
 [[package]]
 name = "flapjack-decodebin-core"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 
 [[package]]
 name = "flapjack-decodebin-owner"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "flapjack-decodebin-core",
  "flapjack-lockorder",
@@ -3138,7 +3137,7 @@ dependencies = [
 [[package]]
 name = "flapjack-decodebin-queue"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "flapjack-lockorder",
 ]
@@ -3146,7 +3145,7 @@ dependencies = [
 [[package]]
 name = "flapjack-lockorder"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "loom",
 ]
@@ -3154,7 +3153,7 @@ dependencies = [
 [[package]]
 name = "flapjack-mqueue"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "flapjack-decodebin-queue",
  "gst-static-env",
@@ -3165,7 +3164,7 @@ dependencies = [
 [[package]]
 name = "flapjack-pango-markup"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "flapjack-subparse-formats",
 ]
@@ -3173,7 +3172,7 @@ dependencies = [
 [[package]]
 name = "flapjack-pwaudiosink"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3190,7 +3189,7 @@ dependencies = [
 [[package]]
 name = "flapjack-rsadaptivesrc"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "aes",
  "bytes",
@@ -3215,7 +3214,7 @@ dependencies = [
 [[package]]
 name = "flapjack-rsfilesrc"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3228,7 +3227,7 @@ dependencies = [
 [[package]]
 name = "flapjack-rshttpsrc"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "flapjack-core",
  "futures-util",
@@ -3247,9 +3246,50 @@ dependencies = [
 ]
 
 [[package]]
+name = "flapjack-sabrump"
+version = "0.1.0"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "futures",
+ "log",
+ "parking_lot",
+ "prost",
+ "prost-build",
+ "protox",
+ "rand 0.10.1",
+ "reqwest",
+ "serde",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "flapjack-sabrumpsrc"
+version = "0.1.0"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
+dependencies = [
+ "base64 0.22.1",
+ "bytes",
+ "flapjack-core",
+ "flapjack-sabrump",
+ "flapjack-srcbin",
+ "gst-static-env",
+ "gst-static-link",
+ "gstreamer",
+ "gstreamer-src",
+ "parking_lot",
+ "reqwest",
+ "serde_json",
+ "tokio",
+ "url",
+]
+
+[[package]]
 name = "flapjack-srcbin"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3261,7 +3301,7 @@ dependencies = [
 [[package]]
 name = "flapjack-subparse"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "encoding_rs",
  "flapjack-pango-markup",
@@ -3277,7 +3317,7 @@ dependencies = [
 [[package]]
 name = "flapjack-subparse-formats"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 
 [[package]]
 name = "flatbuffers"
@@ -3992,20 +4032,7 @@ checksum = "b40ca9252762c466af32d0b1002e91e4e1bc5398f77455e55474deb466355ff5"
 [[package]]
 name = "gst-build-config"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#405524890c4d10e17d5570aebabaa3c8be96ddb6"
-
-[[package]]
-name = "gst-plugin-dav1d"
-version = "0.15.2"
-source = "git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=518b3b9b49ad23c659aa6ea3e587e1846f02b056#518b3b9b49ad23c659aa6ea3e587e1846f02b056"
-dependencies = [
- "dav1d",
- "gst-plugin-version-helper",
- "gstreamer",
- "gstreamer-base",
- "gstreamer-video",
- "num_cpus",
-]
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#96163fa02a4b771b2700d61c8a784d429341ba07"
 
 [[package]]
 name = "gst-plugin-dav1d"
@@ -4023,7 +4050,7 @@ dependencies = [
 [[package]]
 name = "gst-plugin-rtp"
 version = "0.15.2"
-source = "git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=518b3b9b49ad23c659aa6ea3e587e1846f02b056#518b3b9b49ad23c659aa6ea3e587e1846f02b056"
+source = "git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=a35f7d35ecd37a0627983c9235e8417457805618#a35f7d35ecd37a0627983c9235e8417457805618"
 dependencies = [
  "anyhow",
  "atomic_refcell",
@@ -4066,7 +4093,7 @@ dependencies = [
 [[package]]
 name = "gst-plugin-webrtc"
 version = "0.15.2"
-source = "git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=518b3b9b49ad23c659aa6ea3e587e1846f02b056#518b3b9b49ad23c659aa6ea3e587e1846f02b056"
+source = "git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=a35f7d35ecd37a0627983c9235e8417457805618#a35f7d35ecd37a0627983c9235e8417457805618"
 dependencies = [
  "anyhow",
  "async-tungstenite",
@@ -4149,7 +4176,7 @@ dependencies = [
 [[package]]
 name = "gst-plugin-webrtcbin2"
 version = "0.16.0-alpha"
-source = "git+https://gitlab.futo.org/fcast/webrtcbin2.git?rev=14833cc2b278fff935657bbe02f46f23c45b114b#14833cc2b278fff935657bbe02f46f23c45b114b"
+source = "git+https://gitlab.futo.org/fcast/webrtcbin2.git?rev=827eed7e10188e59e19ce894ab9fe2199cea0a66#827eed7e10188e59e19ce894ab9fe2199cea0a66"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -4179,7 +4206,7 @@ dependencies = [
 [[package]]
 name = "gst-static-env"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#405524890c4d10e17d5570aebabaa3c8be96ddb6"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#96163fa02a4b771b2700d61c8a784d429341ba07"
 dependencies = [
  "ctor 0.6.3",
  "gio-sys",
@@ -4203,7 +4230,7 @@ dependencies = [
 [[package]]
 name = "gst-static-link"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#405524890c4d10e17d5570aebabaa3c8be96ddb6"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#96163fa02a4b771b2700d61c8a784d429341ba07"
 
 [[package]]
 name = "gstreamer"
@@ -4343,30 +4370,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "gstreamer-check"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bca00e318412c20405c6e0817cb330b706d128c779c9ec613fa2b53e4daf55c7"
-dependencies = [
- "glib",
- "gstreamer",
- "gstreamer-check-sys",
-]
-
-[[package]]
-name = "gstreamer-check-sys"
-version = "0.25.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a15eb052477932b64993509db62a2b5fbfd88a1203d249e871ad5d7bc052508"
-dependencies = [
- "glib-sys",
- "gobject-sys",
- "gstreamer-sys",
- "libc",
- "system-deps",
-]
-
-[[package]]
 name = "gstreamer-net"
 version = "0.25.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4472,7 +4475,7 @@ dependencies = [
 [[package]]
 name = "gstreamer-src"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#405524890c4d10e17d5570aebabaa3c8be96ddb6"
+source = "git+https://gitlab.futo.org/fcast/gstreamer-src.git?branch=master#96163fa02a4b771b2700d61c8a784d429341ba07"
 dependencies = [
  "fd-lock",
  "gst-build-config",
@@ -4930,6 +4933,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-android-activity"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "android-activity 0.5.2",
  "android-activity 0.6.1",
@@ -4945,6 +4949,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-linuxkms"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "bytemuck",
  "calloop 0.14.4",
@@ -4969,6 +4974,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-selector"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "cfg-if",
  "cfg_aliases",
@@ -4987,6 +4993,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-testing"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "cfg_aliases",
  "i-slint-common",
@@ -4998,6 +5005,7 @@ dependencies = [
 [[package]]
 name = "i-slint-backend-winit"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "accesskit",
  "accesskit_winit",
@@ -5043,6 +5051,7 @@ dependencies = [
 [[package]]
 name = "i-slint-common"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "derive_more",
  "fontique",
@@ -5058,6 +5067,7 @@ dependencies = [
 [[package]]
 name = "i-slint-compiler"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "annotate-snippets 0.12.16",
  "by_address",
@@ -5090,6 +5100,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "accesskit",
  "async-channel",
@@ -5144,6 +5155,7 @@ dependencies = [
 [[package]]
 name = "i-slint-core-macros"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "quote",
  "serde_json",
@@ -5153,6 +5165,7 @@ dependencies = [
 [[package]]
 name = "i-slint-cue"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "flapjack-subparse-formats",
  "i-slint-renderer-dodvg",
@@ -5165,6 +5178,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-dodvg"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "glow 0.18.0",
  "i-slint-core",
@@ -5179,6 +5193,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-femtovg"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "cfg-if",
  "const-field-offset",
@@ -5199,6 +5214,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-skia"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "bytemuck",
  "cfg-if",
@@ -5236,6 +5252,7 @@ dependencies = [
 [[package]]
 name = "i-slint-renderer-software"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "bytemuck",
  "clru",
@@ -5253,6 +5270,7 @@ dependencies = [
 [[package]]
 name = "i-slint-video"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "wgpu",
 ]
@@ -5260,6 +5278,7 @@ dependencies = [
 [[package]]
 name = "i-slint-video-import"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "ash",
  "i-slint-video-wgpu",
@@ -5273,6 +5292,7 @@ dependencies = [
 [[package]]
 name = "i-slint-video-wgpu"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "thiserror 2.0.18",
  "wgpu",
@@ -6217,7 +6237,7 @@ dependencies = [
 [[package]]
 name = "librice"
 version = "0.4.3"
-source = "git+https://gitlab.futo.org/fcast/librice.git?rev=134c5da390164cd1f2e9bb5670d818ac927f1315#134c5da390164cd1f2e9bb5670d818ac927f1315"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=17ef3a67f949f71b686968496365269bdeff449f#17ef3a67f949f71b686968496365269bdeff449f"
 dependencies = [
  "byteorder",
  "futures",
@@ -8587,7 +8607,7 @@ dependencies = [
  "futures",
  "gethostname",
  "google-cast-protocol 0.1.0",
- "gst-plugin-dav1d 0.15.2 (git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=518b3b9b49ad23c659aa6ea3e587e1846f02b056)",
+ "gst-plugin-dav1d",
  "gst-plugin-rtp",
  "gst-plugin-webrtcbin2",
  "gst-static-env",
@@ -8627,7 +8647,6 @@ dependencies = [
  "rsa",
  "rtp-types",
  "rtsp-types",
- "sabrump",
  "sdp-types 0.1.8",
  "self_cell",
  "serde",
@@ -8660,7 +8679,7 @@ dependencies = [
  "fcast-runtime",
  "fcast-video",
  "flapjack",
- "gst-plugin-dav1d 0.15.2 (git+https://gitlab.futo.org/fcast/gst-plugins-rs.git?rev=518b3b9b49ad23c659aa6ea3e587e1846f02b056)",
+ "gst-plugin-dav1d",
  "gst-static-env",
  "gst-static-link",
  "gstreamer",
@@ -8837,7 +8856,7 @@ dependencies = [
 [[package]]
 name = "rice-c"
 version = "0.4.3"
-source = "git+https://gitlab.futo.org/fcast/librice.git?rev=134c5da390164cd1f2e9bb5670d818ac927f1315#134c5da390164cd1f2e9bb5670d818ac927f1315"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=17ef3a67f949f71b686968496365269bdeff449f#17ef3a67f949f71b686968496365269bdeff449f"
 dependencies = [
  "rice-proto",
  "sans-io-time",
@@ -8848,12 +8867,12 @@ dependencies = [
 [[package]]
 name = "rice-ctypes"
 version = "0.4.3"
-source = "git+https://gitlab.futo.org/fcast/librice.git?rev=134c5da390164cd1f2e9bb5670d818ac927f1315#134c5da390164cd1f2e9bb5670d818ac927f1315"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=17ef3a67f949f71b686968496365269bdeff449f#17ef3a67f949f71b686968496365269bdeff449f"
 
 [[package]]
 name = "rice-proto"
 version = "0.4.3"
-source = "git+https://gitlab.futo.org/fcast/librice.git?rev=134c5da390164cd1f2e9bb5670d818ac927f1315#134c5da390164cd1f2e9bb5670d818ac927f1315"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=17ef3a67f949f71b686968496365269bdeff449f#17ef3a67f949f71b686968496365269bdeff449f"
 dependencies = [
  "byteorder",
  "libc",
@@ -8874,7 +8893,7 @@ dependencies = [
 [[package]]
 name = "rice-stun-types"
 version = "0.4.3"
-source = "git+https://gitlab.futo.org/fcast/librice.git?rev=134c5da390164cd1f2e9bb5670d818ac927f1315#134c5da390164cd1f2e9bb5670d818ac927f1315"
+source = "git+https://gitlab.futo.org/fcast/librice.git?rev=17ef3a67f949f71b686968496365269bdeff449f#17ef3a67f949f71b686968496365269bdeff449f"
 dependencies = [
  "byteorder",
  "rand 0.9.4",
@@ -9030,7 +9049,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.4.15",
- "windows-sys 0.59.0",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -9127,25 +9146,6 @@ name = "rustversion"
 version = "1.0.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
-
-[[package]]
-name = "sabrump"
-version = "0.1.0"
-dependencies = [
- "base64 0.22.1",
- "bytes",
- "futures",
- "log",
- "parking_lot",
- "prost",
- "prost-build",
- "protox",
- "rand 0.10.1",
- "reqwest",
- "serde",
- "thiserror 2.0.18",
- "tokio",
-]
 
 [[package]]
 name = "same-file"
@@ -9524,7 +9524,7 @@ checksum = "fcf6e9b9bc7cd39363ba9032692b5303940ab16f600fedf844de215c657ec508"
 [[package]]
 name = "simulator"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e9b9ce3e4db013ec4b5b4602bded99719a00d610"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#e85f30a41f4fadd589d3ee4140c308d9d8ea5079"
 dependencies = [
  "ctor 0.2.9",
  "gst-static-env",
@@ -9603,6 +9603,7 @@ checksum = "0c790de23124f9ab44544d7ac05d60440adc586479ce501c1d6d7da3cd8c9cf5"
 [[package]]
 name = "slint"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "const-field-offset",
  "i-slint-backend-android-activity",
@@ -9627,6 +9628,7 @@ dependencies = [
 [[package]]
 name = "slint-build"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "derive_more",
  "fontique",
@@ -9638,7 +9640,7 @@ dependencies = [
 [[package]]
 name = "slint-gstreamer-video"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/slint-gstreamer-video.git?rev=d2e46a317ef605f15a5198f0eef5750518a2c3bf#d2e46a317ef605f15a5198f0eef5750518a2c3bf"
+source = "git+https://gitlab.futo.org/fcast/slint-gstreamer-video.git?rev=ed565eff27ee5aaed2f5fc26aac2ffb7c0fec601#ed565eff27ee5aaed2f5fc26aac2ffb7c0fec601"
 dependencies = [
  "gstreamer",
  "gstreamer-allocators",
@@ -9657,6 +9659,7 @@ dependencies = [
 [[package]]
 name = "slint-macros"
 version = "1.18.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "i-slint-compiler",
  "proc-macro2",
@@ -10654,7 +10657,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69fff37da548239c3bf9e64a12193d261e8b22b660991c6fd2df057c168f435f"
 dependencies = [
  "cc",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -11137,6 +11140,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "vtable"
 version = "0.5.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "const-field-offset",
  "portable-atomic",
@@ -11147,6 +11151,7 @@ dependencies = [
 [[package]]
 name = "vtable-macro"
 version = "0.5.0"
+source = "git+https://gitlab.futo.org/fcast/slint.git?rev=e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e#e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -11626,7 +11631,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -11770,15 +11775,6 @@ name = "windows-sys"
 version = "0.52.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "282be5f36a8ce781fad8c8ae18fa3f9beff57ec1b52cb3de0789201425d9a33d"
-dependencies = [
- "windows-targets 0.52.6",
-]
-
-[[package]]
-name = "windows-sys"
-version = "0.59.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1e38bc4d79ed67fd075bcc251a1c39b32a1776bbe92e5bef1f0bf1f8c531853b"
 dependencies = [
  "windows-targets 0.52.6",
 ]
