@@ -55,9 +55,10 @@ export component IdleView inherits Rectangle {
     }
 
     VerticalLayout {
-        padding: 32px;
-        padding-right: 58px;
-        padding-left: self.padding-right;
+        padding-top: 32px + Bridge.safe-area-top;
+        padding-bottom: 32px + Bridge.safe-area-bottom;
+        padding-right: 58px + Bridge.safe-area-right;
+        padding-left: 58px + Bridge.safe-area-left;
         spacing: 20px;
 
 
@@ -135,6 +136,62 @@ export component IdleView inherits Rectangle {
                                 icon-height: 14px;
                                 key: @tr("Local IP Address");
                                 value: Bridge.local-ip-addrs;
+                            }
+                        }
+                    }
+
+                    // Who is connected, from each sender's own introduction.
+                    // The QR code stays up beside it so another can join.
+                    if Bridge.senders.length > 0: Rectangle {
+                        background: @linear-gradient(222.86deg, #262626 7.47%, #0E0F10 95.53%);
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: @linear-gradient(180deg, rgba(255, 255, 255, 0.04) 0%, rgba(255, 255, 255, 0) 100%);
+
+                        VerticalLayout {
+                            padding: 10px;
+                            spacing: 3px;
+
+                            HorizontalLayout {
+                                padding-left: 5px;
+                                padding-top: 3px;
+                                padding-bottom: 3px;
+                                spacing: 8px;
+
+                                Text {
+                                    text: Bridge.senders.length == 1 ? @tr("Connected") : @tr("{} connected", Bridge.senders.length);
+                                    color: FCastPalette.opacity-light-700;
+                                    font-size: 12px;
+                                    vertical-alignment: center;
+                                }
+
+                                VerticalLayout {
+                                    alignment: center;
+
+                                    Rectangle {
+                                        width: 8px;
+                                        height: 8px;
+                                        border-radius: 4px;
+                                        background: #3DDC84;
+                                    }
+                                }
+
+                                Rectangle { }
+                            }
+
+                            for sender in Bridge.senders: VerticalLayout {
+                                Rectangle {
+                                    height: 1px;
+                                    background: FCastPalette.opacity-light-1100;
+                                }
+
+                                ReceiverInfoEntry {
+                                    icon: Icons.fcast-small;
+                                    icon-width: 15px;
+                                    icon-height: 15px;
+                                    key: sender.app == "" ? @tr("Sender") : (sender.version == "" ? sender.app : sender.app + " " + sender.version);
+                                    value: sender.name == "" ? @tr("Unnamed device") : sender.name;
+                                }
                             }
                         }
                     }

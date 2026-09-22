@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# Final-link linker for Rust android targets, wired via cargo [env]
+# CARGO_TARGET_*_LINKER. Resolves the NDK the same way build.rs does.
+set -eu
+api="${GSTREAMER_SRC_ANDROID_API:-28}"
+ndk="${GSTREAMER_SRC_ANDROID_NDK:-${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}}"
+if [ -z "$ndk" ]; then
+  base="${ANDROID_HOME:-$HOME/Android/Sdk}/ndk"
+  ndk="$base/$(ls "$base" | sort -V | tail -1)"
+fi
+host=linux-x86_64
+[ "$(uname -s)" = Darwin ] && host=darwin-x86_64
+exec "$ndk/toolchains/llvm/prebuilt/$host/bin/aarch64-linux-android${api}-clang++" "$@"

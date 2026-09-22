@@ -88,6 +88,23 @@ pub struct InspectorSample {
     pub buffering: Option<InspectorBuffering>,
 }
 
+/// What a sender's transport command does, for the mini OSD.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransportKind {
+    Pause,
+    Resume,
+    Seek,
+}
+
+/// What a sender said about itself when it introduced its session. Empty
+/// strings where it said nothing.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SenderInfo {
+    pub display_name: String,
+    pub app_name: String,
+    pub app_version: String,
+}
+
 #[derive(Debug)]
 pub enum UpdateGuiCommand {
     DeviceConnected,
@@ -156,6 +173,16 @@ pub enum UpdateGuiCommand {
     SetImageViaPlayer(bool),
     SetIsLive(bool),
     SetSeekPending(bool),
+    /// A transport command that did not come from this UI (the sender's
+    /// pause, resume or seek). The player shows its mini OSD for it, where a
+    /// click on the receiver's own chrome needs no echo. `by` names the
+    /// sender when it introduced itself.
+    TransportFromSender {
+        kind: TransportKind,
+        by: Option<String>,
+    },
+    /// The senders currently introduced, every time the set changes.
+    SetSenders(Vec<SenderInfo>),
     /// Server-directed source backoff countdown ("server busy, retrying in
     /// Ns"). `remaining_ms == 0` clears it, `total_ms` sizes the bar.
     SetSourceBackoff {
@@ -475,6 +502,14 @@ impl GuiController {
 
     pub fn set_seek_pending(&self, pending: bool) {
         self.send(UpdateGuiCommand::SetSeekPending(pending));
+    }
+
+    pub fn transport_from_sender(&self, kind: TransportKind, by: Option<String>) {
+        self.send(UpdateGuiCommand::TransportFromSender { kind, by });
+    }
+
+    pub fn set_senders(&self, senders: Vec<SenderInfo>) {
+        self.send(UpdateGuiCommand::SetSenders(senders));
     }
 
     pub fn set_playback_rate(&mut self, rate: f32) {

@@ -204,11 +204,13 @@ impl ReceiverArgs {
                 let _env_pkg_config_cross = sh.push_env("PKG_CONFIG_ALLOW_CROSS", "1");
 
                 match args.cmd {
-                    AndroidReceiverCommand::Check => cmd!(
-                        sh,
-                        "cargo ndk --target aarch64-linux-android check -p receiver-android"
-                    )
-                    .run()?,
+                    AndroidReceiverCommand::Check => {
+                        cmd!(
+                            sh,
+                            "cargo ndk --target aarch64-linux-android check -p receiver-android"
+                        )
+                        .run()?
+                    }
                     AndroidReceiverCommand::Clippy => todo!(),
                     AndroidReceiverCommand::BuildLibGst => {
                         let _env_build_system = sh.push_env(

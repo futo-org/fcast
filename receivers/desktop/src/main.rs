@@ -18,28 +18,28 @@ fn main() -> anyhow::Result<()> {
 
     if !settings.headless() && std::env::var("SLINT_BACKEND") == Err(std::env::VarError::NotPresent)
     {
-        let selector = rcore::slint::BackendSelector::new();
-        #[cfg(not(target_os = "windows"))]
-        let selector = selector.require_opengl_with_version(3, 30);
-        #[cfg(target_os = "windows")]
-        let selector = selector.require_opengl_with_version(4, 0);
-        selector.select()?;
+        // The video lane needs slint on the same wgpu device the sink
+        // renders with, and that decision has to be made here, before a
+        // window exists. It declines when no gpu device came up at all, and
+        // then the OpenGL selection stands: the UI runs, playback has no
+        // video.
+        if !rcore::select_wgpu_video_backend() {
+            let selector = rcore::slint::BackendSelector::new();
+            // Both dodvg lanes are compiled in. Name the OpenGL one so this
+            // build renders like every other one instead of leaning on the
+            // backend's default order.
+            let selector = selector.renderer_name("dodvg".into());
+            #[cfg(not(target_os = "windows"))]
+            let selector = selector.require_opengl_with_version(3, 30);
+            #[cfg(target_os = "windows")]
+            let selector = selector.require_opengl_with_version(4, 0);
+            selector.select()?;
+        }
     }
 
     if let Err(err) = rcore::slint::set_xdg_app_id("org.fcast.Receiver") {
         rcore::tracing::warn!(?err, "Failed to set XDG app id");
     }
 
-    // Opt into the experimental Wayland subsurface sink with
-    // FCAST_VIDEO_SINK=wayland-subsurface.
-    #[cfg(target_os = "linux")]
-    if std::env::var("FCAST_VIDEO_SINK").as_deref() == Ok("wayland-subsurface") {
-        let sink = rcore::WaylandSubsurfaceSink::new(
-            settings.disable_hdr_output(),
-            settings.rendering_options(),
-        );
-        return rcore::run(settings, sink);
-    }
-
-    rcore::run(settings, rcore::SwapchainSink::new())
+    rcore::run(settings)
 }

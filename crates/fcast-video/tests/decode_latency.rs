@@ -14,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use fcast_video::subpic::{BitmapFormat, BitmapPacket, decoder_for, dvb, pgs, vobsub};
+use fcast_video::subpic::{BitmapSubFormat, BitmapPacket, decoder_for, dvb, pgs, vobsub};
 
 /// A warm decode should take single-digit milliseconds. 100ms is where a
 /// viewer would notice.
@@ -23,7 +23,7 @@ const CEILING: Duration = Duration::from_millis(100);
 /// Decodes per format. Enough for a meaningful p99, few enough to stay fast.
 const RUNS: usize = 200;
 
-fn packet(format: BitmapFormat, bytes: &[u8], rt_ms: u64) -> BitmapPacket {
+fn packet(format: BitmapSubFormat, bytes: &[u8], rt_ms: u64) -> BitmapPacket {
     BitmapPacket {
         format,
         data: gst::Buffer::from_slice(bytes.to_vec()),
@@ -37,19 +37,19 @@ fn packet(format: BitmapFormat, bytes: &[u8], rt_ms: u64) -> BitmapPacket {
 fn a_warm_decode_costs_well_under_a_frame_in_every_format() {
     gst::init().expect("gst init");
 
-    let cases: [(BitmapFormat, Vec<u8>, Option<&[u8]>); 3] = [
+    let cases: [(BitmapSubFormat, Vec<u8>, Option<&[u8]>); 3] = [
         (
-            BitmapFormat::Pgs,
+            BitmapSubFormat::Pgs,
             pgs::fixtures::minimal_display_set(),
             None,
         ),
         (
-            BitmapFormat::Vobsub,
+            BitmapSubFormat::Vobsub,
             vobsub::fixtures::minimal_unit(),
             Some(vobsub::fixtures::SAMPLE_IDX),
         ),
         (
-            BitmapFormat::Dvb,
+            BitmapSubFormat::Dvb,
             // The grounded set exercises the whole decode, not a fragment.
             dvb::fixtures::grounded_display_set(),
             None,

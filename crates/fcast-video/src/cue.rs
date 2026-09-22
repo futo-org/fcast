@@ -1,5 +1,12 @@
 //! Sink-side subtitle cue state: which cue is on screen right now
-//! ([`CueEngine`]) and what it looks like (the `fvid-cue-raster` worker).
+//! ([`CueEngine`]) and what it looks like.
+//!
+//! What a cue LOOKS like is [`i_slint_cue::engine`]'s: the cache, the worker
+//! and the per-frame probe live beside the layout they drive, so an
+//! application that draws subtitles gets them without writing any of it. What
+//! is here is the half that is a video sink's: the running-time schedule, the
+//! bitmap subtitle decoder, and the stacking that turns a set of cues into a
+//! set of overlays.
 //!
 //! The engine is fed running-time-scheduled cues from outside the sink and is
 //! evaluated per displayed frame, so a cue's visibility is a pure function of
@@ -22,20 +29,29 @@ use std::{
 
 use parking_lot::{Condvar, Mutex};
 use smallvec::SmallVec;
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
+
+use flapjack::cue::{MAX_ACTIVE_CUES, Schedule, opening_rank};
+use i_slint_cue::engine::{CueRaster, Painted, RasterOptions, SceneSlot};
+/// One cue on screen, as a display list plus where it ended up: what a SCENE
+/// consumer gets instead of an [`Overlay`]. The dodvg lanes draw the scene
+/// straight into their frame, so nothing in it has been painted.
+pub use i_slint_cue::engine::Shown as ShownScene;
+
+/// The scheduling vocabulary, which is the driver's. Named here too so a
+/// consumer of this crate reaches one set of types.
+pub use flapjack::cue::{
+    BITMAP_PENDING_PIXEL_BUDGET, CueInput, PENDING_LIMIT, SubtitleTextFormat, cue_is_in_future,
+    cue_is_too_old,
+};
+/// What this crate called the format before the schedule moved.
+pub use flapjack::cue::SubtitleTextFormat as TextFormat;
 
 use crate::{
-    cue_ir::{self, CueIr, CueStyle, VideoRect},
-    subpic::{BitmapFormat, BitmapPacket, DisplayUpdate, SubpicDecoder},
+    cue_ir::{CueStyle, VideoRect},
+    subpic::{BitmapSubFormat, BitmapPacket, DisplayUpdate, SubpicDecoder},
     video::{Overlay, OverlaySpace},
 };
-
-/// Cap on cues waiting for their turn, sized for a whole file because that is
-/// what arrives: an external subtitle branch is unsynced by construction, so
-/// the parser hands the entire file over at once. A whole film's cues cost
-/// well under a megabyte, so this is a runaway-producer backstop rather than a
-/// working bound.
-const PENDING_LIMIT: usize = 4096;
 
 /// Undecoded bitmap packets allowed to wait for the decode worker. A burst
 /// backstop, not a working bound: a bitmap stream is demuxer-paced, so a
@@ -48,41 +64,73 @@ const PENDING_LIMIT: usize = 4096;
 /// is loud, counted, and recovers at the next complete set.
 const BITMAP_QUEUE_LIMIT: usize = 64;
 
-/// Decoded bitmap sets allowed to wait for their turn.
-///
-/// The text path's 4096 does not transfer: a queued cue is a short string
-/// while a decoded display set is megabytes of RGBA. The store is bounded by
-/// count and by bytes, and whichever bites first wins.
-const BITMAP_PENDING_LIMIT: usize = 256;
-
-/// Pixel memory allowed in the decoded-set backlog. The per-decoder allocation
-/// budget bounds one decoder's working set; this bounds how much of its output
-/// may be held waiting.
-const BITMAP_PENDING_PIXEL_BUDGET: usize = 64 * 1024 * 1024;
-
 /// How many decode costs are kept for [`CueEngine::bitmap_decode_latencies`].
 const BITMAP_LATENCY_WINDOW: usize = 256;
 
-/// How long a worker waits with nothing to do before it retires.
+/// How long the decode worker waits with nothing to do before it retires.
 ///
 /// Both engine workers are lazily spawned and lazily unspawned, so an idle
 /// sink does not keep a thread parked for the process lifetime. The cost of
 /// retiring too eagerly is one thread spawn off the streaming thread; the
 /// timeout is long enough that a normal subtitle cadence never retires the
-/// worker mid-track.
+/// worker mid-track. The raster worker's twin is
+/// [`i_slint_cue::engine::IDLE_TIMEOUT`], and it is the same twenty seconds.
+///
+/// Fixed, unlike that twin, which a test shortens through
+/// [`RasterOptions::idle_timeout`]. The decode retirement test drives its
+/// worker through [`CueEngine::hold_decode_for_test`] instead.
 const WORKER_IDLE_TIMEOUT: Duration = Duration::from_secs(20);
 
-/// How many text cues may be on screen at once.
+/// Inline capacity of the overlay set a raster consumer reads per frame.
 ///
-/// Overlapping cues are real (WebVTT and SSA both allow them) but few in
-/// practice. Eight is a backstop against a pathological file, sized so eight
-/// stacked cues still fit on a 720p canvas.
-///
-/// Above it, the oldest-start cue goes, with a warning. The cues that just
-/// arrived are the ones the viewer has not read yet.
-const MAX_ACTIVE_CUES: usize = 8;
+/// Text cues alone are bounded by [`MAX_ACTIVE_CUES`], but a bitmap set adds a
+/// region per subpicture on top, so this cannot be made spill-proof the way the
+/// scene set is. Four covers a text cue beside a two-region display set, which
+/// is what real sources carry; past it the frame pays one allocation, which is
+/// what it used to pay at two.
+const MAX_OVERLAYS: usize = 4;
 
-/// Whether the engine shows exactly one text cue at a time.
+#[derive(Default)]
+struct State {
+    /// Which cues and display sets are on screen, as a function of the running
+    /// time of the frame being shown. The driver's, because the clock is.
+    ///
+    /// Its payload is the raster engine's, and nothing here ever reads one:
+    /// everything about WHEN a cue is on screen is the schedule's, everything
+    /// about what it looks like is [`CueRaster`]'s.
+    sched: Schedule<SceneSlot>,
+    /// Coded video size decoders pre-scale their regions to (see
+    /// [`CueEngine::set_video_size`]). `(0, 0)` until the sink negotiates caps.
+    video_size: (u32, u32),
+}
+
+/// The slot a cue activates with: nothing built, and nothing keyed until the
+/// next [`CueRaster::resolve`] keys it.
+fn slot(_: &CueInput) -> SceneSlot {
+    SceneSlot::default()
+}
+
+/// A markup cue becomes its IR before it is scheduled.
+///
+/// The raster engine reads the IR and nothing else, so the one place that
+/// knows what a transport calls its format has to do the conversion, and this
+/// is it. Parsing here also means a markup cue is parsed once rather than once
+/// per layout.
+///
+/// It is reachable: matroskademux emits `format=pango-markup` directly for
+/// S_TEXT/UTF8 tracks, so cues arrive that never passed through a parser
+/// element. The parser is tolerant by design and never rejects a cue, so
+/// broken markup degrades to its words instead of reaching the screen as tags.
+fn parsed(mut cue: CueInput) -> CueInput {
+    if matches!(cue.format, SubtitleTextFormat::PangoMarkup) {
+        let ir = gstrssubparse::pango_markup::markup_to_cue_ir(&cue.text);
+        cue.text = ir.plain_text();
+        cue.format = SubtitleTextFormat::CueIr { ir: Arc::new(ir), pts_start: None };
+    }
+    cue
+}
+
+/// Whether the engine shows one cue at a time.
 ///
 /// Lever: `FCAST_SINGLE_ACTIVE_CUE=1` (set = on). It restores the
 /// `fcasttextoverlay` behaviour of holding exactly one text buffer: a cue
@@ -90,9 +138,9 @@ const MAX_ACTIVE_CUES: usize = 8;
 /// one at a time, but existing pixel and timing expectations were written
 /// against this, so it stays reachable.
 ///
-/// Read once, on first use. The engine keeps per-cue state whose shape depends
-/// on the answer, and a lever changed under a running pipeline would leave
-/// that state describing a policy no longer in force.
+/// Read once, on first use. The schedule keeps per-cue state whose shape
+/// depends on the answer, and a lever changed under a running pipeline would
+/// leave that state describing a policy no longer in force.
 fn single_active_cues() -> bool {
     static SINGLE: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| {
         std::env::var_os("FCAST_SINGLE_ACTIVE_CUE").is_some_and(|value| value == "1")
@@ -100,321 +148,30 @@ fn single_active_cues() -> bool {
     *SINGLE
 }
 
-/// How far ahead of a frozen frame a cue may be pulled onto the screen.
-///
-/// Paused only, and a deliberate semantic choice: this shows a cue early.
-/// Caption converters can leave a small hole between the end of one cue and
-/// the start of the next. While playing that hole is invisible, but a viewer
-/// who pauses can land inside it and the screen goes correctly, uselessly
-/// blank, since no frame will ever arrive to bring the next cue in. Other
-/// players fill that hole by reading the cue nearest the playhead, and 200 ms
-/// gives that feel with room to spare.
-///
-/// Playing is excluded because nothing is gained there and something is lost:
-/// the cue starts on time by itself, and pulling it in early would move every
-/// cue boundary in the file, which is visible jitter against the audio.
-///
-/// Asymmetric on purpose: only a cue's start is relaxed. Expiry is read at the
-/// exact frame time, so nothing ever leaves the screen early.
-const PAUSED_CUE_LOOKAHEAD: gst::ClockTime = gst::ClockTime::from_mseconds(200);
-
-/// The lookahead actually in force: [`PAUSED_CUE_LOOKAHEAD`], or none at all.
+/// The paused gap tolerance in force: the driver's default, or none at all.
 ///
 /// Lever: `FCAST_NO_PAUSED_CUE_LOOKAHEAD` (set = off). With it set the paused
-/// schedule is exact again and a frame frozen in a gap stays blank.
-///
-/// Read once, on first use, like every other lever here. A tolerance changed
-/// under a running pipeline would leave cues on screen that the policy now in
-/// force would never have put there.
+/// schedule is exact again and a frame frozen in a gap stays blank. Read once,
+/// like every other lever here.
 fn paused_cue_lookahead() -> gst::ClockTime {
     static OFF: std::sync::LazyLock<bool> =
         std::sync::LazyLock::new(|| std::env::var_os("FCAST_NO_PAUSED_CUE_LOOKAHEAD").is_some());
     if *OFF {
         gst::ClockTime::ZERO
     } else {
-        PAUSED_CUE_LOOKAHEAD
+        flapjack::cue::PAUSED_CUE_LOOKAHEAD
     }
-}
-
-/// Rasters kept around after they stop being active. Small on purpose. It
-/// exists so a re-show (a track toggled off and on, a seek back into the same
-/// cue, a canvas that returns to a previous size) is instant, not so that a
-/// whole subtitle file stays resident.
-const RASTER_CACHE_LIMIT: usize = 8;
-
-/// The text formats the renderer accepts.
-///
-/// [`TextFormat::Utf8`] and [`TextFormat::PangoMarkup`] mirror the `format`
-/// field of the production text caps (`text/x-raw, format={utf8,
-/// pango-markup}`). Every arm rasterizes through [`crate::cue_ir`]
-/// (parley + vello_cpu, nothing links pango): plain text wraps as unstyled
-/// lines, markup parses through `gst-subparse`'s tolerant pango-markup
-/// reimplementation with its styling honoured.
-///
-/// [`TextFormat::CueIr`] carries styling that was already parsed upstream
-/// (`text-format=cue-ir`). It is not a new caps format: those buffers still
-/// negotiate `text/x-raw, format=utf8` and carry readable UTF-8 text, with the
-/// styling travelling beside the payload in a `CueIrMeta`. It is the only arm
-/// with per-cue positioning and karaoke.
-///
-/// Not `Copy`/`Eq`/`Hash`: the IR is an `Arc` payload holding `f32`s, so there
-/// is no lawful `Eq`. The raster cache is a linear-scan `Vec`, for which
-/// `PartialEq` is enough.
-#[derive(Debug, Clone, PartialEq)]
-pub enum TextFormat {
-    Utf8,
-    PangoMarkup,
-    /// A cue parsed with `text-format=cue-ir`.
-    CueIr {
-        /// The styled cue, shared with the driver's delivery (no copy).
-        ir: Arc<CueIr>,
-        /// The text buffer's pts. Karaoke reveal times in the IR are absolute
-        /// on that timeline, so this is what anchors them to `start_rt`.
-        /// `None` disables reveal stepping and shows the whole cue at once,
-        /// which is always safe.
-        pts_start: Option<gst::ClockTime>,
-    },
-}
-
-impl TextFormat {
-    /// The IR this cue is rendered from, when it has one.
-    fn ir(&self) -> Option<&Arc<CueIr>> {
-        match self {
-            TextFormat::CueIr { ir, .. } => Some(ir),
-            _ => None,
-        }
-    }
-}
-
-/// One cue, already converted to running time by the producer.
-#[derive(Debug, Clone, PartialEq)]
-pub struct CueInput {
-    pub format: TextFormat,
-    pub text: String,
-    pub start_rt: gst::ClockTime,
-    /// `None` means open-ended: the cue stays active until superseded or
-    /// cleared.
-    pub end_rt: Option<gst::ClockTime>,
-}
-
-/// A cue no longer covers a frame once the frame's running time has reached the
-/// cue's end.
-///
-/// The overlay element's too-old rule (`text_running_time_end <=
-/// vid_running_time`), with an open-ended cue (no end) never expiring.
-pub fn cue_is_too_old(end_rt: Option<gst::ClockTime>, frame_rt: gst::ClockTime) -> bool {
-    end_rt.is_some_and(|end| end <= frame_rt)
-}
-
-/// A cue has not begun while the frame's running time is before its start.
-///
-/// The overlay element states the same rule over the video buffer's whole
-/// window. The sink evaluates per displayed frame *instant* rather than per
-/// buffer window, which collapses that to `frame_rt < start_rt`. The only
-/// difference is at most one frame of display quantization, which the element
-/// already has.
-pub fn cue_is_in_future(start_rt: gst::ClockTime, frame_rt: gst::ClockTime) -> bool {
-    start_rt > frame_rt
-}
-
-/// A rendered cue: tightly packed RGBA with straight (non-premultiplied) alpha,
-/// placed in window coordinates.
-#[derive(Debug)]
-pub struct Raster {
-    /// Shared with every [`Overlay`] built from this raster. A cue strip is
-    /// megabytes and `overlays_for` runs per displayed frame, so the buffer is
-    /// refcount-shared rather than memcpy'd. The upload path only ever reads
-    /// `&pixels[..]`, which derefs identically.
-    pixels: Arc<Vec<u8>>,
-    width: u32,
-    height: u32,
-    x: i32,
-    y: i32,
-}
-
-impl Raster {
-    /// Cheap. The pixel buffer is refcount-shared with the overlay, so this is
-    /// a handful of scalar copies per frame, not a memcpy.
-    fn to_overlay(&self) -> Overlay {
-        Overlay {
-            pixels: self.pixels.clone(),
-            width: self.width,
-            height: self.height,
-            x: self.x,
-            y: self.y,
-            render_width: self.width,
-            render_height: self.height,
-            // Window space: the raster was laid out at display resolution, so
-            // it must not be scaled (or rotated) with the video.
-            space: OverlaySpace::Window,
-        }
-    }
-
-    /// Texture dimensions, for tests and diagnostics.
-    pub fn size(&self) -> (u32, u32) {
-        (self.width, self.height)
-    }
-
-    /// Placement in window coordinates, for tests and diagnostics.
-    pub fn position(&self) -> (i32, i32) {
-        (self.x, self.y)
-    }
-
-    /// The RGBA bytes, for tests and diagnostics.
-    pub fn pixels(&self) -> &[u8] {
-        &self.pixels
-    }
-}
-
-/// What a raster is fully determined by: the cue's content, the canvas it is
-/// laid out against, the house style, where the picture sits, and for karaoke
-/// how many reveal steps have passed. Same key means byte-identical pixels,
-/// which is what makes the cache sound.
-///
-/// `style`/`video_rect`/`step` vary every arm's output now that one
-/// rasterizer draws them all; a style change costs a cache flush, which is a
-/// user-settings action, not a per-frame one.
-///
-/// Equality is structural with an `Arc` pointer fast path (a re-shown cue is
-/// usually the same allocation). No `Eq`/`Hash`: [`CueIr`] and [`CueStyle`]
-/// hold `f32`s, and the linear-scan cache never needed them.
-#[derive(Debug, Clone)]
-struct RasterKey {
-    text: String,
-    format: TextFormat,
-    canvas: (u32, u32),
-    style: Arc<CueStyle>,
-    video_rect: Option<VideoRect>,
-    /// Number of reveal thresholds at or before the frame clock (0 = only the
-    /// un-timed spans are visible). Always 0 for non-karaoke cues.
-    step: usize,
-}
-
-impl PartialEq for RasterKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.canvas == other.canvas
-            && self.video_rect == other.video_rect
-            && self.step == other.step
-            && self.text == other.text
-            && (Arc::ptr_eq(&self.style, &other.style) || self.style == other.style)
-            && match (&self.format, &other.format) {
-                (TextFormat::CueIr { ir: a, .. }, TextFormat::CueIr { ir: b, .. }) => {
-                    cue_ir::ir_eq(a, b)
-                }
-                (a, b) => a == b,
-            }
-    }
-}
-
-#[derive(Debug)]
-enum RasterState {
-    /// Requested (or requestable), no pixels yet. The frame renders bare and
-    /// the completion signal repaints. The engine never waits.
-    Pending,
-    Ready(Arc<Raster>),
-    /// Like `Pending` for the worker (a replacement is wanted), but the
-    /// previous raster keeps showing meanwhile. Its placement is still valid,
-    /// so a stale frame beats a blank one. Used when the same cue re-keys in
-    /// place (a karaoke step, a style change). A canvas/video-rect change stays
-    /// `Pending` instead, because the old placement is wrong in the new
-    /// geometry.
-    Stale(Arc<Raster>),
-    /// The worker could not produce pixels (empty text, absurd size, cairo
-    /// refusal). Remembered so the cue is not re-requested every frame.
-    Failed,
-}
-
-impl RasterState {
-    /// Re-key in place. Keep any pixels on screen while the replacement
-    /// renders; otherwise start over as `Pending`.
-    fn into_stale(self) -> RasterState {
-        match self {
-            RasterState::Ready(raster) | RasterState::Stale(raster) => RasterState::Stale(raster),
-            _ => RasterState::Pending,
-        }
-    }
-}
-
-#[derive(Debug)]
-struct Active {
-    cue: CueInput,
-    key: RasterKey,
-    raster: RasterState,
-    /// Reveal thresholds as running times (see [`cue_ir::reveal_steps`]); empty
-    /// for the non-karaoke common case, which is every utf8/markup cue.
-    steps: Vec<gst::ClockTime>,
-}
-
-#[derive(Default)]
-struct State {
-    /// Cues waiting for their window, ordered by `start_rt`.
-    pending: VecDeque<CueInput>,
-    /// The cues on screen right now, ordered by `start_rt`, earliest first,
-    /// which is also bottom-first on screen (see [`active_overlays`]). Bounded
-    /// by [`MAX_ACTIVE_CUES`]; holds at most one entry under
-    /// [`single_active_cues`].
-    active: SmallVec<[Active; 2]>,
-    /// Display size the rasters are laid out against.
-    canvas: (u32, u32),
-    /// Where the video sits inside that display (see [`VideoRect`]). `None`
-    /// means unknown, and the whole window doubles as the picture.
-    video_rect: Option<VideoRect>,
-    /// The house style cue-IR rasters are drawn with (see [`CueStyle`]).
-    style: Arc<CueStyle>,
-    /// The video segment as captured by the sink, for pts → running time.
-    video_segment: Option<gst::Segment>,
-    /// Running time of the most recently shown frame. While paused this is
-    /// frozen, and it is what a newly arriving cue is evaluated against.
-    last_shown_rt: Option<gst::ClockTime>,
-    /// Orders raster requests by *state-lock* order: keys are computed under
-    /// the state lock but written to the worker inbox after it, so two threads'
-    /// writes can arrive inverted (see [`CueEngine::request_raster`]).
-    request_seq: u64,
-
-    // ---- the bitmap side: a PARALLEL state, sharing only this lock ----
-    //
-    // Nothing below is read by any text codepath, and `active` above is not
-    // read by any bitmap one. The two meet in exactly three places: the reset
-    // hooks (`clear`/`flush`/`reset_timeline`), the schedule advance in
-    // `overlays_for`/`current_overlays`, and `active_overlays`, which
-    // concatenates what both sides have to show.
-    /// Decoded display sets waiting for their turn, ordered by `start_rt`.
-    bitmap_pending: VecDeque<DisplayUpdate>,
-    /// The set currently on screen, if any.
-    bitmap_active: Option<DisplayUpdate>,
-    /// Coded video size decoders pre-scale their regions to (see
-    /// [`CueEngine::set_video_size`]). `(0, 0)` until the sink negotiates caps.
-    video_size: (u32, u32),
-    /// Bumped by every reset (clear, flush, new stream, inbox overflow). A
-    /// packet is stamped with the epoch it was submitted under and a decoded
-    /// set is only published if the epoch still matches, which is the single
-    /// serialization point between the decode worker and everything else.
-    bitmap_epoch: u64,
-    /// The buffer the last accepted `submit_bitmap` carried, for the
-    /// consecutive-duplicate check. Cleared on every epoch bump, so a genuine
-    /// replay after a flush is never mistaken for a redelivery.
-    last_bitmap_buffer: Option<gst::Buffer>,
 }
 
 type OnChange = Arc<dyn Fn() + Send + Sync>;
 
-#[derive(Default)]
 struct Shared {
     state: Mutex<State>,
-    cache: Mutex<RasterCache>,
-    /// How long a worker idles before retiring, in nanoseconds; zero means
-    /// [`WORKER_IDLE_TIMEOUT`]. Only a test ever writes it.
-    worker_idle_nanos: AtomicU64,
-    worker: Mutex<Option<WorkerHandle>>,
+    /// What every cue on screen looks like: the layout, the caches, the
+    /// worker. Told what is on screen once per frame and never told when.
+    raster: CueRaster,
     on_change: Mutex<Option<OnChange>>,
     dirty: AtomicBool,
-    dropped: AtomicU64,
-    /// Fontmap warm-up cost in nanoseconds; 0 until the worker has warmed.
-    warm_nanos: AtomicU64,
-    /// How long each raster the worker produced took, newest last, bounded.
-    /// Cache hits never reach the worker, so counting them would report the
-    /// cache rather than the rasterizer.
-    raster_latencies: Mutex<VecDeque<Duration>>,
 
     // ---- the bitmap side ----
     /// The `fvid-sub-decode` worker, spawned on the first bitmap packet.
@@ -422,9 +179,6 @@ struct Shared {
     /// Times the packet inbox overflowed and reset the decoder. Pathological:
     /// the phase gate asserts this stays 0 across the whole battery.
     bitmap_overflow_resets: AtomicU64,
-    /// Decoded sets given up because the pending store was full. Also expected
-    /// to stay 0 in a healthy run.
-    bitmap_dropped_sets: AtomicU64,
     /// Packets the decoder refused (a panic caught at the worker, or a format
     /// with no decoder).
     bitmap_decode_errors: AtomicU64,
@@ -446,43 +200,141 @@ struct Shared {
 
 impl Drop for Shared {
     fn drop(&mut self) {
-        if let Some(handle) = self.worker.lock().take() {
-            handle.stop();
-        }
         if let Some(handle) = self.decode_worker.lock().take() {
             handle.stop();
         }
     }
 }
 
-impl Shared {
-    fn worker_idle(&self) -> Duration {
-        match self.worker_idle_nanos.load(Ordering::Relaxed) {
-            0 => WORKER_IDLE_TIMEOUT,
-            nanos => Duration::from_nanos(nanos),
-        }
+/// Called when the overlay set changes without a frame flowing: a raster
+/// landing, an activation or expiry, a clear. Runs on whichever thread noticed
+/// and never with an engine lock held.
+fn mark_changed(shared: &Shared) {
+    shared.dirty.store(true, Ordering::Release);
+    let callback = shared.on_change.lock().clone();
+    if let Some(callback) = callback {
+        callback();
     }
 }
 
-type DecoderFactory = dyn Fn(BitmapFormat) -> Option<Box<dyn SubpicDecoder>> + Send + Sync;
+type DecoderFactory = dyn Fn(BitmapSubFormat) -> Option<Box<dyn SubpicDecoder>> + Send + Sync;
 
 /// Sink-side cue scheduler. Cheap to clone (an `Arc` handle); every method is
 /// non-blocking.
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct CueEngine {
     shared: Arc<Shared>,
 }
 
+impl Default for CueEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CueEngine {
+    /// An engine for a consumer that takes [`Overlay`]s: the raster engine
+    /// paints every cue, and [`CueEngine::overlays_for`] hands the pixels over.
     pub fn new() -> Self {
-        Self::default()
+        Self::build(RasterOptions::default())
+    }
+
+    /// An engine for a consumer that draws the display lists itself, which
+    /// switches the paint lane off.
+    ///
+    /// Fixed here rather than settable, because the pixel cache remembers a
+    /// failed paint as a tombstone and a lane switched mid-stream has
+    /// tombstones in it that were never a refusal. No consumer switches.
+    ///
+    /// [`CueEngine::overlays_for`] and [`CueEngine::current_overlays`] stay
+    /// callable and stay correct: they answer with the bitmap subtitle set and
+    /// nothing else, because [`active_overlays`] refuses to composite a text
+    /// cue whose pixels the consumer is drawing itself. A subpicture has no
+    /// display list and is the one thing a scene consumer cannot draw, so it
+    /// stays on this path on every lane.
+    pub fn for_scene_consumer() -> Self {
+        Self::build(RasterOptions { scenes_only: true, ..RasterOptions::default() })
+    }
+
+    /// An engine whose raster worker retires after `idle` rather than after
+    /// [`WORKER_IDLE_TIMEOUT`].
+    ///
+    /// Tests only. A test that wants to watch a retirement cannot wait twenty
+    /// seconds for one.
+    #[doc(hidden)]
+    pub fn with_worker_idle_for_test(idle: Duration) -> Self {
+        Self::build(RasterOptions { idle_timeout: idle, ..RasterOptions::default() })
+    }
+
+    fn build(options: RasterOptions) -> Self {
+        // Cyclic because the raster engine's change hook has to reach back
+        // here: it means "ask again", and only this side knows what is on
+        // screen to ask about. Weak, so the hook is not what keeps the engine
+        // alive.
+        let shared = Arc::new_cyclic(|back: &Weak<Shared>| {
+            let raster = CueRaster::with_options(options);
+            let back = back.clone();
+            raster.on_change(move || {
+                if let Some(shared) = back.upgrade() {
+                    mark_changed(&shared);
+                }
+            });
+            Shared {
+                state: Mutex::default(),
+                raster,
+                on_change: Mutex::default(),
+                dirty: AtomicBool::new(false),
+                decode_worker: Mutex::default(),
+                bitmap_overflow_resets: AtomicU64::new(0),
+                bitmap_decode_errors: AtomicU64::new(0),
+                bitmap_sets_decoded: AtomicU64::new(0),
+                bitmap_decode_latencies: Mutex::default(),
+                decoder_factory: Mutex::default(),
+            }
+        });
+        {
+            let mut state = shared.state.lock();
+            state.sched.set_single_active(single_active_cues());
+            state.sched.set_paused_lookahead(paused_cue_lookahead());
+        }
+        Self { shared }
+    }
+
+    /// One pass of the raster engine over what is on screen: what each active
+    /// cue wants built, and the next cue's work before its turn comes.
+    ///
+    /// Everything the engine needs is here and nothing it does not: the cue's
+    /// words, its IR when it has one, and the rank its reveal has reached.
+    /// Where the cue came from and when it is due stay on this side.
+    fn drive(&self, state: &mut State) -> bool {
+        let rate = state.sched.rate();
+        let (active, next) = state.sched.active_and_next_mut();
+        let mut cues: SmallVec<[i_slint_cue::engine::Cue<'_>; MAX_ACTIVE_CUES]> = active
+            .iter_mut()
+            .map(|active| i_slint_cue::engine::Cue {
+                text: &active.cue.text,
+                ir: flapjack::cue::cue_ir(&active.cue.format),
+                rank: active.rank,
+                slot: &mut active.payload,
+            })
+            .collect();
+        let next = next.map(|cue| i_slint_cue::engine::Next {
+            text: &cue.text,
+            ir: flapjack::cue::cue_ir(&cue.format),
+            rank: opening_rank(cue, rate),
+        });
+        self.shared
+            .raster
+            .resolve(i_slint_cue::engine::Frame { active: &mut cues, next })
     }
 
     /// Schedule a cue. Called from the text delivery thread; never blocks and
     /// never rasterizes inline.
     pub fn submit(&self, cue: CueInput) {
+        // Before the lock: a markup cue is parsed here, and no lock is worth
+        // holding across a parse.
+        let cue = parsed(cue);
         let mut changed;
-        let fetch;
         {
             let mut state = self.shared.state.lock();
 
@@ -490,33 +342,20 @@ impl CueEngine {
             // after a seek may not be). `partition_point` because a whole-file
             // burst is mostly sorted and the insert point must not cost a walk
             // over thousands of queued cues.
-            let at = state
-                .pending
-                .partition_point(|queued| queued.start_rt <= cue.start_rt);
-            // A cue that repeats one already queued (or already showing) is
-            // folded into it rather than appended. See `merge_delivery`.
-            if !merge_delivery(&mut state, at, &cue) {
-                state.pending.insert(at, cue);
-                trim_pending(&mut state, &self.shared.dropped);
-            }
+            state.sched.submit(cue);
 
             // A cue that covers the frame already on screen becomes visible
             // without a new frame. This is the paused path, so it evaluates
-            // with the gap tolerance ([`PAUSED_CUE_LOOKAHEAD`]).
-            changed = match state.last_shown_rt {
-                Some(rt) => evaluate_paused(&mut state, rt),
+            // with the gap tolerance.
+            changed = match state.sched.last_shown_rt() {
+                Some(rt) => state.sched.advance_paused(rt, slot),
                 None => false,
             };
-            let (want, filled) = self.resolve_raster(&mut state);
-            changed |= filled;
-            fetch = want;
+            changed |= self.drive(&mut state);
         }
 
-        if let Some(request) = fetch {
-            self.request_raster(request);
-        }
         if changed {
-            self.mark_changed();
+            mark_changed(&self.shared);
         }
     }
 
@@ -557,10 +396,9 @@ impl CueEngine {
             if slot.retired {
                 continue;
             }
-            if state
-                .last_bitmap_buffer
+            if packet
                 .as_ref()
-                .is_some_and(|last| packet.as_ref().is_some_and(|p| same_buffer(last, &p.data)))
+                .is_some_and(|p| state.sched.is_repeat_bitmap(&p.data))
             {
                 debug!(
                     rt = ?packet.as_ref().map(|p| p.rt),
@@ -569,12 +407,12 @@ impl CueEngine {
                 return;
             }
             let Some(packet) = packet.take() else { return };
-            state.last_bitmap_buffer = Some(packet.data.clone());
+            state.sched.note_bitmap(packet.data.clone());
 
             if slot.queue.len() >= BITMAP_QUEUE_LIMIT {
                 let dropped = slot.queue.len();
                 slot.queue.clear();
-                state.bitmap_epoch += 1;
+                let epoch = state.sched.bump_bitmap_epoch();
                 let total = self
                     .shared
                     .bitmap_overflow_resets
@@ -582,13 +420,13 @@ impl CueEngine {
                     + 1;
                 warn!(
                     dropped,
-                    epoch = state.bitmap_epoch,
+                    epoch,
                     total,
                     "bitmap decode inbox full; reset the decoder rather than decode a stream with a \
                      hole in it -- subtitles resume at the next complete display set"
                 );
             }
-            slot.queue.push_back((state.bitmap_epoch, packet));
+            slot.queue.push_back((state.sched.bitmap_epoch(), packet));
             inbox.cv.notify_all();
             return;
         }
@@ -606,13 +444,10 @@ impl CueEngine {
     pub fn clear(&self) {
         let changed = {
             let mut state = self.shared.state.lock();
-            state.pending.clear();
-            let changed = !state.active.is_empty();
-            state.active.clear();
-            changed | reset_bitmap_state(&mut state, true)
+            state.sched.clear()
         };
         if changed {
-            self.mark_changed();
+            mark_changed(&self.shared);
         }
     }
 
@@ -627,33 +462,17 @@ impl CueEngine {
             return;
         }
 
-        let changed;
-        let fetch;
-        {
-            let mut state = self.shared.state.lock();
-            if state.canvas == (width, height) {
-                return;
-            }
-            state.canvas = (width, height);
-
-            // Every active cue's raster was laid out against the old size.
-            for active in state.active.iter_mut() {
-                active.key.canvas = (width, height);
-                active.raster = RasterState::Pending;
-            }
-            // The old-canvas rasters stay in the cache. A canvas that returns
-            // to a previous size is one of the re-shows [`RASTER_CACHE_LIMIT`]
-            // exists to make instant; LRU is the eviction policy.
-            let (want, filled) = self.resolve_raster(&mut state);
-            fetch = want;
-            changed = filled;
+        if self.shared.raster.canvas() == (width, height) {
+            return;
         }
-
-        if let Some(request) = fetch {
-            self.request_raster(request);
-        }
-        if changed {
-            self.mark_changed();
+        // Every active cue's scene was laid out against the old size, and the
+        // next `drive` re-keys them. Keeping the old scene up meanwhile is
+        // what stops a resize blanking every line on screen for as long as
+        // the worker takes; the old-canvas scenes stay cached, so a canvas
+        // that returns to a previous size is instant.
+        self.shared.raster.set_canvas((width, height));
+        if self.drive(&mut self.shared.state.lock()) {
+            mark_changed(&self.shared);
         }
     }
 
@@ -675,33 +494,16 @@ impl CueEngine {
             return;
         }
 
-        let changed;
-        let fetch;
-        {
-            let mut state = self.shared.state.lock();
-            if state.video_rect == rect {
-                return;
-            }
-            state.video_rect = rect;
-
-            // The active cues' rasters were laid out against the old frame, so
-            // their placement is now wrong. Pending, not Stale.
-            for active in state.active.iter_mut() {
-                active.key.video_rect = rect;
-                active.raster = RasterState::Pending;
-            }
-            // Rasters for the old rect stay cached, as in `set_canvas`. LRU is
-            // the policy.
-            let (want, filled) = self.resolve_raster(&mut state);
-            fetch = want;
-            changed = filled;
+        if self.shared.raster.video_rect() == rect {
+            return;
         }
-
-        if let Some(request) = fetch {
-            self.request_raster(request);
-        }
-        if changed {
-            self.mark_changed();
+        // The active cues were laid out against the old picture rect, so their
+        // placement is now slightly wrong. They re-key and keep showing
+        // meanwhile, as in `set_canvas`: a resize while playing must not
+        // strobe the line.
+        self.shared.raster.set_video_rect(rect);
+        if self.drive(&mut self.shared.state.lock()) {
+            mark_changed(&self.shared);
         }
     }
 
@@ -733,48 +535,25 @@ impl CueEngine {
     /// Change the house style (see [`CueStyle`]); the active cue re-rasters.
     /// Callable at any time from any thread, including while paused.
     pub fn set_style(&self, style: CueStyle) {
-        let changed;
-        let fetch;
-        {
-            let mut state = self.shared.state.lock();
-            if *state.style == style {
-                return;
-            }
-            let style = Arc::new(style);
-            state.style = style.clone();
-
-            // The active cues' rasters were drawn with the old style; keep
-            // showing them (their placement is still valid) until the re-styled
-            // ones land, rather than blinking blank on a settings toggle.
-            for active in state.active.iter_mut() {
-                active.key.style = style.clone();
-                let raster = std::mem::replace(&mut active.raster, RasterState::Pending);
-                active.raster = raster.into_stale();
-            }
-            // Old-style rasters stay cached too (LRU is the policy), so a
-            // style toggled back is instant as well.
-            let (want, filled) = self.resolve_raster(&mut state);
-            fetch = want;
-            changed = filled;
-        }
-
-        if let Some(request) = fetch {
-            self.request_raster(request);
-        }
-        if changed {
-            self.mark_changed();
+        // The active cues were drawn with the old style; they keep showing
+        // until the re-styled ones land, rather than blinking blank on a
+        // settings toggle. Old-style scenes stay cached, so a style toggled
+        // back is instant as well.
+        self.shared.raster.set_style(style);
+        if self.drive(&mut self.shared.state.lock()) {
+            mark_changed(&self.shared);
         }
     }
 
     /// The house style in force (see [`CueStyle`]).
     pub fn style(&self) -> CueStyle {
-        (*self.shared.state.lock().style).clone()
+        (*self.shared.raster.style()).clone()
     }
 
     /// Record the video segment the sink is running, so frame pts can be turned
     /// into the running time cues are scheduled in.
     pub fn set_video_segment(&self, segment: &gst::Segment) {
-        self.shared.state.lock().video_segment = Some(segment.clone());
+        self.shared.state.lock().sched.set_video_segment(segment);
     }
 
     /// FLUSH_STOP. Both sides of the comparison are invalid: cues from before
@@ -782,15 +561,10 @@ impl CueEngine {
     pub fn flush(&self) {
         let changed = {
             let mut state = self.shared.state.lock();
-            state.pending.clear();
-            state.video_segment = None;
-            state.last_shown_rt = None;
-            let changed = !state.active.is_empty();
-            state.active.clear();
-            changed | reset_bitmap_state(&mut state, true)
+            state.sched.flush()
         };
         if changed {
-            self.mark_changed();
+            mark_changed(&self.shared);
         }
     }
 
@@ -814,15 +588,11 @@ impl CueEngine {
     pub fn reset_timeline(&self) {
         let changed = {
             let mut state = self.shared.state.lock();
-            state.video_segment = None;
-            state.last_shown_rt = None;
-            let mut changed = reset_bitmap_state(&mut state, false);
+            let mut changed = state.sched.forget_timeline();
 
-            let before = state.bitmap_pending.len();
-            state
-                .bitmap_pending
-                .retain(|update| update.end_rt.is_some());
-            let stranded = before - state.bitmap_pending.len();
+            let stranded = state
+                .sched
+                .retain_bitmap_pending(|update| update.end_rt.is_some());
             if stranded > 0 {
                 debug!(
                     stranded,
@@ -830,18 +600,13 @@ impl CueEngine {
                      and nothing in the next item would have superseded them"
                 );
             }
-            if state
-                .bitmap_active
-                .as_ref()
-                .is_some_and(|active| active.end_rt.is_none())
-            {
-                state.bitmap_active = None;
-                changed = true;
-            }
+            changed |= state
+                .sched
+                .clear_bitmap_active_if(|active| active.end_rt.is_none());
             changed
         };
         if changed {
-            self.mark_changed();
+            mark_changed(&self.shared);
         }
     }
 
@@ -849,7 +614,7 @@ impl CueEngine {
     pub fn video_running_time(&self, pts: Option<gst::ClockTime>) -> Option<gst::ClockTime> {
         let pts = pts?;
         let state = self.shared.state.lock();
-        let segment = state.video_segment.as_ref()?;
+        let segment = state.sched.video_segment()?;
         match segment.to_running_time(pts) {
             gst::GenericFormattedValue::Time(time) => time,
             _ => None,
@@ -868,28 +633,23 @@ impl CueEngine {
     /// ([`PAUSED_CUE_LOOKAHEAD`]). A cue whose start is a few frames away
     /// arrives on its own, on time, and showing it early here would move every
     /// cue boundary in the file.
-    pub fn overlays_for(&self, frame_rt: Option<gst::ClockTime>) -> SmallVec<[Overlay; 1]> {
+    pub fn overlays_for(
+        &self,
+        frame_rt: Option<gst::ClockTime>,
+    ) -> SmallVec<[Overlay; MAX_OVERLAYS]> {
         let mut changed = false;
-        let fetch;
         let overlays;
         {
             let mut state = self.shared.state.lock();
             if let Some(rt) = frame_rt {
-                state.last_shown_rt = Some(rt);
-                changed = evaluate(&mut state, rt);
-                changed |= evaluate_bitmap(&mut state, rt);
+                changed = state.sched.advance(rt, slot);
             }
-            let (want, filled) = self.resolve_raster(&mut state);
-            changed |= filled;
-            fetch = want;
-            overlays = active_overlays(&state);
+            changed |= self.drive(&mut state);
+            overlays = active_overlays(&state, self.shared.raster.draws_pixels());
         }
 
-        if let Some(request) = fetch {
-            self.request_raster(request);
-        }
         if changed {
-            self.mark_changed();
+            mark_changed(&self.shared);
         }
         overlays
     }
@@ -904,29 +664,124 @@ impl CueEngine {
     /// [`PAUSED_CUE_LOOKAHEAD`] describes, so a playhead frozen in the hole
     /// between two cues shows the one it is about to reach rather than
     /// nothing. The bitmap schedule is read exactly, as it is everywhere.
-    pub fn current_overlays(&self) -> SmallVec<[Overlay; 1]> {
+    pub fn current_overlays(&self) -> SmallVec<[Overlay; MAX_OVERLAYS]> {
         let mut changed = false;
-        let fetch;
         let overlays;
         {
             let mut state = self.shared.state.lock();
-            if let Some(rt) = state.last_shown_rt {
-                changed = evaluate_paused(&mut state, rt);
-                changed |= evaluate_bitmap(&mut state, rt);
+            if let Some(rt) = state.sched.last_shown_rt() {
+                changed = state.sched.advance_paused(rt, slot);
             }
-            let (want, filled) = self.resolve_raster(&mut state);
-            changed |= filled;
-            fetch = want;
-            overlays = active_overlays(&state);
+            changed |= self.drive(&mut state);
+            overlays = active_overlays(&state, self.shared.raster.draws_pixels());
         }
 
-        if let Some(request) = fetch {
-            self.request_raster(request);
-        }
         if changed {
-            self.mark_changed();
+            mark_changed(&self.shared);
         }
         overlays
+    }
+
+    /// [`Self::overlays_for`] for a consumer that draws the display lists
+    /// itself: the same schedule advance, the same stacking, no pixels.
+    ///
+    /// Requires [`CueEngine::for_scene_consumer`], or the engine keeps
+    /// painting cues nothing will ever read.
+    pub fn scenes_for(
+        &self,
+        frame_rt: Option<gst::ClockTime>,
+    ) -> SmallVec<[ShownScene; MAX_ACTIVE_CUES]> {
+        let mut changed = false;
+        let shown;
+        {
+            let mut state = self.shared.state.lock();
+            if let Some(rt) = frame_rt {
+                changed = state.sched.advance(rt, slot);
+            }
+            changed |= self.drive(&mut state);
+            shown = active_scenes(&state);
+        }
+
+        if changed {
+            mark_changed(&self.shared);
+        }
+        shown
+    }
+
+    /// [`Self::current_overlays`] for a scene consumer: the paused path, with
+    /// the same gap tolerance, as display lists.
+    pub fn current_scenes(&self) -> SmallVec<[ShownScene; MAX_ACTIVE_CUES]> {
+        let mut changed = false;
+        let shown;
+        {
+            let mut state = self.shared.state.lock();
+            if let Some(rt) = state.sched.last_shown_rt() {
+                changed = state.sched.advance_paused(rt, slot);
+            }
+            changed |= self.drive(&mut state);
+            shown = active_scenes(&state);
+        }
+
+        if changed {
+            mark_changed(&self.shared);
+        }
+        shown
+    }
+
+    /// The display lists on screen right now, evaluating nothing.
+    ///
+    /// For a consumer whose schedule is advanced elsewhere: one that still
+    /// calls [`Self::overlays_for`] per frame on the streaming thread, because
+    /// its bitmap subtitle set has no display list and stays on the raster
+    /// path, with [`Self::current_overlays`] advancing it while paused.
+    /// Reaching for [`Self::scenes_for`] from such a lane's repaint would
+    /// evaluate the schedule a second time, at the repaint clock rather than
+    /// the frame's, and move every cue boundary with it.
+    pub fn shown_scenes(&self) -> SmallVec<[ShownScene; MAX_ACTIVE_CUES]> {
+        // Evaluating nothing means no CLOCK is read: no cue starts or ends
+        // here. Reconciling the cues already on screen against what has been
+        // built is not scheduling, and it is the only place a display list
+        // reaches the slot a consumer draws from.
+        let changed;
+        let shown;
+        {
+            let mut state = self.shared.state.lock();
+            changed = self.drive(&mut state);
+            shown = active_scenes(&state);
+        }
+        if changed {
+            mark_changed(&self.shared);
+        }
+        shown
+    }
+
+    /// The bitmap subtitle set on screen right now, evaluating nothing.
+    ///
+    /// The subpicture twin of [`Self::shown_scenes`], and what a scene consumer
+    /// reads instead of [`Self::current_overlays`]. A display set has no
+    /// display list, so it can never come back on the scene lane; it is
+    /// decoded pixels and the consumer has to composite them itself.
+    ///
+    /// By closure rather than by value because that is the whole point: a
+    /// consumer that only wants to know whether the set moved gets its answer
+    /// without building a `SmallVec` of [`Overlay`]s and cloning an `Arc` per
+    /// region every frame. The closure runs under the engine's state lock, so
+    /// it must stay short. Composite outside it.
+    ///
+    /// The slice is empty when nothing is showing, which is also how a cue end,
+    /// a scheduled clear, [`Self::clear`] and [`Self::flush`] surface here.
+    ///
+    /// Bitmap sets bypass the raster engine entirely, so unlike
+    /// [`Self::shown_scenes`] this one reads and nothing else.
+    pub fn with_shown_bitmaps<R>(
+        &self,
+        read: impl FnOnce(&[crate::subpic::BitmapRegion]) -> R,
+    ) -> R {
+        let state = self.shared.state.lock();
+        read(match state.sched.bitmap_active() {
+            Some(update) => &update.regions,
+            None => &[],
+        })
     }
 
     /// Whether the overlay set changed since the last call, and clears the
@@ -944,12 +799,28 @@ impl CueEngine {
 
     /// Cues dropped because the pending list was full.
     pub fn dropped_cues(&self) -> u64 {
-        self.shared.dropped.load(Ordering::Relaxed)
+        self.shared.state.lock().sched.dropped()
     }
 
-    /// Rasters currently held in the cache.
+    /// Cues currently laid out and held in the scene cache.
     pub fn cached_rasters(&self) -> usize {
-        self.shared.cache.lock().len()
+        self.shared.raster.cached_scenes()
+    }
+
+    /// Paints held for the overlay lanes: one per (cue, reveal rank) shown.
+    pub fn cached_pixels(&self) -> usize {
+        self.shared.raster.cached_pixels()
+    }
+
+    /// How many cues the worker has LAID OUT, cache hits excluded.
+    ///
+    /// The karaoke gate: a reveal sweep repaints one scene at a rising
+    /// threshold, so this must not move while a syllable fires. Doc-hidden and
+    /// public rather than `cfg(test)` because the suites in `tests/` link this
+    /// crate as any dependent does.
+    #[doc(hidden)]
+    pub fn scene_builds(&self) -> u64 {
+        self.shared.raster.scene_builds()
     }
 
     /// Times the bitmap decode inbox overflowed and reset the decoder.
@@ -960,7 +831,7 @@ impl CueEngine {
 
     /// Decoded display sets given up because the pending store was full.
     pub fn bitmap_dropped_sets(&self) -> u64 {
-        self.shared.bitmap_dropped_sets.load(Ordering::Relaxed)
+        self.shared.state.lock().sched.bitmap_dropped()
     }
 
     /// Packets the decoder could not take: a caught panic, or a format with no
@@ -990,10 +861,7 @@ impl CueEngine {
     /// why it happens here, on a dedicated thread, at sink construction. Never
     /// on a streaming or event-loop thread, and never in the middle of a cue.
     pub fn warm(&self) {
-        self.with_raster_inbox(|inbox, slot| {
-            slot.warm = true;
-            inbox.cv.notify_all();
-        });
+        self.shared.raster.warm();
     }
 
     /// What the last rasters cost, in order, from the request that reached the
@@ -1003,163 +871,11 @@ impl CueEngine {
     /// never reach the worker, so this measures the rasterizer rather than the
     /// cache in front of it.
     pub fn raster_latencies(&self) -> Vec<Duration> {
-        self.shared
-            .raster_latencies
-            .lock()
-            .iter()
-            .copied()
-            .collect()
+        self.shared.raster.latencies()
     }
 
     pub fn warm_up_time(&self) -> Option<Duration> {
-        match self.shared.warm_nanos.load(Ordering::Acquire) {
-            0 => None,
-            nanos => Some(Duration::from_nanos(nanos)),
-        }
-    }
-
-    /// Cache lookup for the active cues' rasters. Returns the sequenced key to
-    /// hand to the worker (a miss, or a karaoke prefetch) and whether any
-    /// active raster was filled from cache. Must be called with `state` locked;
-    /// takes the cache lock underneath it, which is the only order this pair is
-    /// ever taken in.
-    ///
-    /// One key per call even when several cues want one. The worker asks for
-    /// the next wanted key after every publish (see [`worker_main`]), so a
-    /// stack of cues fills in one behind the other without the newest-wins
-    /// slot losing any of them. A need always outranks a karaoke prefetch,
-    /// whichever cue each belongs to.
-    fn resolve_raster(&self, state: &mut State) -> (Option<(u64, RasterKey)>, bool) {
-        let mut filled = false;
-        let mut need = None;
-        let mut prefetch = None;
-        for active in state.active.iter_mut() {
-            match active.raster {
-                RasterState::Pending | RasterState::Stale(_) => {
-                    if let Some(raster) = self.shared.cache.lock().get(&active.key) {
-                        active.raster = RasterState::Ready(raster);
-                        filled = true;
-                    } else if need.is_none() {
-                        need = Some(active.key.clone());
-                    }
-                }
-                // Karaoke: while the current step shows, warm the next one so
-                // crossing a reveal threshold is a cache hit instead of a
-                // raster latency. `publish` files a prefetch under its own key
-                // without touching what is on screen. Once cached this is one
-                // short cache probe per frame, and only for karaoke cues.
-                RasterState::Ready(_)
-                    if prefetch.is_none() && active.key.step < active.steps.len() =>
-                {
-                    let next = RasterKey {
-                        step: active.key.step + 1,
-                        ..active.key.clone()
-                    };
-                    if self.shared.cache.lock().get(&next).is_none() {
-                        prefetch = Some(next);
-                    }
-                }
-                _ => {}
-            }
-        }
-
-        // The cue boundary, same trick as the karaoke prefetch: while the
-        // current cue shows, warm the cue that comes next, so the frame that
-        // crosses the boundary is a cache hit instead of a raster latency.
-        //
-        // Without it, a cue whose predecessor ends exactly where it starts is
-        // adopted `Pending` and skipped by `active_overlays`, so the boundary
-        // frame carries nothing and the line reappears one frame later. On a
-        // file whose cues are contiguous that is a visible flash at every
-        // boundary; a gap between cues merely hides it.
-        //
-        // Costs nothing in steady state. The cue is rastered once either way;
-        // this only moves the work earlier, onto an idle worker. Ranked below
-        // both the need and the karaoke prefetch, since anything a visible cue
-        // wants outranks warming one that is not up yet.
-        if need.is_none()
-            && prefetch.is_none()
-            && let Some(next) = state.pending.front()
-        {
-            let rate = state.video_segment.as_ref().map_or(1.0, |s| s.rate());
-            let (_, step) = reveal_plan(next, rate);
-            let key = RasterKey {
-                text: next.text.clone(),
-                format: next.format.clone(),
-                canvas: state.canvas,
-                style: state.style.clone(),
-                video_rect: state.video_rect,
-                step,
-            };
-            if self.shared.cache.lock().get(&key).is_none() {
-                prefetch = Some(key);
-            }
-        }
-
-        match need.or(prefetch) {
-            Some(key) => {
-                state.request_seq += 1;
-                (Some((state.request_seq, key)), filled)
-            }
-            None => (None, filled),
-        }
-    }
-
-    /// Ask for the next raster the active set wants, if any, and repaint if a
-    /// cache hit filled one in. Called by the raster worker after every
-    /// publish, so a stack of cues resolves without waiting for the next frame
-    /// (while paused, without waiting at all).
-    ///
-    /// Takes no lock across the request: state lock, then release, then the
-    /// inbox, the same order every other caller uses.
-    fn pump_rasters(&self) {
-        let (fetch, filled) = {
-            let mut state = self.shared.state.lock();
-            self.resolve_raster(&mut state)
-        };
-        if let Some(request) = fetch {
-            self.request_raster(request);
-        }
-        if filled {
-            self.mark_changed();
-        }
-    }
-
-    fn request_raster(&self, (seq, request): (u64, RasterKey)) {
-        self.with_raster_inbox(|inbox, slot| {
-            // Newest-wins by *state-lock order*, not thread arrival order. The
-            // key was computed under the state lock but is written here after
-            // releasing it, so a preempted thread can deliver a stale key late.
-            // Without the sequence check it would clobber a newer request and,
-            // since `publish` rightly rejects the stale raster, leave the
-            // active cue Pending with an empty inbox. Self-healing in one
-            // frame during playback, but stuck indefinitely while paused.
-            if slot.request.as_ref().is_none_or(|(s, ..)| *s < seq) {
-                slot.request = Some((seq, request.clone(), Instant::now()));
-                inbox.cv.notify_all();
-            }
-        });
-    }
-
-    /// Run `f` under the raster inbox's lock, against an inbox whose worker is
-    /// still alive.
-    ///
-    /// The retirement handshake, and the reason it is a loop. A worker retires
-    /// only while holding this lock, so `f` can never be handed to a dead
-    /// inbox. Either this call gets the lock first (and the retirement then
-    /// finds work waiting and abandons itself), or the retirement got there
-    /// first and left `retired` set, in which case the next `worker_inbox()`
-    /// spawns a fresh worker. One retry at most, and only in the window around
-    /// a retirement.
-    fn with_raster_inbox<R>(&self, mut f: impl FnMut(&Arc<Inbox>, &mut Slot) -> R) -> R {
-        loop {
-            let inbox = self.worker_inbox();
-            let mut slot = inbox.slot.lock();
-            if slot.retired {
-                continue;
-            }
-            return f(&inbox, &mut slot);
-        }
+        self.shared.raster.warm_cost()
     }
 
     /// The same, for the bitmap decode inbox.
@@ -1175,38 +891,6 @@ impl CueEngine {
             }
             return f(&inbox, &mut slot);
         }
-    }
-
-    /// The worker is spawned on first use, so a sink that never shows a cue
-    /// never pays for a thread.
-    fn worker_inbox(&self) -> Arc<Inbox> {
-        let mut worker = self.shared.worker.lock();
-        if let Some(handle) = worker.as_ref() {
-            return handle.inbox.clone();
-        }
-        let inbox = Arc::new(Inbox::default());
-        let weak = Arc::downgrade(&self.shared);
-        let thread_inbox = inbox.clone();
-        // A respawn inherits the warm-up. The fontmap went with the retired
-        // worker's thread, and building one on the cue path can cost seconds
-        // (why [`CueEngine::warm`] exists). A sink warmed once stays warmed
-        // across retirements: the new worker rebuilds its context before it is
-        // asked for pixels rather than during.
-        if self.shared.warm_nanos.load(Ordering::Acquire) != 0 {
-            inbox.slot.lock().warm = true;
-        }
-        let spawned = std::thread::Builder::new()
-            .name("fvid-cue-raster".to_owned())
-            .spawn(move || worker_main(weak, thread_inbox));
-        match spawned {
-            Ok(_) => {
-                *worker = Some(WorkerHandle {
-                    inbox: inbox.clone(),
-                })
-            }
-            Err(err) => warn!(%err, "failed to spawn the cue raster thread"),
-        }
-        inbox
     }
 
     /// The decode worker is spawned on the first bitmap packet, so a pipeline
@@ -1250,17 +934,6 @@ impl CueEngine {
         DecodeHold { inbox }
     }
 
-    /// Shorten the window an idle worker waits before retiring.
-    ///
-    /// Tests only. Production uses [`WORKER_IDLE_TIMEOUT`]. A test that wants
-    /// to watch a retirement cannot wait that long.
-    #[doc(hidden)]
-    pub fn set_worker_idle_for_test(&self, idle: Duration) {
-        self.shared
-            .worker_idle_nanos
-            .store(idle.as_nanos().max(1) as u64, Ordering::Relaxed);
-    }
-
     /// Whether each engine worker thread currently exists.
     ///
     /// `(raster, decode)`. Doc-hidden and for the retirement tests: the
@@ -1268,10 +941,7 @@ impl CueEngine {
     /// answer to "is there a worker", beside the operating system's.
     #[doc(hidden)]
     pub fn workers_live(&self) -> (bool, bool) {
-        (
-            self.shared.worker.lock().is_some(),
-            self.shared.decode_worker.lock().is_some(),
-        )
+        (self.shared.raster.worker_live(), self.shared.decode_worker.lock().is_some())
     }
 
     /// Install the decoder factory the worker builds from.
@@ -1288,18 +958,11 @@ impl CueEngine {
     #[doc(hidden)]
     pub fn set_decoder_factory(
         &self,
-        factory: impl Fn(BitmapFormat) -> Option<Box<dyn SubpicDecoder>> + Send + Sync + 'static,
+        factory: impl Fn(BitmapSubFormat) -> Option<Box<dyn SubpicDecoder>> + Send + Sync + 'static,
     ) {
         *self.shared.decoder_factory.lock() = Some(Arc::new(factory));
     }
 
-    fn mark_changed(&self) {
-        self.shared.dirty.store(true, Ordering::Release);
-        let callback = self.shared.on_change.lock().clone();
-        if let Some(callback) = callback {
-            callback();
-        }
-    }
 }
 
 /// Everything on screen right now, as overlays: one per active text cue, then
@@ -1309,11 +972,12 @@ impl CueEngine {
 /// for (bottom-centre of the picture by house policy, or wherever the file put
 /// it on the cue-IR arm: `line:`/`position:`, SSA `\pos`, an `{\an8}` anchor).
 /// That placement is honoured as the cue's first choice, and cues are placed
-/// in start order, so the earliest-starting cue keeps the spot it asked for
-/// and a later one that would land on top of it moves up until it does not.
-/// That is bottom-up stacking for the ordinary case and browser-like for the
-/// positioned case: the WebVTT rendering algorithm also moves a cue box that
-/// would overlap an existing one.
+/// newest first, so the latest-starting cue keeps the spot it asked for and an
+/// earlier one still showing moves up out of its way. Read top to bottom the
+/// stack is start order, the roll-up rule: new text enters at the bottom and
+/// old text climbs. Files split one sentence across two overlapping cues
+/// expecting exactly that, and the seniority rule (earliest keeps the bottom,
+/// which is what libass does) renders those sentences in reverse.
 ///
 /// Two known limits, both deliberate:
 ///
@@ -1321,906 +985,97 @@ impl CueEngine {
 ///    cues there do overlap. [`MAX_ACTIVE_CUES`] keeps that out of reach for
 ///    real files.
 ///  * an unpositioned cue moving up may still land in a positioned cue's space
-///    if the positioned cue starts later (it has not been placed yet when the
-///    earlier one is). Fixing that means placing positioned cues first, which
+///    if the positioned cue starts earlier (it has not been placed yet when the
+///    later one is). Fixing that means placing positioned cues first, which
 ///    reorders the stack, and the ordering is worth more.
-fn active_overlays(state: &State) -> SmallVec<[Overlay; 1]> {
-    let mut overlays = SmallVec::new();
-    // What has been placed, in placement order: (x, y, width, height).
-    let mut placed: SmallVec<[(i32, i32, u32, u32); 2]> = SmallVec::new();
-    for active in state.active.iter() {
-        // `Stale` counts: its pixels are a previous step or style of the same
-        // cue in the same place, which beats blanking the line while the
-        // replacement renders.
-        let (RasterState::Ready(raster) | RasterState::Stale(raster)) = &active.raster else {
+///
+/// `text` is false for a scene consumer, whose text cues are drawn from their
+/// display lists and must not also be composited here. Authoritative rather
+/// than emergent: a cache still holding a paint from before the switch would
+/// otherwise put that cue on screen twice.
+fn active_overlays(state: &State, text: bool) -> SmallVec<[Overlay; MAX_OVERLAYS]> {
+    let mut overlays: SmallVec<[Overlay; MAX_OVERLAYS]> = SmallVec::new();
+    for active in state.sched.active().iter().filter(|_| text) {
+        // Whatever the last `drive` decided is drawable, which includes a
+        // stale scene and a paint one rank behind: both beat blanking the line
+        // while the replacement is built.
+        let (Some(painted), Some(at)) = (active.payload.painted(), active.payload.placed()) else {
             continue;
         };
-        let mut overlay = raster.to_overlay();
-        overlay.y = stacked_y(&placed, &overlay);
-        placed.push((overlay.x, overlay.y, overlay.width, overlay.height));
-        overlays.push(overlay);
+        overlays.push(to_overlay(painted, at));
     }
     // The bitmap set rides beside the text cue, not instead of it: a source
     // can carry a subpicture track and a text track at once, and the
     // compositor already mixes the two spaces per overlay. These bypass the
     // raster path entirely. They are pixels already, so there is no key, cache
     // or worker between the decoder and the screen.
-    if let Some(update) = state.bitmap_active.as_ref() {
-        overlays.extend(update.regions.iter().map(|region| region.to_overlay()));
+    if let Some(update) = state.sched.bitmap_active().as_ref() {
+        overlays.extend(
+            update.regions.iter().map(crate::subpic::region_overlay),
+        );
     }
     overlays
 }
 
-/// Where an overlay ends up once it has moved out of the way of the cues
-/// already placed: its own `y`, or far enough above whatever it collided with.
+/// [`active_overlays`] for the scene lanes: the same cues, in the same stacking
+/// order, as display lists rather than pixels.
 ///
-/// Rectangles, not lines: two cues at different horizontal positions do not
-/// collide and neither moves. The loop is bounded by the number of cues that
-/// can be placed, since each pass either settles or clears one more rectangle.
-fn stacked_y(placed: &[(i32, i32, u32, u32)], overlay: &Overlay) -> i32 {
-    let (x, w, h) = (overlay.x, overlay.width as i32, overlay.height as i32);
-    let mut y = overlay.y;
-    for _ in 0..MAX_ACTIVE_CUES {
-        let mut moved = false;
-        for &(px, py, pw, ph) in placed {
-            let overlaps_x = x < px + pw as i32 && px < x + w;
-            let overlaps_y = y < py + ph as i32 && py < y + h;
-            if overlaps_x && overlaps_y {
-                y = py - h;
-                moved = true;
-            }
-        }
-        if !moved {
-            break;
-        }
-    }
-    // Off the top of the canvas is worse than overlapping. A cue nobody can
-    // see is not a subtitle.
-    y.max(0)
-}
-
-/// Drop the bitmap state a reset invalidates and bump the epoch. Returns
-/// whether what is on screen changed.
+/// No paint is read, so a cue shows the frame its LAYOUT is ready
+/// rather than the frame its paint is. That is the whole point of the lane: the
+/// consumer paints it itself, in its own frame.
 ///
-/// `drop_decoded` distinguishes the two kinds of reset: `clear`/`flush` are
-/// "this track's pictures are wrong now", so decoded sets go too; STREAM_START
-/// is "the video timeline restarted", which invalidates the DECODER (its
-/// half-assembled set belongs to the old stream) but says nothing about sets
-/// the producer already scheduled.
-///
-/// The epoch bump always happens, and always takes the duplicate memory with
-/// it. A replay that re-delivers the same bytes after a flush must not be
-/// mistaken for the transport's preroll/render redelivery.
-fn reset_bitmap_state(state: &mut State, drop_decoded: bool) -> bool {
-    state.bitmap_epoch += 1;
-    state.last_bitmap_buffer = None;
-    if !drop_decoded {
-        return false;
-    }
-    state.bitmap_pending.clear();
-    state.bitmap_active.take().is_some()
-}
-
-/// Whether two handles name the same buffer object.
-///
-/// Not `==`. gstreamer-rs implements `PartialEq for BufferRef` as a content
-/// comparison, and subtitle packets repeat their bytes constantly, so a
-/// duplicate check written on `==` would swallow a real re-delivery.
-///
-/// The miniobject address is the identity. Holding a strong reference to the
-/// previous buffer keeps its address from being recycled under the comparison.
-fn same_buffer(a: &gst::Buffer, b: &gst::Buffer) -> bool {
-    a.as_ptr() == b.as_ptr()
-}
-
-/// Whether two display updates describe the same picture in the same window.
-///
-/// Pixel buffers are compared by pointer, not content. The only way two
-/// updates can legitimately share an allocation is that one came from the
-/// other, which is exactly the duplicate this exists to recognize. A decoder
-/// that produced the same image twice from different bytes is a new picture,
-/// and re-adopting it costs one repaint.
-fn same_update(a: &DisplayUpdate, b: &DisplayUpdate) -> bool {
-    a.start_rt == b.start_rt
-        && a.end_rt == b.end_rt
-        && a.regions.len() == b.regions.len()
-        && a.regions.iter().zip(b.regions.iter()).all(|(x, y)| {
-            x.x == y.x
-                && x.y == y.y
-                && x.width == y.width
-                && x.height == y.height
-                && x.render_width == y.render_width
-                && x.render_height == y.render_height
-                && Arc::ptr_eq(&x.pixels, &y.pixels)
-        })
-}
-
-/// Advance the bitmap schedule to `rt`. Returns whether the set on screen
-/// changed.
-///
-/// The bitmap twin of [`evaluate`], deliberately the same shape: pop
-/// everything whose turn has come, keep the last one (a display set lives
-/// until the next one replaces it), and expire what is showing when its end
-/// has passed.
-///
-/// Two differences from the text rule, both from [`DisplayUpdate`]'s contract:
-///
-///  * a popped update with no regions is the scheduled clear. It takes the
-///    active set away instead of becoming it.
-///  * expiry is a real event here rather than an edge case. Some formats' pages
-///    carry a timeout and must come off the screen with nothing to replace
-///    them.
-///
-/// The rule, stated once so [`trim_bitmap_pending`] can state the same one:
-/// **what survives a run of due sets is the last non-expired one.** An expired
-/// set in that run is skipped without disturbing the candidate already found.
-/// A set that timed out before its turn supersedes nothing, so an earlier
-/// open-ended set behind it stays on screen rather than being replaced by
-/// blank.
-fn evaluate_bitmap(state: &mut State, rt: gst::ClockTime) -> bool {
-    let mut candidate = None;
-    while let Some(next) = state.bitmap_pending.front() {
-        if cue_is_in_future(next.start_rt, rt) {
-            break;
-        }
-        let update = state
-            .bitmap_pending
-            .pop_front()
-            .expect("front() just returned an update");
-        // Superseded between two frames, or timed out before its turn. It can
-        // never be shown, so it is not a candidate for anything.
-        if cue_is_too_old(update.end_rt, rt) {
-            debug!(start = %update.start_rt, %rt, "bitmap set expired before it could be shown");
-            continue;
-        }
-        candidate = Some(update);
-    }
-
-    match candidate {
-        Some(update) if update.regions.is_empty() => {
-            // The scheduled clear, at its own running time.
-            state.bitmap_active.take().is_some()
-        }
-        Some(update) => {
-            // No-op adoption check: a redelivery that decodes to the picture
-            // already showing must not report a change, or a paused viewer
-            // repaints for nothing.
-            if state
-                .bitmap_active
-                .as_ref()
-                .is_some_and(|active| same_update(active, &update))
-            {
-                false
-            } else {
-                state.bitmap_active = Some(update);
-                true
-            }
-        }
-        None => {
-            let expired = state
-                .bitmap_active
-                .as_ref()
-                .is_some_and(|active| cue_is_too_old(active.end_rt, rt));
-            if expired {
-                debug!(%rt, "bitmap set timed out with nothing to replace it");
-                state.bitmap_active = None;
-            }
-            expired
-        }
-    }
-}
-
-/// Bring `bitmap_pending` back under [`BITMAP_PENDING_LIMIT`] sets AND
-/// [`BITMAP_PENDING_PIXEL_BUDGET`] bytes, in the order that costs least.
-///
-/// Same spend order as [`trim_pending`]: give up what can never be shown
-/// first, and only then give up the future, from the far end, so the sets
-/// about to be shown survive.
-///
-/// "Can never be shown" is a bigger class here than for text, and it is
-/// [`evaluate_bitmap`]'s rule read backwards. The two must agree, or the trim
-/// evicts a set the schedule would have shown. A set is unshowable at `rt` if
-/// it has expired, and also if a later non-expired set already starts at or
-/// before `rt`, because that is the one `evaluate_bitmap` adopts.
-///
-/// The "non-expired" qualifier matters: an expired set superseding an
-/// open-ended one is not a supersession at all, and treating it as one would
-/// blank a page the schedule was still showing.
-///
-/// Trim, never reset (unlike the packet inbox). Every [`DisplayUpdate`] is a
-/// complete picture, so dropping one costs exactly that picture and nothing
-/// downstream of it.
-fn trim_bitmap_pending(state: &mut State, dropped: &AtomicU64) {
-    if !bitmap_pending_over_budget(state) {
-        return;
-    }
-
-    // 1. The free ones.
-    if let Some(rt) = state.last_shown_rt {
-        let before = state.bitmap_pending.len();
-        // The last non-expired entry whose turn has already come is the one
-        // `evaluate_bitmap` would adopt. Everything before it in that run is
-        // superseded, and everything expired is dead wherever it sits. When
-        // the whole due run has expired there is nothing to keep from it, so
-        // the survivors start at the first future entry.
-        let due = state
-            .bitmap_pending
-            .partition_point(|update| !cue_is_in_future(update.start_rt, rt));
-        let keep_from = state
-            .bitmap_pending
-            .iter()
-            .take(due)
-            .rposition(|update| !cue_is_too_old(update.end_rt, rt))
-            .unwrap_or(due);
-        let mut index = 0;
-        state.bitmap_pending.retain(|update| {
-            let at = index;
-            index += 1;
-            at >= keep_from && !cue_is_too_old(update.end_rt, rt)
-        });
-        let evicted = (before - state.bitmap_pending.len()) as u64;
-        if evicted > 0 {
-            let total = dropped.fetch_add(evicted, Ordering::Relaxed) + evicted;
-            warn!(
-                evicted,
-                %rt,
-                total,
-                "bitmap backlog full; gave up sets already past the playhead or superseded"
-            );
-        }
-        if !bitmap_pending_over_budget(state) {
-            return;
-        }
-    }
-
-    // 2. The costly ones, from the far end. One set always survives: a single
-    // set over the byte budget on its own is the decoder's allocation to
-    // bound, and emptying the queue over it would give up a picture that is
-    // about to be shown.
-    let furthest = state
-        .bitmap_pending
-        .back()
-        .expect("over the limit, so non-empty")
-        .start_rt;
-    let mut over = 0u64;
-    let mut horizon = furthest;
-    while bitmap_pending_over_budget(state) && state.bitmap_pending.len() > 1 {
-        let gone = state
-            .bitmap_pending
-            .pop_back()
-            .expect("length checked above");
-        // Popping from the back means the last one dropped is the earliest,
-        // which is the horizon the warning has to name.
-        horizon = gone.start_rt;
-        over += 1;
-    }
-    if over > 0 {
-        let total = dropped.fetch_add(over, Ordering::Relaxed) + over;
-        warn!(
-            over,
-            %horizon,
-            %furthest,
-            total,
-            "bitmap backlog full; gave up the furthest-future sets -- nothing from the horizon \
-             out to the furthest set will be shown"
-        );
-    }
-}
-
-/// Whether the decoded-set backlog has passed either of its bounds.
-fn bitmap_pending_over_budget(state: &State) -> bool {
-    state.bitmap_pending.len() > BITMAP_PENDING_LIMIT
-        || bitmap_pending_pixel_bytes(state) > BITMAP_PENDING_PIXEL_BUDGET
-}
-
-/// What the decoded-set backlog actually costs in pixel memory: every distinct
-/// allocation once, however many regions and updates point at it.
-///
-/// Sharing is the point. A [`BitmapRegion`]'s pixels are an `Arc`, and a
-/// decoder with persistent region buffers may emit many updates pointing at
-/// one allocation. Charging a shared page N times would trim such a stream at
-/// a fraction of the budget it is actually using. Formats that build one
-/// picture per display set share nothing and are charged in full.
-///
-/// Identity is the `Arc`'s pointer. A `Vec` that two `Arc`s hold separately is
-/// two allocations and is charged twice, which is correct, since dropping one
-/// does not free the other.
-fn bitmap_pending_pixel_bytes(state: &State) -> usize {
-    let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    let mut total = 0;
-    for update in &state.bitmap_pending {
-        for region in &update.regions {
-            if seen.insert(Arc::as_ptr(&region.pixels) as usize) {
-                total += region.pixel_bytes();
-            }
-        }
-    }
-    total
-}
-
-/// Whether two deliveries describe the same cue: same text, same format, same
-/// start. Only the end may differ, and [`merge_end`] settles that.
-fn same_cue(a: &CueInput, b: &CueInput) -> bool {
-    a.start_rt == b.start_rt && a.format == b.format && a.text == b.text
-}
-
-/// The end a merged pair keeps: the LATER of the two. `None` (open-ended,
-/// "until superseded or cleared") counts as the latest end there is.
-///
-/// Never the earlier one: a zero-length twin must not be able to expire the cue
-/// it duplicates.
-fn merge_end(a: Option<gst::ClockTime>, b: Option<gst::ClockTime>) -> Option<gst::ClockTime> {
-    match (a, b) {
-        (Some(a), Some(b)) => Some(a.max(b)),
-        // Either side open-ended makes the merged cue open-ended.
-        _ => None,
-    }
-}
-
-/// Fold a redelivery into the entry it repeats. Returns whether it was folded.
-///
-/// Two facts make this load-bearing rather than tidy:
-///
-///  * **Files carry each cue twice.** Caption converters emit, for every cue, a
-///    zero-length record (`start == end`) immediately before the real one. Both
-///    are real records and the parser and transport carry both faithfully (`pts
-///    + 0` is `pts`), so 401 cues can arrive as 783 deliveries. Un-merged, the
-///    twins double the backlog and the degenerate copy can expire the cue it
-///    duplicates, since `end <= rt` is true of a zero-length window at every rt
-///    at or after its start.
-///  * **A replay re-delivers the whole file.** The subtitle input is seeked and
-///    re-parsed from its origin whenever the branch has to be realigned, so the
-///    engine sees the same cues again. Merging makes that redelivery a no-op
-///    instead of a second copy of the file.
-///
-/// `at` is the insertion point [`CueEngine::submit`] computed, i.e. one past
-/// the last entry whose start is `<= cue.start_rt`.
-fn merge_delivery(state: &mut State, at: usize, cue: &CueInput) -> bool {
-    // The equal-start run ends at `at`. It is one or two entries long in
-    // practice, so walking it backwards costs nothing worth indexing away.
-    let mut idx = at;
-    while idx > 0 && state.pending[idx - 1].start_rt == cue.start_rt {
-        idx -= 1;
-        if same_cue(&state.pending[idx], cue) {
-            state.pending[idx].end_rt = merge_end(state.pending[idx].end_rt, cue.end_rt);
-            return true;
-        }
-    }
-    // The repeat may also be of a cue ON SCREEN: it left `pending` when it
-    // activated, so a replay's copy would otherwise re-queue it, and a
-    // degenerate twin arriving behind it would then expire it early. With
-    // several cues on screen the question is the same one, asked of each.
-    if let Some(active) = state
-        .active
-        .iter_mut()
-        .find(|active| same_cue(&active.cue, cue))
-    {
-        active.cue.end_rt = merge_end(active.cue.end_rt, cue.end_rt);
-        return true;
-    }
-    false
-}
-
-/// Bring `pending` back under [`PENDING_LIMIT`], giving up the least useful
-/// cues first.
-///
-/// WHICH cues go matters. Drop-oldest, under a whole-file burst, discards the
-/// cue about to be shown in order to admit one an hour away: the tail of the
-/// file evicts the head of it and the viewer sees nothing. So:
-///
-///  1. Cues already PAST the playhead go first. They can never be shown again,
-///     so giving them up costs nothing at all.
-///  2. Only if that is not enough does something showable go, and then it is
-///     the FURTHEST FUTURE (the cues whose turn is last), with the horizon that
-///     costs named in the warning.
-///
-/// Both kinds count toward `dropped_cues`, which stays what it always was: how
-/// many cues the engine was handed and will not show.
-fn trim_pending(state: &mut State, dropped: &AtomicU64) {
-    if state.pending.len() <= PENDING_LIMIT {
-        return;
-    }
-
-    // 1. The free ones.
-    if let Some(rt) = state.last_shown_rt {
-        let before = state.pending.len();
-        state.pending.retain(|cue| !cue_is_too_old(cue.end_rt, rt));
-        let evicted = (before - state.pending.len()) as u64;
-        if evicted > 0 {
-            let total = dropped.fetch_add(evicted, Ordering::Relaxed) + evicted;
-            warn!(
-                evicted,
-                %rt,
-                total,
-                "cue backlog full; gave up cues already past the playhead"
-            );
-        }
-        if state.pending.len() <= PENDING_LIMIT {
-            return;
-        }
-    }
-
-    // 2. The costly ones, from the far end.
-    let over = state.pending.len() - PENDING_LIMIT;
-    let horizon = state.pending[PENDING_LIMIT].start_rt;
-    let furthest = state
-        .pending
-        .back()
-        .expect("over the limit, so non-empty")
-        .start_rt;
-    state.pending.truncate(PENDING_LIMIT);
-    let total = dropped.fetch_add(over as u64, Ordering::Relaxed) + over as u64;
-    warn!(
-        over,
-        %horizon,
-        %furthest,
-        total,
-        "cue backlog full; gave up the furthest-future cues -- nothing from the horizon out to \
-         the furthest cue will be shown"
-    );
-}
-
-/// Advance the schedule to `rt`. Returns whether what is on screen changed.
-///
-/// MULTI-ACTIVE: every cue whose window covers `rt` is on screen, and each one
-/// leaves on its own end. Overlapping cues are normal in a subtitle file (a
-/// speaker label under a line of dialogue, a sign translated while someone
-/// talks over it). The single-active engine this one grew out of showed them
-/// one at a time, because `fcasttextoverlay` holds exactly one text buffer and
-/// a newer one replaces it.
-///
-/// LATEST-START-WINS is not gone. It stopped being a REPLACEMENT policy and
-/// became an ORDERING one. The active set is kept in start order and
-/// [`active_overlays`] stacks it bottom-up, so the earliest-starting cue holds
-/// the bottom line and later ones sit above it, which is what a browser does
-/// with the same file.
-///
-/// Unchanged from the element: a cue that started AND ended between two frames
-/// is dropped without ever being shown (the too-old pop), the end is exclusive,
-/// and a cue with no end never expires on its own.
-///
-/// Under [`single_active_cues`] this delegates to [`evaluate_single_active`],
-/// which is the old rule kept whole rather than reconstructed out of the new
-/// one.
-fn evaluate(state: &mut State, rt: gst::ClockTime) -> bool {
-    let mut changed = if single_active_cues() {
-        evaluate_single_active(state, rt)
-    } else {
-        evaluate_multi_active(state, rt)
-    };
-    changed |= advance_karaoke(state, rt);
-    changed
-}
-
-/// Advance the schedule to a FROZEN `rt`, then fill a gap the playhead stopped
-/// inside. Returns whether what is on screen changed.
-///
-/// The paused twin of [`evaluate`]: that function plus one rule. See
-/// [`PAUSED_CUE_LOOKAHEAD`] for why the rule exists and why it is paused-only.
-/// The exact evaluation runs FIRST and unmodified, so expiry, overlap, ordering
-/// and karaoke are unchanged. The lookahead can only ever ADD a cue that the
-/// exact rule left off the screen.
-///
-/// THE COMPOSITION RULES, three of them, all in the narrow direction:
-///
-///  * **Only when the screen is empty.** The lookahead fires only if the active
-///    set at `rt` is EMPTY, which is exactly the gap-landing case and nothing
-///    else. A frame that already carries a cue is not a defect however close
-///    the next cue is, and pulling one in beside it would turn a file's
-///    ordinary cue boundary into an overlap the file never wrote, inventing a
-///    two-line screen out of two one-line cues.
-///  * **One cue, the nearest.** Not every cue inside the window: the policy
-///    exists to fill a hole, and a hole is filled by the cue that comes next.
-///  * **Nothing unshowable.** A cue that occupies no time (`start == end`) can
-///    never be shown at any running time, so it is skipped and the scan
-///    continues. That is not hypothetical: the converters that leave the gap
-///    also put a zero-length twin in front of every real cue, so the twin is
-///    usually the very first thing in the window.
-///
-/// The chosen cue is POPPED rather than peeked, so it is genuinely on screen
-/// with an ordinary [`Active`] entry, an ordinary raster and an ordinary
-/// expiry. That is what makes resuming seamless: the cue the viewer is already
-/// looking at stays put as frames start flowing again, instead of blinking out
-/// and coming back when its real start arrives.
-///
-/// BITMAPS ARE EXCLUDED, so [`evaluate_bitmap`] is called at the exact `rt` on
-/// this path too. Their semantics are supersession, not windows: a display set
-/// lives until the next one replaces it, so a bitmap track has no gaps of the
-/// converter kind to fill. What it does have is the SCHEDULED CLEAR (a set with
-/// no regions, whose whole purpose is to blank the screen at a chosen instant),
-/// and a lookahead would let the picture after a clear jump the clear that was
-/// put there to end it.
-fn evaluate_paused(state: &mut State, rt: gst::ClockTime) -> bool {
-    let mut changed = evaluate(state, rt);
-    changed |= lookahead_into_gap(state, rt);
-    changed
-}
-
-/// The paused-only rule of [`evaluate_paused`]: adopt the nearest showable cue
-/// starting within [`PAUSED_CUE_LOOKAHEAD`] of a frozen `rt`, when nothing at
-/// all covers `rt`.
-///
-/// Assumes the exact evaluation has already run, which is what makes the scan
-/// cheap and the bounds simple: every cue still in `pending` starts strictly
-/// after `rt`, so the window to search is a short prefix and the first showable
-/// entry in it is the nearest one.
-fn lookahead_into_gap(state: &mut State, rt: gst::ClockTime) -> bool {
-    let tolerance = paused_cue_lookahead();
-    if tolerance.is_zero() || !state.active.is_empty() {
-        return false;
-    }
-    // Saturating: a running time within 200 ms of the end of the ClockTime range
-    // is not reachable, but the arithmetic should not be the thing that decides
-    // that.
-    let horizon = rt.saturating_add(tolerance);
-
-    // `take_while` bounds the scan to the window. `pending` is start-ordered,
-    // so the first cue past the horizon ends it and nothing behind that one is
-    // any nearer. `position` then picks the first SHOWABLE entry inside it,
-    // stepping over the zero-length twins.
-    let Some(at) = state
-        .pending
+/// Bitmap subtitle sets are deliberately absent. They are decoded pixels with
+/// no display list behind them, so a scene consumer cannot draw them and
+/// pretending otherwise here would silently drop them.
+fn active_scenes(state: &State) -> SmallVec<[ShownScene; MAX_ACTIVE_CUES]> {
+    state
+        .sched
+        .active()
         .iter()
-        .take_while(|cue| !cue_is_in_future(cue.start_rt, horizon))
-        .position(|cue| !cue_is_too_old(cue.end_rt, cue.start_rt))
-    else {
-        return false;
-    };
-
-    let cue = state
-        .pending
-        .remove(at)
-        .expect("position() just returned this index");
-    debug!(
-        ?cue,
-        %rt,
-        ahead = %cue.start_rt.saturating_sub(rt),
-        "paused frame landed in a gap; showing the next cue early"
-    );
-    let canvas = state.canvas;
-    let video_rect = state.video_rect;
-    let style = state.style.clone();
-    let rate = state.video_segment.as_ref().map_or(1.0, |s| s.rate());
-    // A plain `push` keeps both invariants the active set has, because it is
-    // empty: start order is trivial with one entry, and `MAX_ACTIVE_CUES` is
-    // nowhere near. The same emptiness makes this lawful under
-    // `single_active_cues()`, which allows exactly one.
-    state
-        .active
-        .push(activate(cue, canvas, video_rect, style, rate));
-    true
+        .filter_map(|active| active.payload.shown())
+        .collect()
 }
 
-/// Pop everything whose turn has come, dropping what expired before it could be
-/// shown.
-fn take_due(state: &mut State, rt: gst::ClockTime) -> SmallVec<[CueInput; 2]> {
-    let mut due = SmallVec::new();
-    while let Some(next) = state.pending.front() {
-        if cue_is_in_future(next.start_rt, rt) {
-            break;
-        }
-        let cue = state
-            .pending
-            .pop_front()
-            .expect("front() just returned a cue");
-        if cue_is_too_old(cue.end_rt, rt) {
-            debug!(?cue, %rt, "cue expired before it could be shown");
-            continue;
-        }
-        due.push(cue);
-    }
-    due
-}
-
-fn evaluate_multi_active(state: &mut State, rt: gst::ClockTime) -> bool {
-    let due = take_due(state, rt);
-
-    // Expiry is per cue and does not wait for a successor: this is the half the
-    // single-active rule could not express, since there the arrival of any cue
-    // ended whatever was showing.
-    let before = state.active.len();
-    state
-        .active
-        .retain(|active| !cue_is_too_old(active.cue.end_rt, rt));
-    let mut changed = state.active.len() != before;
-
-    let canvas = state.canvas;
-    let video_rect = state.video_rect;
-    let style = state.style.clone();
-    let rate = state.video_segment.as_ref().map_or(1.0, |s| s.rate());
-    for cue in due {
-        // The same cue handed back (a redelivery that got past
-        // `merge_delivery`, a re-evaluation of an unchanged set) must not
-        // re-enter: it would re-key its raster and blink the line.
-        if state.active.iter().any(|active| active.cue == cue) {
-            continue;
-        }
-        // Start order, not arrival order. An out-of-order delivery whose start
-        // is behind a cue already showing belongs BELOW it, not on top.
-        let at = state
-            .active
-            .partition_point(|active| active.cue.start_rt <= cue.start_rt);
-        state
-            .active
-            .insert(at, activate(cue, canvas, video_rect, style.clone(), rate));
-        changed = true;
-    }
-
-    // The backstop. Dropping the oldest START is the only sane direction: the
-    // cue that has been on screen longest is the one the viewer has had the
-    // most time to read.
-    while state.active.len() > MAX_ACTIVE_CUES {
-        let gone = state.active.remove(0);
-        warn!(
-            cap = MAX_ACTIVE_CUES,
-            text = gone.cue.text,
-            start = %gone.cue.start_rt,
-            %rt,
-            "more overlapping cues than the screen holds; gave up the oldest one still showing"
-        );
-        changed = true;
-    }
-
-    changed
-}
-
-/// The engine's original rule, kept whole for the lever: ONE cue on screen,
-/// latest start wins, and the arrival of a cue ends whatever was showing
-/// regardless of how much of its window is left.
+/// One painted cue as an overlay.
 ///
-/// `fcasttextoverlay` holds exactly one text buffer and a newer one replaces
-/// it; every timing expectation written before the multi-active change was
-/// written against this.
-fn evaluate_single_active(state: &mut State, rt: gst::ClockTime) -> bool {
-    // Latest-start-wins: only the last of the due run survives it.
-    let candidate = take_due(state, rt).pop();
-
-    let canvas = state.canvas;
-    let video_rect = state.video_rect;
-    let style = state.style.clone();
-    let rate = state.video_segment.as_ref().map_or(1.0, |s| s.rate());
-    match candidate {
-        Some(cue) => {
-            if state.active.first().is_some_and(|act| act.cue == cue) {
-                false
-            } else {
-                state.active.clear();
-                state
-                    .active
-                    .push(activate(cue, canvas, video_rect, style, rate));
-                true
-            }
-        }
-        None => {
-            let expired = state
-                .active
-                .first()
-                .is_some_and(|act| cue_is_too_old(act.cue.end_rt, rt));
-            if expired {
-                state.active.clear();
-            }
-            expired
-        }
+/// Cheap. The pixel buffer is refcount-shared with the paint the engine
+/// cached, so this is a handful of scalar copies per frame, not a memcpy of a
+/// cue strip.
+fn to_overlay(painted: &Painted, (x, y): (i32, i32)) -> Overlay {
+    Overlay {
+        pixels: painted.pixels.clone(),
+        width: painted.width,
+        height: painted.height,
+        x,
+        y,
+        render_width: painted.width,
+        render_height: painted.height,
+        // Window space: the paint was laid out at display resolution, so it
+        // must not be scaled (or rotated) with the video.
+        space: OverlaySpace::Window,
     }
 }
 
-/// Turn a scheduled cue into an active one: its raster key, plus (for karaoke)
-/// the reveal thresholds it will re-key on.
-fn activate(
-    cue: CueInput,
-    canvas: (u32, u32),
-    video_rect: Option<VideoRect>,
-    style: Arc<CueStyle>,
-    rate: f64,
-) -> Active {
-    let (steps, step) = reveal_plan(&cue, rate);
-    Active {
-        key: RasterKey {
-            text: cue.text.clone(),
-            format: cue.format.clone(),
-            canvas,
-            style,
-            video_rect,
-            step,
-        },
-        steps,
-        cue,
-        raster: RasterState::Pending,
-    }
-}
-
-/// The reveal schedule a cue activates with: its karaoke step times and the
-/// step it starts on.
+/// Retire the bitmap decode worker if it is STILL idle. Answers whether the
+/// caller should end its thread.
 ///
-/// Split out of [`activate`] so the boundary prefetch in
-/// [`CueEngine::resolve_raster`] can compute the key a cue WILL activate under
-/// without activating it. The two must not drift: a prefetch filed under a
-/// different key from the one activation asks for warms nothing and the cue
-/// still blinks.
-fn reveal_plan(cue: &CueInput, rate: f64) -> (Vec<gst::ClockTime>, usize) {
-    // Karaoke, cue-IR only: reveal times are absolute on the media timeline and
-    // the engine's clock is running time, so they are anchored by the buffer's
-    // pts and scaled by the segment rate.
-    match cue.format.ir() {
-        Some(ir) => {
-            let pts_start = match &cue.format {
-                TextFormat::CueIr { pts_start, .. } => *pts_start,
-                _ => None,
-            };
-            let steps = cue_ir::reveal_steps(ir, cue.start_rt, pts_start, rate);
-            // Timed spans without a usable anchor (no pts, a non-forward rate):
-            // show the whole cue at once, per the documented `pts_start`
-            // contract. A pinned step of 0 would hide every timed span forever
-            // instead.
-            let step = if steps.is_empty() && cue_ir::has_reveals(ir) {
-                usize::MAX
-            } else {
-                0
-            };
-            (steps, step)
-        }
-        None => (Vec::new(), 0),
-    }
-}
-
-/// Karaoke: a raster is keyed on how many reveal steps the clock has passed;
-/// crossing one re-keys it (usually a cache hit thanks to the prefetch in
-/// [`CueEngine::resolve_raster`]). If the replacement is not ready yet, the
-/// previous step keeps showing (`Stale`). Otherwise the whole line blinks off
-/// for a frame at every syllable on the first pass.
+/// # The handshake
 ///
-/// Per cue, since each cue on screen carries its own reveal schedule.
-fn advance_karaoke(state: &mut State, rt: gst::ClockTime) -> bool {
-    let mut changed = false;
-    for active in state.active.iter_mut() {
-        if active.steps.is_empty() {
-            continue;
-        }
-        let step = active.steps.partition_point(|s| *s <= rt);
-        if step != active.key.step {
-            active.key.step = step;
-            let raster = std::mem::replace(&mut active.raster, RasterState::Pending);
-            active.raster = raster.into_stale();
-            // What is on screen only changes if we stopped showing pixels; a
-            // Stale raster is the same image until the replacement lands.
-            changed |= !matches!(active.raster, RasterState::Stale(_));
-        }
-    }
-    changed
-}
-
-/// Most-recently-used-last, capacity [`RASTER_CACHE_LIMIT`].
-#[derive(Default)]
-struct RasterCache {
-    entries: Vec<(RasterKey, Arc<Raster>)>,
-}
-
-impl RasterCache {
-    fn get(&mut self, key: &RasterKey) -> Option<Arc<Raster>> {
-        let idx = self.entries.iter().position(|(k, _)| k == key)?;
-        let entry = self.entries.remove(idx);
-        let raster = entry.1.clone();
-        self.entries.push(entry);
-        Some(raster)
-    }
-
-    fn insert(&mut self, key: RasterKey, raster: Arc<Raster>) {
-        if let Some(idx) = self.entries.iter().position(|(k, _)| *k == key) {
-            self.entries.remove(idx);
-        }
-        self.entries.push((key, raster));
-        while self.entries.len() > RASTER_CACHE_LIMIT {
-            self.entries.remove(0);
-        }
-    }
-
-    fn len(&self) -> usize {
-        self.entries.len()
-    }
-}
-
-#[derive(Default)]
-struct Slot {
-    /// Newest-wins by ENGINE SEQUENCE NUMBER, not arrival order (see
-    /// [`CueEngine::request_raster`]): older requests are stale by
-    /// construction. The instant is when the request was made, so the worker
-    /// can report what the wait cost (see [`CueEngine::raster_latencies`]).
-    request: Option<(u64, RasterKey, Instant)>,
-    warm: bool,
-    quit: bool,
-    /// The worker that drained this inbox has retired, so nothing will ever
-    /// read it again. Set by the worker under BOTH locks (see
-    /// [`retire_raster_worker`]), which is what makes it impossible for a
-    /// submitter to lose work to a retirement: a submitter holding this lock
-    /// blocks the retirement, and a submitter that arrives after one sees this
-    /// flag and asks for a fresh inbox.
-    retired: bool,
-}
-
-#[derive(Default)]
-struct Inbox {
-    slot: Mutex<Slot>,
-    cv: Condvar,
-}
-
-struct WorkerHandle {
-    inbox: Arc<Inbox>,
-}
-
-impl WorkerHandle {
-    fn stop(&self) {
-        let mut slot = self.inbox.slot.lock();
-        slot.quit = true;
-        self.inbox.cv.notify_all();
-    }
-}
-
-/// How long this worker should wait with nothing to do before it offers to
-/// retire. Reads the engine's setting each time so a test can shorten it, and
-/// answers the default when the engine is already gone (the next wait ends the
-/// thread anyway).
-fn worker_idle(shared: &Weak<Shared>) -> Duration {
-    shared
-        .upgrade()
-        .map_or(WORKER_IDLE_TIMEOUT, |shared| shared.worker_idle())
-}
-
-/// Retire the raster worker if it is STILL idle. Answers whether the caller
-/// should end its thread.
+/// The only thing that could go wrong is LOSING WORK, a submitter that hands a
+/// packet to an inbox nobody will ever read again, and the flag plus the lock
+/// order is the whole answer to it:
 ///
-/// # The handshake, once, for both workers
-///
-/// Both engine workers are lazily spawned, and this is what makes them lazily
-/// unspawned: a thread parked on a condvar for the lifetime of a receiver that
-/// has shown its last subtitle costs a stack for nothing, and a device that
-/// plays item after item accumulates one per sink that ever showed a cue.
-///
-/// The only thing that could go wrong here is LOSING WORK (a submitter that
-/// hands a request to an inbox nobody will ever read again), and the flag plus
-/// the lock order is the whole answer to it:
-///
-///  * a submitter takes the inbox lock to write, and this takes the same lock
-///    to retire, so the two cannot interleave. Whoever gets there first wins:
-///    if the submitter does, the check below sees the work and abandons the
-///    retirement; if the retirement does, `retired` is set before the submitter
-///    can look at the slot;
+///  * a submitter takes the inbox lock to write and this takes the same lock
+///    to retire, so the two cannot interleave. Whoever gets there first wins;
 ///  * `retired` is set in the SAME critical section that clears the engine's
 ///    handle, so a submitter holding a stale `Arc` sees the flag, and every
 ///    submitter that arrives afterwards gets a freshly spawned worker from the
-///    now-empty handle. `CueEngine::with_raster_inbox` and
-///    `CueEngine::submit_bitmap` are the two places that read it;
+///    now-empty handle. [`CueEngine::with_decode_inbox`] is where it is read;
 ///  * the handle is cleared only if it still points at THIS inbox, so a worker
 ///    that somehow outlived its own replacement cannot unregister it.
 ///
-/// Lock order is the engine's own: the handle first, then the inbox. Neither
-/// worker ever takes the state lock while holding the inbox lock, which is what
-/// keeps this pair out of the engine's other pair.
-fn retire_raster_worker(shared: &Weak<Shared>, inbox: &Arc<Inbox>) -> bool {
-    // The engine is gone: nothing will ever ask again.
-    let Some(shared) = shared.upgrade() else {
-        return true;
-    };
-    let mut handle = shared.worker.lock();
-    let mut slot = inbox.slot.lock();
-    if slot.quit {
-        return true;
-    }
-    if slot.request.is_some() || slot.warm {
-        return false;
-    }
-    if handle
-        .as_ref()
-        .is_some_and(|live| Arc::ptr_eq(&live.inbox, inbox))
-    {
-        *handle = None;
-    }
-    slot.retired = true;
-    debug!("the cue raster worker retired after an idle period");
-    true
-}
-
-/// The bitmap decode worker's half of the handshake documented on
-/// [`retire_raster_worker`].
+/// The raster worker next door runs the same handshake, in
+/// [`i_slint_cue::engine`].
 fn retire_decode_worker(shared: &Weak<Shared>, inbox: &Arc<BitmapInbox>) -> bool {
     let Some(shared) = shared.upgrade() else {
         return true;
@@ -2244,116 +1099,6 @@ fn retire_decode_worker(shared: &Weak<Shared>, inbox: &Arc<BitmapInbox>) -> bool
     slot.retired = true;
     debug!("the bitmap subtitle decode worker retired after an idle period");
     true
-}
-
-fn worker_main(shared: Weak<Shared>, inbox: Arc<Inbox>) {
-    // Built on this thread, on first use, and never moved off it: pango and
-    // cairo objects stay thread-local, and the expensive fontconfig walk
-    // happens here rather than on a streaming or event-loop thread.
-    let mut ctx: Option<RasterCtx> = None;
-
-    'work: loop {
-        let (request, warm) = {
-            let mut slot = inbox.slot.lock();
-            loop {
-                if slot.quit {
-                    break 'work;
-                }
-                if slot.request.is_some() || slot.warm {
-                    break;
-                }
-                // A TIMED wait, so a sink that has stopped showing cues stops
-                // paying for a thread. Everything about the retirement is in
-                // `retire_worker`; what matters here is that it happens with
-                // this lock released and is re-checked under it.
-                if inbox
-                    .cv
-                    .wait_for(&mut slot, worker_idle(&shared))
-                    .timed_out()
-                {
-                    drop(slot);
-                    if retire_raster_worker(&shared, &inbox) {
-                        return;
-                    }
-                    slot = inbox.slot.lock();
-                }
-            }
-            (slot.request.take(), std::mem::take(&mut slot.warm))
-        };
-
-        if warm {
-            let started = Instant::now();
-            let ctx = ctx.get_or_insert_with(RasterCtx::new);
-            ctx.warm();
-            let elapsed = started.elapsed();
-            info!(?elapsed, "cue raster fontmap warmed");
-            if let Some(shared) = shared.upgrade() {
-                shared
-                    .warm_nanos
-                    .store(elapsed.as_nanos().max(1) as u64, Ordering::Release);
-            }
-        }
-
-        let Some((_seq, key, requested_at)) = request else {
-            continue;
-        };
-        let Some(shared) = shared.upgrade() else {
-            break;
-        };
-
-        // The engine re-requests a Pending key every frame while a raster is in
-        // flight, so after publishing, the slot often holds a stale copy of the
-        // request just completed. Serve it from the cache instead of rendering
-        // the same pixels twice (which halves worker throughput exactly when
-        // rasters are slowest). Cache hits are not recorded in the latency
-        // window: it measures the rasterizer.
-        let cached = shared.cache.lock().get(&key);
-        if let Some(raster) = cached {
-            let changed = publish(&shared, key, Some(raster));
-            let engine = CueEngine { shared };
-            if changed {
-                engine.mark_changed();
-            }
-            // The rest of the stack, if there is one (see `pump_rasters`).
-            engine.pump_rasters();
-            continue;
-        }
-
-        // A panic inside the render stack (a parley/vello assert, a geometry
-        // guard someone forgets) must not kill this thread: the handle would
-        // still be held, every future request would go to a dead worker, and
-        // subtitles would silently stop for the process lifetime. Convert
-        // panics into a Failed raster and rebuild the (possibly poisoned)
-        // contexts on the next request.
-        let rendered = {
-            let ctx = ctx.get_or_insert_with(RasterCtx::new);
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.render(&key)))
-        };
-        let raster = match rendered {
-            Ok(raster) => raster.map(Arc::new),
-            Err(_) => {
-                warn!(
-                    step = key.step,
-                    "cue raster panicked; rebuilding the raster context"
-                );
-                ctx = None;
-                None
-            }
-        };
-        record_raster_latency(&shared, requested_at.elapsed());
-        let changed = publish(&shared, key, raster);
-        let engine = CueEngine { shared };
-        if changed {
-            engine.mark_changed();
-        }
-        // ASK FOR THE NEXT ONE. With several cues on screen the frame path
-        // hands over one key at a time (the inbox is a newest-wins slot), so
-        // the worker feeding itself is what fills a stack in without waiting
-        // for the next frame, and while PAUSED there is no next frame. It
-        // cannot spin: a key that has been published is no longer wanted, and a
-        // key that failed is remembered as Failed.
-        engine.pump_rasters();
-    }
 }
 
 /// The decode worker's inbox: an ORDERED FIFO, and that is the whole point.
@@ -2416,7 +1161,7 @@ impl Drop for DecodeHold {
 /// region buffers DVB paints into), which is what keeps `submit_bitmap` a
 /// pointer copy on the delivery thread.
 fn decode_worker_main(shared: Weak<Shared>, inbox: Arc<BitmapInbox>) {
-    let mut decoder: Option<(BitmapFormat, Box<dyn SubpicDecoder>)> = None;
+    let mut decoder: Option<(BitmapSubFormat, Box<dyn SubpicDecoder>)> = None;
     let mut applied_codec_data: Option<gst::Buffer> = None;
     let mut applied_size: Option<(u32, u32)> = None;
     let mut current_epoch: Option<u64> = None;
@@ -2424,7 +1169,7 @@ fn decode_worker_main(shared: Weak<Shared>, inbox: Arc<BitmapInbox>) {
     // COUNTER stays per packet, since it measures the defect, but the log line
     // does not: an unwired format would otherwise print once per packet for the
     // whole stream.
-    let mut warned_undecodable: Option<(BitmapFormat, u64)> = None;
+    let mut warned_undecodable: Option<(BitmapSubFormat, u64)> = None;
 
     'work: loop {
         let (epoch, packet) = {
@@ -2442,7 +1187,7 @@ fn decode_worker_main(shared: Weak<Shared>, inbox: Arc<BitmapInbox>) {
                 // idleness), and neither does one with packets waiting.
                 if inbox
                     .cv
-                    .wait_for(&mut slot, worker_idle(&shared))
+                    .wait_for(&mut slot, WORKER_IDLE_TIMEOUT)
                     .timed_out()
                 {
                     drop(slot);
@@ -2580,8 +1325,7 @@ fn decode_worker_main(shared: Weak<Shared>, inbox: Arc<BitmapInbox>) {
             .bitmap_sets_decoded
             .fetch_add(updates.len() as u64, Ordering::Relaxed);
         if publish_bitmap(&shared, epoch, updates) {
-            let engine = CueEngine { shared };
-            engine.mark_changed();
+            mark_changed(&shared);
         }
     }
 }
@@ -2589,7 +1333,7 @@ fn decode_worker_main(shared: Weak<Shared>, inbox: Arc<BitmapInbox>) {
 /// Build the decoder for a format. Production reads the implemented set from
 /// [`crate::subpic::decoder_for`]; tests may install their own factory through
 /// [`CueEngine::set_decoder_factory`].
-fn build_decoder(shared: &Arc<Shared>, format: BitmapFormat) -> Option<Box<dyn SubpicDecoder>> {
+fn build_decoder(shared: &Arc<Shared>, format: BitmapSubFormat) -> Option<Box<dyn SubpicDecoder>> {
     let factory = shared.decoder_factory.lock().clone();
     match factory {
         Some(factory) => factory(format),
@@ -2607,31 +1351,26 @@ fn build_decoder(shared: &Arc<Shared>, format: BitmapFormat) -> Option<Box<dyn S
 /// the only two outcomes.
 fn publish_bitmap(shared: &Arc<Shared>, epoch: u64, updates: Vec<DisplayUpdate>) -> bool {
     let mut state = shared.state.lock();
-    if state.bitmap_epoch != epoch {
+    if state.sched.bitmap_epoch() != epoch {
         debug!(
             epoch,
-            current = state.bitmap_epoch,
+            current = state.sched.bitmap_epoch(),
             sets = updates.len(),
             "dropping bitmap sets decoded before a reset"
         );
         return false;
     }
 
+    // Insert-sorted and trimmed by the schedule, which owns the backlog
+    // policy for both sides.
     for update in updates {
-        // Insert-sorted, defensively: the FIFO worker publishes in stream
-        // order, so this is normally a push to the back. `partition_point`
-        // finds that in log time instead of walking the backlog.
-        let at = state
-            .bitmap_pending
-            .partition_point(|queued| queued.start_rt <= update.start_rt);
-        state.bitmap_pending.insert(at, update);
+        state.sched.submit_bitmap(epoch, update);
     }
-    trim_bitmap_pending(&mut state, &shared.bitmap_dropped_sets);
 
     // A set that covers the frame already on screen becomes visible without a
     // new frame: the paused path, identical to the text one.
-    match state.last_shown_rt {
-        Some(rt) => evaluate_bitmap(&mut state, rt),
+    match state.sched.last_shown_rt() {
+        Some(rt) => state.sched.advance_bitmap(rt),
         None => false,
     }
 }
@@ -2645,110 +1384,11 @@ fn record_bitmap_latency(shared: &Arc<Shared>, cost: Duration) {
     latencies.push_back(cost);
 }
 
-/// How many raster costs are kept for [`CueEngine::raster_latencies`].
-const RASTER_LATENCY_WINDOW: usize = 256;
-
-/// Record what one raster cost, oldest dropped. Bounded because this runs for
-/// the whole life of a sink and nothing ever drains it.
-fn record_raster_latency(shared: &Arc<Shared>, cost: Duration) {
-    let mut latencies = shared.raster_latencies.lock();
-    if latencies.len() == RASTER_LATENCY_WINDOW {
-        latencies.pop_front();
-    }
-    latencies.push_back(cost);
-}
-
-/// Hand a finished raster to the engine. Returns whether it changed what is on
-/// screen (a raster for a cue that has since been replaced only warms the
-/// cache). Takes the state lock without holding the inbox lock, since the
-/// worker must never hold both, since the engine takes them in the opposite
-/// order.
-fn publish(shared: &Arc<Shared>, key: RasterKey, raster: Option<Arc<Raster>>) -> bool {
-    if let Some(raster) = raster.as_ref() {
-        shared.cache.lock().insert(key.clone(), raster.clone());
-    }
-
-    let mut state = shared.state.lock();
-    let mut changed = false;
-    // EVERY active cue under this key, not the first: two cues on screen can
-    // legitimately share one (the same line delivered at two times renders to
-    // the same pixels), and serving only one of them would leave the other
-    // Pending against a key already answered.
-    for active in state.active.iter_mut() {
-        if active.key != key
-            || !matches!(active.raster, RasterState::Pending | RasterState::Stale(_))
-        {
-            continue;
-        }
-        active.raster = match raster.as_ref() {
-            Some(raster) => RasterState::Ready(raster.clone()),
-            None => RasterState::Failed,
-        };
-        changed |= matches!(active.raster, RasterState::Ready(_));
-    }
-    changed
-}
-
-/// The worker's rasterizer state, on the one raster thread.
-///
-/// One parley/vello rasterizer ([`cue_ir::RasterCtx`]) renders every arm.
-/// parley's contexts cache font data and layouts, so it is built once here
-/// and kept for the thread's lifetime.
-struct RasterCtx {
-    cue_ir: cue_ir::RasterCtx,
-}
-
-impl RasterCtx {
-    fn new() -> Self {
-        Self {
-            cue_ir: cue_ir::RasterCtx::new(),
-        }
-    }
-
-    /// Force the font stack to actually load: a throwaway layout, measured
-    /// and rasterized exactly like a real cue. Runs on the dedicated thread
-    /// at sink construction, never on a streaming or event-loop thread and
-    /// never mid-cue.
-    fn warm(&mut self) {
-        self.cue_ir.warm();
-    }
-
-    fn render(&mut self, key: &RasterKey) -> Option<Raster> {
-        // Every arm renders through parley/vello. Utf8 and pango-markup cues
-        // become an IR right here: plain text wraps as unstyled lines, markup
-        // goes through the tolerant pango-markup reimplementation (pure Rust,
-        // nothing links pango), which never rejects a cue, broken markup
-        // degrades to its words. That matters because matroskademux emits
-        // `format=pango-markup` directly for S_TEXT/UTF8 tracks, so cues
-        // reach this arm that never passed through a parser element.
-        let converted;
-        let ir = match &key.format {
-            TextFormat::CueIr { ir, .. } => ir,
-            TextFormat::Utf8 => {
-                converted = Arc::new(CueIr::from_plain_text(&key.text));
-                &converted
-            }
-            TextFormat::PangoMarkup => {
-                converted = Arc::new(gstrssubparse::pango_markup::markup_to_cue_ir(&key.text));
-                &converted
-            }
-        };
-        let out = self
-            .cue_ir
-            .render(ir, &key.style, key.canvas, key.video_rect, key.step)?;
-        Some(Raster {
-            pixels: Arc::new(out.pixels),
-            width: out.width,
-            height: out.height,
-            x: out.x,
-            y: out.y,
-        })
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cue_ir::{self, RasterCtx};
+    use crate::cue_scene::ALL_REVEALED;
 
     fn ms(value: u64) -> gst::ClockTime {
         gst::ClockTime::from_mseconds(value)
@@ -2756,7 +1396,7 @@ mod tests {
 
     fn cue(text: &str, start: u64, duration: u64) -> CueInput {
         CueInput {
-            format: TextFormat::Utf8,
+            format: SubtitleTextFormat::Utf8,
             text: text.to_owned(),
             start_rt: ms(start),
             end_rt: Some(ms(start + duration)),
@@ -2780,7 +1420,7 @@ mod tests {
             .shared
             .state
             .lock()
-            .active
+            .sched.active()
             .iter()
             .map(|active| active.cue.text.clone())
             .collect()
@@ -2900,11 +1540,12 @@ mod tests {
     /// inherited limitation: the newer cue REPLACED the older one, so a file
     /// with two overlapping cues showed one of them at a time.
     ///
-    /// Latest-start-wins survives as ORDERING (the later cue is above the
-    /// earlier one) and `showing()` still answers with the topmost cue, which
-    /// is why every test that predates this one reads the same as it did.
+    /// Latest-start-wins survives as ORDERING (the later cue takes the bottom
+    /// slot, the earlier one climbs above it) and `showing()` still answers
+    /// with the latest cue, which is why every test that predates this one
+    /// reads the same as it did.
     #[test]
-    fn two_cues_covering_the_frame_both_show_earliest_at_the_bottom() {
+    fn two_cues_covering_the_frame_both_show_latest_at_the_bottom() {
         let engine = CueEngine::new();
         engine.submit(cue("First", 0, 1000));
         engine.submit(cue("Second", 500, 1000));
@@ -2918,7 +1559,7 @@ mod tests {
         assert_eq!(
             showing(&engine).as_deref(),
             Some("Second"),
-            "the latest start is the top of the stack"
+            "the latest start is the newest entry of the stack"
         );
 
         // Each leaves on its OWN end -- the half the single-active rule could
@@ -2933,10 +1574,10 @@ mod tests {
     }
 
     /// An out-of-order delivery whose start is BEHIND a cue already showing
-    /// belongs below it, not on top: the stack is ordered by start time, not by
-    /// arrival.
+    /// slots in front of it, above it on screen: the stack is ordered by start
+    /// time, not by arrival.
     #[test]
-    fn a_late_delivered_earlier_cue_joins_the_stack_underneath() {
+    fn a_late_delivered_earlier_cue_slots_by_its_start() {
         let engine = CueEngine::new();
         engine.submit(cue("Later start", 500, 1000));
         engine.overlays_for(Some(ms(600)));
@@ -2991,7 +1632,7 @@ mod tests {
         engine.submit(cue("bottom", 0, 2000));
         engine.submit(cue("top", 500, 2000));
         assert_eq!(
-            engine.shared.state.lock().pending.len(),
+            engine.shared.state.lock().sched.pending().len(),
             0,
             "a cue on screen was queued a second time"
         );
@@ -3003,12 +1644,12 @@ mod tests {
 
         // ...and a zero-length twin of the BOTTOM cue cannot shorten it.
         engine.submit(CueInput {
-            format: TextFormat::Utf8,
+            format: SubtitleTextFormat::Utf8,
             text: "bottom".to_owned(),
             start_rt: ms(0),
             end_rt: Some(ms(0)),
         });
-        assert_eq!(engine.shared.state.lock().pending.len(), 0);
+        assert_eq!(engine.shared.state.lock().sched.pending().len(), 0);
         engine.overlays_for(Some(ms(1_500)));
         assert_eq!(
             showing_all(&engine).len(),
@@ -3030,7 +1671,7 @@ mod tests {
     fn an_open_ended_cue_never_expires() {
         let engine = CueEngine::new();
         engine.submit(CueInput {
-            format: TextFormat::Utf8,
+            format: SubtitleTextFormat::Utf8,
             text: "Forever".to_owned(),
             start_rt: gst::ClockTime::ZERO,
             end_rt: None,
@@ -3062,7 +1703,7 @@ mod tests {
 
         engine.flush();
         assert_eq!(showing(&engine), None);
-        assert_eq!(engine.shared.state.lock().last_shown_rt, None);
+        assert_eq!(engine.shared.state.lock().sched.last_shown_rt(), None);
     }
 
     /// The paused path in miniature: no frame flows, but a cue covering the
@@ -3095,7 +1736,7 @@ mod tests {
 
         engine.overlays_for(None);
         assert_eq!(showing(&engine).as_deref(), Some("Showing"));
-        assert_eq!(engine.shared.state.lock().last_shown_rt, Some(ms(10)));
+        assert_eq!(engine.shared.state.lock().sched.last_shown_rt(), Some(ms(10)));
     }
 
     /// The whole-file burst, at engine scale: an external subtitle arrives as
@@ -3111,7 +1752,7 @@ mod tests {
             engine.submit(cue(&format!("cue {index}"), 10_000 + index * 1000, 800));
         }
         assert_eq!(engine.dropped_cues(), 0, "a whole file must fit");
-        assert_eq!(engine.shared.state.lock().pending.len(), CUES as usize);
+        assert_eq!(engine.shared.state.lock().sched.pending().len(), CUES as usize);
 
         // First, middle and last each show at their own time. The middle and
         // the last are the ones the old drop-oldest bound discarded.
@@ -3137,54 +1778,16 @@ mod tests {
         }
         assert_eq!(engine.dropped_cues(), 4);
         let state = engine.shared.state.lock();
-        assert_eq!(state.pending.len(), PENDING_LIMIT);
+        assert_eq!(state.sched.pending_len(), PENDING_LIMIT);
         // The survivors are the SOONEST ones: the next cue up is still there,
         // and it is the four furthest out that went.
-        assert_eq!(state.pending.front().unwrap().text, "cue 0");
+        assert_eq!(state.sched.pending().front().unwrap().text, "cue 0");
         assert_eq!(
-            state.pending.back().unwrap().text,
+            state.sched.pending().back().unwrap().text,
             format!("cue {}", PENDING_LIMIT - 1)
         );
     }
 
-    /// The eviction ORDER, at the one place it is decided: cues already past
-    /// the playhead cost nothing to give up, so they go before any cue that
-    /// could still be shown.
-    #[test]
-    fn trimming_spends_the_past_before_it_spends_the_future() {
-        let mut state = State {
-            last_shown_rt: Some(ms(50_000)),
-            ..State::default()
-        };
-        // Over the limit by less than the past holds, so spending the past
-        // alone is enough and no future cue need be touched.
-        let past = 8usize;
-        for index in 0..past as u64 {
-            state
-                .pending
-                .push_back(cue(&format!("past {index}"), index * 100, 50));
-        }
-        let future = PENDING_LIMIT - past + 2;
-        for index in 0..future as u64 {
-            state
-                .pending
-                .push_back(cue(&format!("future {index}"), 60_000 + index * 100, 50));
-        }
-        assert!(state.pending.len() > PENDING_LIMIT);
-        let dropped = AtomicU64::new(0);
-        trim_pending(&mut state, &dropped);
-
-        // Only the past was spent, and every future cue survived.
-        assert_eq!(dropped.load(Ordering::Relaxed), past as u64);
-        assert_eq!(state.pending.len(), future);
-        assert!(
-            state
-                .pending
-                .iter()
-                .all(|cue| cue.text.starts_with("future")),
-            "a future cue was dropped while the past was still holding slots"
-        );
-    }
 
     /// Converter output carries every cue twice: a zero-length
     /// record (`start == end`) and then the real one. Both are faithful
@@ -3193,7 +1796,7 @@ mod tests {
     fn a_zero_length_twin_merges_into_the_cue_it_repeats() {
         let engine = CueEngine::new();
         let degenerate = CueInput {
-            format: TextFormat::Utf8,
+            format: SubtitleTextFormat::Utf8,
             text: "twin".to_owned(),
             start_rt: ms(2965),
             end_rt: Some(ms(2965)),
@@ -3207,8 +1810,8 @@ mod tests {
 
         {
             let state = engine.shared.state.lock();
-            assert_eq!(state.pending.len(), 1, "the twins are one cue");
-            assert_eq!(state.pending[0].end_rt, Some(ms(4185)));
+            assert_eq!(state.sched.pending_len(), 1, "the twins are one cue");
+            assert_eq!(state.sched.pending()[0].end_rt, Some(ms(4185)));
         }
         // And it is shown for its REAL window rather than expiring on arrival.
         assert_eq!(advance(&engine, ms(3000)).as_deref(), Some("twin"));
@@ -3219,8 +1822,8 @@ mod tests {
         engine.submit(real);
         engine.submit(degenerate);
         let state = engine.shared.state.lock();
-        assert_eq!(state.pending.len(), 1);
-        assert_eq!(state.pending[0].end_rt, Some(ms(4185)));
+        assert_eq!(state.sched.pending_len(), 1);
+        assert_eq!(state.sched.pending()[0].end_rt, Some(ms(4185)));
     }
 
     /// The redelivery may also repeat the cue that is ON SCREEN, and the
@@ -3239,7 +1842,7 @@ mod tests {
         engine.reset_timeline();
         engine.submit(cue("showing", 1000, 2000));
         assert_eq!(
-            engine.shared.state.lock().pending.len(),
+            engine.shared.state.lock().sched.pending().len(),
             0,
             "the cue on screen was queued a second time"
         );
@@ -3247,12 +1850,12 @@ mod tests {
 
         // A zero-length twin of it lands the same way, and cannot shorten it.
         engine.submit(CueInput {
-            format: TextFormat::Utf8,
+            format: SubtitleTextFormat::Utf8,
             text: "showing".to_owned(),
             start_rt: ms(1000),
             end_rt: Some(ms(1000)),
         });
-        assert_eq!(engine.shared.state.lock().pending.len(), 0);
+        assert_eq!(engine.shared.state.lock().sched.pending().len(), 0);
         assert_eq!(advance(&engine, ms(2500)).as_deref(), Some("showing"));
     }
 
@@ -3267,12 +1870,12 @@ mod tests {
             }
         };
         burst();
-        let after_first = engine.shared.state.lock().pending.len();
+        let after_first = engine.shared.state.lock().sched.pending().len();
         assert_eq!(after_first, 500);
 
         burst();
         assert_eq!(
-            engine.shared.state.lock().pending.len(),
+            engine.shared.state.lock().sched.pending().len(),
             after_first,
             "the redelivery queued a second copy of the file"
         );
@@ -3315,15 +1918,34 @@ mod tests {
 
     // ---- rasterization ----
 
-    fn raster_key(text: &str, format: TextFormat, canvas: (u32, u32)) -> RasterKey {
-        RasterKey {
-            text: text.to_owned(),
+    /// Lay a cue out the way the engine does: the IR when the format carries
+    /// one, the plain text when it does not, and the one conversion this crate
+    /// owns in between (see [`parsed`]).
+    ///
+    /// Takes the context, so a test that lays several cues out does not
+    /// rebuild the font stack per cue.
+    fn render_with(
+        ctx: &mut RasterCtx,
+        text: &str,
+        format: SubtitleTextFormat,
+        canvas: (u32, u32),
+        style: &CueStyle,
+    ) -> Option<crate::cue_scene::RasterOut> {
+        let cue = parsed(CueInput {
             format,
-            canvas,
-            style: Arc::new(CueStyle::default()),
-            video_rect: None,
-            step: 0,
-        }
+            text: text.to_owned(),
+            start_rt: gst::ClockTime::ZERO,
+            end_rt: None,
+        });
+        let plain;
+        let ir = match flapjack::cue::cue_ir(&cue.format) {
+            Some(ir) => &**ir,
+            None => {
+                plain = crate::cue_ir::CueIr::from_plain_text(&cue.text);
+                &plain
+            }
+        };
+        ctx.render(ir, style, canvas, None, ALL_REVEALED as usize)
     }
 
     /// pangocairo draws into an image surface: no display server, no GL, no
@@ -3332,13 +1954,12 @@ mod tests {
     fn raster_smoke() {
         let mut ctx = RasterCtx::new();
         let canvas = (1920, 1080);
-        let raster = ctx
-            .render(&raster_key("Hello, subtitles", TextFormat::Utf8, canvas))
+        let raster = render_with(&mut ctx, "Hello, subtitles", SubtitleTextFormat::Utf8, canvas, &CueStyle::default())
             .expect("a plain cue rasterizes");
 
-        let (width, height) = raster.size();
+        let (width, height) = (raster.width, raster.height);
         assert!(width > 0 && height > 0);
-        assert_eq!(raster.pixels().len(), width as usize * height as usize * 4);
+        assert_eq!(raster.pixels.len(), width as usize * height as usize * 4);
         // Sized against the canvas, not the video, and it fits inside it. One
         // line is roughly `FONT_HEIGHT_FRACTION` of the canvas height plus the
         // outline padding, 49px of font at 1080p.
@@ -3349,14 +1970,14 @@ mod tests {
         );
 
         // Bottom-centre placement, inside the canvas.
-        let (x, y) = raster.position();
+        let (x, y) = (raster.x, raster.y);
         assert!(x >= 0 && x as u32 + width <= canvas.0);
         assert!(y as u32 > canvas.1 / 2);
         assert!(y as u32 + height <= canvas.1);
 
         // Actual glyphs: some pixels are opaque, some are fully transparent.
         let alphas: Vec<u8> = raster
-            .pixels()
+            .pixels
             .as_chunks::<4>()
             .0
             .iter()
@@ -3370,7 +1991,7 @@ mod tests {
     fn an_empty_cue_rasterizes_to_nothing() {
         let mut ctx = RasterCtx::new();
         assert!(
-            ctx.render(&raster_key("", TextFormat::Utf8, (1920, 1080)))
+            render_with(&mut ctx, "", SubtitleTextFormat::Utf8, (1920, 1080), &CueStyle::default())
                 .is_none()
         );
     }
@@ -3381,16 +2002,14 @@ mod tests {
         let canvas = (1280, 720);
         let source = "<i>Bonjour</i>";
 
-        let markup = ctx
-            .render(&raster_key(source, TextFormat::PangoMarkup, canvas))
+        let markup = render_with(&mut ctx, source, SubtitleTextFormat::PangoMarkup, canvas, &CueStyle::default())
             .expect("markup rasterizes");
-        let utf8 = ctx
-            .render(&raster_key(source, TextFormat::Utf8, canvas))
+        let utf8 = render_with(&mut ctx, source, SubtitleTextFormat::Utf8, canvas, &CueStyle::default())
             .expect("utf8 rasterizes");
 
         // The utf8 rendering shows the tags literally, so it is wider.
-        assert_ne!(markup.size(), utf8.size());
-        assert!(utf8.size().0 > markup.size().0);
+        assert_ne!((markup.width, markup.height), (utf8.width, utf8.height));
+        assert!(utf8.width > markup.width);
     }
 
     #[test]
@@ -3399,31 +2018,28 @@ mod tests {
         let canvas = (1280, 720);
         let broken = "<b>unclosed";
 
-        let rendered = ctx
-            .render(&raster_key(broken, TextFormat::PangoMarkup, canvas))
+        let rendered = render_with(&mut ctx, broken, SubtitleTextFormat::PangoMarkup, canvas, &CueStyle::default())
             .expect("a cue is never dropped for bad markup");
         // The tolerant parser closes the tag at end of input, so the cue
         // renders as its words WITH the styling honoured (pango used to
         // reject the whole string and the fallback discarded the bold).
         let ir = Arc::new(gstrssubparse::pango_markup::markup_to_cue_ir(broken));
-        let styled = ctx
-            .render(&RasterKey {
-                format: TextFormat::CueIr {
-                    ir,
-                    pts_start: None,
-                },
-                ..raster_key(broken, TextFormat::Utf8, canvas)
-            })
-            .expect("the parsed IR rasterizes");
-        let raw = ctx
-            .render(&raster_key(broken, TextFormat::Utf8, canvas))
+        let styled = render_with(
+            &mut ctx,
+            broken,
+            SubtitleTextFormat::CueIr { ir, pts_start: None },
+            canvas,
+            &CueStyle::default(),
+        )
+        .expect("the parsed IR rasterizes");
+        let raw = render_with(&mut ctx, broken, SubtitleTextFormat::Utf8, canvas, &CueStyle::default())
             .expect("utf8 rasterizes");
 
-        assert_eq!(rendered.size(), styled.size());
-        assert_eq!(rendered.pixels(), styled.pixels());
+        assert_eq!((rendered.width, rendered.height), (styled.width, styled.height));
+        assert_eq!(rendered.pixels, styled.pixels);
         assert_ne!(
-            rendered.pixels(),
-            raw.pixels(),
+            rendered.pixels,
+            raw.pixels,
             "the markup source must not reach the screen"
         );
     }
@@ -3453,60 +2069,213 @@ mod tests {
             "the premise is that strict parsing rejects a voice span"
         );
 
-        let rendered = ctx
-            .render(&raster_key(voiced, TextFormat::PangoMarkup, canvas))
+        let rendered = render_with(&mut ctx, voiced, SubtitleTextFormat::PangoMarkup, canvas, &CueStyle::default())
             .expect("a cue is never dropped for bad markup");
-        let words = ctx
-            .render(&raster_key(
-                "Hello there and more",
-                TextFormat::Utf8,
-                canvas,
-            ))
-            .expect("utf8 rasterizes");
-        let with_tags = ctx
-            .render(&raster_key(voiced, TextFormat::Utf8, canvas))
+        let words =
+            render_with(&mut ctx, "Hello there and more", SubtitleTextFormat::Utf8, canvas, &CueStyle::default())
+                .expect("utf8 rasterizes");
+        let with_tags = render_with(&mut ctx, voiced, SubtitleTextFormat::Utf8, canvas, &CueStyle::default())
             .expect("utf8 rasterizes");
 
         assert_eq!(
-            rendered.pixels(),
-            words.pixels(),
+            rendered.pixels,
+            words.pixels,
             "the viewer must read only the words"
         );
         // The tags are strictly wider than the words, so this is also a
         // guard against the two rasters coinciding by accident.
-        assert!(with_tags.size().0 > words.size().0);
-        assert_ne!(rendered.pixels(), with_tags.pixels());
+        assert!(with_tags.width > words.width);
+        assert_ne!(rendered.pixels, with_tags.pixels);
+    }
+
+    // ---- karaoke: one layout, a threshold per step ----
+
+    /// A `\k`-style cue as the cue-IR arm delivers one: three syllables, the
+    /// last two revealing a second apart, each in its own colour so the
+    /// difference is visible in the pixels.
+    fn karaoke_cue() -> (CueInput, Arc<cue_ir::CueIr>) {
+        let mut ir = cue_ir::CueIr::from_plain_text("");
+        let mut spans = Vec::new();
+        for (index, word) in ["first ", "second ", "third"].into_iter().enumerate() {
+            let mut span = cue_ir::ir::Span::plain(word);
+            if index > 0 {
+                span.reveal_ns = Some(index as u64 * 1_000_000_000);
+            }
+            span.style.foreground = Some(cue_ir::ir::Color::rgb(255, (80 * index) as u8, 0));
+            spans.push(span);
+        }
+        ir.lines[0].spans = spans;
+        let ir = Arc::new(ir);
+        (
+            CueInput {
+                format: SubtitleTextFormat::CueIr {
+                    ir: ir.clone(),
+                    pts_start: Some(gst::ClockTime::ZERO),
+                },
+                text: "first second third".to_owned(),
+                start_rt: gst::ClockTime::ZERO,
+                end_rt: Some(ms(10_000)),
+            },
+            ir,
+        )
+    }
+
+
+    /// THE WAVE 5 GATE: a karaoke line lays out exactly ONCE, however many
+    /// syllables fire.
+    ///
+    /// Before this wave a reveal step was part of the raster key, so every
+    /// syllable was a new key, a new parley layout and a new vello render of
+    /// the whole cue -- several times a second on a fast line, at whatever the
+    /// display resolution is. The step is now a threshold over one scene, so
+    /// the layout counter must not move across the sweep and the cue on screen
+    /// must be the same scene allocation throughout.
+    #[test]
+    fn a_karaoke_sweep_lays_the_cue_out_once() {
+        let engine = CueEngine::new();
+        engine.set_canvas(1280, 720);
+        let (cue, _) = karaoke_cue();
+        engine.submit(cue);
+
+        engine.overlays_for(Some(ms(100)));
+        assert!(wait_for(|| !engine.current_overlays().is_empty()));
+
+        // The scene the whole sweep is drawn from, by pointer.
+        let scene = {
+            let state = engine.shared.state.lock();
+            state
+                .sched
+                .active()
+                .first()
+                .expect("a cue is active")
+                .payload
+                .showing()
+                .expect("the cue never got a display list")
+                .clone()
+        };
+        assert_eq!(
+            scene.max_rank(),
+            2,
+            "two timed syllables are two ranks: {scene:?}"
+        );
+        let builds = engine.scene_builds();
+        assert_eq!(builds, 1, "the cue was laid out {builds} times, not once");
+
+        let opening = engine.current_overlays().remove(0);
+        let ink = |overlay: &Overlay| {
+            overlay
+                .pixels
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .filter(|px| px[3] > 200 && px[0] > 200)
+                .count()
+        };
+        let mut seen = vec![ink(&opening)];
+
+        // Cross both thresholds.
+        for (rank, rt) in [(1u16, 1_500u64), (2, 2_500)] {
+            engine.overlays_for(Some(ms(rt)));
+            assert!(
+                !engine.current_overlays().is_empty(),
+                "crossing a threshold blanked the line; the rank below it was the \
+                 right thing to keep showing"
+            );
+            assert!(
+                wait_for(|| ink(&engine.current_overlays()[0]) > *seen.last().expect("a sweep")),
+                "syllable {rank} never lit up"
+            );
+
+            let overlay = engine.current_overlays().remove(0);
+            assert_eq!(
+                (overlay.width, overlay.height),
+                (opening.width, opening.height),
+                "revealing a syllable resized the cue"
+            );
+            let live = engine.shared.state.lock();
+            let active = live.sched.active().first().expect("a cue is active");
+            assert_eq!(active.rank, rank, "the reveal rank did not track the clock");
+            let now = active.payload.showing().expect("the sweep dropped the scene");
+            assert!(
+                Arc::ptr_eq(now, &scene),
+                "the cue was re-keyed at a syllable, so it laid out again"
+            );
+            drop(live);
+            assert_eq!(
+                engine.scene_builds(),
+                builds,
+                "a syllable cost a parley layout, which is the whole thing this wave removed"
+            );
+            seen.push(ink(&overlay));
+        }
+        // One scene, one cache entry, whatever the reveal did; the paints are
+        // where the steps show up, one per rank the clock passed.
+        assert_eq!(
+            engine.cached_rasters(),
+            1,
+            "a step keyed a scene of its own"
+        );
+        assert_eq!(
+            engine.cached_pixels(),
+            seen.len(),
+            "the overlay lane holds one paint per reveal step and nothing else"
+        );
+    }
+
+    /// THE COMPATIBILITY PATH: the pixels the engine hands the overlay lanes at
+    /// reveal step N are the pixels the one-piece rasterizer produces at step
+    /// N, byte for byte.
+    ///
+    /// [`cue_ir::RasterCtx::render`] is untouched by this wave and is what
+    /// every pixel expectation in the tree was written against, so it is the
+    /// pre-surgery oracle. What is under test is the engine's half of the
+    /// step-to-rank mapping: an off-by-one between "thresholds passed" and
+    /// "rank painted" would show a syllable early or late and nothing else
+    /// would catch it.
+    #[test]
+    fn the_overlay_lane_paints_what_the_step_used_to_render() {
+        let engine = CueEngine::new();
+        engine.set_canvas(1280, 720);
+        let (cue, ir) = karaoke_cue();
+        engine.submit(cue);
+
+        let mut oracle = cue_ir::RasterCtx::new();
+        let style = engine.style();
+        // Frame times either side of each threshold, and the step each one
+        // means: 0 before the first, then one and two.
+        for (step, rt) in [(0usize, 100u64), (1, 1_500), (2, 2_500)] {
+            let want = oracle
+                .render(&ir, &style, (1280, 720), None, step)
+                .expect("the karaoke cue rasterizes");
+            engine.overlays_for(Some(ms(rt)));
+            assert!(
+                wait_for(|| engine
+                    .current_overlays()
+                    .first()
+                    .is_some_and(|overlay| *overlay.pixels == want.pixels)),
+                "step {step}: the engine painted something other than the raster this \
+                 step used to produce"
+            );
+            let overlay = engine.current_overlays().remove(0);
+            assert_eq!(
+                (overlay.width, overlay.height, overlay.x),
+                (want.width, want.height, want.x),
+                "step {step}: the surface moved"
+            );
+        }
     }
 
     // ---- the default readability box ----
 
-    /// A pixel of a raster, as straight RGBA.
-    fn px_at(raster: &Raster, x: u32, y: u32) -> [u8; 4] {
-        let (w, _) = raster.size();
-        let at = ((y * w + x) * 4) as usize;
-        raster.pixels()[at..at + 4].try_into().expect("in bounds")
-    }
-
-    /// A `CueStyle`-keyed raster key, for the box tests.
-    fn styled_key(
-        text: &str,
-        format: TextFormat,
-        canvas: (u32, u32),
-        style: CueStyle,
-    ) -> RasterKey {
-        RasterKey {
-            text: text.to_owned(),
-            format,
-            canvas,
-            style: Arc::new(style),
-            video_rect: None,
-            step: 0,
-        }
+    /// A pixel of a paint, as straight RGBA.
+    fn px_at(raster: &crate::cue_scene::RasterOut, x: u32, y: u32) -> [u8; 4] {
+        let at = ((y * raster.width + x) * 4) as usize;
+        raster.pixels[at..at + 4].try_into().expect("in bounds")
     }
 
     /// The cue-IR form of the same plain text.
-    fn ir_format(text: &str) -> TextFormat {
-        TextFormat::CueIr {
+    fn ir_format(text: &str) -> SubtitleTextFormat {
+        SubtitleTextFormat::CueIr {
             ir: Arc::new(cue_ir::CueIr::from_plain_text(text)),
             pts_start: None,
         }
@@ -3526,18 +2295,12 @@ mod tests {
         let canvas = (640, 360);
 
         for (arm, format) in [
-            ("pango", TextFormat::Utf8),
+            ("pango", SubtitleTextFormat::Utf8),
             ("cue-ir", ir_format("Hello, subtitles")),
         ] {
-            let raster = ctx
-                .render(&styled_key(
-                    "Hello, subtitles",
-                    format,
-                    canvas,
-                    CueStyle::default(),
-                ))
+            let raster = render_with(&mut ctx, "Hello, subtitles", format, canvas, &CueStyle::default())
                 .unwrap_or_else(|| panic!("{arm}: rasterizes"));
-            let (_, h) = raster.size();
+            let (_, h) = (raster.width, raster.height);
 
             // Inside the box, outside the ink: the tint, at its own alpha.
             let inside = px_at(&raster, 3, h / 2);
@@ -3559,7 +2322,7 @@ mod tests {
 
             // The glyphs still read white on top of it.
             let white = raster
-                .pixels()
+                .pixels
                 .chunks_exact(4)
                 .filter(|px| px[3] > 200 && px[0] > 200 && px[1] > 200 && px[2] > 200)
                 .count();
@@ -3576,28 +2339,16 @@ mod tests {
         let canvas = (640, 360);
 
         for (arm, format) in [
-            ("pango", TextFormat::Utf8),
+            ("pango", SubtitleTextFormat::Utf8),
             ("cue-ir", ir_format("Hello, subtitles")),
         ] {
-            let boxed = ctx
-                .render(&styled_key(
-                    "Hello, subtitles",
-                    format.clone(),
-                    canvas,
-                    CueStyle::default(),
-                ))
+            let boxed = render_with(&mut ctx, "Hello, subtitles", format.clone(), canvas, &CueStyle::default())
                 .unwrap_or_else(|| panic!("{arm}: rasterizes"));
-            let bare = ctx
-                .render(&styled_key(
-                    "Hello, subtitles",
-                    format,
-                    canvas,
-                    CueStyle::outline_only(),
-                ))
+            let bare = render_with(&mut ctx, "Hello, subtitles", format, canvas, &CueStyle::outline_only())
                 .unwrap_or_else(|| panic!("{arm}: rasterizes"));
 
             // Nothing is painted where the box was.
-            let (_, h) = bare.size();
+            let (_, h) = (bare.width, bare.height);
             assert_eq!(
                 px_at(&bare, 3, h / 2)[3],
                 0,
@@ -3605,10 +2356,10 @@ mod tests {
             );
             // ...and the cue is physically smaller without the box padding.
             assert!(
-                bare.size().0 < boxed.size().0 && bare.size().1 < boxed.size().1,
+                bare.width < boxed.width && bare.height < boxed.height,
                 "{arm}: the box adds padding, so {:?} must be smaller than {:?}",
-                bare.size(),
-                boxed.size()
+                (bare.width, bare.height),
+                (boxed.width, boxed.height)
             );
         }
     }
@@ -3624,19 +2375,10 @@ mod tests {
 
         let mut ir = cue_ir::CueIr::from_plain_text("Hello, subtitles");
         ir.layout.background = Some(cue_ir::ir::Color::rgb(0, 0, 255));
-        let raster = ctx
-            .render(&styled_key(
-                "Hello, subtitles",
-                TextFormat::CueIr {
-                    ir: Arc::new(ir),
-                    pts_start: None,
-                },
-                canvas,
-                CueStyle::default(),
-            ))
+        let raster = render_with(&mut ctx, "Hello, subtitles", SubtitleTextFormat::CueIr { ir: Arc::new(ir), pts_start: None, }, canvas, &CueStyle::default())
             .expect("rasterizes");
 
-        let (_, h) = raster.size();
+        let (_, h) = (raster.width, raster.height);
         let inside = px_at(&raster, 3, h / 2);
         assert!(
             inside[2] > 200 && inside[0] < 60 && inside[1] < 60,
@@ -3654,26 +2396,17 @@ mod tests {
 
         let mut ir = cue_ir::CueIr::from_plain_text("Hello, subtitles");
         ir.base.foreground = Some(cue_ir::ir::Color::rgb(255, 0, 0));
-        let raster = ctx
-            .render(&styled_key(
-                "Hello, subtitles",
-                TextFormat::CueIr {
-                    ir: Arc::new(ir),
-                    pts_start: None,
-                },
-                canvas,
-                CueStyle::default(),
-            ))
+        let raster = render_with(&mut ctx, "Hello, subtitles", SubtitleTextFormat::CueIr { ir: Arc::new(ir), pts_start: None, }, canvas, &CueStyle::default())
             .expect("rasterizes");
 
-        let (_, h) = raster.size();
+        let (_, h) = (raster.width, raster.height);
         let inside = px_at(&raster, 3, h / 2);
         assert!(
             inside[3] > 120 && inside[3] < 200 && inside[0] < 40,
             "a coloured-text cue still gets the black house box, got {inside:?}"
         );
         let red = raster
-            .pixels()
+            .pixels
             .chunks_exact(4)
             .filter(|px| px[3] > 200 && px[0] > 180 && px[1] < 60 && px[2] < 60)
             .count();
@@ -3683,59 +2416,13 @@ mod tests {
     #[test]
     fn a_larger_canvas_rasters_larger_text() {
         let mut ctx = RasterCtx::new();
-        let small = ctx
-            .render(&raster_key("Same text", TextFormat::Utf8, (640, 360)))
+        let small = render_with(&mut ctx, "Same text", SubtitleTextFormat::Utf8, (640, 360), &CueStyle::default())
             .expect("rasterizes");
-        let large = ctx
-            .render(&raster_key("Same text", TextFormat::Utf8, (1920, 1080)))
+        let large = render_with(&mut ctx, "Same text", SubtitleTextFormat::Utf8, (1920, 1080), &CueStyle::default())
             .expect("rasterizes");
 
-        assert!(large.size().0 > small.size().0);
-        assert!(large.size().1 > small.size().1);
-    }
-
-    #[test]
-    fn the_raster_cache_is_lru_bounded() {
-        let mut cache = RasterCache::default();
-        let raster = || {
-            Arc::new(Raster {
-                pixels: Arc::new(vec![0; 4]),
-                width: 1,
-                height: 1,
-                x: 0,
-                y: 0,
-            })
-        };
-
-        for index in 0..RASTER_CACHE_LIMIT {
-            cache.insert(
-                raster_key(&format!("{index}"), TextFormat::Utf8, (1, 1)),
-                raster(),
-            );
-        }
-        assert_eq!(cache.len(), RASTER_CACHE_LIMIT);
-
-        // Touch the oldest so it is no longer the eviction candidate.
-        assert!(
-            cache
-                .get(&raster_key("0", TextFormat::Utf8, (1, 1)))
-                .is_some()
-        );
-        cache.insert(raster_key("new", TextFormat::Utf8, (1, 1)), raster());
-
-        assert_eq!(cache.len(), RASTER_CACHE_LIMIT);
-        assert!(
-            cache
-                .get(&raster_key("0", TextFormat::Utf8, (1, 1)))
-                .is_some(),
-            "the touched entry survived"
-        );
-        assert!(
-            cache
-                .get(&raster_key("1", TextFormat::Utf8, (1, 1)))
-                .is_none(),
-            "the least recently used entry was evicted"
-        );
+        assert!(large.width > small.width);
+        assert!(large.height > small.height);
     }
 
     // ---- the engine driving the worker ----
@@ -3887,20 +2574,26 @@ mod tests {
     }
 
     /// THE STACK, IN PIXELS: two overlapping cues reach the screen as two
-    /// overlays at two heights, and neither covers the other.
+    /// overlays at two heights, neither covers the other, and they read
+    /// top-to-bottom in start order.
     ///
     /// Both rasters are laid out bottom-centre by the house policy, so they ask
     /// for the SAME strip; what separates them is `active_overlays`, and the
     /// separation has to be visible in the numbers a compositor uploads rather
     /// than in engine state.
+    ///
+    /// The cue pair is a real one, a converted stream splitting one sentence
+    /// across two cues 41 ms apart. The seniority rule kept the earlier cue at
+    /// the bottom and the sentence read "something to live for. / It helps if
+    /// they have"; the later start must take the bottom slot.
     #[test]
     fn two_cues_on_screen_are_two_overlays_at_two_heights() {
         let engine = CueEngine::new();
         engine.set_canvas(1280, 720);
-        engine.submit(cue("The bottom line", 0, 8_000));
-        engine.submit(cue("The line above it", 1_000, 2_000));
+        engine.submit(cue("It helps if they have", 0, 8_000));
+        engine.submit(cue("something to live for.", 41, 2_000));
 
-        engine.overlays_for(Some(ms(2_000)));
+        engine.overlays_for(Some(ms(1_000)));
         assert!(
             wait_for(|| engine.current_overlays().len() == 2),
             "two cues cover this frame and {} overlay(s) reached the screen",
@@ -3908,26 +2601,26 @@ mod tests {
         );
 
         let overlays = engine.current_overlays();
-        let (bottom, top) = (&overlays[0], &overlays[1]);
+        let (first, second) = (&overlays[0], &overlays[1]);
         assert!(
             overlays.iter().all(|o| o.space == OverlaySpace::Window),
             "text cues are laid out at display resolution and stay in window space"
         );
         assert!(
-            bottom.y > top.y,
-            "the earlier-starting cue must be the LOWER one: bottom at y={}, top at y={}",
-            bottom.y,
-            top.y
+            second.y > first.y,
+            "the later-starting cue must be the LOWER one: first at y={}, second at y={}",
+            first.y,
+            second.y
         );
         assert!(
-            top.y + top.height as i32 <= bottom.y,
-            "the two cues overlap vertically: top spans {}..{}, bottom starts at {}",
-            top.y,
-            top.y + top.height as i32,
-            bottom.y
+            first.y + first.height as i32 <= second.y,
+            "the two cues overlap vertically: first spans {}..{}, second starts at {}",
+            first.y,
+            first.y + first.height as i32,
+            second.y
         );
         assert!(
-            bottom.y + bottom.height as i32 <= 720,
+            second.y + second.height as i32 <= 720,
             "the bottom cue hangs off the canvas"
         );
         // Both are real pictures, not empty strips.
@@ -3938,12 +2631,12 @@ mod tests {
             );
         }
 
-        // The one on top ends first. THE OTHER STAYS -- under the single-active
-        // rule the top cue's arrival ended the bottom one, so this frame showed
-        // nothing at all -- and it stays without re-rastering, in the same
-        // allocation and at the same height.
-        let bottom_pixels = bottom.pixels.clone();
-        let bottom_y = bottom.y;
+        // The one at the BOTTOM ends first. THE OTHER STAYS -- under the
+        // single-active rule the second cue's arrival ended the first, so this
+        // frame showed nothing at all -- without re-rastering, in the same
+        // allocation, and it drops back into the freed bottom slot.
+        let first_pixels = first.pixels.clone();
+        let first_y = first.y;
         engine.overlays_for(Some(ms(4_000)));
         let after = engine.current_overlays();
         assert_eq!(
@@ -3952,12 +2645,14 @@ mod tests {
             "the surviving cue went with the expired one"
         );
         assert!(
-            Arc::ptr_eq(&after[0].pixels, &bottom_pixels),
+            Arc::ptr_eq(&after[0].pixels, &first_pixels),
             "the surviving cue was re-rastered rather than left alone"
         );
-        assert_eq!(
-            after[0].y, bottom_y,
-            "the surviving cue moved when the one above it left"
+        assert!(
+            after[0].y > first_y,
+            "the surviving cue did not reclaim the bottom slot: y={} was {}",
+            after[0].y,
+            first_y
         );
     }
 
@@ -4329,7 +3024,7 @@ mod tests {
         engine.warm();
         assert!(wait_for(|| engine.warm_up_time().is_some()));
         let elapsed = engine.warm_up_time().unwrap();
-        println!("fvid-cue-raster fontmap warm-up: {elapsed:?}");
+        println!("slint-cue fontmap warm-up: {elapsed:?}");
         assert!(elapsed < Duration::from_secs(30));
     }
 
@@ -4354,7 +3049,7 @@ mod tests {
         let engine = CueEngine::new();
         engine.set_canvas(1920, 1080);
         engine.submit(CueInput {
-            format: TextFormat::Utf8,
+            format: SubtitleTextFormat::Utf8,
             text: wall_of_text(),
             start_rt: gst::ClockTime::ZERO,
             end_rt: Some(ms(60_000)),
@@ -4375,16 +3070,24 @@ mod tests {
     /// were copied. Bitmap subtitles need it too: a page is the same order of
     /// magnitude as this raster and is composited the same way, so a per-frame
     /// clone at 60 Hz is megabytes a frame of pure memcpy.
+    ///
+    /// It reads the PIXEL LANE now rather than the active cue, because that is
+    /// where the bytes live since the engine's own artifact became the scene.
+    /// The claim is unchanged: what the overlay carries is the allocation the
+    /// engine already had, not a copy made for the caller.
     #[test]
     fn overlay_pixels_are_the_engines_own_buffer_on_every_call() {
         let engine = big_raster_engine();
 
         let engine_pixels = {
             let state = engine.shared.state.lock();
-            match &state.active.first().expect("a cue is active").raster {
-                RasterState::Ready(raster) => raster.pixels.clone(),
-                other => panic!("expected a ready raster, got {other:?}"),
-            }
+            let active = state.sched.active().first().expect("a cue is active");
+            active
+                .payload
+                .painted()
+                .expect("the cue on screen has been painted")
+                .pixels
+                .clone()
         };
 
         let first = engine.overlays_for(Some(ms(20)));
@@ -4642,7 +3345,7 @@ mod tests {
     /// buffer IDENTITY, so a test that wants a duplicate has to clone the
     /// buffer deliberately.
     fn bitmap_packet(tag: u8, rt: u64, duration: Option<u64>) -> BitmapPacket {
-        bitmap_packet_of(BitmapFormat::Pgs, tag, rt, duration)
+        bitmap_packet_of(BitmapSubFormat::Pgs, tag, rt, duration)
     }
 
     /// The same, for a NAMED format. Every test in this file installs its own
@@ -4650,7 +3353,7 @@ mod tests {
     /// one test that deliberately does not install anything and needs a
     /// format the production table still answers `None` for.
     fn bitmap_packet_of(
-        format: BitmapFormat,
+        format: BitmapSubFormat,
         tag: u8,
         rt: u64,
         duration: Option<u64>,
@@ -4740,6 +3443,232 @@ mod tests {
             "the regions lost their placement"
         );
         assert!(bitmap.iter().all(|overlay| overlay.pixels[0] == 7));
+    }
+
+    /// WAVE 7's bitmap preservation, on the seam the desktop lane runs on.
+    ///
+    /// A scene consumer draws the display lists itself, so the text cue has to
+    /// stay out of the overlay list; a subpicture is decoded pixels with no
+    /// display list, so it has to be in it. Both halves are asserted, because
+    /// getting one of them without the other is how the lane loses PGS, DVB or
+    /// VobSub subtitles silently.
+    #[test]
+    fn a_scene_consumer_keeps_the_bitmap_overlays_and_drops_the_text_raster() {
+        gst::init().unwrap();
+        let engine = CueEngine::for_scene_consumer();
+        engine.set_canvas(1280, 720);
+        engine.set_video_size(1920, 1080);
+        DecoderRig::default().install(&engine);
+
+        engine.submit(cue("A text cue", 0, 10_000));
+        engine.submit_bitmap(bitmap_packet(7, 0, None));
+        assert!(
+            wait_for(|| {
+                engine.scenes_for(Some(ms(10)));
+                engine.shown_scenes().len() == 1 && !engine.current_overlays().is_empty()
+            }),
+            "the lane never put the text cue and the subpicture on screen together"
+        );
+        // Every chance to paint the text cue anyway: the engine asks for the
+        // next wanted job after every read.
+        for _ in 0..30 {
+            engine.overlays_for(Some(ms(10)));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
+        let overlays = engine.current_overlays();
+        assert_eq!(
+            overlays
+                .iter()
+                .filter(|overlay| overlay.space == OverlaySpace::Window)
+                .count(),
+            0,
+            "the text cue is still an overlay on a scene consumer, so the lane would draw it \
+             twice, once composited into the video and once in the scene"
+        );
+        let bitmap: Vec<_> = overlays
+            .iter()
+            .filter(|overlay| overlay.space == OverlaySpace::SrcFrame)
+            .collect();
+        assert_eq!(
+            bitmap.len(),
+            1,
+            "the subpicture went away with the text raster, and nothing on this lane can \
+             draw it back: a display list is exactly what it does not have"
+        );
+        assert_eq!(bitmap[0].pixels[0], 7, "the region lost its pixels");
+
+        assert_eq!(
+            engine.shown_scenes().len(),
+            1,
+            "the text cue must still be on the scene lane's own read"
+        );
+        assert!(
+            engine
+                .shown_scenes()
+                .iter()
+                .all(|shown| shown.scene.glyph_count() > 0),
+            "the display list the lane would draw carries no glyphs"
+        );
+    }
+
+    /// The read a scene consumer composites bitmap sets from: the same regions
+    /// [`CueEngine::current_overlays`] would answer with, without building the
+    /// overlay list to get at them.
+    ///
+    /// The desktop wgpu lane reads this once per frame and compares it against
+    /// what it last composited, so the two answers have to agree region for
+    /// region or the lane would rebuild for nothing (or, worse, not rebuild
+    /// when it should).
+    #[test]
+    fn the_bitmap_read_matches_the_overlays_the_raster_lane_would_build() {
+        gst::init().unwrap();
+        let engine = CueEngine::for_scene_consumer();
+        engine.set_canvas(1280, 720);
+        engine.set_video_size(1920, 1080);
+        DecoderRig::default().install(&engine);
+
+        assert_eq!(
+            engine.with_shown_bitmaps(|regions| regions.len()),
+            0,
+            "an engine with nothing on screen answered with regions"
+        );
+
+        engine.submit_bitmap(bitmap_packet(9, 0, None));
+        // The decode is asynchronous and the schedule only moves when someone
+        // reads it, which `with_shown_bitmaps` deliberately does not do.
+        engine.overlays_for(Some(ms(10)));
+        assert!(
+            wait_for(|| engine.current_overlays().len() == 1),
+            "the set never reached the screen"
+        );
+
+        let overlays = engine.current_overlays();
+        let (tags, rects) = engine.with_shown_bitmaps(|regions| {
+            (
+                regions.iter().map(|r| r.pixels[0]).collect::<Vec<_>>(),
+                regions
+                    .iter()
+                    .map(|r| (r.x, r.y, r.render_width, r.render_height))
+                    .collect::<Vec<_>>(),
+            )
+        });
+        assert_eq!(
+            tags,
+            overlays
+                .iter()
+                .map(|overlay| overlay.pixels[0])
+                .collect::<Vec<_>>(),
+            "the two reads disagree about which pixels are on screen"
+        );
+        assert_eq!(
+            rects,
+            overlays
+                .iter()
+                .map(|o| (o.x, o.y, o.render_width, o.render_height))
+                .collect::<Vec<_>>(),
+            "the two reads disagree about where the regions land"
+        );
+
+        // The Arc is the identity the consumer caches on, so it has to be the
+        // one the overlay carries and it has to survive a second read.
+        engine.with_shown_bitmaps(|regions| {
+            assert!(
+                Arc::ptr_eq(&regions[0].pixels, &overlays[0].pixels),
+                "the read copied the pixels instead of sharing them"
+            );
+        });
+
+        engine.clear();
+        assert_eq!(
+            engine.with_shown_bitmaps(|regions| regions.len()),
+            0,
+            "a cleared engine still shows a bitmap set, so the lane would never take it down"
+        );
+    }
+
+    /// A RESIZE MUST NOT BLANK THE LINE.
+    ///
+    /// `set_canvas` and `set_video_rect` re-key every active cue, and they used
+    /// to drop what was on screen with it (`Pending`). On the scene lanes that
+    /// is one or two frames of nothing while the worker re-lays-out, and a
+    /// window drag is a continuous stream of those, which is the "resizing
+    /// while playing makes them flash" report.
+    ///
+    /// Asserted at both ends: the same allocation is still showing on the read
+    /// immediately after the re-key, and a NEW one replaces it once the worker
+    /// answers, so this is a hold and not a leak.
+    #[test]
+    fn a_resize_keeps_the_cue_up_until_the_new_layout_lands() {
+        let engine = CueEngine::for_scene_consumer();
+        engine.set_canvas(1280, 720);
+        engine.submit(cue("It's a little after 12", 1_000, 20_000));
+        engine.scenes_for(Some(ms(2_000)));
+        assert!(
+            wait_for(|| engine.shown_scenes().len() == 1),
+            "the cue never made it on screen, so the resize below proves nothing"
+        );
+        let before = Arc::clone(&engine.shown_scenes()[0].scene);
+
+        engine.set_canvas(1920, 1080);
+        let during = engine.shown_scenes();
+        assert_eq!(during.len(), 1, "the resize blanked the line");
+        assert!(
+            Arc::ptr_eq(&during[0].scene, &before),
+            "the resize swapped the display list before the new one existed"
+        );
+
+        // A video rect change is the other half of a resize and re-keys the
+        // same way, so it must hold the same.
+        engine.set_video_rect(Some(VideoRect {
+            x: 0,
+            y: 60,
+            width: 1920,
+            height: 960,
+        }));
+        assert_eq!(
+            engine.shown_scenes().len(),
+            1,
+            "the picture rect change blanked the line"
+        );
+
+        assert!(
+            wait_for(|| {
+                let shown = engine.shown_scenes();
+                shown.len() == 1 && !Arc::ptr_eq(&shown[0].scene, &before)
+            }),
+            "the stale display list was never replaced, so the hold is a leak"
+        );
+    }
+
+    /// The other side of the hold: a cue that ENDS still goes away at once.
+    ///
+    /// A stale scene keeps a re-keyed cue up. An expiry is not a re-key
+    /// (the cue leaves `active` entirely), so nothing about the hold may reach
+    /// it, or every line would linger past its end time.
+    #[test]
+    fn a_cue_that_ends_clears_even_after_a_resize() {
+        let engine = CueEngine::for_scene_consumer();
+        engine.set_canvas(1280, 720);
+        engine.submit(cue("It's a little after 12", 1_000, 1_000));
+        engine.scenes_for(Some(ms(1_500)));
+        assert!(
+            wait_for(|| engine.shown_scenes().len() == 1),
+            "the cue never made it on screen"
+        );
+
+        engine.set_canvas(1920, 1080);
+        assert_eq!(
+            engine.shown_scenes().len(),
+            1,
+            "the resize blanked the line"
+        );
+        // Past the end, with the replacement still unbuilt.
+        engine.scenes_for(Some(ms(2_500)));
+        assert!(
+            engine.shown_scenes().is_empty(),
+            "the expired cue is still on screen, so the stale hold outlived its cue"
+        );
     }
 
     /// The scheduled clear happens at its own running time, and the
@@ -4953,7 +3882,7 @@ mod tests {
             "the set covering the playhead was evicted while 200 future sets were kept"
         );
         assert_eq!(
-            engine.shared.state.lock().bitmap_pending.len(),
+            engine.shared.state.lock().sched.bitmap_pending().len(),
             200,
             "the trim spent more than the free ones"
         );
@@ -4964,14 +3893,14 @@ mod tests {
         assert!(wait_for(|| engine.bitmap_dropped_sets() == 244));
         {
             let state = engine.shared.state.lock();
-            assert_eq!(state.bitmap_pending.len(), BITMAP_PENDING_LIMIT);
+            assert_eq!(state.sched.bitmap_pending_len(), flapjack::cue::BITMAP_PENDING_LIMIT);
             assert_eq!(
-                state.bitmap_pending.front().expect("non-empty").start_rt,
+                state.sched.bitmap_pending().front().expect("non-empty").start_rt,
                 ms(20_000),
                 "the trim spent the near future instead of the far future"
             );
             assert_eq!(
-                state.bitmap_pending.back().expect("non-empty").start_rt,
+                state.sched.bitmap_pending().back().expect("non-empty").start_rt,
                 ms(65_500)
             );
         }
@@ -5010,7 +3939,7 @@ mod tests {
             .shared
             .state
             .lock()
-            .bitmap_pending
+            .sched.bitmap_pending()
             .iter()
             .map(DisplayUpdate::pixel_bytes)
             .sum();
@@ -5297,7 +4226,7 @@ mod tests {
                 .shared
                 .state
                 .lock()
-                .bitmap_pending
+                .sched.bitmap_pending()
                 .iter()
                 .any(|update| update.start_rt == ms(12_000)),
             "the expired set was kept"
@@ -5352,12 +4281,12 @@ mod tests {
              budget trimmed a backlog holding 8 MiB"
         );
         assert_eq!(
-            engine.shared.state.lock().bitmap_pending.len() as u64,
+            engine.shared.state.lock().sched.bitmap_pending().len() as u64,
             SETS,
             "the backlog gave up sets it did not have to"
         );
         assert_eq!(
-            bitmap_pending_pixel_bytes(&engine.shared.state.lock()),
+            engine.shared.state.lock().sched.bitmap_pending_bytes(),
             PAGE,
             "one allocation, one charge"
         );
@@ -5432,12 +4361,12 @@ mod tests {
         {
             let state = engine.shared.state.lock();
             assert_eq!(
-                state.bitmap_pending.len(),
+                state.sched.bitmap_pending_len(),
                 1,
                 "the bounded set behind it was dropped too"
             );
             assert_eq!(
-                state.bitmap_pending.front().expect("non-empty").end_rt,
+                state.sched.bitmap_pending().front().expect("non-empty").end_rt,
                 Some(ms(51_000))
             );
         }
@@ -5456,7 +4385,7 @@ mod tests {
             "a bounded set was dropped at STREAM_START; only open-ended ones are stranded"
         );
         assert!(
-            engine.shared.state.lock().bitmap_pending.is_empty(),
+            engine.shared.state.lock().sched.bitmap_pending().is_empty(),
             "the open-ended set queued behind it survived into the next item"
         );
     }
@@ -5475,7 +4404,7 @@ mod tests {
         gst::init().unwrap();
 
         // THE WIRING, for all three, from the engine's side.
-        for format in BitmapFormat::ALL {
+        for format in BitmapSubFormat::ALL {
             assert!(
                 crate::subpic::implemented(format),
                 "{format:?} is not in the implemented set"
@@ -5496,7 +4425,7 @@ mod tests {
         let before = warns.load(Ordering::Relaxed);
 
         for index in 0..8u64 {
-            engine.submit_bitmap(bitmap_packet_of(BitmapFormat::Dvb, 1, index * 10, None));
+            engine.submit_bitmap(bitmap_packet_of(BitmapSubFormat::Dvb, 1, index * 10, None));
         }
         assert!(wait_for(|| engine.bitmap_decode_errors() == 8));
         std::thread::sleep(Duration::from_millis(50));
@@ -5515,7 +4444,7 @@ mod tests {
         // A new epoch is a new report: the condition may have been fixed, and a
         // silent second stream would be worse than a repeated line.
         engine.clear();
-        engine.submit_bitmap(bitmap_packet_of(BitmapFormat::Dvb, 1, 100, None));
+        engine.submit_bitmap(bitmap_packet_of(BitmapSubFormat::Dvb, 1, 100, None));
         assert!(wait_for(|| engine.bitmap_decode_errors() == 9));
         assert!(
             wait_for(|| warns.load(Ordering::Relaxed) - before == 2),

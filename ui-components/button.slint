@@ -12,6 +12,8 @@ export component Button {
     in property <bool> enabled <=> i-touch-area.enabled;
     in property <bool> checkable;
     in property <bool> colorize-icon;
+    // The focus ring. A host that shows focus some other way turns it off.
+    in property <bool> focus-ring: true;
     in property <angle> icon-rotation: 0deg;
 
     // in property <color> background-default-color: FCastPalette.button-default-background;
@@ -189,7 +191,7 @@ export component Button {
         }
     }
 
-    if (root.has-focus && root.enabled) : FocusBorder {
+    if (root.has-focus && root.enabled && root.focus-ring) : FocusBorder {
         border-radius: i-background.border-radius;
         opacity: root.fade;
     }

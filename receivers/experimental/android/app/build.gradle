@@ -2,9 +2,26 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
+// Release signing comes from an untracked keystore.properties next to the
+// root build.gradle (storeFile/storePassword/keyAlias/keyPassword). Absent,
+// release stays debug-signed so adb install keeps working locally; Play
+// uploads need the real keystore.
+def keystoreProps = new Properties()
+def keystorePropsFile = rootProject.file('keystore.properties')
+if (keystorePropsFile.exists()) {
+    keystorePropsFile.withInputStream { keystoreProps.load(it) }
+}
+
+// CI injects -PversionCode/-PversionName at upload time, same scheme as the
+// kotlin receiver. A Play update must exceed the listing's current code.
+def currentVersionCode = project.hasProperty('versionCode')
+        ? Integer.parseInt(project.property('versionCode')) : 1
+def currentVersionName = project.hasProperty('versionName')
+        ? project.property('versionName') : '1.0'
+
 android {
     namespace 'org.fcast.rsreceiver.android'
-    compileSdk 34
+    compileSdk 36
 
     sourceSets {
         main {
@@ -16,18 +33,55 @@ android {
     }
 
     defaultConfig {
-        applicationId "org.fcast.rsreceiver.android"
-        minSdk 25
-        targetSdk 34
-        versionCode 1
-        versionName "1.0"
+        // Kotlin receiver's id, so this ships as an update to the existing
+        // Play listing. The live listing is the .playstore-suffixed flavor,
+        // the base id is the sideload build. Java package and namespace stay
+        // org.fcast.rsreceiver.android, JNI symbol names depend on them.
+        applicationId "com.futo.fcast.receiver"
+        // Tied to the level the native library links against, which is
+        // GSTREAMER_SRC_ANDROID_API in android-linker-aarch64, default 28.
+        // This said 25, which the library can never satisfy: it needs
+        // libnativewindow and libaaudio, both API 26, plus the AAudio, AImage
+        // and AHardwareBuffer calls behind them. An API 25 device would
+        // install the apk and then fail to load the .so. Move the two
+        // together or not at all.
+        minSdk 28
+        targetSdk 36
+        versionCode currentVersionCode
+        versionName currentVersionName
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    flavorDimensions "type"
+    productFlavors {
+        playstore {
+            dimension "type"
+            applicationIdSuffix ".playstore"
+            versionNameSuffix "-playstore"
+        }
+        defaultFlavor {
+            dimension "type"
+        }
+    }
+
+    signingConfigs {
+        release {
+            if (keystoreProps.getProperty('storeFile')) {
+                storeFile rootProject.file(keystoreProps['storeFile'])
+                storePassword keystoreProps['storePassword']
+                keyAlias keystoreProps['keyAlias']
+                keyPassword keystoreProps['keyPassword']
+            }
+        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
+            signingConfig keystoreProps.getProperty('storeFile') != null
+                    ? signingConfigs.release
+                    : signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
@@ -35,14 +89,57 @@ android {
         sourceCompatibility JavaVersion.VERSION_1_8
         targetCompatibility JavaVersion.VERSION_1_8
     }
-    buildFeatures {
-        viewBinding true
-    }
 }
 
 dependencies {
-    implementation libs.material
+    // annotation only; material dragged in emoji2 whose startup init cost
+    // 15% of launch CPU, and nothing here uses material widgets
+    compileOnly libs.annotation
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core
 }
+
+// Play requires 16KB-page-size support (ELF LOAD segments aligned to
+// 0x4000) for targetSdk 35+ uploads. The alignment comes from linker flags
+// in .cargo/config.toml; this assert catches a toolchain regression before
+// it ships. Reads the ELF program headers directly, no NDK tools needed.
+tasks.register('check16kAlignment') {
+    doLast {
+        def sos = fileTree('src/main/jniLibs') { include '*/libfcastreceiver.so' }.files
+        if (sos.isEmpty()) {
+            throw new GradleException('no jniLibs to check')
+        }
+        sos.each { so ->
+        def bytes = so.newInputStream().withCloseable { s ->
+            def head = new byte[64]
+            if (s.read(head) != 64) throw new GradleException('short ELF header')
+            head
+        }
+        def buf = java.nio.ByteBuffer.wrap(bytes).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+        if (buf.getInt(0) != 0x464c457f) throw new GradleException('not an ELF file')
+        boolean elf64 = (bytes[4] & 0xff) == 2 // EI_CLASS
+        long phoff = elf64 ? buf.getLong(0x20) : (buf.getInt(0x1c) & 0xffffffffL)
+        int phentsize = buf.getShort(elf64 ? 0x36 : 0x2a) & 0xffff
+        int phnum = buf.getShort(elf64 ? 0x38 : 0x2c) & 0xffff
+        def raf = new RandomAccessFile(so, 'r')
+        raf.withCloseable {
+            for (int i = 0; i < phnum; i++) {
+                def ph = new byte[phentsize]
+                it.seek(phoff + (long) i * phentsize)
+                it.readFully(ph)
+                def pb = java.nio.ByteBuffer.wrap(ph).order(java.nio.ByteOrder.LITTLE_ENDIAN)
+                if (pb.getInt(0) == 1) { // PT_LOAD
+                    long align = elf64 ? pb.getLong(0x30) : (pb.getInt(0x1c) & 0xffffffffL)
+                    if (align < 0x4000) {
+                        throw new GradleException(
+                            "${so}: LOAD align 0x${Long.toHexString(align)} < 0x4000, " +
+                            'the .so lost 16KB page-size compliance')
+                    }
+                }
+            }
+        }
+        }
+    }
+}
+preBuild.dependsOn check16kAlignment

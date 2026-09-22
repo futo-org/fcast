@@ -6,6 +6,9 @@ import { FocusBorder } from "components.slint";
 
 export component Switch {
     in property <bool> enabled: true;
+    // The focus ring around the rail. A host that shows focus some other way
+    // (a tinted row) turns it off.
+    in property <bool> focus-ring: true;
     in property <string> text;
     in-out property <bool> checked;
     out property <bool> has-focus: focus-scope.has-focus;
@@ -99,7 +102,7 @@ export component Switch {
                 }
 
                 // focus border
-                if root.has-focus && root.enabled : FocusBorder {
+                if root.has-focus && root.enabled && root.focus-ring : FocusBorder {
                     border-radius: rail.border-radius;
                 }
             }

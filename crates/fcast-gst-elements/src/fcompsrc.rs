@@ -451,11 +451,21 @@ pub mod imp {
                 gst::FlowError::Error
             })?;
             let Some(provider) = context.0.get_provider(url.provider_id) else {
-                gst::element_imp_error!(
-                    self,
-                    gst::ResourceError::NotFound,
-                    ["Could not find provider id={}", url.provider_id]
-                );
+                // A provider that vanished after bytes flowed is the sender
+                // connection dropping mid stream, not a missing resource
+                if *current_pos > 0 {
+                    gst::element_imp_error!(
+                        self,
+                        gst::ResourceError::Read,
+                        ["Lost the connection providing id={}", url.provider_id]
+                    );
+                } else {
+                    gst::element_imp_error!(
+                        self,
+                        gst::ResourceError::NotFound,
+                        ["Could not find provider id={}", url.provider_id]
+                    );
+                }
                 return Err(gst::FlowError::Error);
             };
             let read_length = companion::MAX_RESOURCE_READ_SIZE as u64;

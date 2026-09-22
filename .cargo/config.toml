@@ -8,7 +8,9 @@ fast = "run -p fast --"
 # libs they reference, so pin a modern linker.
 [target.x86_64-unknown-linux-gnu]
 linker = "clang"
-rustflags = ["-C", "link-arg=--ld-path=wild"]
+# RELR-packed relative relocations, ~2.2MB smaller binary; needs glibc
+# 2.36+, satisfied by NixOS and the flathub 25.08 runtime
+rustflags = ["-C", "link-arg=--ld-path=wild", "-Clink-arg=-Wl,-z,pack-relative-relocs"]
 
 # Static GStreamer for the whole tree, zero env setup. The forked -sys crates
 # (see [patch.crates-io]) probe the static build through their gstreamer-src
@@ -20,3 +22,51 @@ GSTREAMER_SRC_REPO = "https://gitlab.futo.org/fcast/gstreamer.git"
 GSTREAMER_SRC_REF = "fcast/1.29.2"
 # Deterministic build-tree location, independent of any global cargo build-dir.
 GSTREAMER_SRC_BUILD_ROOT = { value = "target/gst-static", relative = true }
+# Target-scoped C toolchain for cc-rs build scripts (ring, skia glue, ...):
+# the nix host clang wrapper cannot cross-compile to android. The wrappers
+# resolve the NDK like the linkers do.
+CC_aarch64-linux-android = { value = "android-linker-aarch64", relative = true }
+CXX_aarch64-linux-android = { value = "android-cxx-aarch64", relative = true }
+AR_aarch64-linux-android = { value = "android-ar", relative = true }
+CC_x86_64-linux-android = { value = "android-linker-x86_64", relative = true }
+CXX_x86_64-linux-android = { value = "android-cxx-x86_64", relative = true }
+AR_x86_64-linux-android = { value = "android-ar", relative = true }
+CC_armv7-linux-androideabi = { value = "android-linker-armv7", relative = true }
+CXX_armv7-linux-androideabi = { value = "android-cxx-armv7", relative = true }
+AR_armv7-linux-androideabi = { value = "android-ar", relative = true }
+
+# NDK clang as the final-link linker for android targets (executable paths
+# with separators in config are config-relative since cargo 1.73). The
+# wrappers resolve the NDK like gstreamer-src's build.rs does.
+# packed dynamic relocations save ~2.2MB in the .so; APS2 needs API 23+,
+# our minSdk is 28 (RELR would need 30)
+# 16KB LOAD alignment is a Play requirement (mandatory for targetSdk 35+
+# uploads). NDK r28+ defaults to it, but an NDK downgrade would silently
+# revert to 4KB, so it is pinned here and asserted at APK packaging.
+# A build-id is what lets simpleperf match a stripped on-device library to
+# the unstripped one on the host (report --symdir), without it the report
+# shows raw offsets. Twenty bytes of note section.
+[target.aarch64-linux-android]
+linker = "./android-linker-aarch64"
+rustflags = [
+    "-Clink-arg=-Wl,--pack-dyn-relocs=android",
+    "-Clink-arg=-Wl,-z,max-page-size=16384",
+    "-Clink-arg=-Wl,--build-id=sha1",
+]
+
+[target.x86_64-linux-android]
+linker = "./android-linker-x86_64"
+rustflags = [
+    "-Clink-arg=-Wl,--pack-dyn-relocs=android",
+    "-Clink-arg=-Wl,-z,max-page-size=16384",
+]
+
+# 32-bit userspace TV boxes (Amlogic). Pages are 4KB there, the 16KB
+# alignment just keeps the packaging assert uniform across ABIs.
+[target.armv7-linux-androideabi]
+linker = "./android-linker-armv7"
+rustflags = [
+    "-Clink-arg=-Wl,--pack-dyn-relocs=android",
+    "-Clink-arg=-Wl,-z,max-page-size=16384",
+    "-Clink-arg=-Wl,--build-id=sha1",
+]

@@ -154,6 +154,8 @@ impl Default for InterfaceConfig {
 #[serde(default)]
 pub struct VideoConfig {
     /// Allow HDR passthrough. False tone-maps HDR content to SDR.
+    /// Accepted for old config files. The video lane tone maps HDR to the
+    /// window's SDR swapchain unconditionally, so nothing reads it.
     pub hdr_output: bool,
     /// Frame render profile: `fast`, `balanced` or `high-quality`. Stored as a
     /// string so an unrecognised value warns instead of discarding the file.

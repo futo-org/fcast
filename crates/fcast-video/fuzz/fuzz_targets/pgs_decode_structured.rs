@@ -17,7 +17,7 @@
 #![no_main]
 
 use fcast_video::subpic::{
-    BitmapFormat, SubpicDecoder,
+    BitmapSubFormat, SubpicDecoder,
     pgs::{ALLOCATION_BUDGET, PgsDecoder, fixtures},
 };
 use fcast_video_fuzz as harness;
@@ -160,7 +160,7 @@ fuzz_target!(|input: Input| {
         for segment in segments {
             bytes.extend_from_slice(&segment.bytes());
         }
-        let packet = harness::packet(BitmapFormat::Pgs, &bytes, index as u64 / 2);
+        let packet = harness::packet(BitmapSubFormat::Pgs, &bytes, index as u64 / 2);
         harness::push_and_check(
             &mut decoder,
             &packet,
@@ -172,7 +172,7 @@ fuzz_target!(|input: Input| {
 
     harness::assert_recovers(
         &mut decoder,
-        BitmapFormat::Pgs,
+        BitmapSubFormat::Pgs,
         &fixtures::minimal_display_set(),
         1,
         video,

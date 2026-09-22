@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext stays permitted DELIBERATELY: senders cast plain http URLs
+     for LAN media servers, and the config cannot express "RFC1918 only"
+     (it has no address-range scoping, only domains). The GStreamer media
+     path bypasses this policy either way; this governs any future
+     Java-side HTTP, which would otherwise fail silently at targetSdk 28+
+     defaults. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

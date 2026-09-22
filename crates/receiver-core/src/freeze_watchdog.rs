@@ -98,9 +98,9 @@ pub(crate) struct FreezeWatchdog {
     item: MediaItemId,
     pinned: Option<Pinned>,
     stage: Stage,
-    /// Seqnum of the dispatched recovery seek, so its failure report can be
-    /// recognized.
-    recovery_seqnum: Option<gst::Seqnum>,
+    /// The op the dispatched recovery seek runs under, so its failure report
+    /// can be recognized.
+    recovery_op: Option<flapjack::OpId>,
 }
 
 impl FreezeWatchdog {
@@ -110,7 +110,7 @@ impl FreezeWatchdog {
             item: 0,
             pinned: None,
             stage: Stage::Fresh,
-            recovery_seqnum: None,
+            recovery_op: None,
         }
     }
 
@@ -128,7 +128,7 @@ impl FreezeWatchdog {
             self.item = sample.item;
             self.stage = Stage::Fresh;
             self.pinned = None;
-            self.recovery_seqnum = None;
+            self.recovery_op = None;
         }
 
         let Some(position) = self.judgeable(sample) else {
@@ -225,12 +225,12 @@ impl FreezeWatchdog {
 
     /// Remember which seek is ours, so a failure report for it can be logged
     /// as the refused recovery it is.
-    pub(crate) fn note_recovery_seek(&mut self, seqnum: gst::Seqnum) {
-        self.recovery_seqnum = Some(seqnum);
+    pub(crate) fn note_recovery_seek(&mut self, op: flapjack::OpId) {
+        self.recovery_op = Some(op);
     }
 
-    pub(crate) fn is_recovery_seek(&self, seqnum: gst::Seqnum) -> bool {
-        self.recovery_seqnum == Some(seqnum)
+    pub(crate) fn is_recovery_seek(&self, op: flapjack::OpId) -> bool {
+        self.recovery_op == Some(op)
     }
 
     /// Diagnostic name of the rung this item is on.
@@ -557,7 +557,7 @@ mod tests {
             item: 0,
             pinned: None,
             stage: Stage::Fresh,
-            recovery_seqnum: None,
+            recovery_op: None,
         };
         assert!(!watchdog.enabled());
         let start = Instant::now();
@@ -568,10 +568,14 @@ mod tests {
     }
 
     #[test]
-    fn recovery_seek_seqnums_are_recognized() {
+    fn recovery_seek_ops_are_recognized() {
+        crate::gstreamer::init_for_tests();
         let mut watchdog = FreezeWatchdog::new();
-        let ours = gst::Seqnum::next();
-        let foreign = gst::Seqnum::next();
+        // op ids are minted by a player; a reservation dropped unsubmitted
+        // resolves on the drop and touches no playback
+        let player = flapjack::Player::new(flapjack::Sinks::default()).expect("a player");
+        let ours = player.allocate_op().id();
+        let foreign = player.allocate_op().id();
         assert!(!watchdog.is_recovery_seek(ours));
         watchdog.note_recovery_seek(ours);
         assert!(watchdog.is_recovery_seek(ours));

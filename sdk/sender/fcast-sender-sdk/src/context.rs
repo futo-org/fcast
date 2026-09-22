@@ -17,11 +17,11 @@ impl CastContext {
     #[cfg_attr(feature = "uniffi", uniffi::constructor)]
     pub fn new() -> Result<Self, AsyncRuntimeError> {
         #[cfg(feature = "fcast")]
-        if tokio_rustls::rustls::crypto::ring::default_provider()
+        if tokio_rustls::rustls::crypto::aws_lc_rs::default_provider()
             .install_default()
             .is_err()
         {
-            log::error!("Failed to install default crypto provider (ring)");
+            log::error!("Failed to install default crypto provider (aws-lc-rs)");
         }
 
         Ok(Self {

@@ -41,23 +41,14 @@ pub mod utils;
 // every existing `crate::fcompsrc::...` call site keeps resolving unchanged.
 #[cfg(target_os = "linux")]
 pub use fcast_gst_elements::vajpegdec;
-pub use fcast_gst_elements::{fcompsrc, fwebrtcsrc, imagedec, imagetypefind};
+pub use fcast_gst_elements::{fcompsrc, imagedec, imagetypefind};
+pub use fcast_webrtc::fwebrtcsrc;
 
-// Renderer *settings* only: plain data, no libplacebo. This is what the CLI and
-// the config store carry, so it stays available with `render` off.
-use fcast_video::render_options::{RenderProfile, RenderingOptions};
-
-// Everything below is the GPU render surface, re-exported for the receiver
-// binaries. Behind `render` so a test build of this crate never drags in
-// libplacebo (and the C library its -sys crate builds).
-#[cfg(all(target_os = "linux", feature = "render"))]
-pub use fcast_video::egl;
-#[cfg(feature = "render")]
-pub use fcast_video::{SwapchainSink, VideoSink};
-#[cfg(feature = "render")]
-pub use glow;
-#[cfg(feature = "render")]
-pub use libplacebo;
+// Renderer settings, plain data the CLI and the config store carry. The
+// vocabulary's own type, so a tier added in the fork reaches the config here
+// rather than being silently unreachable.
+#[cfg(not(target_os = "android"))]
+use i_slint_video::RenderProfile;
 
 pub use gst;
 pub use gst_video;
@@ -68,7 +59,9 @@ pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
 
 pub type SenderId = u32;
 
-use message::{Mdns, Raop};
+#[cfg(not(target_os = "android"))]
+use message::Mdns;
+use message::Raop;
 
 pub const FCAST_TCP_PORT: u16 = 46899;
 pub const GCAST_TCP_PORT: u16 = 8009;
@@ -94,6 +87,59 @@ macro_rules! log_if_err {
 // Own crate so receiver-core and the GStreamer element crate share one thread
 // pool.
 pub use fcast_runtime::RUNTIME;
+
+/// The fcast TXT records (fingerprint, protocol version), set once the
+/// application has minted its TLS identity. Desktop hands them to mdns-sd
+/// directly; android's NsdManager owns the broadcast and pulls them across
+/// the activity's JNI bridge, polling until they exist.
+#[cfg(target_os = "android")]
+static FCAST_TXT_RECORDS: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
+pub(crate) fn publish_fcast_txt_records(records: Vec<(String, String)>) {
+    let _ = FCAST_TXT_RECORDS.set(records);
+}
+
+/// The android video surface handoff, re-exported so the UI crate can hand
+/// the codec its window without its own flapjack dependency.
+#[cfg(target_os = "android")]
+pub use flapjack::android::set_video_window;
+#[cfg(target_os = "android")]
+pub use flapjack::android::set_video_window_pending;
+#[cfg(target_os = "android")]
+pub use flapjack::android::set_app_visible;
+
+#[cfg(target_os = "android")]
+pub fn fcast_txt_records() -> Option<&'static [(String, String)]> {
+    FCAST_TXT_RECORDS.get().map(|v| v.as_slice())
+}
+
+/// The fcast port actually bound, set when the listeners are committed. The
+/// activity gates its NSD registration on this, so an advertisement never
+/// points at a port nobody is listening on yet.
+#[cfg(target_os = "android")]
+static FCAST_COMMITTED_PORT: std::sync::OnceLock<u16> = std::sync::OnceLock::new();
+
+#[cfg(target_os = "android")]
+pub(crate) fn publish_fcast_port(port: u16) {
+    let _ = FCAST_COMMITTED_PORT.set(port);
+}
+
+#[cfg(target_os = "android")]
+pub fn fcast_committed_port() -> Option<u16> {
+    FCAST_COMMITTED_PORT.get().copied()
+}
+
+/// Install aws-lc-rs as the process-wide rustls crypto provider, before any TLS
+/// work. Idempotent enough for one call per process entry.
+pub fn install_default_crypto_provider() {
+    if let Err(err) = tokio_rustls::rustls::crypto::aws_lc_rs::default_provider().install_default() {
+        tracing::error!(
+            ?err,
+            "Failed to register aws-lc-rs as rustls default crypto provider"
+        );
+    }
+}
 
 struct GCastUpdateSender(Option<UnboundedSender<gcast::StatusUpdate>>);
 
@@ -145,14 +191,8 @@ pub struct CliArgs {
     #[arg(long, default_value_t = false)]
     no_fcast: bool,
     /// Change what video frame render profile should be used
-    #[arg(long, value_enum)]
+    #[arg(long, value_parser = render_profile_arg)]
     render_profile: Option<RenderProfile>,
-    /// Visualize the color mapping lookup table used for video rendering
-    #[arg(long, default_value_t = false)]
-    visualize_color_mapping_lut: bool,
-    /// Visualize clipped pixels from tone-mapping
-    #[arg(long, default_value_t = false)]
-    visualize_hdr_clipping: bool,
     /// Path to the settings file to use
     #[arg(long)]
     settings_file_path: Option<String>,
@@ -163,9 +203,6 @@ pub struct CliArgs {
     /// Run without a GUI
     #[arg(long, default_value_t = false)]
     pub headless: bool,
-    /// Force HDR content to be tone-mapped to SDR.
-    #[arg(long, default_value_t = false)]
-    pub disable_hdr_output: bool,
 }
 
 /// The receiver's effective settings: parsed CLI flags plus the persisted
@@ -173,6 +210,7 @@ pub struct CliArgs {
 ///
 /// A passed CLI flag always wins; the flags are one-directional, so the CLI can
 /// force a behavior on but never off.
+#[cfg(not(target_os = "android"))]
 pub struct Settings {
     pub cli: CliArgs,
     pub config: config::ConfigStore,
@@ -213,14 +251,6 @@ impl Settings {
                     .and_then(parse_render_profile)
             })
             .unwrap_or(RenderProfile::Fast)
-    }
-
-    pub fn rendering_options(&self) -> RenderingOptions {
-        RenderingOptions {
-            profile: self.render_profile(),
-            visualize_lut: self.cli.visualize_color_mapping_lut,
-            show_clipping: self.cli.visualize_hdr_clipping,
-        }
     }
 
     /// Regex of network interface names to exclude from advertising on.
@@ -298,10 +328,6 @@ impl Settings {
         self.cli.no_fullscreen_player || !self.config.get().interface.fullscreen_player
     }
 
-    pub fn disable_hdr_output(&self) -> bool {
-        self.cli.disable_hdr_output || !self.config.get().video.hdr_output
-    }
-
     /// GUI scaling mode, resolved from `--ui-scale` then `[interface]
     /// ui_scale`. An unrecognised value warns and falls back to `auto`.
     pub fn ui_scale(&self) -> ui_scaling::UiScale {
@@ -325,15 +351,34 @@ impl Settings {
     }
 }
 
+/// The tier as a person writes it. These are the sink's own property nicks,
+/// so `--render-profile`, the settings file and the GObject property all
+/// answer to one set of words.
+#[cfg(not(target_os = "android"))]
+fn render_profile_from_str(value: &str) -> Option<RenderProfile> {
+    match value.trim().to_ascii_lowercase().replace('_', "-").as_str() {
+        "fast" => Some(RenderProfile::Fast),
+        "balanced" => Some(RenderProfile::Balanced),
+        "high-quality" => Some(RenderProfile::HighQuality),
+        _ => None,
+    }
+}
+
+/// The same for the command line, where an unknown value is the caller's
+/// mistake and worth refusing rather than warning about.
+#[cfg(not(target_os = "android"))]
+fn render_profile_arg(value: &str) -> Result<RenderProfile, String> {
+    render_profile_from_str(value)
+        .ok_or_else(|| format!("expected fast, balanced or high-quality, got {value:?}"))
+}
+
 #[cfg(not(target_os = "android"))]
 fn parse_render_profile(value: &str) -> Option<RenderProfile> {
-    match <RenderProfile as clap::ValueEnum>::from_str(value, true) {
-        Ok(profile) => Some(profile),
-        Err(_) => {
-            tracing::warn!(value, "Unknown render_profile in config, using default");
-            None
-        }
+    let parsed = render_profile_from_str(value);
+    if parsed.is_none() {
+        tracing::warn!(value, "Unknown render_profile in config, using default");
     }
+    parsed
 }
 
 #[cfg(not(target_os = "android"))]

@@ -83,11 +83,7 @@ fn main() {
             // This is the receiver side plus the crates it shares (fcast-protocol,
             // sabrump, google-cast-protocol); `test-sender` has the rest.
             //
-            // No `--all-features` either. It was pulling `fcast-video/render` +
-            // `wayland-subsurface` (libplacebo, which builds the C library
-            // from source, plus Vulkan and slint) into a lane whose
-            // fcast-video suites are
-            // pure CPU rasterization. The three features that actually gate tests
+            // No `--all-features` either. The three features that actually gate tests
             // are named instead: fcast-protocol's tokio-{sender,receiver} (all of
             // tests/network_stream.rs is `#![cfg]`'d on both) and
             // fcast-gst-elements' textoverlay (the fcasttextoverlay unit tests).

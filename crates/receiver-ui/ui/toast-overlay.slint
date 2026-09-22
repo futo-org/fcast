@@ -113,9 +113,6 @@ export component ToastOverlay inherits Rectangle  {
             }
             return @tr("No decoder for {}, the track was disabled", detail);
         }
-        if (kind == UiToastKind.StuckStream) {
-            return @tr("A stream stopped and will not resume by itself");
-        }
         if (kind == UiToastKind.SubtitleFormatUnsupported) {
             return @tr("The subtitle format is not supported");
         }

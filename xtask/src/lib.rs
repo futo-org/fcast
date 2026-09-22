@@ -34,7 +34,7 @@ pub fn sh() -> Rc<Shell> {
     SH.with(|sh| sh.clone())
 }
 
-#[derive(clap::ValueEnum, Clone)]
+#[derive(clap::ValueEnum, Clone, Copy)]
 pub enum AndroidAbiTarget {
     X64,
     X86,

@@ -1,11 +1,10 @@
 use std::{
-    sync::atomic::{AtomicBool, AtomicU64, Ordering},
-    time::{Duration, Instant},
+    sync::atomic::{AtomicBool, Ordering},
 };
 
 use anyhow::Result;
 use fcast_protocol::PlaybackState;
-use gst::{glib::object::ObjectExt, prelude::*};
+use gst::prelude::*;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::MessageSender;
@@ -59,239 +58,17 @@ fn missing_plugin_is_ignorable(msg: &gst::Message) -> bool {
     !caps.is_empty() && caps.iter().all(|s| s.name().as_str().starts_with("meta/"))
 }
 
-/// The debug text our adaptivedemux2 carry-patch posts when it discards a
-/// buffer instead of pausing the output task for good
-/// (the fork's `adaptivedemux2-transient-flushing-no-permanent-pause` patch).
-/// Ours, so it is stable and appears nowhere else in GStreamer.
-const TRANSIENT_FLUSHING_DISCARD: &str =
-    "downstream returned FLUSHING while this element is not flushing";
-
-/// Whether a bus WARNING is the carry-patch's transient-FLUSHING discard: the
-/// ONE warning class that must not reach the user.
-///
-/// It reports a RECOVERED hiccup (the patch turned a permanent silent freeze
-/// into one discarded buffer, playback continues), so the toast is pure noise,
-/// and the race can fire on any transient flush. The match is on the debug
-/// string because the patch posts a NULL user-facing text, so the message is
-/// GStreamer's generic "GStreamer encountered a general stream error." for
-/// STREAM/FAILED and cannot discriminate anything. Deliberately not a general
-/// suppression list: every other warning still toasts exactly as before.
-fn warning_is_transient_flushing_discard(debug: Option<&str>) -> bool {
-    debug.is_some_and(|debug| debug.contains(TRANSIENT_FLUSHING_DISCARD))
-}
-
-/// The stream the discard names: `Discarding data on <stream>: downstream ...`.
-///
-/// The stream name is the whole of what makes a persistent discard actionable -
-/// `subtitle_00` says the text branch is the stuck one, `video_00` says the
-/// item is dead - and it is the only per-stream key the message carries.
-fn discarded_stream_name(debug: &str) -> Option<&str> {
-    let rest = debug.split("Discarding data on ").nth(1)?;
-    let name = rest.split(':').next()?.trim();
-    (!name.is_empty()).then_some(name)
-}
-
-/// Discards on ONE stream before the classifier stops calling it transient.
-///
-/// "Transient" is a claim, and `dash-embedded-still-broken.txt` is that claim
-/// being wrong: one `Discarding data on subtitle_00` at PLAYING, logged as
-/// "(recovered)", on a run where the subtitles never appeared at all. The
-/// carry-patch's discard IS recoverable per buffer - it drops one buffer
-/// instead of pausing the output loop for good - but nothing about it says the
-/// downstream FLUSHING will ever clear, and a multiqueue slot's `srcresult`
-/// latches until a FLUSH_STOP reaches it. So the count is the evidence: one
-/// discard is a race, several on the same stream is a branch that is not
-/// coming back.
-///
-/// Three, not one: a genuine transient flush can legitimately catch more than
-/// one buffer in flight (the demuxer's output loop serves every track from one
-/// thread and can be several buffers deep when a flush lands).
-const FLUSHING_DISCARD_ESCALATION: u32 = 3;
-
-/// How long a subtitle track may sit discarded with nothing delivered before
-/// the receiver calls it dead rather than transient.
-///
-/// Generous, because a sparse track legitimately delivers nothing for a while:
-/// this is a track that took a FLUSHING discard and then produced NO cue at
-/// all for half a minute, not a track that is merely quiet.
-const SUBTITLE_STALL_VERDICT: Duration = Duration::from_secs(30);
-
-/// The subtitle path's liveness, shared between the consumer callback (which
-/// counts what reaches the engine) and the bus hook (which sees the discards).
-///
-/// # Why the discard COUNT cannot be the signal
-///
-/// [`FLUSHING_DISCARD_ESCALATION`] waits for a third discard on one stream. It
-/// will never arrive. The carry-patch sets `slot->warned_transient_flushing`
-/// on the FIRST discard and clears it nowhere (`gstadaptivedemux.c:3700-3701`,
-/// three references in the whole file: the declaration, this check and this
-/// set), so a slot that has latched downstream FLUSHING for good discards
-/// every subsequent buffer SILENTLY. The receiver therefore sees exactly ONE
-/// warning for a permanently dead track, and a count-based threshold of three
-/// is unreachable for the precise failure it was built to catch - which is the
-/// field's `subtitle_00`, count=1, subtitles never appearing.
-///
-/// So the second signal is DELIVERY, not repetition: a discard followed by
-/// [`SUBTITLE_STALL_VERDICT`] of nothing reaching the engine is a dead track,
-/// however many warnings upstream chose to post. Sampled on the application's
-/// existing tick (`Application::poll_freeze_watchdog`'s caller), never on a
-/// timer of its own - the bus hook stays lock-free-ish and wakeup-free, which
-/// is this file's standing discipline.
-#[derive(Default, Clone)]
-struct SubtitleFlow(std::sync::Arc<SubtitleFlowInner>);
-
-#[derive(Default)]
-struct SubtitleFlowInner {
-    /// Subtitle items that reached the engine this load.
-    delivered: AtomicU64,
-    /// The first FLUSHING discard since the last load: the stream it named,
-    /// the delivery count when it happened, and when. `None` until one lands.
-    discard: std::sync::Mutex<Option<(String, u64, Instant)>>,
-    /// The verdict has been reported; never report it twice for one load.
-    reported: AtomicBool,
-}
-
-impl SubtitleFlow {
-    fn delivered(&self) {
-        self.0.delivered.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Count an item on its way to the engine and hand it back.
-    ///
-    /// A `Clear` is the ABSENCE of a cue, not one, so it does not count: a
-    /// track that only ever clears has delivered nothing, which is exactly the
-    /// state this verdict exists to name.
-    fn tally(&self, item: flapjack::SubtitleFeedItem) -> flapjack::SubtitleFeedItem {
-        if !matches!(item, flapjack::SubtitleFeedItem::Clear) {
-            self.delivered();
-        }
-        item
-    }
-
-    /// Record a discard, keeping the FIRST one: it is the one whose delivery
-    /// mark tells us whether anything has flowed since the track broke.
-    fn note_discard(&self, stream: &str) {
-        let Ok(mut discard) = self.0.discard.lock() else {
-            return;
-        };
-        if discard.is_none() {
-            *discard = Some((
-                stream.to_owned(),
-                self.0.delivered.load(Ordering::Relaxed),
-                Instant::now(),
-            ));
-        }
-    }
-
-    /// A new load: nothing discarded, nothing delivered, verdict re-armed.
-    fn reset(&self) {
-        self.0.delivered.store(0, Ordering::Relaxed);
-        self.0.reported.store(false, Ordering::Relaxed);
-        if let Ok(mut discard) = self.0.discard.lock() {
-            *discard = None;
-        }
-    }
-
-    /// The stream to report as dead, once, or `None`.
-    fn stalled_stream(&self) -> Option<String> {
-        let Ok(discard) = self.0.discard.lock() else {
-            return None;
-        };
-        let (stream, delivered_then, at) = discard.as_ref()?;
-        if self.0.delivered.load(Ordering::Relaxed) != *delivered_then
-            || at.elapsed() < SUBTITLE_STALL_VERDICT
-            || self.0.reported.swap(true, Ordering::SeqCst)
-        {
-            return None;
-        }
-        Some(stream.clone())
-    }
-}
-
-/// Whether a teardown is in flight, shared with the bus hook.
-///
-/// # Why the escalation needs to know
-///
-/// A Stop on a live adaptive item ALWAYS produces this discard class, and
-/// harmlessly: the teardown's flush pair reaches the demuxer while its output
-/// loop still has buffers in hand, so every selected stream discards one. A
-/// field log of a plain `Stop { target: Ready }` shows it on `video_00` AND
-/// `audio_00` within ~1 ms of the job, alongside the crate's "restoring the
-/// segment the flush pair removed" on `sink_0..2` - the ordinary shape of an
-/// item being taken down, and the rig measures the same thing (the repeated
-/// re-enable test's discards all land at 41.62 s against a shutdown at
-/// 41.98 s).
-///
-/// Counting those against [`FLUSHING_DISCARD_ESCALATION`] spends 2-3 of a
-/// 3-discard budget per Stop, so a receiver that has stopped a couple of items
-/// escalates on the next transient race and tells the user a track is dead
-/// when nothing is wrong. The budget exists for the MID-PLAY discard - the
-/// stuck branch that never comes back - and that is the one it has to keep
-/// its accuracy for.
-///
-/// An `AtomicBool` because the reader is the bus hook on a GStreamer streaming
-/// thread, which this file's discipline keeps lock-free and wait-free.
-#[derive(Default, Clone)]
-struct TeardownFlag(std::sync::Arc<std::sync::atomic::AtomicBool>);
-
-impl TeardownFlag {
-    fn set(&self, tearing_down: bool) {
-        self.0.store(tearing_down, Ordering::SeqCst);
-    }
-
-    fn tearing_down(&self) -> bool {
-        self.0.load(Ordering::SeqCst)
-    }
-}
-
-/// Per-stream discard counts for [`FLUSHING_DISCARD_ESCALATION`].
-///
-/// COUNT-BASED, deliberately, and there is no timer anywhere near it. This is
-/// read and written from the bus hook, which runs on GStreamer STREAMING
-/// THREADS; arming or servicing a timer there is the one thing this file's
-/// discipline forbids. A count needs no clock and no wakeup: the Nth discard
-/// is itself the event.
-///
-/// Keyed by stream name so two stuck streams escalate independently, and never
-/// reset - a stream that recovers simply stops arriving here, and re-arming on
-/// a gap would need exactly the timer this avoids.
-#[derive(Default)]
-struct FlushingDiscards(std::sync::Mutex<std::collections::HashMap<String, u32>>);
-
-impl FlushingDiscards {
-    /// Record one discard on `stream` and return its new count.
-    ///
-    /// A poisoned lock is not worth a panic on a streaming thread: the counter
-    /// is diagnostics, so a poisoned map degrades to "always transient" rather
-    /// than taking the pipeline down with it.
-    fn record(&self, stream: &str) -> u32 {
-        let Ok(mut counts) = self.0.lock() else {
-            return 1;
-        };
-        let count = counts.entry(stream.to_owned()).or_insert(0);
-        *count = count.saturating_add(1);
-        *count
-    }
-}
-
-/// Lever: `FCAST_NO_WARNING_FILTER` (set = old behavior, every warning toasts).
-/// Read once, the hook runs on streaming threads.
-fn toast_every_warning() -> bool {
-    static OFF: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *OFF.get_or_init(|| std::env::var_os("FCAST_NO_WARNING_FILTER").is_some())
-}
-
 /// The driver's bitmap subtitle format as the engine names it.
 ///
 /// The two enums are deliberate mirrors (the driver cannot depend on the
 /// renderer) so the whole translation is this match, and this crate is the one
 /// place that sees both sides. That is also why the agreement between their
 /// implemented sets is asserted here (see the test of the same name below).
-fn bitmap_format(format: flapjack::BitmapSubFormat) -> fcast_video::subpic::BitmapFormat {
+fn bitmap_format(format: flapjack::BitmapSubFormat) -> fcast_video::subpic::BitmapSubFormat {
     match format {
-        flapjack::BitmapSubFormat::Pgs => fcast_video::subpic::BitmapFormat::Pgs,
-        flapjack::BitmapSubFormat::Vobsub => fcast_video::subpic::BitmapFormat::Vobsub,
-        flapjack::BitmapSubFormat::Dvb => fcast_video::subpic::BitmapFormat::Dvb,
+        flapjack::BitmapSubFormat::Pgs => fcast_video::subpic::BitmapSubFormat::Pgs,
+        flapjack::BitmapSubFormat::Vobsub => fcast_video::subpic::BitmapSubFormat::Vobsub,
+        flapjack::BitmapSubFormat::Dvb => fcast_video::subpic::BitmapSubFormat::Dvb,
     }
 }
 
@@ -352,18 +129,35 @@ pub enum TrackKind {
     Subtitle,
 }
 
-/// A full track selection, keyed by GStreamer stream id (`None` = slot
-/// disabled). Re-exported from `flapjack`, whose selection engine owns
-/// all dispatch/confirmation sequencing; indices exist only at the
-/// protocol/GUI edge.
-pub use flapjack::TrackSelection;
+/// A full track selection, keyed by stream id (`None` = slot disabled).
+/// flapjack's selection engine owns all dispatch/confirmation sequencing
+/// and now speaks opaque `flapjack::StreamId` handles; this keeps the
+/// receiver's string-keyed view, converted at the [`Player`] boundary
+/// (`sid_out`/`sid_in`). Indices exist only at the protocol/GUI edge.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct TrackSelection {
+    pub video: Option<StreamId>,
+    pub audio: Option<StreamId>,
+    pub subtitle: Option<StreamId>,
+}
 
-/// User-meaningful buckets for fatal playback errors. Classified from the
-/// gst error domain/code plus which side failed (`from_source` is
-/// `failed_uri.is_some()`, i.e. the failing element was an input). `Frozen`
-/// and `ImageDownloadFailed` are app-level, never produced here. `Frozen`,
-/// `Unexpected` and `MissingCodec` surface as the report-bug popup,
-/// everything else as a localized toast.
+/// Boundary conversion: flapjack stream handles cross into the receiver as
+/// their display form and come back through `sid_in`.
+pub(crate) fn sid_out(id: flapjack::StreamId) -> StreamId {
+    id.to_string()
+}
+
+pub(crate) fn sid_in(sid: &str) -> Option<flapjack::StreamId> {
+    sid.strip_prefix("stream#")?.parse().ok().map(flapjack::StreamId::from_raw)
+}
+
+/// User-meaningful buckets for fatal playback errors. Folded from
+/// flapjack's `ErrorKind`, which classifies the gst error domain/code and
+/// which side failed (see `from_flapjack`). `ImageDownloadFailed` is
+/// app-level, never produced here; `Frozen` is the receiver's own watchdog
+/// verdict and flapjack's `Stalled` alike. `Frozen`, `Unexpected` and
+/// `MissingCodec` surface as the report-bug popup, everything else as a
+/// localized toast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaErrorKind {
     NotFound,
@@ -399,42 +193,24 @@ impl MediaErrorKind {
         }
     }
 
-    fn from_glib_error(err: &gst::glib::Error, from_source: bool) -> Self {
-        use gst::{CoreError, ResourceError, StreamError};
-        if let Some(err) = err.kind::<ResourceError>() {
-            return match err {
-                ResourceError::NotFound => Self::NotFound,
-                ResourceError::NotAuthorized => Self::AccessDenied,
-                ResourceError::OpenRead
-                | ResourceError::OpenReadWrite
-                | ResourceError::Read
-                | ResourceError::Seek
-                | ResourceError::Sync
-                | ResourceError::Busy
-                    if from_source =>
-                {
-                    Self::NetworkFailure
-                }
-                _ if !from_source => Self::OutputFailure,
-                _ => Self::Unexpected,
-            };
+    /// flapjack classifies the bus error itself now; this only folds its
+    /// classes onto the receiver's codes.
+    fn from_flapjack(kind: flapjack::ErrorKind) -> Self {
+        use flapjack::ErrorKind as K;
+        match kind {
+            K::NotFound => Self::NotFound,
+            K::AccessDenied => Self::AccessDenied,
+            K::NetworkFailed => Self::NetworkFailure,
+            K::UnsupportedFormat => Self::UnsupportedFormat,
+            K::MissingCodec => Self::MissingCodec,
+            K::DecodeFailed => Self::DecodeFailed,
+            K::Encrypted => Self::DrmProtected,
+            K::OutputFailed => Self::OutputFailure,
+            K::Stalled => Self::Frozen,
+            // the crate's enum is non-exhaustive, a class it grows later is
+            // unexpected here until it gets a code of its own
+            K::Other | _ => Self::Unexpected,
         }
-        if let Some(err) = err.kind::<StreamError>() {
-            return match err {
-                StreamError::TypeNotFound
-                | StreamError::WrongType
-                | StreamError::Format
-                | StreamError::Demux => Self::UnsupportedFormat,
-                StreamError::CodecNotFound => Self::MissingCodec,
-                StreamError::Decode => Self::DecodeFailed,
-                StreamError::Decrypt | StreamError::DecryptNokey => Self::DrmProtected,
-                _ => Self::Unexpected,
-            };
-        }
-        if err.matches(CoreError::MissingPlugin) {
-            return Self::MissingCodec;
-        }
-        Self::Unexpected
     }
 }
 
@@ -446,10 +222,6 @@ pub enum MediaWarningKind {
     /// A real media track has no decoder and stays disabled. Detail is the
     /// codec description from the missing-plugin element message.
     MissingCodecForTrack,
-    /// The escalated flushing-discard verdict (see the raw-message hook): a
-    /// stream latched FLUSHING and will not resume by itself. Detail is the
-    /// stuck stream's name.
-    StuckStream,
     /// The selected subtitle track's caps cannot be rendered. Never produced
     /// by classification, the application raises it from
     /// [`PlayerEvent::SubtitleTrackUnsupported`]. Detail is the caps string.
@@ -464,45 +236,36 @@ impl MediaWarningKind {
     pub fn code(self) -> &'static str {
         match self {
             Self::MissingCodecForTrack => "FC-W01",
-            Self::StuckStream => "FC-W02",
+            // FC-W02 was the C adaptive demuxer's stuck-stream verdict, retired
+            // with it. Never reused.
             Self::SubtitleFormatUnsupported => "FC-W03",
             Self::Unknown => "FC-W99",
         }
     }
 }
 
-/// The raw gst domain and code of a bus error/warning, for the diagnostic
-/// text. `{:?}` names the code within a known domain (`__Unknown(n)` for
-/// codes newer than the bindings), the quark covers foreign domains.
-fn gst_error_domain_code(err: &gst::glib::Error) -> String {
-    if let Some(code) = err.kind::<gst::ResourceError>() {
-        return format!("resource {code:?}");
+/// The bus text plus flapjack's diagnostic (the gst domain and code, and
+/// the debug string when there is one), the shape the logs and the bug
+/// reports already match on.
+fn with_diagnostic(message: String, diagnostic: Option<String>) -> String {
+    match diagnostic {
+        Some(diagnostic) => format!("{message} [{diagnostic}]"),
+        None => message,
     }
-    if let Some(code) = err.kind::<gst::StreamError>() {
-        return format!("stream {code:?}");
-    }
-    if let Some(code) = err.kind::<gst::CoreError>() {
-        return format!("core {code:?}");
-    }
-    if let Some(code) = err.kind::<gst::LibraryError>() {
-        return format!("library {code:?}");
-    }
-    format!("domain {}", err.domain().as_str())
 }
 
 fn classify_warning(
-    error: &gst::glib::Error,
-    debug: Option<&str>,
+    kind: flapjack::WarningKind,
     missing_desc: Option<String>,
 ) -> (MediaWarningKind, Option<String>) {
-    if error.matches(gst::CoreError::MissingPlugin) {
-        return (MediaWarningKind::MissingCodecForTrack, missing_desc);
+    match kind {
+        flapjack::WarningKind::MissingCodecForTrack => {
+            (MediaWarningKind::MissingCodecForTrack, missing_desc)
+        }
+        // `SelectionNotApplied` and whatever the crate adds later: the text
+        // goes to the log, the toast is the generic line
+        _ => (MediaWarningKind::Unknown, None),
     }
-    if warning_is_transient_flushing_discard(debug) {
-        let stream = debug.and_then(discarded_stream_name).map(str::to_owned);
-        return (MediaWarningKind::StuckStream, stream);
-    }
-    (MediaWarningKind::Unknown, None)
 }
 
 /// Receiver-facing playback events, forwarded into the application loop.
@@ -517,7 +280,7 @@ pub enum PlayerEvent {
     Tags(gst::TagList),
     VolumeChanged(f64),
     /// User must call Player::handle_stream_collection()
-    StreamCollection(gst::StreamCollection),
+    StreamCollection(Vec<flapjack::StreamInfo>),
     /// An async state change or (flushing) seek finished prerolling. Not
     /// attributable to a specific operation: `GstBin` posts its aggregated
     /// ASYNC_DONE with a fresh seqnum (flapjack's selection engine
@@ -544,7 +307,6 @@ pub enum PlayerEvent {
     },
     /// An element asked the application to change the pipeline state.
     RequestState(gst::State),
-    QueueSeek(Seek),
     StreamsSelected {
         video: Option<StreamId>,
         audio: Option<StreamId>,
@@ -553,15 +315,16 @@ pub enum PlayerEvent {
         /// stamps it onto the message).
         seqnum: gst::Seqnum,
     },
-    /// A subtitle refresh seek could not be performed.
-    SubtitleRefreshFailed {
-        seqnum: gst::Seqnum,
-    },
     RateChanged(f64),
-    SeekFailed,
-    /// The element providing the pipeline clock went away (e.g. the audio
-    /// sink after the audio track was deselected). User must call
-    /// `Player::recover_clock()`.
+    /// A seek did not reach the pipeline. `op` names the receiver's own
+    /// request when it was one (the freeze watchdog keys its recovery seek
+    /// on it), `None` for a seek the crate issued on its own behalf.
+    SeekFailed {
+        op: Option<flapjack::OpId>,
+    },
+    /// The element providing the pipeline clock went away. A report only:
+    /// flapjack re-elects the clock itself whenever the transport is running
+    /// toward PLAYING, nothing is owed back.
     ClockLost,
     Error {
         /// Which input the error came from (flapjack's generation-tagged
@@ -650,27 +413,22 @@ pub struct ImageStreamInfo {
     pub animated: bool,
 }
 
-pub fn stream_title(stream: &gst::Stream) -> String {
+pub fn stream_title(info: &flapjack::StreamInfo) -> String {
     let mut res = String::new();
-    if let Some(tags) = stream.tags() {
-        if let Some(language) = tags.get::<gst::tags::LanguageName>() {
-            res += language.get();
-        } else if let Some(language) = tags.get::<gst::tags::LanguageCode>() {
-            let code = language.get();
-            if let Some(lang) = gst_tag::language_codes::language_name(code) {
-                res += lang;
-            } else {
-                res += code;
-            }
+    if let Some(language) = info.language.as_deref() {
+        // a tag may be a code or already a name, resolve codes when possible
+        if let Some(lang) = gst_tag::language_codes::language_name(language) {
+            res += lang;
+        } else {
+            res += language;
         }
-        if let Some(title) = tags.get::<gst::tags::Title>() {
-            let title = title.get();
-            if !title.is_empty() {
-                if !res.is_empty() {
-                    res += " - ";
-                }
-                res += title;
+    }
+    if let Some(title) = info.title.as_deref() {
+        if !title.is_empty() {
+            if !res.is_empty() {
+                res += " - ";
             }
+            res += title;
         }
     }
 
@@ -682,8 +440,23 @@ pub fn stream_title(stream: &gst::Stream) -> String {
 }
 
 pub struct Stream {
-    pub inner: gst::Stream,
+    pub info: flapjack::StreamInfo,
     pub title: String,
+}
+
+impl Stream {
+    /// The stream's id in the receiver's string form.
+    pub fn sid(&self) -> StreamId {
+        sid_out(self.info.id)
+    }
+
+    pub fn is_of_type(&self, ty: gst::StreamType) -> bool {
+        match self.info.slot {
+            flapjack::TrackSlot::Video => ty.contains(gst::StreamType::VIDEO),
+            flapjack::TrackSlot::Audio => ty.contains(gst::StreamType::AUDIO),
+            flapjack::TrackSlot::Subtitle => ty.contains(gst::StreamType::TEXT),
+        }
+    }
 }
 
 /// Rebuild the stream list for a new collection with STABLE positions:
@@ -692,32 +465,22 @@ pub struct Stream {
 /// have changed), streams that left are dropped in place, and newcomers
 /// append in collection order. Positions are the protocol/GUI track ids,
 /// which must not shift mid-item (see `handle_stream_collection`).
-fn merge_streams_stable(previous: Vec<Stream>, collection: &gst::StreamCollection) -> Vec<Stream> {
-    let fresh: Vec<gst::Stream> = collection.iter().collect();
-    let sid_of = |s: &gst::Stream| s.stream_id().map(|id| id.to_string());
-
+fn merge_streams_stable(previous: Vec<Stream>, fresh: &[flapjack::StreamInfo]) -> Vec<Stream> {
     let mut merged: Vec<Stream> = Vec::with_capacity(fresh.len());
     for old in previous {
-        let old_sid = sid_of(&old.inner);
-        if let Some(new) = fresh
-            .iter()
-            .find(|s| old_sid.is_some() && sid_of(s) == old_sid)
-        {
+        if let Some(new) = fresh.iter().find(|s| s.id == old.info.id) {
             merged.push(Stream {
                 title: stream_title(new),
-                inner: new.clone(),
+                info: new.clone(),
             });
         }
     }
-    for new in &fresh {
-        let new_sid = sid_of(new);
-        let known = merged
-            .iter()
-            .any(|m| new_sid.is_some() && sid_of(&m.inner) == new_sid);
+    for new in fresh {
+        let known = merged.iter().any(|m| m.info.id == new.id);
         if !known {
             merged.push(Stream {
                 title: stream_title(new),
-                inner: new.clone(),
+                info: new.clone(),
             });
         }
     }
@@ -731,7 +494,6 @@ pub struct Player {
     /// A volume change was dispatched and its `VolumeChanged` confirmation
     /// has not arrived yet (see `set_volume`).
     volume_confirm_in_flight: bool,
-    msg_tx: MessageSender,
     /// The transport state the user last asked for, committed by
     /// `uri_loaded` once a load prerolls. Requests landing mid-load are
     /// recorded here instead of being stomped by the load's own climb, so
@@ -759,15 +521,9 @@ pub struct Player {
     /// was still in flight, applied when it arrives (see `set_volume`).
     pending_volume: Option<f32>,
     state_machine: StateMachine,
-    stream_collection: Option<gst::StreamCollection>,
-    stream_collection_notify: Option<gst::glib::SignalHandlerId>,
-    /// Shared with the bus hook so the FLUSHING-discard escalation can tell a
-    /// teardown's own flush from a branch that is genuinely stuck. See
-    /// [`TeardownFlag`].
-    teardown: TeardownFlag,
-    /// Discards seen vs subtitle items delivered, the signal that catches a
-    /// latched track the discard COUNT never can. See [`SubtitleFlow`].
-    subtitle_flow: SubtitleFlow,
+    /// `shutdown` ran and its barrier fired, so the pipeline is down and no
+    /// job may be queued behind it. See [`Drop`].
+    shut_down: bool,
 }
 
 impl Player {
@@ -782,61 +538,66 @@ impl Player {
         // worker thread, this constructor only wires the receiver-specific
         // pieces onto its API.
         //
-        // Audio: the native PipeWire sink on Linux when a daemon is
-        // reachable (see pwaudiosink.rs for why), autoaudiosink otherwise.
-        // FCAST_NO_PW_AUDIO=1 forces the fallback for A/B comparisons.
+        // Audio: flapjack's PipeWire sink on Linux when a daemon is
+        // reachable, autoaudiosink otherwise. FCAST_NO_PW_AUDIO=1 forces the
+        // fallback for A/B comparisons. The sink registers above pulsesink,
+        // so the knob demotes it too or autoaudiosink would pick it anyway.
         #[cfg(target_os = "linux")]
-        let audio = if std::env::var("FCAST_NO_PW_AUDIO").is_ok_and(|v| v == "1")
-            || !fcast_gst_elements::pwaudiosink::is_available()
-        {
-            info!("audio sink: autoaudiosink (PipeWire disabled or unreachable)");
+        let audio = if std::env::var("FCAST_NO_PW_AUDIO").is_ok_and(|v| v == "1") {
+            let _ = flapjack::pwaudiosink::plugin_init();
+            if let Some(feature) = gst::Registry::get().lookup_feature("pwaudiosink") {
+                feature.set_rank(gst::Rank::NONE);
+            }
+            info!("audio sink: autoaudiosink (PipeWire disabled)");
+            flapjack::AudioSink::Auto
+        } else if !flapjack::pwaudiosink::is_available() {
+            info!("audio sink: autoaudiosink (PipeWire unreachable)");
             flapjack::AudioSink::Auto
         } else {
-            info!("audio sink: native PipeWire (fcastpwaudiosink)");
+            info!("audio sink: native PipeWire (pwaudiosink)");
             flapjack::AudioSink::Factory(Box::new(|| {
                 use anyhow::Context;
-                gst::ElementFactory::make("fcastpwaudiosink")
+                gst::ElementFactory::make("pwaudiosink")
                     .build()
-                    .context("creating fcastpwaudiosink")
+                    .context("creating pwaudiosink")
             }))
         };
-        #[cfg(not(target_os = "linux"))]
+        // The plugin's AAudio sink; android's autoaudiosink would find
+        // nothing in the static build.
+        #[cfg(target_os = "android")]
+        let audio = flapjack::AudioSink::Factory(Box::new(|| {
+            info!("audio sink: native AAudio (aaudiosink)");
+            use anyhow::Context;
+            gst::ElementFactory::make("aaudiosink")
+                .build()
+                .context("creating aaudiosink")
+        }));
+        #[cfg(not(any(target_os = "linux", target_os = "android")))]
         let audio = flapjack::AudioSink::Auto;
 
-        let fcast = flapjack::Player::new(flapjack::Sinks {
-            video: video_sink,
-            audio,
-        })?;
+        // Subtitles use the consumer installed below, the constructor-time
+        // sink stays empty until the cue engine exists.
+        // ONE runtime in the process: flapjack's network elements (rshttpsrc,
+        // rsadaptivesrc) run on the receiver's pool instead of standing up the
+        // crate's own fallback. `RUNTIME` is a `LazyLock` static and so is
+        // never dropped, which is the lifetime `new_with_runtime` requires: a
+        // runtime dropped under a load cancels the elements' spawns silently.
+        let fcast = flapjack::Player::new_with_runtime(
+            flapjack::Sinks {
+                video: match video_sink {
+                    Some(sink) => flapjack::VideoSink::Element(sink),
+                    // headless: every frame is decoded and dropped (`VideoSink::Fake`)
+                    None => flapjack::VideoSink::Fake,
+                },
+                audio,
+                subtitle: flapjack::SubtitleSink::None,
+            },
+            fcast_runtime::RUNTIME.handle().clone(),
+        )?;
 
-        // CUE-IR SELECTION. `rssubparse`/`rsssaparse` deliver styling one of
-        // two ways, chosen by their `text-format` property: inline pango markup
-        // in the buffer text (the default, and what the C subparse does), or
-        // plain UTF-8 text with the structured cue attached as a `CueIrMeta`.
-        // Only the second carries colors, per-cue positioning and karaoke, so
-        // the receiver asks for it.
-        //
-        // A property, not a caps preference: cue-ir negotiates the very same
-        // `text/x-raw, format=utf8` the default utf8 path does, so there is
-        // nothing downstream could express a preference WITH. And it has to be
-        // set on elements nobody here creates, since decodebin3 autoplugs them
-        // by rank (see `gstreamer::init`'s rank swap), hence the hierarchy-wide
-        // `deep-element-added` hook, the same trick vajpegdec and media_source
-        // already use. It fires on `gst_bin_add`, before the child is brought
-        // up to its parent's state, which is what the `mutable_ready` property
-        // requires: the mode is latched when the src caps are chosen.
-        {
-            use gst::prelude::*;
-            fcast
-                .pipeline()
-                .connect_deep_element_added(|_, _, element| {
-                    let Some(factory) = element.factory() else {
-                        return;
-                    };
-                    if matches!(factory.name().as_str(), "rssubparse" | "rsssaparse") {
-                        element.set_property_from_str("text-format", "cue-ir");
-                    }
-                });
-        }
+        // CUE-IR SELECTION happens inside flapjack now: its one-time setup
+        // registers the Rust subtitle parsers and flips them to cue-ir
+        // delivery itself, the receiver's deep-element-added hook is gone.
 
         // SUBTITLE CUES: the driver routes them through this consumer, where
         // it used to composite them in subtitleoverlay, now deleted. This is
@@ -857,12 +618,8 @@ impl Player {
         // method used here is non-blocking by construction (nothing rasterizes
         // inline, nothing waits on the raster worker) and none of them can
         // panic on a caller's cue text.
-        let subtitle_flow = SubtitleFlow::default();
         if let Some(engine) = cue_engine {
-            let flow = subtitle_flow.clone();
-            // `tally` counts and hands the item straight back, so the delivery
-            // signal costs this match neither an arm nor an indent level.
-            fcast.set_subtitle_consumer(move |item| match flow.tally(item) {
+            fcast.set_subtitle_consumer(move |item| match item {
                 flapjack::SubtitleFeedItem::Cue {
                     format,
                     text,
@@ -917,10 +674,7 @@ impl Player {
         // reports). Runs on the posting (streaming) thread.
         let missing_plugins = std::sync::Arc::new(MissingPluginTracker::default());
         let missing_plugins_relay = missing_plugins.clone();
-        let discards = FlushingDiscards::default();
-        let teardown_flag = TeardownFlag::default();
-        let teardown = teardown_flag.clone();
-        let flow_hook = subtitle_flow.clone();
+        let hook_tx = msg_tx.clone();
         let hook: flapjack::MessageHook = Box::new(move |msg| {
             use gst::MessageView;
             match msg.view() {
@@ -959,6 +713,21 @@ impl Player {
                     true
                 }
                 MessageView::Element(_) => {
+                    // The adaptive engine says what kind of presentation it
+                    // plays, on every manifest. A live one (a playlist still
+                    // growing) reaches the UI as the IsLive a NO_PREROLL
+                    // source would have raised, which nothing else in an
+                    // HLS pipeline does: it prerolls and buffers like a file.
+                    if let Some(structure) = msg.structure()
+                        && structure.name() == "rsadaptivesrc-presentation"
+                    {
+                        let live = structure.get::<bool>("live").unwrap_or(false);
+                        debug!(live, "adaptive presentation reported");
+                        if live {
+                            hook_tx.player(PlayerEvent::IsLive, None);
+                        }
+                        return false;
+                    }
                     // Consume ONLY missing-plugin reports. Other element
                     // messages (flapjack-image-stream, sabrump-status) belong to
                     // flapjack's translation and must fall through; a
@@ -980,79 +749,6 @@ impl Player {
                     true
                 }
                 MessageView::Warning(warning) => {
-                    let detail = warning.debug();
-                    if warning_is_transient_flushing_discard(detail.as_deref()) {
-                        // PERSISTENCE FIRST. The carry-patch recovers each
-                        // individual buffer, so one discard really is a race
-                        // worth swallowing - but the same message repeating on
-                        // one stream means the downstream FLUSHING is not
-                        // clearing, and a multiqueue slot's `srcresult` latches
-                        // until a FLUSH_STOP reaches its sink pad
-                        // (gstmultiqueue.c:2498 / :1466 / :2789). Past the
-                        // threshold this stops being called "recovered", names
-                        // the stuck stream, and is allowed through to the user
-                        // EXACTLY ONCE (the count is strictly increasing, so
-                        // the equality is a one-shot) - a toast per discarded
-                        // buffer would be its own denial of service.
-                        let stream = detail
-                            .as_deref()
-                            .and_then(discarded_stream_name)
-                            .unwrap_or("?");
-                        // EXPECTED, and off the budget. A teardown's own flush
-                        // pair produces this on every selected stream (see
-                        // [`TeardownFlag`]); it says nothing about whether a
-                        // branch is stuck, because the branch is going away.
-                        // Still logged - the A/B marker and the field forensics
-                        // both want it - just not counted, and never escalated.
-                        if teardown.tearing_down() {
-                            let src = msg.src().map(|src| src.name().to_string());
-                            debug!(
-                                src = src.as_deref().unwrap_or("?"),
-                                stream,
-                                detail = detail.as_deref().unwrap_or(""),
-                                "adaptivedemux2 discarded data during teardown (expected: the \
-                                 stop's own flush caught the output loop mid-buffer)"
-                            );
-                            return !toast_every_warning();
-                        }
-                        // The delivery-based verdict's evidence, recorded
-                        // whatever the count does (see [`SubtitleFlow`]: for a
-                        // permanently latched slot the count never reaches the
-                        // escalation threshold, because upstream warns once).
-                        flow_hook.note_discard(stream);
-                        let count = discards.record(stream);
-                        if count >= FLUSHING_DISCARD_ESCALATION {
-                            let src = msg.src().map(|src| src.name().to_string());
-                            error!(
-                                src = src.as_deref().unwrap_or("?"),
-                                stream,
-                                count,
-                                detail = detail.as_deref().unwrap_or(""),
-                                "adaptivedemux2 keeps discarding data on this stream: downstream \
-                                 is persistently FLUSHING, so the branch is stuck and the track \
-                                 will not play again by itself"
-                            );
-                            return count != FLUSHING_DISCARD_ESCALATION && !toast_every_warning();
-                        }
-                        // LOG-ONLY. Consuming the message here is what keeps the
-                        // toast away: the crate emits no event for a consumed
-                        // message, and `PlayerEvent::Warning` is the only thing
-                        // that reaches the GUI. Log it anyway (unconditionally,
-                        // so the lever's A/B still has the marker), and with the
-                        // detail the user-facing text lacks: the message the
-                        // receiver used to print carried only GStreamer's
-                        // generic STREAM/FAILED sentence, which named neither
-                        // the element nor the pad.
-                        let src = msg.src().map(|src| src.name().to_string());
-                        warn!(
-                            src = src.as_deref().unwrap_or("?"),
-                            stream,
-                            count,
-                            detail = detail.as_deref().unwrap_or(""),
-                            "adaptivedemux2 discarded data on a transient FLUSHING (recovered)"
-                        );
-                        return !toast_every_warning();
-                    }
                     if warning.error().matches(gst::CoreError::MissingPlugin) {
                         let real = missing_plugins.saw_real.swap(false, Ordering::SeqCst);
                         let ignorable = missing_plugins.saw_ignorable.swap(false, Ordering::SeqCst);
@@ -1069,16 +765,13 @@ impl Player {
         // worker feedback alike), mapped onto the protocol-facing
         // `PlayerEvent` and forwarded into the application loop.
         let event_tx = msg_tx.clone();
-        fcast.set_event_handler(Some(hook), move |event, generation| {
-            Self::relay_event(&event_tx, event, generation, &missing_plugins_relay);
+        fcast.set_event_handler(Some(hook), move |event| {
+            Self::relay_event(&event_tx, event, &missing_plugins_relay);
         });
-
-        fcast.set_state_async(gst::State::Ready);
 
         Ok(Self {
             fcast,
             volume_confirm_in_flight: false,
-            msg_tx,
             desired_transport: RunningState::Playing,
             expected_generation: None,
             pending_gapless: None,
@@ -1087,10 +780,7 @@ impl Player {
             seekable_known: false,
             pending_volume: None,
             state_machine: StateMachine::new(),
-            stream_collection: None,
-            stream_collection_notify: None,
-            teardown: teardown_flag,
-            subtitle_flow,
+            shut_down: false,
             streams: Vec::new(),
         })
     }
@@ -1101,12 +791,16 @@ impl Player {
     /// thread or the player worker). It only sends.
     fn relay_event(
         msg_tx: &MessageSender,
-        event: flapjack::PlayerEvent,
-        generation: u64,
+        event: flapjack::Event,
         missing_plugins: &MissingPluginTracker,
     ) {
         use flapjack::PlayerEvent as E;
-        let event = match event {
+        let flapjack::Event {
+            generation,
+            op,
+            kind,
+        } = event;
+        let event = match kind {
             E::EndOfStream => PlayerEvent::EndOfStream,
             E::Loaded { live } => {
                 if live {
@@ -1115,7 +809,7 @@ impl Player {
                 PlayerEvent::UriLoaded
             }
             E::Tags(tags) => PlayerEvent::Tags(tags),
-            E::VolumeChanged(volume) => PlayerEvent::VolumeChanged(volume),
+            E::VolumeChanged(volume) => PlayerEvent::VolumeChanged(volume.get()),
             E::StreamCollection(collection) => PlayerEvent::StreamCollection(collection),
             E::AsyncDone => PlayerEvent::AsyncDone,
             E::DurationChanged => PlayerEvent::DurationChanged,
@@ -1130,28 +824,49 @@ impl Player {
                 pending,
             },
             E::RequestState(state) => PlayerEvent::RequestState(state),
-            E::QueueSeek(seek) => PlayerEvent::QueueSeek(seek),
+            // the receiver's transport is driven by its own state machine
+            // over StateChanged, the high-level mirror is redundant here
+            E::PlaybackChanged(_) => return,
+            // the engine's ABR rung, logged for session triage; nothing in
+            // the protocol carries it yet
+            E::QualityChanged(quality) => {
+                info!(
+                    bitrate = quality.bitrate,
+                    width = ?quality.width,
+                    height = ?quality.height,
+                    "adaptive rendition changed"
+                );
+                return;
+            }
             E::StreamsSelected {
                 video,
                 audio,
                 subtitle,
                 seqnum,
             } => PlayerEvent::StreamsSelected {
-                video,
-                audio,
-                subtitle,
+                video: video.map(sid_out),
+                audio: audio.map(sid_out),
+                subtitle: subtitle.map(sid_out),
                 seqnum,
             },
-            E::RefreshSeekFailed { seqnum } => PlayerEvent::SubtitleRefreshFailed { seqnum },
-            E::RateChanged(rate) => PlayerEvent::RateChanged(rate),
-            E::SeekFailed => PlayerEvent::SeekFailed,
+            E::RateChanged(rate) => PlayerEvent::RateChanged(rate.get()),
+            // `op` tells the receiver's own seeks apart: the freeze watchdog
+            // keys its recovery seek on it, the transport seeks resolve through
+            // the state machine's edges
+            E::SeekFailed => PlayerEvent::SeekFailed { op },
+            // a seek's success and a command discarded before it acted; the
+            // receiver derives both from StateChanged and keys nothing else on
+            // op ids, so they resolve silently
+            E::SeekSettled { .. } | E::Superseded { .. } => return,
             E::ClockLost => PlayerEvent::ClockLost,
             E::Error {
                 origin,
-                error,
+                kind,
+                message,
+                detail: diagnostic,
                 failed_uri,
             } => {
-                let kind = MediaErrorKind::from_glib_error(&error, failed_uri.is_some());
+                let kind = MediaErrorKind::from_flapjack(kind);
                 // Consume the pending codec description only for its own
                 // error, same rule as the warning arm below.
                 let detail = if kind == MediaErrorKind::MissingCodec {
@@ -1163,13 +878,13 @@ impl Player {
                     origin,
                     kind,
                     detail,
-                    message: format!("{} [{}]", error.message(), gst_error_domain_code(&error)),
+                    message: with_diagnostic(message, diagnostic),
                     failed_uri,
                 }
             }
             E::ExternalSubtitleFailed { id } => PlayerEvent::ExternalSubtitleFailed { id },
-            E::SubtitleTrackUnsupported { sid, caps } => PlayerEvent::SubtitleTrackUnsupported {
-                sid,
+            E::SubtitleTrackUnsupported { id, caps } => PlayerEvent::SubtitleTrackUnsupported {
+                sid: sid_out(id),
                 caps: caps.to_string(),
             },
             E::ImageStream(s) => PlayerEvent::ImageStream(ImageStreamInfo {
@@ -1185,23 +900,24 @@ impl Player {
             E::PreparedCancelDeclined { generation } => {
                 PlayerEvent::GaplessCancelDeclined { generation }
             }
-            E::Warning { error, src, debug } => {
+            E::Warning {
+                kind,
+                message,
+                src,
+                detail: diagnostic,
+            } => {
                 // Consume the pending codec description only for the warning
                 // it belongs to, an interleaved unrelated warning must not
                 // eat it.
-                let missing_desc = if error.matches(gst::CoreError::MissingPlugin) {
+                let missing_desc = if kind == flapjack::WarningKind::MissingCodecForTrack {
                     missing_plugins.desc.lock().take()
                 } else {
                     None
                 };
-                let (kind, detail) = classify_warning(&error, debug.as_deref(), missing_desc);
-                let mut message =
-                    format!("{} [{}]", error.message(), gst_error_domain_code(&error));
+                let (kind, detail) = classify_warning(kind, missing_desc);
+                let mut message = with_diagnostic(message, diagnostic);
                 if let Some(src) = src {
                     message.push_str(&format!(" (from {src})"));
-                }
-                if let Some(debug) = debug {
-                    message.push_str(&format!(" ({debug})"));
                 }
                 PlayerEvent::Warning {
                     kind,
@@ -1209,30 +925,20 @@ impl Player {
                     message,
                 }
             }
+            // the crate's enum is non-exhaustive; an event it grows later has
+            // no protocol mapping until someone writes one
+            other => {
+                debug!(event = other.name(), "unmapped player event");
+                return;
+            }
         };
         msg_tx.player(event, Some(generation));
     }
 
-    fn cleanup_stream_collection(&mut self) {
-        if let Some(old_collection) = self.stream_collection.take()
-            && let Some(sig_id) = self.stream_collection_notify.take()
-        {
-            old_collection.disconnect(sig_id);
-        }
-    }
-
-    pub fn handle_stream_collection(&mut self, collection: gst::StreamCollection) {
-        self.cleanup_stream_collection();
-
-        let msg_tx = self.msg_tx.clone();
-        self.stream_collection_notify = Some(collection.connect_stream_notify(
-            None,
-            move |_collection, _stream, param| {
-                if param.name() == "tags" {
-                    msg_tx.player(PlayerEvent::StreamTagsUpdated, None);
-                }
-            },
-        ));
+    pub fn handle_stream_collection(&mut self, collection: Vec<flapjack::StreamInfo>) {
+        // Tag updates arrive as fresh collections now (flapjack re-advertises
+        // with refreshed metadata), the old per-stream notify hook is gone.
+        // update_stream_properties still reports whether titles moved.
 
         // STABLE ORDER across collections of one load: a stream keeps its
         // position for as long as it is advertised, newcomers append. The
@@ -1272,8 +978,6 @@ impl Player {
             .filter(|sid| Self::find_stream_idx(sid, &self.streams).is_some())
             .or_else(|| self.first_sid_of(gst::StreamType::TEXT));
 
-        self.stream_collection = Some(collection);
-
         // The crate's selection engine already reconciled against this
         // collection (and abandoned unconfirmable in-flight work) when it
         // translated the message; give it a pump now that the receiver's
@@ -1282,11 +986,7 @@ impl Player {
     }
 
     fn first_sid_of(&self, ty: gst::StreamType) -> Option<StreamId> {
-        self.streams
-            .iter()
-            .find(|s| s.inner.stream_type().contains(ty))
-            .and_then(|s| s.inner.stream_id())
-            .map(|sid| sid.to_string())
+        self.streams.iter().find(|s| s.is_of_type(ty)).map(Stream::sid)
     }
 
     /// The applied (or optimistically in-flight) stream id per slot.
@@ -1367,7 +1067,7 @@ impl Player {
     /// item carries once it activates; the application keeps it to validate
     /// the `GaplessActivated` event.
     pub fn prepare_next(&mut self, source: MediaInput) -> u64 {
-        let generation = self.fcast.prepare_next_async(source);
+        let generation = self.fcast.prepare_next(source);
         self.pending_gapless = Some(generation);
         generation
     }
@@ -1390,7 +1090,7 @@ impl Player {
     /// would advance the queue instead of replaying the seek.
     pub fn cancel_prepared(&mut self, after: AfterCancel) {
         if self.pending_gapless.is_some() {
-            self.fcast.cancel_prepared_async(after);
+            self.fcast.cancel_prepared(after);
         }
     }
 
@@ -1424,13 +1124,9 @@ impl Player {
     /// `UriLoaded`). External subtitles attach separately as live inputs
     /// (`attach_external_subtitle`). Callers go through `load`.
     fn set_source(&mut self, source: MediaInput, start: flapjack::StartPoint) {
-        // A new item is not the old one's teardown: discards from here on are
-        // about THIS load and count normally again.
-        self.teardown.set(false);
-        self.subtitle_flow.reset();
         self.clear_state();
         self.state_machine.clear_state();
-        self.expected_generation = Some(self.fcast.load_async(source, start));
+        self.expected_generation = Some(self.fcast.load(source, start));
         self.state_machine.begin_load();
     }
 
@@ -1450,16 +1146,11 @@ impl Player {
                 // assert rate != 0.0 and the binding panics on the NULL
                 // event, killing the playback worker. Play at 1.0x instead;
                 // "start paused" travels as SetPlaybackState, not speed.
-                let rate = if Seek::rate_is_safe(rp.rate) {
-                    rp.rate as f64
-                } else {
+                let rate = flapjack::PlaybackRate::new(f64::from(rp.rate)).unwrap_or_else(|| {
                     warn!(rate = rp.rate, "invalid start speed, playing at 1.0x");
-                    1.0
-                };
-                flapjack::StartPoint::Seek {
-                    position: rp.position,
-                    rate,
-                }
+                    flapjack::PlaybackRate::NORMAL
+                });
+                flapjack::StartPoint::at_rate(rp.position, rate)
             }
             None => flapjack::StartPoint::Live,
         };
@@ -1467,13 +1158,6 @@ impl Player {
     }
 
     fn seek_internal(&mut self, seek: Seek) {
-        if let Some(rate) = seek.rate
-            && !Seek::rate_is_safe(rate)
-        {
-            warn!(rate, "Ignoring invalid seek rate");
-            return;
-        }
-
         // An unresolved seekability query (`!seekable_known`) is not a
         // refusal: let the seek through. The state machine queues seeks that
         // land mid-preroll, so it runs once the pipeline settles. Only a
@@ -1483,7 +1167,7 @@ impl Player {
             // subtitle cue, a separately queued refresh flush is redundant.
             self.fcast.cancel_selection_refresh();
             if let Some(seek) = self.state_machine.seek_internal(seek) {
-                self.fcast.seek_async(seek);
+                self.fcast.seek(seek, self.fcast.allocate_op());
             }
         } else {
             warn!(?seek, "Attempted to seek on a non seekable stream");
@@ -1491,16 +1175,13 @@ impl Player {
     }
 
     pub fn seek(&mut self, position: gst::ClockTime) {
-        self.seek_internal(Seek {
-            position: Some(position),
-            rate: None,
-        });
+        self.seek_internal(Seek::to(position));
     }
 
     /// The freeze watchdog's recovery seek: a FLUSHING, ACCURATE seek to the
     /// pipeline's current position at the current rate, performed IN PLACE
-    /// (no transport change). Returns the fresh seqnum it is stamped with, so
-    /// a refusal report can be attributed to it.
+    /// (no transport change). Returns the op it runs under, so its
+    /// `SeekFailed` can be attributed to it.
     ///
     /// Deliberately not [`Self::seek`]. That path refuses unless the pipeline
     /// is settled at PAUSED and drives it there first (`Job::Seek` in
@@ -1510,13 +1191,14 @@ impl Player {
     /// (`gstbasesink.c:5815-5834`, `needs_preroll` at `:3749`). The seek would
     /// park forever waiting for a settled-PAUSED edge, and a parked seek
     /// silences the very progress tick the watchdog escalates from. The
-    /// crate's refresh seek is the one API that sends the flush in place
-    /// (FREEZE-DIAGN.md section 6: the FLUSH flag is mandatory and the seqnum
-    /// must be fresh or the demuxer drops the seek).
-    pub fn freeze_recovery_seek(&self) -> gst::Seqnum {
-        let seqnum = gst::Seqnum::next();
-        self.fcast.refresh_seek_async(seqnum);
-        seqnum
+    /// crate's refresh seek is the one API that sends the flush in place: the
+    /// FLUSH flag is mandatory and the seqnum must be fresh, or the demuxer
+    /// drops the seek.
+    pub fn freeze_recovery_seek(&self) -> flapjack::OpId {
+        let op = self.fcast.allocate_op();
+        let id = op.id();
+        self.fcast.refresh_seek(op);
+        id
     }
 
     fn applied_track_selection(&self) -> TrackSelection {
@@ -1534,13 +1216,16 @@ impl Player {
         let applied = self.applied_track_selection();
         let stale_cue =
             kind == TrackKind::Subtitle && applied.subtitle.is_some() && sid != applied.subtitle;
-        let slot = match kind {
-            TrackKind::Video => flapjack::TrackSlot::Video,
-            TrackKind::Audio => flapjack::TrackSlot::Audio,
-            TrackKind::Subtitle => flapjack::TrackSlot::Subtitle,
-        };
-        self.fcast
-            .request_track(slot, flapjack::TrackTarget::Stream(sid));
+        // an unparseable sid names nothing, the engine treats None as
+        // "disable the slot" which is also what a stale handle deserves
+        let handle = sid.as_deref().and_then(sid_in);
+        match kind {
+            TrackKind::Video => self.fcast.set_video_track(handle),
+            TrackKind::Audio => self.fcast.set_audio_track(handle),
+            TrackKind::Subtitle => self.fcast.set_subtitle_track(
+                handle.map_or(flapjack::SubtitleTrack::Off, flapjack::SubtitleTrack::Stream),
+            ),
+        }
         self.pump_selection();
         stale_cue
     }
@@ -1551,10 +1236,8 @@ impl Player {
     /// against decodebin3's collection-default auto-select. Replaces the
     /// application's parked-desire enforcement.
     pub fn request_external_subtitle(&mut self, handle: flapjack::ExternalSubId) {
-        self.fcast.request_track(
-            flapjack::TrackSlot::Subtitle,
-            flapjack::TrackTarget::ExternalSubtitle(handle),
-        );
+        self.fcast
+            .set_subtitle_track(flapjack::SubtitleTrack::External(handle));
         self.pump_selection();
     }
 
@@ -1600,9 +1283,10 @@ impl Player {
         self.pump_selection();
     }
 
-    /// The refresh seek job could not perform its seek (already recorded by
-    /// the crate; this is the pump trigger).
-    pub fn subtitle_refresh_failed(&mut self, _seqnum: gst::Seqnum) {
+    /// The receiver's own refresh seek (the freeze watchdog's recovery) could
+    /// not perform its seek, already recorded by the crate; this is the pump
+    /// trigger. The engine's own refreshes report nothing.
+    pub fn subtitle_refresh_failed(&mut self) {
         self.pump_selection();
     }
 
@@ -1620,7 +1304,7 @@ impl Player {
     pub fn volume(&self) -> f32 {
         match self.pending_volume {
             Some(volume) => volume.clamp(0.0, 1.0),
-            None => self.fcast.volume() as f32,
+            None => self.fcast.volume().get() as f32,
         }
     }
 
@@ -1641,7 +1325,7 @@ impl Player {
         }
 
         let target = (volume as f64).clamp(0.0, 1.0);
-        if (self.fcast.volume() - target).abs() < 1e-9 {
+        if (self.fcast.volume().get() - target).abs() < 1e-9 {
             // Setting the property to its current value emits no notify,
             // but senders expect a confirmation for an idempotent set too.
             // Re-emit it manually through the same VolumeChanged path.
@@ -1650,6 +1334,12 @@ impl Player {
             return;
         }
 
+        // the crate's type clamps to 0..1 itself and refuses only a
+        // non-finite value, which the clamp above lets through as NaN
+        let Some(target) = flapjack::Volume::new(target) else {
+            warn!(volume, "Ignoring a non-finite volume");
+            return;
+        };
         self.fcast.set_volume(target);
         self.volume_confirm_in_flight = true;
     }
@@ -1664,23 +1354,36 @@ impl Player {
     }
 
     pub fn set_rate(&mut self, rate: f32) {
-        self.seek_internal(Seek {
-            position: None,
-            rate: Some(rate),
-        });
-    }
-
-    pub fn update_media_info(&mut self) {
-        if let Some(seekable) = self.fcast.query_seekable() {
-            let dur = self.get_duration();
-            debug!(?dur, seekable, "Seek query returned");
-            self.seekable = seekable && dur.is_some();
-            self.seekable_known = true;
+        // the crate's rate type refuses zero and non-finite values, the
+        // validation `Seek::rate_is_safe` used to do here
+        match flapjack::PlaybackRate::new(f64::from(rate)) {
+            Some(rate) => self.seek_internal(Seek::at_rate(rate)),
+            None => warn!(rate, "Ignoring invalid seek rate"),
         }
     }
 
+    pub fn update_media_info(&mut self) {
+        // `Unknown` is "not answerable yet", not a refusal: ask again later
+        let seekable = match self.fcast.seekable() {
+            flapjack::Seekable::Unknown => return,
+            flapjack::Seekable::Yes => true,
+            flapjack::Seekable::No => false,
+        };
+        let dur = self.get_duration();
+        debug!(?dur, seekable, "Seek query returned");
+        self.seekable = seekable && dur.is_some();
+        self.seekable_known = true;
+    }
+
     fn set_state_async(&self, target_state: gst::State) {
-        self.fcast.set_state_async(target_state);
+        // the raw state API is gone, flapjack speaks transport verbs; their
+        // completions ride PlaybackChanged, which the receiver's own state
+        // machine over StateChanged makes redundant (see relay_event)
+        match target_state {
+            gst::State::Playing => self.fcast.play(self.fcast.allocate_op()),
+            gst::State::Paused => self.fcast.pause(self.fcast.allocate_op()),
+            _ => self.fcast.stop(),
+        }
     }
 
     pub fn play(&mut self) {
@@ -1696,15 +1399,11 @@ impl Player {
         self.set_state_async(state);
     }
 
-    /// Handle `ClockLost`: the element providing the pipeline clock went away
-    /// (typically the audio sink after the audio track was deselected).
-    pub fn recover_clock(&mut self) {
-        if !matches!(self.player_state(), PlayerState::Playing) {
-            debug!("Ignoring clock loss while not playing");
-            return;
-        }
-        debug!("Pipeline clock lost; cycling through Paused to elect a new one");
-        self.fcast.recover_clock_async();
+    /// The host saw its network change (an address came or went), so flapjack
+    /// drops every pooled HTTP connection and the next request dials afresh
+    /// instead of stalling on a dead keep-alive.
+    pub fn network_changed(&self) {
+        self.fcast.network_changed();
     }
 
     /// Produce a graph snapshot of the pipeline for the inspector, delivered
@@ -1717,7 +1416,7 @@ impl Player {
         &self,
         done: impl FnOnce(flapjack::graph::GraphSnapshot) + Send + 'static,
     ) {
-        self.fcast.debug_graph_async(Box::new(done));
+        self.fcast.debug_graph(Box::new(done));
     }
 
     pub fn pause(&mut self) {
@@ -1729,24 +1428,21 @@ impl Player {
 
     fn go_to_stopped_state(&mut self, null: Option<oneshot::Sender<()>>) {
         self.desired_transport = RunningState::Playing;
-        // BEFORE the teardown is dispatched, not after: the discards this
-        // suppresses land within ~1 ms of the job, on the streaming threads,
-        // while this function is still running. Cleared by the next `load`.
-        self.teardown.set(true);
-        self.cleanup_stream_collection();
-
         // A full teardown either way (pipeline down, inputs and the per-load
         // audio sink removed), so a Stop releases the item's network/audio
         // resources NOW rather than at the next load. Queued on the worker,
         // it also aborts an in-flight load cleanly (jobs are ordered).
         match null {
-            Some(feedback) => self.fcast.shutdown_async(Box::new(move || {
-                debug!(res = ?feedback.send(()), "Sent shutdown feedback signal");
-            })),
+            Some(feedback) => {
+                self.shut_down = true;
+                self.fcast.shutdown(Box::new(move || {
+                    debug!(res = ?feedback.send(()), "Sent shutdown feedback signal");
+                }))
+            }
             None => {
                 // Don't raise an already shut-down pipeline back to READY.
                 if self.state_machine.current_state != gst::State::Null {
-                    self.fcast.stop_async();
+                    self.fcast.stop();
                 }
             }
         }
@@ -1757,16 +1453,6 @@ impl Player {
         // leftovers leak into the next one.
         self.state_machine.clear_state();
         self.clear_state();
-    }
-
-    /// The subtitle track that took a FLUSHING discard and has delivered
-    /// nothing since, reported at most once per load. `None` normally.
-    ///
-    /// Polled from the application's tick rather than pushed from the bus
-    /// hook, because the verdict needs elapsed time and the hook may not have
-    /// any (see [`SubtitleFlow`]).
-    pub fn stalled_subtitle_stream(&self) -> Option<String> {
-        self.subtitle_flow.stalled_stream()
     }
 
     pub fn stop(&mut self) {
@@ -1784,7 +1470,7 @@ impl Player {
         let mut did_change = false;
 
         for stream in &mut self.streams {
-            let title = stream_title(&stream.inner);
+            let title = stream_title(&stream.info);
             if title != stream.title {
                 stream.title = title;
                 did_change = true;
@@ -1809,21 +1495,20 @@ impl Player {
     }
 
     /// Inspector: every advertised stream plus whether it is currently
-    /// selected, for the track table (`gst::Stream` clones are refcounted).
-    pub fn stream_dbg_rows(&self) -> Vec<(gst::Stream, bool)> {
+    /// selected, for the track table.
+    pub fn stream_dbg_rows(&self) -> Vec<(flapjack::StreamInfo, bool)> {
         self.streams
             .iter()
             .map(|s| {
-                let sid = s.inner.stream_id().map(|id| id.to_string());
-                let selected = sid.is_some()
-                    && [
-                        &self.selected.video,
-                        &self.selected.audio,
-                        &self.selected.subtitle,
-                    ]
-                    .into_iter()
-                    .any(|sel| *sel == sid);
-                (s.inner.clone(), selected)
+                let sid = s.sid();
+                let selected = [
+                    &self.selected.video,
+                    &self.selected.audio,
+                    &self.selected.subtitle,
+                ]
+                .into_iter()
+                .any(|sel| sel.as_deref() == Some(sid.as_str()));
+                (s.info.clone(), selected)
             })
             .collect()
     }
@@ -1891,17 +1576,10 @@ impl Player {
         let collection: Vec<&'static str> = self
             .streams
             .iter()
-            .map(|s| {
-                let t = s.inner.stream_type();
-                if t.contains(gst::StreamType::VIDEO) {
-                    "video"
-                } else if t.contains(gst::StreamType::AUDIO) {
-                    "audio"
-                } else if t.contains(gst::StreamType::TEXT) {
-                    "text"
-                } else {
-                    "other"
-                }
+            .map(|s| match s.info.slot {
+                flapjack::TrackSlot::Video => "video",
+                flapjack::TrackSlot::Audio => "audio",
+                flapjack::TrackSlot::Subtitle => "text",
             })
             .collect();
         let routed = self.fcast.routed_summary();
@@ -1926,17 +1604,13 @@ impl Player {
 
     /// The GStreamer stream id of the `idx`th advertised stream.
     pub fn stream_id_of(&self, idx: u32) -> Option<String> {
-        self.streams
-            .get(idx as usize)?
-            .inner
-            .stream_id()
-            .map(|id| id.to_string())
+        self.streams.get(idx as usize).map(Stream::sid)
     }
 
     pub fn is_stream_of_type(&self, idx: u32, ty: gst::StreamType) -> bool {
         self.streams
             .get(idx as usize)
-            .is_some_and(|s| s.inner.stream_type().contains(ty))
+            .is_some_and(|s| s.is_of_type(ty))
     }
 
     pub fn end_of_stream_reached(&mut self) {
@@ -1972,7 +1646,7 @@ impl Player {
             BufferingStateResult::Buffering => false,
             BufferingStateResult::FinishedWithSeek(seek) => {
                 debug!("Buffering finished, dispatching seek");
-                self.fcast.seek_async(seek);
+                self.fcast.seek(seek, self.fcast.allocate_op());
                 true
             }
             BufferingStateResult::Finished(state) => {
@@ -2003,8 +1677,9 @@ impl Player {
     /// `PlayerEvent::ExternalSubtitleFailed` with the input already
     /// detached.
     pub fn attach_external_subtitle(&mut self, url: &str) -> flapjack::ExternalSubId {
-        let id = self.fcast.allocate_subtitle_id();
-        self.fcast.attach_subtitle_async(id, url.to_string());
+        let slot = self.fcast.allocate_subtitle_id();
+        let id = slot.id();
+        self.fcast.attach_subtitle(slot, url.to_string());
         id
     }
 
@@ -2012,7 +1687,7 @@ impl Player {
     /// entry going away). Best effort, on the player's worker thread. The
     /// input is leaving regardless.
     pub fn detach_external_subtitle(&mut self, id: flapjack::ExternalSubId) {
-        self.fcast.detach_subtitle_async(id);
+        self.fcast.detach_subtitle(id);
     }
 
     /// The GStreamer stream id of an attached external subtitle input, once
@@ -2023,6 +1698,7 @@ impl Player {
         let sids = self.fcast.subtitle_stream_ids(id);
         let sid = sids
             .into_iter()
+            .map(sid_out)
             .find(|sid| Self::find_stream_idx(sid, &self.streams).is_some());
         debug!(?id, ?sid, "external subtitle stream lookup");
         sid
@@ -2061,7 +1737,7 @@ impl Player {
                 })
             }
             StateChangeResult::Seek(seek) => {
-                self.fcast.seek_async(seek);
+                self.fcast.seek(seek, self.fcast.allocate_op());
                 None
             }
             StateChangeResult::Waiting => None,
@@ -2077,15 +1753,10 @@ impl Player {
     }
 
     fn find_stream_idx(sid: &str, streams: &[Stream]) -> Option<u32> {
-        for (idx, stream) in streams.iter().enumerate() {
-            if let Some(this_id) = stream.inner.stream_id()
-                && this_id == sid
-            {
-                return Some(idx as u32);
-            }
-        }
-
-        None
+        streams
+            .iter()
+            .position(|stream| stream.sid() == sid)
+            .map(|idx| idx as u32)
     }
 
     #[cfg_attr(not(target_os = "android"), instrument(skip_all))]
@@ -2154,7 +1825,7 @@ impl Player {
     }
 
     pub fn rate(&self) -> f64 {
-        self.state_machine.rate
+        self.state_machine.rate.get()
     }
 
     #[instrument(skip_all)]
@@ -2166,22 +1837,33 @@ impl Player {
     }
 
     pub fn set_rate_changed(&mut self, rate: f64) {
-        self.state_machine.rate = rate;
+        // a reported rate is one the crate accepted
+        if let Some(rate) = flapjack::PlaybackRate::new(rate) {
+            self.state_machine.rate = rate;
+        }
     }
 }
 
 impl Drop for Player {
     fn drop(&mut self) {
         // The player's worker exits on its own once the last handle drops.
-        // Queue the final teardown (usually a no-op, `shutdown` already
-        // drove the pipeline to Null and waited).
-        self.set_state_async(gst::State::Null);
+        // A player that was never shut down gets its teardown queued here.
+        // One that was must NOT: the shutdown barrier means the worker has
+        // let go of the pipeline, and a job queued behind it makes the worker
+        // take hold again while this handle drops, which can leave the worker
+        // with the last reference and the pipeline (the video sink's GPU
+        // textures included) dying on that thread after `main` returned, at
+        // process exit, under a GL display already torn down.
+        if !self.shut_down {
+            self.set_state_async(gst::State::Null);
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{Duration, Instant};
 
     /// Put a test's registry where the shipped binary's is on the subtitle
     /// path, which `init_for_tests` does not.
@@ -2211,16 +1893,17 @@ mod tests {
         // The audio sink the receiver picks on Linux, chosen inside
         // `Player::new` and instantiated per load.
         #[cfg(target_os = "linux")]
-        let _ = fcast_gst_elements::pwaudiosink::plugin_init();
+        let _ = flapjack::pwaudiosink::plugin_init();
     }
 
     /// FULL-STACK field triage: the same default-selected-subtitle probe the
     /// driver suite runs, but through `Player` - its selection policy, its
-    /// consumer install order, the REAL `FSink`, and the REAL `CueEngine` the
-    /// sink owns. Everything the shipped receiver has except the GUI: no
-    /// window, no GL, no `frame-available`/`overlays-changed` signal
-    /// consumers, and no `render-delay` feedback (that lives in `receiver-ui`
-    /// and needs a repaint loop to produce a cost to feed back).
+    /// consumer install order, a clocked headless sink, and the REAL
+    /// `CueEngine` beside it. Everything the shipped receiver has except the
+    /// GUI: no window, no GL, no `frame-available`/`overlays-changed`
+    /// signal consumers, and no `render-delay` feedback (that lives in
+    /// `receiver-ui` and needs a repaint loop to produce a cost to feed
+    /// back).
     ///
     /// The point is the DELTA against `dash_testbed`'s
     /// `probe_default_subtitle_on_a_live_uri`, which drives the driver alone
@@ -2255,8 +1938,8 @@ mod tests {
         register_shipped_subtitle_parsers();
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let sink = fcast_video::video::FSink::new();
-        let engine = sink.cue_engine();
+        let sink = headless_video_sink();
+        let engine = fcast_video::cue::CueEngine::new();
         engine.set_canvas(1280, 720);
         let mut player = Player::new(
             Some(sink.clone().upcast()),
@@ -2266,7 +1949,7 @@ mod tests {
         )
         .expect("building the player");
 
-        player.load(MediaInput::Uri(uri), None);
+        player.load(MediaInput::uri(uri), None);
 
         let deadline = Instant::now() + Duration::from_secs(75);
         let mut overlays_seen = 0usize;
@@ -2281,7 +1964,6 @@ mod tests {
                 match event {
                     PlayerEvent::UriLoaded => player.uri_loaded(),
                     PlayerEvent::RequestState(state) => player.request_state(state),
-                    PlayerEvent::QueueSeek(seek) => player.queue_seek(seek),
                     PlayerEvent::Buffering(percent) => {
                         player.buffering(percent);
                     }
@@ -2297,9 +1979,6 @@ mod tests {
                 overlays_seen += 1;
             }
             had_overlay = now_overlay;
-            if let Some(stream) = player.stalled_subtitle_stream() {
-                eprintln!("PLAYER PROBE stalled subtitle stream: {stream}");
-            }
             std::thread::sleep(Duration::from_millis(50));
         }
 
@@ -2325,22 +2004,20 @@ mod tests {
     ///
     /// The field correlates the subtitle discard with a video-obstruction
     /// transition (2 for 2, ~400 ms and ~900 ms after `obstructed=true`). The
-    /// handler itself cannot be the cause - it terminates in
-    /// `wl_subsurface.place_above`/`place_below` plus a Wayland connection
-    /// flush and touches no GStreamer object (`fcast-video/src/wayland_sink.rs
-    /// :1362`, and the trait default at `video_sink.rs:34` is an empty body).
-    /// Its SECOND-ORDER path does reach the pipeline: a restack flips
-    /// `self_clocked()`, that changes which render path runs and therefore the
-    /// measured render cost, and `note_render_cost` pushes the new cost to the
-    /// sink and posts a LATENCY message (`receiver-ui/src/lib.rs:160-166`),
+    /// handler itself could not be the cause: on the wayland subsurface sink
+    /// this was reported against (since removed) it terminated in a restack
+    /// plus a connection flush and touched no GStreamer object. Its
+    /// SECOND-ORDER path did reach the pipeline: a restack flipped the sink
+    /// between self-clocked and repaint-driven rendering, that changed the
+    /// measured render cost, and the UI pushed the new cost to the sink and
+    /// posted a LATENCY message,
     /// which makes the whole pipeline recalculate latency. The field log shows
     /// `RecalculateLatency` tracking the obstruction transitions.
     ///
     /// So this drives THAT, exactly as `note_render_cost` does, at controlled
     /// offsets into the item's life - including mid-bring-up, while the text
     /// branch is still being constructed. Calling `set_video_obstructed` here
-    /// would be theatre: headless there is no subsurface and the default body
-    /// does nothing.
+    /// would be theatre: headless there is no window and nothing listens.
     ///
     /// Env-driven so the matrix runs without recompiling:
     ///   `FCAST_PROBE_URI`            the item (required)
@@ -2364,8 +2041,8 @@ mod tests {
         register_shipped_subtitle_parsers();
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let sink = fcast_video::video::FSink::new();
-        let engine = sink.cue_engine();
+        let sink = headless_video_sink();
+        let engine = fcast_video::cue::CueEngine::new();
         engine.set_canvas(1280, 720);
         let mut player = Player::new(
             Some(sink.clone().upcast()),
@@ -2380,7 +2057,7 @@ mod tests {
         if let Ok(external) = std::env::var("FCAST_PROBE_EXTERNAL") {
             player.attach_external_subtitle(&external);
         }
-        player.load(MediaInput::Uri(uri), None);
+        player.load(MediaInput::uri(uri), None);
 
         let start = Instant::now();
         let deadline = start + Duration::from_secs(60);
@@ -2395,7 +2072,6 @@ mod tests {
                 match event {
                     PlayerEvent::UriLoaded => player.uri_loaded(),
                     PlayerEvent::RequestState(state) => player.request_state(state),
-                    PlayerEvent::QueueSeek(seek) => player.queue_seek(seek),
                     PlayerEvent::Buffering(percent) => {
                         player.buffering(percent);
                     }
@@ -2425,9 +2101,6 @@ mod tests {
                 overlays_seen += 1;
             }
             had_overlay = now_overlay;
-            if let Some(stream) = player.stalled_subtitle_stream() {
-                eprintln!("OBSTRUCTION PROBE stalled subtitle stream: {stream}");
-            }
             std::thread::sleep(Duration::from_millis(25));
         }
 
@@ -2447,77 +2120,17 @@ mod tests {
         );
     }
 
-    /// The REAL video sink runs headless, which is what makes a full-stack
-    /// field-triage harness possible at all: `FSink` owns the cue engine
-    /// (`receiver-ui` takes the engine OUT of the sink and hands both to the
-    /// player, `receiver-ui/src/lib.rs:756-782`), and its `show_frame` only
-    /// stores the newest frame behind a mutex, so nothing here needs a window,
-    /// a GL context or placebo. The delta against the shipped binary is the UI
-    /// render path and its two signal connections, not the sink itself.
-    #[test]
-    fn the_real_video_sink_and_its_cue_engine_build_headless() {
-        crate::gstreamer::init_for_tests();
-        let sink = fcast_video::video::FSink::new();
-        let engine = sink.cue_engine();
-        engine.set_canvas(1280, 720);
-        let element: gst::Element = sink.upcast();
-        assert_eq!(element.current_state(), gst::State::Null);
-    }
-
-    /// The verdict needs BOTH halves: a discard, and nothing delivered since.
-    /// A discard alone is the transient the escalation was always willing to
-    /// forgive.
-    #[test]
-    fn a_discard_followed_by_a_delivery_is_not_a_stalled_track() {
-        let flow = SubtitleFlow::default();
-        flow.note_discard("subtitle_00");
-        // Backdate past the verdict window so only the delivery decides.
-        {
-            let mut d = flow.0.discard.lock().expect("discard");
-            let (stream, mark, _) = d.take().expect("noted");
-            *d = Some((stream, mark, Instant::now() - SUBTITLE_STALL_VERDICT * 2));
-        }
-        flow.delivered();
-        assert_eq!(flow.stalled_stream(), None);
-    }
-
-    #[test]
-    fn a_discard_with_nothing_delivered_since_is_reported_once() {
-        let flow = SubtitleFlow::default();
-        flow.delivered();
-        flow.note_discard("subtitle_00");
-        // Not yet: the window has not elapsed, so a sparse track is safe.
-        assert_eq!(flow.stalled_stream(), None);
-        {
-            let mut d = flow.0.discard.lock().expect("discard");
-            let (stream, mark, _) = d.take().expect("noted");
-            *d = Some((stream, mark, Instant::now() - SUBTITLE_STALL_VERDICT * 2));
-        }
-        assert_eq!(flow.stalled_stream(), Some("subtitle_00".to_owned()));
-        // ONCE: a per-tick repeat would be a log flood for a track that is
-        // already gone for the item.
-        assert_eq!(flow.stalled_stream(), None);
-    }
-
-    /// The FIRST discard is the one kept: its delivery mark is what "nothing
-    /// since the track broke" is measured against, so a later discard must not
-    /// move the goalposts forward.
-    #[test]
-    fn a_later_discard_does_not_reset_the_verdict_clock() {
-        let flow = SubtitleFlow::default();
-        flow.note_discard("subtitle_00");
-        flow.note_discard("subtitle_01");
-        let held = flow.0.discard.lock().expect("discard").clone();
-        assert_eq!(held.map(|(s, _, _)| s), Some("subtitle_00".to_owned()));
-    }
-
-    #[test]
-    fn a_load_rearms_the_verdict() {
-        let flow = SubtitleFlow::default();
-        flow.note_discard("subtitle_00");
-        flow.reset();
-        assert!(flow.0.discard.lock().expect("discard").is_none());
-        assert_eq!(flow.0.delivered.load(Ordering::Relaxed), 0);
+    /// A clocked sink with no window behind it. The shipped lane is an
+    /// appsink paced like a video sink, so a synchronous fakesink drives the
+    /// pipeline at the same field pace and the cue engine stays the one the
+    /// player hands the driver, exactly as `receiver-ui` wires it.
+    fn headless_video_sink() -> gst_base::BaseSink {
+        gst::ElementFactory::make("fakesink")
+            .property("sync", true)
+            .build()
+            .expect("fakesink")
+            .downcast()
+            .expect("fakesink is a base sink")
     }
 
     /// The driver's caps gate and the engine's decoder table each write down
@@ -2543,7 +2156,7 @@ mod tests {
 
     /// The bytes the driver's tests push are bytes a decoder can actually read.
     ///
-    /// `flapjack_test`'s bitmap fixtures are DELIBERATELY not the decoders'
+    /// `simulator`'s bitmap fixtures are DELIBERATELY not the decoders'
     /// own: they are written from the specifications a second time, so that
     /// a transport test cannot pass because both ends share one author's
     /// misreading. The cost of that is a fixture nobody ever decodes: every
@@ -2558,18 +2171,18 @@ mod tests {
 
         for (format, bytes, codec_data) in [
             (
-                fcast_video::subpic::BitmapFormat::Pgs,
-                flapjack_test::pgs::display_set(0),
+                fcast_video::subpic::BitmapSubFormat::Pgs,
+                simulator::pgs::display_set(0),
                 None,
             ),
             (
-                fcast_video::subpic::BitmapFormat::Vobsub,
-                flapjack_test::vobsub::subpicture_unit(0),
-                Some(flapjack_test::vobsub::SAMPLE_IDX.to_vec()),
+                fcast_video::subpic::BitmapSubFormat::Vobsub,
+                simulator::vobsub::subpicture_unit(0),
+                Some(simulator::vobsub::SAMPLE_IDX.to_vec()),
             ),
             (
-                fcast_video::subpic::BitmapFormat::Dvb,
-                flapjack_test::dvb::display_set(0),
+                fcast_video::subpic::BitmapSubFormat::Dvb,
+                simulator::dvb::display_set(0),
                 None,
             ),
         ] {
@@ -2652,9 +2265,9 @@ mod tests {
         use fcast_video::cue::{CueEngine, CueInput, TextFormat};
         use flapjack::{
             AudioSink, Player, PlayerEvent, SelectionGate, Sinks, StartPoint, SubtitleFeedItem,
-            TrackSlot, TrackTarget,
+            SubtitleTrack, VideoSink,
         };
-        use flapjack_test::{
+        use simulator::{
             scenario::ScenarioBuilder,
             sink::FTestSink,
             spec::{CueSpec, Pacing, StreamSpec},
@@ -2664,7 +2277,7 @@ mod tests {
         gst::init().unwrap();
         static INIT: std::sync::Once = std::sync::Once::new();
         INIT.call_once(|| {
-            flapjack_test::register_for_tests();
+            simulator::register_for_tests();
             flapjack::audiostretch::plugin_init().expect("registering audiostretch");
         });
 
@@ -2712,8 +2325,9 @@ mod tests {
         let frames = video_sink.recording();
         let player = Arc::new(
             Player::new(Sinks {
-                video: Some(video_sink.upcast()),
+                video: VideoSink::Element(video_sink.upcast()),
                 audio: AudioSink::Factory(Box::new(|| Ok(FTestSink::new().upcast()))),
+                subtitle: flapjack::SubtitleSink::None,
             })
             .expect("building flapjack"),
         );
@@ -2764,16 +2378,16 @@ mod tests {
         let sink = errors.clone();
         let flag = loaded.clone();
         let sids = text_sids.clone();
-        player.set_event_handler(None, move |event, _| match event {
-            PlayerEvent::Error { error, .. } => sink.lock().push(error.to_string()),
+        player.set_event_handler(None, move |flapjack::Event { kind: event, .. }| match event {
+            PlayerEvent::Error { message, .. } => sink.lock().push(message),
             PlayerEvent::Loaded { .. } => {
                 flag.store(true, Ordering::Release);
             }
             PlayerEvent::StreamCollection(collection) => {
                 *sids.lock() = collection
                     .iter()
-                    .filter(|stream| stream.stream_type().contains(gst::StreamType::TEXT))
-                    .filter_map(|stream| stream.stream_id().map(|s| s.to_string()))
+                    .filter(|stream| stream.slot == flapjack::TrackSlot::Subtitle)
+                    .map(|stream| stream.id.to_string())
                     .collect();
             }
             _ => {}
@@ -2793,12 +2407,9 @@ mod tests {
             );
         };
 
-        player.load_async(
-            MediaInput::Uri(scenario.uri()),
-            StartPoint::Seek {
-                position: gst::ClockTime::ZERO,
-                rate: 1.0,
-            },
+        player.load(
+            MediaInput::uri(scenario.uri()),
+            StartPoint::beginning(),
         );
         let load_deadline = Instant::now() + Duration::from_secs(30);
         while !loaded.load(Ordering::Acquire) {
@@ -2806,7 +2417,7 @@ mod tests {
             pump();
             std::thread::sleep(Duration::from_millis(10));
         }
-        player.play().expect("play");
+        player.play(player.allocate_op());
 
         // The subtitle track is off until something asks for it, exactly as in
         // the app, and the request only takes once the pipeline is running.
@@ -2820,7 +2431,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         let sid = text_sids.lock()[0].clone();
-        player.request_track(TrackSlot::Subtitle, TrackTarget::Stream(Some(sid)));
+        player.set_subtitle_track(sid_in(&sid).map_or(SubtitleTrack::Off, SubtitleTrack::Stream));
         // The branch has to actually carry a cue before the walk can claim
         // anything: a run where selection never landed would show a clean sweep
         // of blank frames and call it a pass.
@@ -2871,7 +2482,7 @@ mod tests {
         let epoch = clears.load(Ordering::Acquire);
 
         let (tx, rx) = mpsc::channel();
-        player.shutdown_async(Box::new(move || {
+        player.shutdown(Box::new(move || {
             let _ = tx.send(());
         }));
         let _ = rx.recv_timeout(Duration::from_secs(30));
@@ -2978,86 +2589,6 @@ mod tests {
         );
     }
 
-    /// The field shape: our carry-patch's discard warning, as GStreamer
-    /// formats a debug string (source location and object path around it), must
-    /// be recognized so it stays out of the toast.
-    #[test]
-    fn the_carry_patchs_discard_warning_is_recognized() {
-        let debug = "gstadaptivedemux.c(3705): gst_adaptive_demux_output_loop (): \
-                     /GstPipeline:flapjack/GstURISourceBin:fj-src-0/GstDashDemux2:dashdemux2:\n\
-                     Discarding data on subtitle_00: downstream returned FLUSHING while this \
-                     element is not flushing";
-        assert!(warning_is_transient_flushing_discard(Some(debug)));
-        // Any pad name, and the bare message on its own.
-        assert!(warning_is_transient_flushing_discard(Some(
-            "Discarding data on video_01: downstream returned FLUSHING while this element is not flushing"
-        )));
-    }
-
-    /// Narrow on purpose: this is not a general warning-suppression list, so
-    /// everything else must keep reaching the user exactly as before.
-    #[test]
-    fn other_warnings_are_never_filtered() {
-        assert!(!warning_is_transient_flushing_discard(None));
-        assert!(!warning_is_transient_flushing_discard(Some("")));
-        assert!(!warning_is_transient_flushing_discard(Some(
-            "gsturidecodebin.c(1234): no decoder available for type 'video/x-h265'"
-        )));
-        // Superficially similar but a different condition: only the patch's
-        // full sentence counts.
-        assert!(!warning_is_transient_flushing_discard(Some(
-            "gstqueue.c(1393): pushing on pad src returned FLUSHING"
-        )));
-        assert!(!warning_is_transient_flushing_discard(Some(
-            "Discarding data on subtitle_00: downstream returned NOT_LINKED"
-        )));
-    }
-
-    /// The stream name is what makes a persistent discard actionable, so it
-    /// has to survive GStreamer's full debug formatting, not just the bare
-    /// sentence.
-    #[test]
-    fn the_discarded_stream_is_named() {
-        let debug = "gstadaptivedemux.c(3705): gst_adaptive_demux_output_loop (): \
-                     /GstPipeline:flapjack/GstURISourceBin:urisourcebin0/GstDashDemux2:dashdemux2-0:\n\
-                     Discarding data on subtitle_00: downstream returned FLUSHING while this \
-                     element is not flushing";
-        assert_eq!(discarded_stream_name(debug), Some("subtitle_00"));
-        assert_eq!(
-            discarded_stream_name(
-                "Discarding data on video_01: downstream returned FLUSHING while this element is not flushing"
-            ),
-            Some("video_01")
-        );
-        // Nothing to name is not a panic and not an empty name.
-        assert_eq!(discarded_stream_name("some other warning entirely"), None);
-        assert_eq!(discarded_stream_name("Discarding data on : x"), None);
-    }
-
-    /// Counting is PER STREAM and escalates only on the stream that keeps
-    /// failing. `dash-embedded-still-broken.txt` is the case that matters: the
-    /// text branch is stuck while video and audio are fine, so a global
-    /// counter would either escalate on healthy streams or need several
-    /// unrelated discards before it noticed the one that is wedged.
-    #[test]
-    fn repeated_discards_escalate_per_stream() {
-        let discards = FlushingDiscards::default();
-        // Below the threshold, still "transient".
-        for expected in 1..FLUSHING_DISCARD_ESCALATION {
-            assert_eq!(discards.record("subtitle_00"), expected);
-        }
-        // A different stream has its own count and does not push the first one
-        // over.
-        assert_eq!(discards.record("video_00"), 1);
-        assert_eq!(discards.record("subtitle_00"), FLUSHING_DISCARD_ESCALATION);
-        // Strictly increasing past the threshold, which is what makes the
-        // "let it through exactly once" equality in the hook a one-shot.
-        assert_eq!(
-            discards.record("subtitle_00"),
-            FLUSHING_DISCARD_ESCALATION + 1
-        );
-    }
-
     #[test]
     fn missing_plugin_ignorable_only_for_metadata_streams() {
         crate::gstreamer::init_for_tests();
@@ -3080,118 +2611,65 @@ mod tests {
         assert!(!missing_plugin_is_ignorable(&msg));
     }
 
-    fn stream(sid: &str, ty: gst::StreamType) -> gst::Stream {
-        gst::Stream::new(Some(sid), None, ty, gst::StreamFlags::empty())
-    }
-
-    fn collection(streams: &[gst::Stream]) -> gst::StreamCollection {
-        let mut builder = gst::StreamCollection::builder(None);
-        for s in streams {
-            builder = builder.stream(s.clone());
+    fn stream(id: u32, slot: flapjack::TrackSlot) -> flapjack::StreamInfo {
+        flapjack::StreamInfo {
+            id: flapjack::StreamId::from_raw(id),
+            slot,
+            language: None,
+            title: None,
+            codec: None,
+            caps: None,
         }
-        builder.build()
     }
 
-    fn sids(streams: &[Stream]) -> Vec<String> {
-        streams
-            .iter()
-            .filter_map(|s| s.inner.stream_id().map(|id| id.to_string()))
-            .collect()
+    fn ids(streams: &[Stream]) -> Vec<u32> {
+        streams.iter().map(|s| s.info.id.raw()).collect()
     }
 
     #[test]
     fn stream_positions_stay_stable_across_collections() {
-        crate::gstreamer::init_for_tests();
-        let audio = stream("a0", gst::StreamType::AUDIO);
-        let video = stream("v0", gst::StreamType::VIDEO);
-        let text = stream("t0", gst::StreamType::TEXT);
+        let audio = stream(0, flapjack::TrackSlot::Audio);
+        let video = stream(1, flapjack::TrackSlot::Video);
+        let text = stream(2, flapjack::TrackSlot::Subtitle);
 
         // Initial collection: [audio, video].
-        let first = merge_streams_stable(Vec::new(), &collection(&[audio.clone(), video.clone()]));
-        assert_eq!(sids(&first), ["a0", "v0"]);
+        let first = merge_streams_stable(Vec::new(), &[audio.clone(), video.clone()]);
+        assert_eq!(ids(&first), [0, 1]);
 
         // decodebin3 rebuilds the collection in a DIFFERENT order and with a
         // new text stream (an external subtitle attach). Positions of the
         // known streams must not move (they are the advertised track ids);
         // the newcomer appends.
-        let second = merge_streams_stable(
-            first,
-            &collection(&[video.clone(), audio.clone(), text.clone()]),
-        );
-        assert_eq!(sids(&second), ["a0", "v0", "t0"]);
+        let second =
+            merge_streams_stable(first, &[video.clone(), audio.clone(), text.clone()]);
+        assert_eq!(ids(&second), [0, 1, 2]);
 
         // A stream leaving (external detached) drops in place; the rest
         // keep their positions.
-        let third = merge_streams_stable(second, &collection(&[video, audio]));
-        assert_eq!(sids(&third), ["a0", "v0"]);
-    }
-
-    fn kind_of<T: gst::glib::error::ErrorDomain>(code: T, from_source: bool) -> MediaErrorKind {
-        MediaErrorKind::from_glib_error(&gst::glib::Error::new(code, "x"), from_source)
+        let third = merge_streams_stable(second, &[video, audio]);
+        assert_eq!(ids(&third), [0, 1]);
     }
 
     #[test]
-    fn error_kind_resource_domain() {
-        use gst::ResourceError as R;
-        // Side-independent identities.
-        assert_eq!(kind_of(R::NotFound, true), MediaErrorKind::NotFound);
-        assert_eq!(kind_of(R::NotFound, false), MediaErrorKind::NotFound);
-        assert_eq!(
-            kind_of(R::NotAuthorized, true),
-            MediaErrorKind::AccessDenied
-        );
-        // Source side reads/seeks are network trouble.
-        for code in [
-            R::OpenRead,
-            R::OpenReadWrite,
-            R::Read,
-            R::Seek,
-            R::Sync,
-            R::Busy,
-        ] {
-            assert_eq!(kind_of(code, true), MediaErrorKind::NetworkFailure);
+    fn error_kind_folds_flapjack_classes() {
+        use flapjack::ErrorKind as K;
+        // The domain/code table lives in flapjack now (tested there); this
+        // is the fold onto the receiver's codes, one class each.
+        let table = [
+            (K::NotFound, MediaErrorKind::NotFound),
+            (K::AccessDenied, MediaErrorKind::AccessDenied),
+            (K::NetworkFailed, MediaErrorKind::NetworkFailure),
+            (K::UnsupportedFormat, MediaErrorKind::UnsupportedFormat),
+            (K::MissingCodec, MediaErrorKind::MissingCodec),
+            (K::DecodeFailed, MediaErrorKind::DecodeFailed),
+            (K::Encrypted, MediaErrorKind::DrmProtected),
+            (K::OutputFailed, MediaErrorKind::OutputFailure),
+            (K::Stalled, MediaErrorKind::Frozen),
+            (K::Other, MediaErrorKind::Unexpected),
+        ];
+        for (kind, expected) in table {
+            assert_eq!(MediaErrorKind::from_flapjack(kind), expected, "{kind:?}");
         }
-        // The same codes on a sink are an output failure, as is anything
-        // else resource-flavored there.
-        assert_eq!(kind_of(R::Read, false), MediaErrorKind::OutputFailure);
-        assert_eq!(kind_of(R::Busy, false), MediaErrorKind::OutputFailure);
-        assert_eq!(kind_of(R::Failed, false), MediaErrorKind::OutputFailure);
-        // A source failing with a non-transfer resource code is not a story
-        // we can tell the user, it goes to the popup.
-        assert_eq!(kind_of(R::Failed, true), MediaErrorKind::Unexpected);
-        assert_eq!(kind_of(R::NoSpaceLeft, true), MediaErrorKind::Unexpected);
-    }
-
-    #[test]
-    fn error_kind_stream_domain() {
-        use gst::StreamError as S;
-        for code in [S::TypeNotFound, S::WrongType, S::Format, S::Demux] {
-            assert_eq!(kind_of(code, true), MediaErrorKind::UnsupportedFormat);
-        }
-        assert_eq!(
-            kind_of(S::CodecNotFound, true),
-            MediaErrorKind::MissingCodec
-        );
-        assert_eq!(kind_of(S::Decode, false), MediaErrorKind::DecodeFailed);
-        assert_eq!(kind_of(S::Decrypt, true), MediaErrorKind::DrmProtected);
-        assert_eq!(kind_of(S::DecryptNokey, true), MediaErrorKind::DrmProtected);
-        assert_eq!(kind_of(S::Failed, true), MediaErrorKind::Unexpected);
-    }
-
-    #[test]
-    fn error_kind_core_and_unknown_domains() {
-        assert_eq!(
-            kind_of(gst::CoreError::MissingPlugin, false),
-            MediaErrorKind::MissingCodec
-        );
-        assert_eq!(
-            kind_of(gst::CoreError::StateChange, false),
-            MediaErrorKind::Unexpected
-        );
-        assert_eq!(
-            kind_of(gst::LibraryError::Init, true),
-            MediaErrorKind::Unexpected
-        );
     }
 
     #[test]
@@ -3216,7 +2694,6 @@ mod tests {
         }
         let warning_codes = [
             (MediaWarningKind::MissingCodecForTrack, "FC-W01"),
-            (MediaWarningKind::StuckStream, "FC-W02"),
             (MediaWarningKind::SubtitleFormatUnsupported, "FC-W03"),
             (MediaWarningKind::Unknown, "FC-W99"),
         ];
@@ -3238,36 +2715,26 @@ mod tests {
     }
 
     #[test]
-    fn diagnostic_names_domain_and_code() {
-        let err = gst::glib::Error::new(gst::ResourceError::NotFound, "x");
-        assert_eq!(gst_error_domain_code(&err), "resource NotFound");
-        let err = gst::glib::Error::new(gst::StreamError::Decode, "x");
-        assert_eq!(gst_error_domain_code(&err), "stream Decode");
-        let err = gst::glib::Error::new(gst::CoreError::MissingPlugin, "x");
-        assert_eq!(gst_error_domain_code(&err), "core MissingPlugin");
-        let err = gst::glib::Error::new(gst::LibraryError::Init, "x");
-        assert_eq!(gst_error_domain_code(&err), "library Init");
+    fn diagnostic_is_appended_in_brackets() {
+        assert_eq!(
+            with_diagnostic("x".into(), Some("resource NotFound".into())),
+            "x [resource NotFound]"
+        );
+        assert_eq!(with_diagnostic("x".into(), None), "x");
     }
 
     #[test]
     fn warning_classification() {
-        let missing = gst::glib::Error::new(gst::CoreError::MissingPlugin, "no decoder");
-        let (kind, detail) = classify_warning(&missing, None, Some("H.265 (Main)".into()));
+        let (kind, detail) = classify_warning(
+            flapjack::WarningKind::MissingCodecForTrack,
+            Some("H.265 (Main)".into()),
+        );
         assert_eq!(kind, MediaWarningKind::MissingCodecForTrack);
         assert_eq!(detail.as_deref(), Some("H.265 (Main)"));
 
-        // The escalated discard: generic STREAM/FAILED text, the carry-patch
-        // marker plus stream name only in the debug string.
-        let discard = gst::glib::Error::new(gst::StreamError::Failed, "general stream error");
-        let debug = format!("Discarding data on subtitle_00: {TRANSIENT_FLUSHING_DISCARD}");
-        let (kind, detail) = classify_warning(&discard, Some(&debug), None);
-        assert_eq!(kind, MediaWarningKind::StuckStream);
-        assert_eq!(detail.as_deref(), Some("subtitle_00"));
-
         // Anything else is Unknown and carries no detail, even with a stale
         // missing-plugin description pending.
-        let other = gst::glib::Error::new(gst::StreamError::Failed, "clock problem");
-        let (kind, detail) = classify_warning(&other, Some("no marker"), Some("stale".into()));
+        let (kind, detail) = classify_warning(flapjack::WarningKind::Other, Some("stale".into()));
         assert_eq!(kind, MediaWarningKind::Unknown);
         assert_eq!(detail, None);
     }

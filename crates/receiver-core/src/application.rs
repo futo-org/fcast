@@ -436,7 +436,6 @@ fn media_warning_toast_kind(kind: player::MediaWarningKind) -> UiToastKind {
     use player::MediaWarningKind as K;
     match kind {
         K::MissingCodecForTrack => UiToastKind::MissingCodecForTrack,
-        K::StuckStream => UiToastKind::StuckStream,
         K::SubtitleFormatUnsupported => UiToastKind::SubtitleFormatUnsupported,
         K::Unknown => UiToastKind::GenericWarning,
     }
@@ -487,7 +486,7 @@ fn push_recent_warning(ring: &mut RecentWarnings, at: Instant, code: &'static st
 }
 
 /// The warnings preceding a fatal error are usually the actual story (a
-/// stuck stream, a discard streak), so the bug-report block carries them.
+/// missing codec, a track that stopped), so the bug-report block carries them.
 fn format_recent_warnings(ring: &RecentWarnings, now: Instant) -> String {
     if ring.is_empty() {
         return "no recent warnings".to_owned();
@@ -545,6 +544,27 @@ enum MediaSource {
     AirPlayMirror {
         stream_connection_id: u64,
     },
+}
+
+/// The mini OSD's reading of a transport operation, `None` for one that is
+/// not transport or whose effect depends on a state the player is not in.
+fn remote_transport_kind(
+    op: &Operation,
+    state: PlayerState,
+) -> Option<crate::gui::TransportKind> {
+    use crate::gui::TransportKind as T;
+    use fcast_protocol::v4::PlaybackState as P;
+    match op {
+        Operation::Pause | Operation::SetPlaybackState(P::Paused) => Some(T::Pause),
+        Operation::Resume | Operation::SetPlaybackState(P::Playing) => Some(T::Resume),
+        Operation::Seek(_) => Some(T::Seek),
+        Operation::ResumeOrPause => match state {
+            PlayerState::Playing => Some(T::Pause),
+            PlayerState::Paused => Some(T::Resume),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 #[derive(Debug, Copy, Clone)]
@@ -638,10 +658,46 @@ impl FCastSenderHandle {
 }
 
 pub struct Application {
+    // (vm, activity) jobject ptrs captured once at startup so playback code
+    // never touches android-activity's RwLock, see set_playback_active
     #[cfg(target_os = "android")]
-    android_app: android_activity::AndroidApp,
+    android_jni: (usize, usize),
+    /// The (active, visual, audible) triple last sent to the activity, so
+    /// state transitions that resolve to the same answer cost no JNI round
+    /// trip.
+    #[cfg(target_os = "android")]
+    android_playback: (bool, bool, bool),
+    /// Whether the current item has something to show. Defaults to true per
+    /// load (video and images want the screen awake from the start); flapjack
+    /// flips it false when the item turns out to be audio only.
+    #[cfg(target_os = "android")]
+    android_visual: bool,
+    /// Whether the current item makes sound. Defaults to true per load (a
+    /// cast arriving during a call must not play over it, so focus is taken
+    /// before the tracks are known); false for images and for items whose
+    /// stream collection has no audio track. An inaudible item takes no
+    /// audio focus and no media session, so a photo never pauses whatever
+    /// else is playing.
+    #[cfg(target_os = "android")]
+    android_audible: bool,
+    /// A transient focus loss (call, alarm) paused playback, so the matching
+    /// regain resumes it. A user pause never sets this.
+    #[cfg(target_os = "android")]
+    android_transient_pause: bool,
+    /// Current item title for the MediaSession metadata, pushed with the
+    /// duration on the progress tick whenever either changes.
+    #[cfg(target_os = "android")]
+    android_media_title: String,
+    #[cfg(target_os = "android")]
+    android_meta_pushed: Option<(String, i64)>,
+    /// Last pushed (playing, speed-milli) edge and when, the session-update
+    /// throttle.
+    #[cfg(target_os = "android")]
+    android_session_pushed: Option<((bool, i32), Instant)>,
     msg_tx: MessageSender,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
+    // start of the current load, drives the load-latency marks
+    load_t0: Option<Instant>,
     #[cfg(not(target_os = "android"))]
     mdns: mdns_sd::ServiceDaemon,
     last_sent_update: Instant,
@@ -751,6 +807,7 @@ pub struct Application {
     gapless_blocked_item: Option<MediaItemId>,
     /// Kill switch: FCAST_NO_GAPLESS=1 forces the ordinary EOS-then-load path.
     gapless_enabled: bool,
+    #[cfg(not(target_os = "android"))]
     screensaver_inhibitor: inhibit_screensaver::Inhibitor,
     tls_acceptor: tokio_rustls::TlsAcceptor,
     companion_ctx: CompanionContext,
@@ -759,6 +816,8 @@ pub struct Application {
     receiver_info: Arc<crate::ReceiverInfo>,
     fcast_txt_records: HashMap<String, String>,
     fcast_senders: HashMap<SenderId, FCastSenderHandle>,
+    /// What each introduced sender said about itself, for the UI.
+    senders: HashMap<SenderId, crate::gui::SenderInfo>,
     inspector_bitrates: InspectorBitrates,
     /// Gates all inspector work so nothing is computed or sent while it is
     /// closed.
@@ -812,6 +871,7 @@ impl Application {
         cue_engine: Option<fcast_video::cue::CueEngine>,
         msg_tx: MessageSender,
         #[cfg(not(target_os = "android"))] settings: Settings,
+        #[cfg(target_os = "android")] android_app: android_activity::AndroidApp,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         for nv_feature in registry.features_by_plugin("nvcodec") {
@@ -882,14 +942,25 @@ impl Application {
             ("fp".to_owned(), fingerprint),
             ("v".to_owned(), "4".to_owned()),
         ]);
+        // android's NsdManager owns the mdns broadcast; the activity pulls
+        // these across its JNI bridge and holds the registration until then
+        #[cfg(target_os = "android")]
+        crate::publish_fcast_txt_records(
+            fcast_txt_records
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect(),
+        );
         #[cfg(not(target_os = "android"))]
         let mdns = mdns::start_daemon(&msg_tx, &settings)?;
 
-        let run_gcast = if cfg!(not(target_os = "android")) {
-            settings.google_cast_enabled()
-        } else {
-            true
-        };
+        #[cfg(not(target_os = "android"))]
+        let run_gcast = settings.google_cast_enabled();
+        // Off on android until the activity registers _googlecast._tcp with
+        // NsdManager: senders discover by mDNS only, so the server was a
+        // bound port with zero reachable users.
+        #[cfg(target_os = "android")]
+        let run_gcast = false;
 
         let gcast_tx = if run_gcast {
             let (gcast_tx, gcast_rx) = mpsc::unbounded_channel::<gcast::StatusUpdate>();
@@ -942,6 +1013,9 @@ impl Application {
         let receiver_info = Arc::new(crate::ReceiverInfo {
             device_info: fcast_protocol::v4::DeviceInfo {
                 display_name: None,
+                #[cfg(target_os = "android")]
+                app_name: Some("FCast Receiver Android".to_owned()),
+                #[cfg(not(target_os = "android"))]
                 app_name: Some("FCast Receiver Desktop".to_owned()),
                 app_version: Some(env!("CARGO_PKG_VERSION").to_owned()),
             },
@@ -952,9 +1026,27 @@ impl Application {
 
         Ok(Self {
             #[cfg(target_os = "android")]
-            android_app,
+            android_jni: (
+                android_app.vm_as_ptr() as usize,
+                android_app.activity_as_ptr() as usize,
+            ),
+            #[cfg(target_os = "android")]
+            android_playback: (false, false, false),
+            #[cfg(target_os = "android")]
+            android_visual: true,
+            #[cfg(target_os = "android")]
+            android_audible: true,
+            #[cfg(target_os = "android")]
+            android_transient_pause: false,
+            #[cfg(target_os = "android")]
+            android_media_title: String::new(),
+            #[cfg(target_os = "android")]
+            android_meta_pushed: None,
+            #[cfg(target_os = "android")]
+            android_session_pushed: None,
             msg_tx,
             updates_tx,
+            load_t0: None,
             #[cfg(not(target_os = "android"))]
             mdns,
             last_sent_update: Instant::now() - SENDER_UPDATE_INTERVAL,
@@ -1023,6 +1115,7 @@ impl Application {
             load_start_override: None,
             gapless_blocked_item: None,
             gapless_enabled: !std::env::var("FCAST_NO_GAPLESS").is_ok_and(|v| v == "1"),
+            #[cfg(not(target_os = "android"))]
             screensaver_inhibitor: inhibit_screensaver::Inhibitor::new(
                 inhibit_screensaver::Options {
                     app_reverse_domain: "org.fcast.receiver".to_owned(),
@@ -1035,6 +1128,7 @@ impl Application {
             receiver_info,
             fcast_txt_records,
             fcast_senders: HashMap::new(),
+            senders: HashMap::new(),
         })
     }
 
@@ -1161,6 +1255,8 @@ impl Application {
         self.release_seek_hold_if_landed(position.seconds_f64());
         self.gui
             .update_playback_progress(position.seconds_f64() as f32, duration.seconds_f64() as f32);
+        #[cfg(target_os = "android")]
+        self.android_media_progress(position.seconds_f64(), duration.seconds_f64());
         self.push_buffered_ranges();
 
         // Bypasses per-sender intervals on purpose; debounced because the start/seek
@@ -1327,6 +1423,8 @@ impl Application {
         self.gui.set_playback_rate(playback_rate as f32);
         self.gui
             .update_playback_progress(position as f32, duration as f32);
+        #[cfg(target_os = "android")]
+        self.android_media_progress(position, duration);
         self.push_buffered_ranges();
 
         if self.should_broadcast()
@@ -1394,11 +1492,11 @@ impl Application {
         self.clear_source_backoff();
 
         if continue_to_play == ContinueToPlay::No {
-            self.gui.set_media_title("".to_owned());
+            self.set_media_title("".to_owned());
             self.gui.set_artist_name("".to_owned());
             self.gui.clear_images();
             self.gui.update_playback_progress(0.0, 0.0);
-            self.gui.set_app_state(AppState::Idle);
+            self.transition_app_state(AppState::Idle);
             self.gui.set_playback_state(GuiPlaybackState::Idle);
             self.gui.clear_tracks();
             self.gui.set_track_ids(-1, -1, -1);
@@ -1449,17 +1547,7 @@ impl Application {
         };
 
         info!("Media loaded successfully");
-
-        #[cfg(target_os = "android")]
-        {
-            let android_app = self.android_app.clone();
-            tokio::task::spawn_blocking(move || {
-                android_app.set_window_flags(
-                    WindowManagerFlags::KEEP_SCREEN_ON,
-                    WindowManagerFlags::empty(),
-                );
-            });
-        }
+        self.load_mark("loaded");
 
         let Some(current_media) = self.current_media.as_ref() else {
             return;
@@ -1618,18 +1706,224 @@ impl Application {
         Ok(())
     }
 
+    /// One line per load phase with time since the load command, the whole
+    /// of the receiver's cast-latency instrumentation. "playing" ends the
+    /// trace so later pause/resume edges stay silent.
+    fn load_mark(&mut self, phase: &str) {
+        let Some(t0) = self.load_t0 else {
+            return;
+        };
+        info!(elapsed_ms = t0.elapsed().as_millis() as u64, phase, "load timeline");
+        if phase == "playing" {
+            self.load_t0 = None;
+        }
+    }
+
+    /// The single edge every device resource hangs off: tells the activity
+    /// whether playback is active, whether it is visual and whether it is
+    /// audible. The Java side owns wake lock, wifi lock, FLAG_KEEP_SCREEN_ON
+    /// (visual only), audio focus and the media session (audible only)
+    /// against exactly this signal, so nothing can leak past a stop, an
+    /// error, or an item that turns out to be an image.
+    ///
+    /// Over JNI rather than android-activity's set_window_flags, whose
+    /// process-wide RwLock deadlocks against the slint event loop holding
+    /// the read side across every callback dispatch.
+    #[cfg(target_os = "android")]
+    fn set_playback_active(&mut self, active: bool) {
+        let state = (
+            active,
+            active && self.android_visual,
+            active && self.android_audible,
+        );
+        if self.android_playback == state {
+            return;
+        }
+        let (vm, activity) = self.android_jni;
+        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(vm as *mut _) }) else {
+            return;
+        };
+        let Ok(mut env) = vm.attach_current_thread_permanently() else {
+            return;
+        };
+        let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
+        match env.call_method(
+            &activity,
+            "setPlaybackActive",
+            "(ZZZ)V",
+            &[
+                jni::objects::JValue::Bool(state.0 as u8),
+                jni::objects::JValue::Bool(state.1 as u8),
+                jni::objects::JValue::Bool(state.2 as u8),
+            ],
+        ) {
+            // cached only on success: a failed release cached as released
+            // would suppress every retry and leak the locks and focus for
+            // the life of the process
+            Ok(_) => self.android_playback = state,
+            Err(err) => {
+                let _ = env.exception_clear();
+                warn!(?err, "setPlaybackActive call into the activity failed");
+            }
+        }
+    }
+
+    /// One JNI call into the activity, reporting success. Permanently
+    /// attached: these run on tokio workers several times a second during
+    /// playback, and a fresh attach/detach pair per call allocates a Java
+    /// thread peer each time.
+    #[cfg(target_os = "android")]
+    fn call_activity(
+        &self,
+        what: &str,
+        sig: &str,
+        args: &[jni::objects::JValue<'_, '_>],
+    ) -> bool {
+        let (vm, activity) = self.android_jni;
+        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(vm as *mut _) }) else {
+            return false;
+        };
+        let Ok(mut env) = vm.attach_current_thread_permanently() else {
+            return false;
+        };
+        let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
+        match env.call_method(&activity, what, sig, args) {
+            Ok(_) => true,
+            Err(err) => {
+                let _ = env.exception_clear();
+                warn!(?err, what, "activity call failed");
+                false
+            }
+        }
+    }
+
+    /// MediaSession state and metadata, from the progress tick. Metadata
+    /// pushes only when the (title, duration) pair actually changed, and
+    /// the playback state only on a state/speed edge plus a 1 Hz keepalive:
+    /// the platform extrapolates position from (position, speed) itself, so
+    /// a 10 Hz setPlaybackState is pure binder churn fanned out to every
+    /// controller.
+    #[cfg(target_os = "android")]
+    fn android_media_progress(&mut self, position_secs: f64, duration_secs: f64) {
+        let playing = matches!(self.player.player_state(), PlayerState::Playing);
+        let speed = self.player.rate() as f32;
+        let dur_ms = (duration_secs * 1000.0) as i64;
+        // compared in place, the title is only cloned on an actual push
+        let meta_stale = self
+            .android_meta_pushed
+            .as_ref()
+            .is_none_or(|(title, dur)| *title != self.android_media_title || *dur != dur_ms);
+        if meta_stale {
+            let (vm, activity) = self.android_jni;
+            if let Ok(vm) = unsafe { jni::JavaVM::from_raw(vm as *mut _) } {
+                if let Ok(mut env) = vm.attach_current_thread_permanently() {
+                    let activity =
+                        unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
+                    // a local frame so the string ref cannot pile up on a
+                    // permanently attached thread
+                    let pushed = env
+                        .with_local_frame(4, |env| -> jni::errors::Result<bool> {
+                            let title = env.new_string(&self.android_media_title)?;
+                            env.call_method(
+                                &activity,
+                                "updateMediaMetadata",
+                                "(Ljava/lang/String;J)V",
+                                &[
+                                    jni::objects::JValue::Object(&title),
+                                    jni::objects::JValue::Long(dur_ms),
+                                ],
+                            )?;
+                            Ok(true)
+                        })
+                        .unwrap_or_else(|err| {
+                            let _ = env.exception_clear();
+                            warn!(?err, "updateMediaMetadata call failed");
+                            false
+                        });
+                    if pushed {
+                        self.android_meta_pushed = Some((self.android_media_title.clone(), dur_ms));
+                    }
+                }
+            }
+        }
+
+        let edge = (playing, (speed * 1000.0) as i32);
+        let stale = self
+            .android_session_pushed
+            .map_or(true, |(last_edge, at)| {
+                last_edge != edge || at.elapsed() >= Duration::from_secs(1)
+            });
+        if !stale {
+            return;
+        }
+        // cached on success only: a failed playing=false push would leave
+        // the Java side holding the wake lock until the next edge
+        if self.call_activity(
+            "updateMediaSession",
+            "(ZJF)V",
+            &[
+                jni::objects::JValue::Bool(playing as u8),
+                jni::objects::JValue::Long((position_secs * 1000.0) as i64),
+                jni::objects::JValue::Float(speed),
+            ],
+        ) {
+            self.android_session_pushed = Some((edge, Instant::now()));
+        }
+    }
+
+    /// The GUI title, mirrored into the android MediaSession metadata on
+    /// the next progress tick.
+    fn set_media_title(&mut self, title: String) {
+        #[cfg(target_os = "android")]
+        {
+            self.android_media_title = title.clone();
+        }
+        self.gui.set_media_title(title);
+    }
+
+    /// The one gate for GUI app-state changes: the android resource edge
+    /// rides on the same transition, so every path out of playback (stop,
+    /// error, playlist end, image finish) releases what playback held.
+    fn transition_app_state(&mut self, state: AppState) {
+        #[cfg(target_os = "android")]
+        {
+            let active = !matches!(state, AppState::Idle);
+            if matches!(state, AppState::LoadingMedia) {
+                // A new item is visual until flapjack says otherwise, and it
+                // must not inherit the previous item's focus-loss hold.
+                self.android_visual = true;
+                self.android_audible = true;
+                self.android_transient_pause = false;
+                // The dedup below can absorb this transition entirely (stop
+                // then immediate re-cast), but focus still needs a re-check:
+                // a cast arriving during a phone call must not play over it.
+                self.call_activity("ensureAudioFocus", "()V", &[]);
+            }
+            if !active {
+                self.android_transient_pause = false;
+                if self.android_playback.0 {
+                    // back to the display's default mode between items
+                    self.call_activity(
+                        "setContentFrameRate",
+                        "(F)V",
+                        &[jni::objects::JValue::Float(0.0)],
+                    );
+                }
+            }
+            self.set_playback_active(active);
+        }
+        self.gui.set_app_state(state);
+    }
+
     fn media_ended(&mut self) {
         info!("Media finished");
 
+        // With an advance pending the release would immediately re-acquire:
+        // audio focus abandoned and re-requested, both locks cycled, and the
+        // notification blinking Casting-Ready-Casting at every EOS boundary.
         #[cfg(target_os = "android")]
-        {
-            let android_app = self.android_app.clone();
-            tokio::task::spawn_blocking(move || {
-                android_app.set_window_flags(
-                    WindowManagerFlags::empty(),
-                    WindowManagerFlags::KEEP_SCREEN_ON,
-                );
-            });
+        if self.autoplay_next_index().is_none() {
+            self.set_playback_active(false);
         }
 
         // An autoplay queue with a next item is exempt: the receiver-side advance must
@@ -1639,7 +1933,46 @@ impl Application {
             self.current_media = None;
         }
 
+        #[cfg(not(target_os = "android"))]
         self.screensaver_inhibitor.un_inhibit();
+    }
+
+    /// Settings consulted from shared code paths. Android has no
+    /// [`Settings`](crate::Settings) (CLI flags and the config store are
+    /// desktop concepts) and answers with its constants.
+    fn is_headless(&self) -> bool {
+        #[cfg(not(target_os = "android"))]
+        {
+            self.settings.headless()
+        }
+        #[cfg(target_os = "android")]
+        {
+            false
+        }
+    }
+
+    fn is_fcast_enabled(&self) -> bool {
+        #[cfg(not(target_os = "android"))]
+        {
+            self.settings.fcast_enabled()
+        }
+        #[cfg(target_os = "android")]
+        {
+            true
+        }
+    }
+
+    /// Whether playback should enter fullscreen (immersive on android) on
+    /// its own. Android has no config store yet, so the default stands.
+    fn fullscreen_player_wanted(&self) -> bool {
+        #[cfg(not(target_os = "android"))]
+        {
+            !self.settings.no_fullscreen_player()
+        }
+        #[cfg(target_os = "android")]
+        {
+            true
+        }
     }
 
     fn queue_mut(&mut self) -> Option<&mut QueueState> {
@@ -1687,6 +2020,7 @@ impl Application {
         url: String,
         headers: Option<HashMap<String, String>>,
     ) -> player::MediaInput {
+        let headers = media_source::request_headers(headers.as_ref());
         let built = match container {
             "application/x-whep" => media_source::build_whep_source(&url),
             "application/x-fwebrtc" => match self.pending_fwebrtc_channel.take() {
@@ -1711,14 +2045,16 @@ impl Application {
                     );
                     media_source::build_uri_source_with_head(
                         &url,
-                        headers,
-                        Some(media_source::PreloadedHead {
+                        headers.clone(),
+                        media_source::PreloadedHead {
                             bytes: item.bytes,
                             total: item.total,
-                        }),
+                        },
                     )
                 }
-                None => media_source::build_uri_source(&url, headers),
+                // flapjack builds the source and sends the headers with every
+                // request the item makes.
+                None => return player::MediaInput::uri_with_headers(url, headers),
             },
         };
         match built {
@@ -1726,7 +2062,7 @@ impl Application {
             Err(err) => {
                 error!(?err, container, "Failed to build the fcast source element");
                 // Fall back to the URI path so the load surfaces a real error.
-                player::MediaInput::Uri(url)
+                player::MediaInput::uri_with_headers(url, headers)
             }
         }
     }
@@ -1861,15 +2197,17 @@ impl Application {
         }
 
         self.window_visible_before_playing = Some(self.gui.set_window_visibility(true));
-        #[cfg(not(target_os = "android"))]
-        if !self.settings.no_fullscreen_player() {
-            // If the window was hidden, it takes some time before it can be fullscreened.
+        if self.fullscreen_player_wanted() {
+            // If the window was hidden, it takes some time before it can be
+            // fullscreened. Android has no hidden-window state to wait out,
+            // fullscreen there is the immersive toggle.
+            #[cfg(not(target_os = "android"))]
             self.gui.wait_for_is_visible();
             self.window_fullscreen_before_playing = Some(self.gui.set_fullscreen(true));
         }
 
         let mut media_title = None;
-        if !self.settings.headless()
+        if !self.is_headless()
             && let Some(v3::MetadataObject::Generic {
                 title,
                 thumbnail_url: Some(thumbnail_url),
@@ -1939,10 +2277,10 @@ impl Application {
 
         self.gui.set_player_type(player_variant);
         if !is_image {
-            self.gui.set_app_state(AppState::LoadingMedia);
+            self.transition_app_state(AppState::LoadingMedia);
         }
         if let Some(title) = media_title {
-            self.gui.set_media_title(title);
+            self.set_media_title(title);
         }
 
         self.current_media_item_id += 1;
@@ -1959,6 +2297,7 @@ impl Application {
             });
         }
         self.is_loading_media = true;
+        self.load_t0 = Some(Instant::now());
         self.clear_source_backoff();
 
         // A pipeline load should reach a steady PAUSED quickly; dump diagnostics if
@@ -1974,6 +2313,7 @@ impl Application {
             });
         }
 
+        #[cfg(not(target_os = "android"))]
         self.screensaver_inhibitor.inhibit("Media playback");
 
         Ok(())
@@ -2019,7 +2359,7 @@ impl Application {
         }
     }
 
-    fn video_stream_available(&self) -> Result<()> {
+    fn video_stream_available(&mut self) -> Result<()> {
         if !self.is_playing() {
             debug!("Ignoring old video stream available event");
             return Ok(());
@@ -2033,12 +2373,31 @@ impl Application {
 
         debug!("Video stream available");
 
+        #[cfg(target_os = "android")]
+        {
+            self.android_visual = true;
+            self.set_playback_active(self.android_playback.0);
+            let fps = self
+                .player
+                .streams
+                .iter()
+                .filter(|s| s.info.slot == flapjack::TrackSlot::Video)
+                .filter_map(|s| s.info.caps.as_ref()?.structure(0)?.get::<gst::Fraction>("framerate").ok())
+                .find(|fr| fr.numer() > 0 && fr.denom() > 0)
+                .map_or(0.0, |fr| fr.numer() as f32 / fr.denom() as f32);
+            self.call_activity(
+                "setContentFrameRate",
+                "(F)V",
+                &[jni::objects::JValue::Float(fps)],
+            );
+        }
+
         self.gui.set_player_type(UiPlayerVariant::Video);
 
         Ok(())
     }
 
-    fn video_stream_unavailable(&self) {
+    fn video_stream_unavailable(&mut self) {
         if !self.is_playing() {
             debug!("Ignoring old video stream unavailable event");
             return;
@@ -2050,6 +2409,18 @@ impl Application {
 
         debug!("Video stream unavailable");
 
+        #[cfg(target_os = "android")]
+        {
+            self.android_visual = false;
+            self.set_playback_active(self.android_playback.0);
+            // an audio item must not inherit the previous video's mode
+            self.call_activity(
+                "setContentFrameRate",
+                "(F)V",
+                &[jni::objects::JValue::Float(0.0)],
+            );
+        }
+
         self.gui.set_player_type(UiPlayerVariant::Audio);
     }
 
@@ -2057,10 +2428,11 @@ impl Application {
         tracing::info!(is_playing = self.is_playing());
         if self.is_playing() {
             self.player.stop();
-            self.gui.set_app_state(AppState::Idle);
+            self.transition_app_state(AppState::Idle);
             self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
             self.current_media = None;
             self.queue_cache.clear();
+            #[cfg(not(target_os = "android"))]
             self.screensaver_inhibitor.un_inhibit();
         }
     }
@@ -2251,21 +2623,6 @@ impl Application {
     /// exclusion, and skipping ticks would let excluded time count as
     /// pinned playback on the first resumed tick.
     fn poll_freeze_watchdog(&mut self) -> Result<()> {
-        // A DEAD SUBTITLE TRACK, which the discard escalation cannot see.
-        // Sampled here because this is the tick that already exists; the
-        // verdict needs elapsed time and the bus hook has none (see
-        // `player::SubtitleFlow`). Reported at most once per load, and only
-        // logged: the track is gone for the item either way, and a toast for
-        // something the user cannot act on is the noise the warning filter
-        // exists to prevent.
-        if let Some(stream) = self.player.stalled_subtitle_stream() {
-            error!(
-                stream,
-                "the subtitle track took a FLUSHING discard and has delivered nothing since: \
-                 its multiqueue slot is latched and the track will not play again for this item"
-            );
-        }
-
         if !self.freeze_watchdog.enabled() {
             return Ok(());
         }
@@ -2306,8 +2663,8 @@ impl Application {
         match action {
             FreezeAction::None => (),
             FreezeAction::Seek { .. } => {
-                let seqnum = self.player.freeze_recovery_seek();
-                self.freeze_watchdog.note_recovery_seek(seqnum);
+                let op = self.player.freeze_recovery_seek();
+                self.freeze_watchdog.note_recovery_seek(op);
             }
             FreezeAction::Reload { .. } => {
                 let rate = self.player.rate() as f32;
@@ -2387,27 +2744,32 @@ impl Application {
     /// cached item still goes through urisourcebin with its bytes as a
     /// preloaded head, because a prepared input's pads sit
     /// unlinked-and-blocked until the swap and the appsrc bytes source dies
-    /// not-negotiated against them.
+    /// not-negotiated against them. An uncached item is flapjack's own URI
+    /// input.
     fn build_gapless_source(
         &mut self,
         container: &str,
         url: String,
         headers: Option<HashMap<String, String>>,
     ) -> player::MediaInput {
-        let head =
-            self.queue_cache_entry(&url, container)
-                .map(|item| media_source::PreloadedHead {
-                    bytes: item.bytes,
-                    total: item.total,
-                });
-        match media_source::build_uri_source_with_head(&url, headers, head) {
+        let headers = media_source::request_headers(headers.as_ref());
+        let head = self
+            .queue_cache_entry(&url, container)
+            .map(|item| media_source::PreloadedHead {
+                bytes: item.bytes,
+                total: item.total,
+            });
+        let Some(head) = head else {
+            return player::MediaInput::uri_with_headers(url, headers);
+        };
+        match media_source::build_uri_source_with_head(&url, headers.clone(), head) {
             Ok(element) => player::MediaInput::Element(element),
             Err(err) => {
                 error!(
                     ?err,
                     container, "Failed to build the gapless source element"
                 );
-                player::MediaInput::Uri(url)
+                player::MediaInput::uri_with_headers(url, headers)
             }
         }
     }
@@ -2689,7 +3051,7 @@ impl Application {
         // here too: a titleless item must not keep the retired item's title,
         // and the artist only ever comes from Tags, so it clears either way
         // and refreshes if the new item carries any.
-        self.gui.set_media_title(title.unwrap_or_default());
+        self.set_media_title(title.unwrap_or_default());
         self.last_artist_name = None;
         self.gui.set_artist_name(String::new());
 
@@ -2700,7 +3062,7 @@ impl Application {
             media.pending_thumbnail = None;
             media.pending_thumbnail_download = None;
         }
-        if !self.settings.headless()
+        if !self.is_headless()
             && let Some(thumbnail_url) = thumbnail_url
         {
             self.have_audio_track_cover = true;
@@ -2885,6 +3247,12 @@ impl Application {
     }
 
     fn pause(&mut self) {
+        // An explicit pause overrides a focus-loss hold: the next focus gain
+        // must not resume against the user's intent.
+        #[cfg(target_os = "android")]
+        {
+            self.android_transient_pause = false;
+        }
         // A pause landing mid-load is recorded as desired transport and committed at
         // preroll.
         if self.is_playing() {
@@ -2893,6 +3261,17 @@ impl Application {
     }
 
     fn resume(&mut self) {
+        // Any resume ends a focus-loss hold; a stale one must not re-fire on
+        // the next focus gain. And a resume needs focus it may have lost
+        // permanently (the request self-clears on LOSS): re-request, with a
+        // refusal coming back as a transient-loss event that pauses again.
+        #[cfg(target_os = "android")]
+        {
+            self.android_transient_pause = false;
+            if self.android_audible {
+                self.call_activity("ensureAudioFocus", "()V", &[]);
+            }
+        }
         if self.is_playing() {
             self.player.play();
         }
@@ -2996,6 +3375,23 @@ impl Application {
     }
 
     fn handle_operation(&mut self, op: Operation, origin: PacketOrigin) -> Result<bool> {
+        // A transport command from outside this UI gets the player's mini OSD:
+        // the sender's pause, resume and seek. A click on the receiver's own
+        // chrome is its own feedback.
+        if !matches!(origin, PacketOrigin::Gui)
+            && let Some(kind) = remote_transport_kind(&op, self.player.player_state())
+        {
+            let by = match origin {
+                PacketOrigin::FCast { sender_id, .. } | PacketOrigin::GCast { sender_id, .. } => {
+                    self.senders
+                        .get(&sender_id)
+                        .map(|s| s.display_name.clone())
+                        .filter(|name| !name.is_empty())
+                }
+                _ => None,
+            };
+            self.gui.transport_from_sender(kind, by);
+        }
         match op {
             Operation::Pause => self.pause(),
             Operation::Resume => self.resume(),
@@ -3186,23 +3582,40 @@ impl Application {
     }
 
     fn handle_mdns_event(&mut self, event: Mdns) -> Result<()> {
-        match event {
+        // Unchanged inputs stop here. The rebuild below is a fast_qr run, a
+        // pixel buffer and a scene dirty, and android re-sends the name on
+        // every NSD re-registration and the address set from a 30 s sweep.
+        let addresses_changed = !matches!(event, Mdns::NameSet(_));
+        let changed = match event {
             Mdns::NameSet(device_name) => {
-                self.device_name = Some(device_name.clone());
-                self.gui.set_local_device_name(device_name);
-            }
-            Mdns::IpAdded(addr) => {
-                let _ = self.current_addresses.insert(addr);
-            }
-            Mdns::IpRemoved(addr) => {
-                let _ = self.current_addresses.remove(&addr);
-            }
-            Mdns::SetIps(addrs) => {
-                self.current_addresses.clear();
-                for addr in addrs {
-                    let _ = self.current_addresses.insert(addr);
+                if self.device_name.as_deref() == Some(device_name.as_str()) {
+                    false
+                } else {
+                    self.device_name = Some(device_name.clone());
+                    self.gui.set_local_device_name(device_name);
+                    true
                 }
             }
+            Mdns::IpAdded(addr) => self.current_addresses.insert(addr),
+            Mdns::IpRemoved(addr) => self.current_addresses.remove(&addr),
+            Mdns::SetIps(addrs) => {
+                let addrs: HashSet<IpAddr> = addrs.into_iter().collect();
+                if addrs == self.current_addresses {
+                    false
+                } else {
+                    self.current_addresses = addrs;
+                    true
+                }
+            }
+        };
+        if !changed {
+            return Ok(());
+        }
+        if addresses_changed {
+            // A pooled HTTP connection outlives the change as a corpse until
+            // its keep-alive notices, which a viewer sees as a freeze at the
+            // next segment.
+            self.player.network_changed();
         }
 
         self.update_connection_details()
@@ -3271,6 +3684,38 @@ impl Application {
     /// Map a selected subtitle stream id to the wire id senders should see: an
     /// external's STABLE catalog id, otherwise the stream's advertised
     /// index.
+    /// The wire/GUI edge: the applied stream ids mapped back to advertised
+    /// indices, for the GUI and every sender. On a confirmed selection, and
+    /// again when the collection lands after one.
+    fn publish_track_ids(&mut self) {
+        let video_id = self
+            .player
+            .current_video_sid()
+            .and_then(|sid| self.player.stream_idx_by_id(sid));
+        let audio_id = self
+            .player
+            .current_audio_sid()
+            .and_then(|sid| self.player.stream_idx_by_id(sid));
+        let subtitle_id = self.advertised_subtitle_id(self.player.current_subtitle_sid());
+        self.gui.set_track_ids(
+            video_id.map(|i| i as i32).unwrap_or(-1),
+            audio_id.map(|i| i as i32).unwrap_or(-1),
+            subtitle_id.map(|i| i as i32).unwrap_or(-1),
+        );
+
+        if self.updates_tx.strong_count() > 0 {
+            let msgs = vec![
+                v4::MessageBuilder::new().change_track(video_id, v4::flat::MediaTrackType::Video),
+                v4::MessageBuilder::new().change_track(audio_id, v4::flat::MediaTrackType::Audio),
+                v4::MessageBuilder::new()
+                    .change_track(subtitle_id, v4::flat::MediaTrackType::Subtitle),
+            ];
+            let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+                fcast::V4Message::TracksSelected(msgs),
+            )));
+        }
+    }
+
     fn advertised_subtitle_id(&self, subtitle_sid: Option<&str>) -> Option<u32> {
         let sid = subtitle_sid?;
         // The catalog comes first: an external is never advertised under its list
@@ -3652,28 +4097,14 @@ impl Application {
                     if external_stream_idxs.contains(&(idx as u32)) {
                         return None;
                     }
-                    let typ = s.inner.stream_type();
-
-                    let metadata = if typ.contains(gst::StreamType::VIDEO) {
-                        Some(v4::MediaTrackMetadata::Video)
-                    } else if typ.contains(gst::StreamType::AUDIO) {
-                        Some(v4::MediaTrackMetadata::Audio)
-                    } else if typ.contains(gst::StreamType::TEXT) {
-                        Some(v4::MediaTrackMetadata::Subtitle)
-                    } else {
-                        return None;
+                    let metadata = match s.info.slot {
+                        flapjack::TrackSlot::Video => Some(v4::MediaTrackMetadata::Video),
+                        flapjack::TrackSlot::Audio => Some(v4::MediaTrackMetadata::Audio),
+                        flapjack::TrackSlot::Subtitle => Some(v4::MediaTrackMetadata::Subtitle),
                     };
 
-                    let (title, iso_639) = if let Some(tags) = s.inner.tags() {
-                        (
-                            tags.get::<gst::tags::Title>()
-                                .map(|t| smol_str::SmolStr::new(t.get())),
-                            tags.get::<gst::tags::LanguageCode>()
-                                .map(|t| SmolStr::new(t.get())),
-                        )
-                    } else {
-                        (None, None)
-                    };
+                    let title = s.info.title.as_deref().map(smol_str::SmolStr::new);
+                    let iso_639 = s.info.language.as_deref().map(SmolStr::new);
 
                     Some(v4::MediaTrack {
                         id: idx as u32,
@@ -3706,15 +4137,10 @@ impl Application {
             if external_stream_idxs.contains(&(idx as u32)) {
                 continue;
             }
-            let typ = stream.inner.stream_type();
-            let dst = if typ.contains(gst::StreamType::VIDEO) {
-                Some(&mut videos)
-            } else if typ.contains(gst::StreamType::AUDIO) {
-                Some(&mut audios)
-            } else if typ.contains(gst::StreamType::TEXT) {
-                Some(&mut subtitles)
-            } else {
-                None
+            let dst = match stream.info.slot {
+                flapjack::TrackSlot::Video => Some(&mut videos),
+                flapjack::TrackSlot::Audio => Some(&mut audios),
+                flapjack::TrackSlot::Subtitle => Some(&mut subtitles),
             };
 
             if let Some(dst) = dst {
@@ -3876,7 +4302,7 @@ impl Application {
                     return Ok(());
                 };
 
-                if !self.settings.headless()
+                if !self.is_headless()
                     && !self.have_audio_track_cover
                     && let Some(cover) = tags.get::<gst::tags::Image>()
                     && let Some(buffer) = cover.get().buffer()
@@ -3901,7 +4327,7 @@ impl Application {
                     && let Some(title) = tags.get::<gst::tags::Title>()
                 {
                     self.have_media_title = true;
-                    self.gui.set_media_title(title.get().to_owned());
+                    self.set_media_title(title.get().to_owned());
                 }
 
                 if let Some(artist) = tags.get::<gst::tags::Artist>()
@@ -3929,7 +4355,20 @@ impl Application {
                 self.player.update_media_info();
                 self.on_media_info_updated();
 
-                self.gui.set_app_state(AppState::Playing);
+                // The tracks are known now: an item with no audio stream
+                // (image through the pipeline, silent clip) must not hold
+                // audio focus over whatever else is playing. An empty
+                // collection says nothing yet and keeps the load default.
+                #[cfg(target_os = "android")]
+                if !self.player.streams.is_empty() {
+                    self.android_audible = self
+                        .player
+                        .streams
+                        .iter()
+                        .any(|s| s.info.slot == flapjack::TrackSlot::Audio);
+                }
+
+                self.transition_app_state(AppState::Playing);
 
                 // NO transport driving here: `Player::uri_loaded` is the one post-load
                 // transport driver, or a mid-load pause gets stomped and a live subtitle
@@ -3938,6 +4377,16 @@ impl Application {
                 self.refresh_external_stream_sids();
 
                 self.update_tracks(true);
+                // An upstream engine confirms its selection on activation,
+                // ahead of decodebin3's merged collection, so a confirmation
+                // that arrived before this mapped against no tracks and read
+                // as nothing selected.
+                if self.player.current_video_sid().is_some()
+                    || self.player.current_audio_sid().is_some()
+                    || self.player.current_subtitle_sid().is_some()
+                {
+                    self.publish_track_ids();
+                }
 
                 if !self.have_media_info {
                     self.media_loaded_successfully();
@@ -4016,6 +4465,12 @@ impl Application {
                     && pending == gst::State::VoidPending;
                 let started_playing =
                     current == gst::State::Playing && pending == gst::State::VoidPending;
+                if first_paused {
+                    self.load_mark("prerolled");
+                }
+                if started_playing {
+                    self.load_mark("playing");
+                }
                 // The only duration writer that deliberately overwrites: preroll/resume is
                 // where the pipeline first has a real answer. A gapless swap produces
                 // neither edge, hence the `DurationChanged` handler and the activation reset.
@@ -4055,15 +4510,6 @@ impl Application {
                 self.clear_source_backoff();
             }
             player::PlayerEvent::RequestState(state) => self.player.request_state(state),
-            player::PlayerEvent::QueueSeek(seek) => self.player.queue_seek(seek),
-            player::PlayerEvent::SubtitleRefreshFailed { seqnum } => {
-                // The freeze watchdog's recovery seek rides the same job; a refusal means
-                // only the escalation can recover.
-                if self.freeze_watchdog.is_recovery_seek(seqnum) {
-                    warn!("FREEZE WATCHDOG: the recovery seek was refused by the pipeline");
-                }
-                self.player.subtitle_refresh_failed(seqnum)
-            }
             player::PlayerEvent::StreamsSelected {
                 video,
                 audio,
@@ -4082,47 +4528,29 @@ impl Application {
                 if selected.subtitle.as_deref() != prev_subtitle.as_deref() {
                     self.gui.clear_video_overlays();
                 }
-                // The wire/GUI edge: applied stream ids map back to advertised indices.
-                let video_id = selected
-                    .video
-                    .as_deref()
-                    .and_then(|sid| self.player.stream_idx_by_id(sid));
-                let audio_id = selected
-                    .audio
-                    .as_deref()
-                    .and_then(|sid| self.player.stream_idx_by_id(sid));
-                let subtitle_id = self.advertised_subtitle_id(selected.subtitle.as_deref());
-                self.gui.set_track_ids(
-                    video_id.map(|i| i as i32).unwrap_or(-1),
-                    audio_id.map(|i| i as i32).unwrap_or(-1),
-                    subtitle_id.map(|i| i as i32).unwrap_or(-1),
-                );
+                self.publish_track_ids();
 
                 if video.is_some() {
                     self.video_stream_available()?;
                 } else {
                     self.video_stream_unavailable();
                 }
-
-                if self.updates_tx.strong_count() > 0 {
-                    let msgs = vec![
-                        v4::MessageBuilder::new()
-                            .change_track(video_id, v4::flat::MediaTrackType::Video),
-                        v4::MessageBuilder::new()
-                            .change_track(audio_id, v4::flat::MediaTrackType::Audio),
-                        v4::MessageBuilder::new()
-                            .change_track(subtitle_id, v4::flat::MediaTrackType::Subtitle),
-                    ];
-                    let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
-                        fcast::V4Message::TracksSelected(msgs),
-                    )));
+            }
+            player::PlayerEvent::SeekFailed { op } => {
+                // The freeze watchdog's recovery seek rides flapjack's refresh
+                // seek and comes back under its own op; only the escalation can
+                // recover from its refusal, and the transport state machine has
+                // no seek of its own to fail for it.
+                if op.is_some_and(|op| self.freeze_watchdog.is_recovery_seek(op)) {
+                    warn!("FREEZE WATCHDOG: the recovery seek was refused by the pipeline");
+                    self.player.subtitle_refresh_failed();
+                } else {
+                    self.player.seek_failed();
                 }
             }
-            player::PlayerEvent::SeekFailed => {
-                self.player.seek_failed();
-            }
             player::PlayerEvent::ClockLost => {
-                self.player.recover_clock();
+                // a report only, flapjack re-elects the clock itself
+                debug!("pipeline clock lost, the player re-elects one");
             }
             player::PlayerEvent::RateChanged(new_rate) => {
                 self.player.set_rate_changed(new_rate);
@@ -4412,11 +4840,10 @@ impl Application {
     fn handle_raop_event(&mut self, event: Raop) -> Result<bool> {
         match event {
             Raop::ConfigAvailable(config) => {
-                let run_raop = if cfg!(not(target_os = "android")) {
-                    self.settings.raop_enabled()
-                } else {
-                    true
-                };
+                #[cfg(not(target_os = "android"))]
+                let run_raop = self.settings.raop_enabled();
+                #[cfg(target_os = "android")]
+                let run_raop = true;
 
                 if run_raop && self.raop_server.is_none() {
                     info!(?config, "Starting raop server");
@@ -4470,13 +4897,13 @@ impl Application {
                 self.current_media =
                     Some(MediaSourceState::new(PacketOrigin::Raop, MediaSource::Raop));
 
-                self.gui.set_app_state(AppState::Playing);
+                self.transition_app_state(AppState::Playing);
                 self.gui.set_player_type(UiPlayerVariant::Raop);
             }
             Raop::SenderDisconnected => {
                 debug!("Session ended");
                 self.current_media = None;
-                self.gui.set_app_state(AppState::Idle);
+                self.transition_app_state(AppState::Idle);
                 self.gui.set_player_type(UiPlayerVariant::Unknown);
                 self.gui.clear_common_playback_state();
             }
@@ -4500,7 +4927,7 @@ impl Application {
             Raop::CoverArtRemoved => self.gui.clear_audio_covers(),
             Raop::MetadataSet(metadata) => {
                 if let Some(title) = metadata.title {
-                    self.gui.set_media_title(title);
+                    self.set_media_title(title);
                 }
                 if let Some(name) = metadata.artist {
                     self.gui.set_artist_name(name);
@@ -4607,7 +5034,7 @@ impl Application {
                     Ok(element) => player::MediaInput::Element(element),
                     Err(err) => {
                         error!(?err, "Failed to build the AirPlay mirror source");
-                        player::MediaInput::Uri(uri)
+                        player::MediaInput::uri(uri)
                     }
                 };
                 // No start seek: a mirror stream is live.
@@ -4619,7 +5046,7 @@ impl Application {
                         stream_connection_id,
                     },
                 ));
-                self.gui.set_app_state(AppState::Playing);
+                self.transition_app_state(AppState::Playing);
                 self.gui.set_player_type(UiPlayerVariant::Video);
             }
             AirPlay::MirrorPaused {
@@ -4841,7 +5268,20 @@ impl Application {
                 );
 
                 self.gui.set_image_preview(img);
-                self.gui.set_app_state(AppState::Playing);
+                // the image lane skips LoadingMedia, so the visual default
+                // set there must be re-asserted or a picture after an
+                // audio-only item lets the screen sleep on it
+                #[cfg(target_os = "android")]
+                {
+                    self.android_visual = true;
+                    // A picture makes no sound: no audio focus (it would
+                    // pause whatever else is playing), no media session and
+                    // no optimistic wake lock (a photo left up overnight is
+                    // exactly the Play battery case). FLAG_KEEP_SCREEN_ON
+                    // carries the screen.
+                    self.android_audible = false;
+                }
+                self.transition_app_state(AppState::Playing);
 
                 self.media_loaded_successfully();
             }
@@ -4900,9 +5340,11 @@ impl Application {
         // Tapped stream ids match the collection's for parsed containers; a sid-less
         // input falls back to the first tap of the right caps kind.
         let sample = |current_sid: Option<&str>, kind: &str| -> Option<(String, u64)> {
+            // stats carry flapjack handles, compare in the receiver's string form
+            let sid_str = |s: &flapjack::StreamIoStats| s.stream_id.map(|id| id.to_string());
             let by_sid = stats
                 .iter()
-                .find(|s| s.stream_id.as_deref() == current_sid && current_sid.is_some());
+                .find(|s| sid_str(s).as_deref() == current_sid && current_sid.is_some());
             let by_kind = || {
                 stats.iter().find(|s| {
                     s.external.is_none()
@@ -4912,12 +5354,9 @@ impl Application {
                             .is_some_and(|structure| structure.name().as_str().starts_with(kind))
                 })
             };
-            by_sid.or_else(by_kind).map(|s| {
-                (
-                    s.stream_id.clone().unwrap_or_else(|| kind.to_string()),
-                    s.bytes,
-                )
-            })
+            by_sid
+                .or_else(by_kind)
+                .map(|s| (sid_str(s).unwrap_or_else(|| kind.to_string()), s.bytes))
         };
         let video = sample(self.player.current_video_sid(), "video/");
         let audio = sample(self.player.current_audio_sid(), "audio/");
@@ -5003,19 +5442,14 @@ impl Application {
     }
 
     /// One track-table row from an advertised stream.
-    fn inspector_track_row(stream: &gst::Stream, selected: bool) -> gui::InspectorTrackRow {
-        let ty = stream.stream_type();
-        let kind = if ty.contains(gst::StreamType::VIDEO) {
-            "Video"
-        } else if ty.contains(gst::StreamType::AUDIO) {
-            "Audio"
-        } else if ty.contains(gst::StreamType::TEXT) {
-            "Text"
-        } else {
-            "Other"
+    fn inspector_track_row(stream: &flapjack::StreamInfo, selected: bool) -> gui::InspectorTrackRow {
+        let kind = match stream.slot {
+            flapjack::TrackSlot::Video => "Video",
+            flapjack::TrackSlot::Audio => "Audio",
+            flapjack::TrackSlot::Subtitle => "Text",
         };
 
-        let caps = stream.caps();
+        let caps = stream.caps.clone();
         let codec = caps
             .as_ref()
             .map(|c| gst_pbutils::pb_utils_get_codec_description(c).to_string())
@@ -5038,21 +5472,9 @@ impl Application {
             }
         }
 
-        let tags = stream.tags();
-        let language = tags
-            .as_ref()
-            .and_then(|t| t.get::<gst::tags::LanguageCode>())
-            .map(|v| v.get().to_string())
-            .unwrap_or_default();
-        if let Some(bitrate) = tags.as_ref().and_then(|t| t.get::<gst::tags::Bitrate>()) {
-            let kbps = bitrate.get() / 1000;
-            if kbps > 0 {
-                if !detail.is_empty() {
-                    detail += ", ";
-                }
-                detail += &format!("{kbps} kbit/s");
-            }
-        }
+        // bitrate came from the stream's tags, which StreamInfo does not
+        // carry; the inspector's bitrate card samples io stats instead
+        let language = stream.language.clone().unwrap_or_default();
 
         gui::InspectorTrackRow {
             kind: kind.to_string(),
@@ -5182,6 +5604,31 @@ impl Application {
                 debug!(?event, "mDNS event");
                 self.handle_mdns_event(event)?;
             }
+            #[cfg(target_os = "android")]
+            Message::AndroidAudio(event) => {
+                use crate::message::AndroidAudio;
+                debug!(?event, "android audio event");
+                // Unconditional pauses: a focus refusal can arrive while the
+                // item is still LOADING (a cast placed during a phone call),
+                // where pause() records the desired transport and the item
+                // prerolls paused instead of playing over the call.
+                match event {
+                    AndroidAudio::Loss | AndroidAudio::BecomingNoisy => {
+                        self.pause();
+                        self.android_transient_pause = false;
+                    }
+                    AndroidAudio::TransientLoss => {
+                        // pause() clears the flag, so set it after
+                        self.pause();
+                        self.android_transient_pause = true;
+                    }
+                    AndroidAudio::Gain => {
+                        if std::mem::take(&mut self.android_transient_pause) {
+                            self.resume();
+                        }
+                    }
+                }
+            }
             Message::PlaylistDataResult { play_message } => {
                 let Some(play_message) = play_message else {
                     error!("Playlist failed to laod");
@@ -5278,7 +5725,7 @@ impl Application {
             }
             Message::ShouldSetLoadingStatus(id) => {
                 if id == self.current_media_item_id && self.is_loading_media {
-                    self.gui.set_app_state(AppState::LoadingMedia);
+                    self.transition_app_state(AppState::LoadingMedia);
                 }
             }
             Message::PendingSubtitleAddCheck { item, epoch } => {
@@ -5361,6 +5808,13 @@ impl Application {
             }
             Message::FCastSenderDisconnect(id) => {
                 self.fcast_senders.remove(&id);
+                if self.senders.remove(&id).is_some() {
+                    self.gui.set_senders(self.senders.values().cloned().collect());
+                }
+            }
+            Message::SenderIntroduced { sender_id, info } => {
+                self.senders.insert(sender_id, info);
+                self.gui.set_senders(self.senders.values().cloned().collect());
             }
             Message::SetConfigBool { key, value } => {
                 #[cfg(not(target_os = "android"))]
@@ -5594,7 +6048,7 @@ impl Application {
         // we commit with no listeners so the loop still serves
         // chromecast/airplay/raop; the empty listener stream stays pending and
         // never fires.
-        let listeners = if self.settings.fcast_enabled() {
+        let listeners = if self.is_fcast_enabled() {
             self.resolve_listen_port(&mut event_rx).await?
         } else {
             info!("FCast receiver disabled by settings, not binding or advertising it");
@@ -5602,6 +6056,8 @@ impl Application {
         };
         if let Some(listeners) = listeners {
             self.port_committed = true;
+            #[cfg(target_os = "android")]
+            crate::publish_fcast_port(self.fcast_port);
             // Advertise only now, at the port actually bound, so a second instance never
             // publishes a duplicate record.
             #[cfg(not(target_os = "android"))]
@@ -5683,7 +6139,19 @@ impl Application {
 
         debug!("Quitting");
 
-        self.player.stop();
+        // A queued stop returns before the pipeline reaches Null, and process
+        // exit while the VA-API decoder tears down on a worker thread
+        // segfaults inside the driver (vaTerminate walking a freed map). Wait
+        // for the descent, bounded so a wedged teardown still lets exit win.
+        let (null_tx, null_rx) = oneshot::channel::<()>();
+        self.player.shutdown(null_tx);
+        let wait = tokio::task::spawn_blocking(move || {
+            null_rx.recv_timeout(std::time::Duration::from_secs(5))
+        });
+        match wait.await {
+            Ok(Ok(())) => debug!("pipeline reached null before exit"),
+            _ => warn!("pipeline teardown did not finish in 5s, exiting anyway"),
+        }
         self.gui.quit_loop();
 
         if fin_tx.send(()).is_err() {

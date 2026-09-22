@@ -106,7 +106,10 @@ pub type SabrSessionListener = dyn for<'a> Fn(SabrSessionEvent<'a>) + Send + Syn
 
 /// Deliver an event to the registered listener, if any.
 fn emit(shared: &Arc<Shared>, event: SabrSessionEvent) {
-    if let Some(listener) = shared.listener.lock().as_deref() {
+    // Cloned out of the lock. A listener that calls back into the session
+    // (release, set_listener) would otherwise deadlock the pump on this mutex.
+    let listener = shared.listener.lock().clone();
+    if let Some(listener) = listener {
         listener(event);
     }
 }
@@ -135,7 +138,6 @@ struct State {
 
     playback_position_us: i64,
     resume_position_us: Option<i64>,
-    restart_from_us: i64,
     seek_pending_us: Option<i64>,
     last_sabr_seek_us: i64,
     restart_epoch: i32,
@@ -276,7 +278,6 @@ impl SabrSession {
             audio_demand: None,
             playback_position_us: 0,
             resume_position_us: None,
-            restart_from_us: NO_US,
             seek_pending_us: None,
             last_sabr_seek_us: NO_US,
             restart_epoch: 0,
@@ -562,6 +563,8 @@ impl SabrSession {
             return;
         }
         state.playback_position_us = from_us;
+        state.seek_pending_us = None;
+        state.last_sabr_seek_us = NO_US;
         reanchor_demands(&mut state, from_us);
         state.last_action_ms = now_ms();
         self.shared.notify.notify_waiters();
@@ -580,7 +583,10 @@ impl SabrSession {
         }
         state.playback_position_us = from_us;
         state.resume_position_us = Some(from_us);
-        state.restart_from_us = from_us;
+        // The newest intent. A server seek still pending for the old position
+        // must not re-target the request once this one has been answered.
+        state.seek_pending_us = None;
+        state.last_sabr_seek_us = NO_US;
         state.last_action_ms = now_ms();
         state.restart_epoch += 1;
         state.rejoin_live_head = false;
@@ -746,6 +752,7 @@ async fn perform_request(shared: &Arc<Shared>, local: &mut PumpLocal) -> Result<
     let requested_resume;
     let position_us;
     let streaming_url;
+    let accepted_keys;
     {
         let mut state = shared.state.lock();
         state.aborting = false;
@@ -758,6 +765,7 @@ async fn perform_request(shared: &Arc<Shared>, local: &mut PumpLocal) -> Result<
         requested_resume = state.resume_position_us;
         position_us = request_position_us(shared, &state);
         streaming_url = state.streaming_url.clone();
+        accepted_keys = accepted_format_keys(&state);
     }
     local.demanded_headers = 0;
     local.foreign_headers = 0;
@@ -781,8 +789,10 @@ async fn perform_request(shared: &Arc<Shared>, local: &mut PumpLocal) -> Result<
         ("Referer", "https://www.youtube.com/".to_owned()),
     ];
 
-    let (video_count_before, video_init_before) = count_and_init(shared, &video);
-    let (audio_count_before, audio_init_before) = count_and_init(shared, &audio);
+    // Over every acceptable rung, not only the active one. The server may
+    // answer with an alternate (adopted in `on_media_header`), and judging
+    // that response by the old rung's buffer read it as empty.
+    let before = BufferSnapshot::take(shared, &accepted_keys);
 
     shared.state.lock().last_request_ms = now_ms();
     let sent_ms = now_ms();
@@ -812,20 +822,6 @@ async fn perform_request(shared: &Arc<Shared>, local: &mut PumpLocal) -> Result<
             state.resume_position_us = None;
         }
     }
-
-    let accepted_keys = {
-        let state = shared.state.lock();
-        let mut keys = HashSet::new();
-        for d in [&state.video_demand, &state.audio_demand]
-            .into_iter()
-            .flatten()
-        {
-            for a in &d.alternates {
-                keys.insert(a.key());
-            }
-        }
-        keys
-    };
 
     let bytes_before = local.media_bytes;
     let media_us_before = local.media_us_delivered;
@@ -861,15 +857,7 @@ async fn perform_request(shared: &Arc<Shared>, local: &mut PumpLocal) -> Result<
         }
     }
 
-    let advanced = has_advanced(
-        shared,
-        &video,
-        video_count_before,
-        video_init_before,
-        &audio,
-        audio_count_before,
-        audio_init_before,
-    );
+    let advanced = before.advanced(shared);
 
     log::debug!(
         "sabr: response advanced={advanced} redirected={redirected} mediaBytes={} demandedHeaders={} foreignHeaders={}",
@@ -1136,6 +1124,11 @@ async fn consume(
 
     result?;
 
+    // A restart (client seek, stall rejoin) during this response makes its
+    // positional directives stale: they answer a position the client has since
+    // abandoned. A redirect's host change still stands.
+    let superseded = shared.state.lock().restart_epoch != start_epoch;
+
     if let Some(url) = redirect {
         log::info!("sabr: redirect issued");
         local.consecutive_redirects += 1;
@@ -1143,7 +1136,9 @@ async fn consume(
             let mut state = shared.state.lock();
             state.streaming_url = url;
             state.backoff_until_ms = state.server_backoff_until_ms;
-            state.resume_position_us = Some(requested_position_us);
+            if !superseded {
+                state.resume_position_us = Some(requested_position_us);
+            }
         }
         if local.consecutive_redirects >= MAX_REDIRECTS {
             return Err(PumpStep::Error(SabrError::Protocol(format!(
@@ -1154,7 +1149,9 @@ async fn consume(
         return Ok(true);
     }
 
-    if let Some(seek) = seek_to_us {
+    if let Some(seek) = seek_to_us
+        && !superseded
+    {
         let empty_response = local.media_bytes == bytes_at_start;
         apply_sabr_seek(shared, seek, requested_position_us, empty_response);
     }
@@ -1847,12 +1844,18 @@ fn starved(shared: &Arc<Shared>, state: &State) -> bool {
 fn evict_consumed_segments(shared: &Arc<Shared>) {
     let (threshold, buffers) = {
         let state = shared.state.lock();
-        let floor = if state.restart_from_us != NO_US {
-            state.restart_from_us
-        } else {
-            state.playback_position_us
-        };
-        let threshold = state.playback_position_us.min(floor) - state.keep_behind_us;
+        // Floor at the slowest consumer's read frontier. Each feeder reports
+        // its own frontier as the playback position (last writer wins), so the
+        // position alone can sit a whole readahead past the laggard, and a
+        // restart re-anchors from_us before any stale position report lands.
+        let mut floor = state.playback_position_us;
+        for demand in [&state.video_demand, &state.audio_demand]
+            .into_iter()
+            .flatten()
+        {
+            floor = floor.min(demand.from_us);
+        }
+        let threshold = floor.saturating_sub(state.keep_behind_us);
         (
             threshold,
             shared.buffers.lock().values().cloned().collect::<Vec<_>>(),
@@ -1930,7 +1933,6 @@ fn apply_sabr_seek(
     state.last_sabr_seek_us = seek_to_us;
     state.seek_pending_us = Some(seek_to_us);
     state.playback_position_us = seek_to_us;
-    state.restart_from_us = seek_to_us;
     reanchor_demands(&mut state, seek_to_us);
     state.last_action_ms = now_ms();
 
@@ -2049,7 +2051,6 @@ fn maybe_rejoin_after_stall(shared: &Arc<Shared>, local: &mut PumpLocal) {
                 );
                 state.rejoin_live_head = false;
                 state.seek_pending_us = Some(target);
-                state.restart_from_us = target;
                 reanchor_demands(&mut state, target);
             }
             None => {
@@ -2100,40 +2101,48 @@ fn self_notify(shared: &Arc<Shared>) {
     shared.notify.notify_waiters();
 }
 
-fn count_and_init(
-    shared: &Arc<Shared>,
-    format: &Option<SabrFormat>,
-) -> (usize, Option<Arc<SabrSegment>>) {
-    match format {
-        Some(f) => {
-            let buffer = self_buffer(shared, &f.key());
-            (buffer.segment_count(), buffer.init_segment())
+/// Every format key the current demands accept (all alternates of both roles).
+fn accepted_format_keys(state: &State) -> HashSet<SabrFormatKey> {
+    let mut keys = HashSet::new();
+    for d in [&state.video_demand, &state.audio_demand]
+        .into_iter()
+        .flatten()
+    {
+        for a in &d.alternates {
+            keys.insert(a.key());
         }
-        None => (0, None),
     }
+    keys
 }
 
-#[allow(clippy::too_many_arguments)]
-fn has_advanced(
-    shared: &Arc<Shared>,
-    video: &Option<SabrFormat>,
-    video_count_before: usize,
-    video_init_before: Option<Arc<SabrSegment>>,
-    audio: &Option<SabrFormat>,
-    audio_count_before: usize,
-    audio_init_before: Option<Arc<SabrSegment>>,
-) -> bool {
-    let check = |format: &Option<SabrFormat>, count_before: usize, init_before: &Option<_>| {
-        let f = match format {
-            Some(f) => f,
-            None => return false,
-        };
-        let buffer = self_buffer(shared, &f.key());
-        buffer.segment_count() > count_before
-            || (init_before.is_none() && buffer.init_segment().is_some())
-    };
-    check(video, video_count_before, &video_init_before)
-        || check(audio, audio_count_before, &audio_init_before)
+/// Segment count and init presence per acceptable buffer before a request, so
+/// the response can be judged by whether any of them grew.
+struct BufferSnapshot {
+    entries: Vec<(SabrFormatKey, usize, bool)>,
+}
+
+impl BufferSnapshot {
+    fn take(shared: &Arc<Shared>, keys: &HashSet<SabrFormatKey>) -> Self {
+        let entries = keys
+            .iter()
+            .map(|key| {
+                let buffer = self_buffer(shared, key);
+                (
+                    key.clone(),
+                    buffer.segment_count(),
+                    buffer.init_segment().is_some(),
+                )
+            })
+            .collect();
+        Self { entries }
+    }
+
+    fn advanced(&self, shared: &Arc<Shared>) -> bool {
+        self.entries.iter().any(|(key, count, had_init)| {
+            let buffer = self_buffer(shared, key);
+            buffer.segment_count() > *count || (!had_init && buffer.init_segment().is_some())
+        })
+    }
 }
 
 fn record_throughput(local: &mut PumpLocal, bytes: i64, elapsed_ms: i64, media_us: i64) {
