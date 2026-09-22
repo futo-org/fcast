@@ -445,6 +445,22 @@ fn video_osd_hidden(bridge: &Bridge) -> bool {
         && !bridge.get_controls_overlay_visible()
 }
 
+/// Whether nothing on screen is showing the playhead. The mini OSD strip
+/// reads `progress-secs` and `duration-secs` itself and is shown exactly when
+/// the chrome is away, so parking on [`video_osd_hidden`] alone left the strip
+/// stepping in 5 second jumps. It shows no buffered ranges, which is why that
+/// property still parks on the chrome alone.
+fn playhead_unwatched(bridge: &Bridge) -> bool {
+    // The strip only exists inside the video player view, and that view goes
+    // away on Stop without a last `changed` callback, so the flag it
+    // publishes can be left true behind it: a seek within the reveal window
+    // and then a Stop had the next item polling every second for a strip
+    // that is not on screen. Read together with the state the view lives
+    // under rather than trusted alone.
+    let strip_up = bridge.get_mini_osd_visible() && bridge.get_app_state() == AppState::Playing;
+    video_osd_hidden(bridge) && !strip_up
+}
+
 fn set_playback_progress(
     bridge: &Bridge,
     damper: &mut TickDamper,
@@ -459,7 +475,7 @@ fn set_playback_progress(
         if bridge.get_is_scrubbing_position() || bridge.get_seek_pending() {
             return;
         }
-        if video_osd_hidden(bridge) {
+        if playhead_unwatched(bridge) {
             // Not fully parked: a reveal renders one frame with the stale
             // property before the next tick corrects it, so cap the drift
             // that frame can show. One write per 5s is render noise.

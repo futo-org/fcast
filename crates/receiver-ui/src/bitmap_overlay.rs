@@ -364,7 +364,19 @@ fn blit(
         let dst_start = ((dy + row) as usize * canvas_w as usize + dx as usize) * 4;
         let dst_row = &mut canvas[dst_start..dst_start + dw as usize * 4];
         if one_to_one {
-            dst_row.copy_from_slice(src_row);
+            // The row copy is the memcpy path the single region case is sized
+            // for, and it is the same thing as `over` only where the canvas
+            // row is still untouched. Where it is not, the later region's
+            // transparent border would punch exactly the hole `over` exists
+            // to prevent, so that row blends. One alpha read per pixel buys
+            // the check, against four writes for the copy it keeps.
+            if dst_row.chunks_exact(4).all(|d| d[3] == 0) {
+                dst_row.copy_from_slice(src_row);
+                continue;
+            }
+            for (d, s) in dst_row.chunks_exact_mut(4).zip(src_row.chunks_exact(4)) {
+                over(d, s);
+            }
             continue;
         }
         for col in 0..dw as usize {
@@ -807,6 +819,36 @@ pub(crate) mod tests {
             [9, 9, 9, 128],
             "the empty-target fast path is not a copy"
         );
+    }
+
+    /// The same, through `blit` rather than against `over` directly: the
+    /// one-to-one row copy is where a display set whose regions overlap used
+    /// to lose the earlier one under the later one's transparent border.
+    #[test]
+    fn an_overlapping_transparent_border_does_not_punch_through_the_row_copy() {
+        // Two 2x1 regions at their own resolution, so `canvas_scale` is 1:1
+        // and both take the row copy path. The second one's left pixel is
+        // transparent and sits on top of the first one's right pixel.
+        let opaque = region(0x40, 0, 0, 2, 1, (2, 1));
+        let mut bordered = region(0x80, 1, 0, 2, 1, (2, 1));
+        bordered.pixels = Arc::new(vec![0, 0, 0, 0, 0x80, 0x80, 0x80, 255]);
+
+        let mut overlay = BitmapOverlay::default();
+        assert!(overlay.latch(&[opaque, bordered]), "the set must be adopted");
+        overlay.composite();
+        let (w, _h, pixels) = overlay.canvas();
+        let at = |x: u32| {
+            let i = (x as usize) * 4;
+            [pixels[i], pixels[i + 1], pixels[i + 2], pixels[i + 3]]
+        };
+        assert_eq!(w, 3, "the bbox spans both regions");
+        assert_eq!(at(0), [0x40, 0x40, 0x40, 255], "the first region's own pixel");
+        assert_eq!(
+            at(1),
+            [0x40, 0x40, 0x40, 255],
+            "the second region's transparent border punched a hole"
+        );
+        assert_eq!(at(2), [0x80, 0x80, 0x80, 255], "the second region's own pixel");
     }
 }
 

@@ -1456,6 +1456,12 @@ export component VideoPlayerView inherits Rectangle {
             Bridge.mini-osd-pinned = false;
         }
     }
+    // One source for "the strip is up", so the damper that parks
+    // `progress-secs` can see what the strip is reading.
+    property <bool> mini-shown: mini-visible && !Bridge.controls-overlay-visible;
+    changed mini-shown => {
+        Bridge.mini-osd-visible = self.mini-shown;
+    }
     mini-tim := Timer {
         interval: 2500ms;
         running: false;
@@ -1546,7 +1552,7 @@ export component VideoPlayerView inherits Rectangle {
     MiniOsd {
         y: root.height - self.height;
         width: 100%;
-        shown: mini-visible && !Bridge.controls-overlay-visible;
+        shown: root.mini-shown;
     }
 
     // One pill per half, on the half the seek went toward. Turning round

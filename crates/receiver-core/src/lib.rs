@@ -12,6 +12,8 @@ pub use clap;
 pub use tracing;
 #[cfg(feature = "airplay")]
 mod airplay;
+#[cfg(target_os = "android")]
+mod android_heif;
 pub mod application;
 pub mod config;
 mod external_subtitles;

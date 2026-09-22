@@ -249,6 +249,10 @@ fn probe_yuv() -> Option<gst_video::VideoFormat> {
             planes = planes.n,
             "android ahb lane: a yuv buffer with too few planes"
         );
+        // Unlock before the drop releases it, like every other exit here: a
+        // buffer released while still CPU-locked leaks its gralloc mapping
+        // for the life of the process.
+        buffer.unlock();
         return None;
     }
     let layout = PlaneLayout {

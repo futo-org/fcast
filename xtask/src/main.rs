@@ -122,6 +122,19 @@ fn main() {
             )
             .run()
             .unwrap();
+            // receiver-ui in its OWN invocation. Its tests (the cue overlay
+            // geometry, the bitmap blend, the video math) never ran in any
+            // lane, and folding it into the batch above is not free: the
+            // `desktop` feature it needs pulls slint, wgpu and the video
+            // sink, which would change what every shared crate up there
+            // compiles with, and the feature list is named explicitly
+            // precisely so that cannot drift.
+            cmd!(
+                sh,
+                "cargo {subcommand...} --all-targets -p receiver-ui --features desktop"
+            )
+            .run()
+            .unwrap();
         }
         Command::TestSender => {
             let sh = sh();

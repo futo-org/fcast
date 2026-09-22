@@ -10,6 +10,13 @@ mod any_protocol_prelude {
 #[cfg(any_protocol)]
 use any_protocol_prelude::*;
 
+/// The head start each address gets over the one behind it (see
+/// [`try_connect_tcp`]). Long enough that a reachable LAN address always
+/// answers inside it, short enough that a dead candidate ahead of a live one
+/// costs a blink rather than the connect deadline.
+#[cfg(any_protocol)]
+const CONNECT_STAGGER: Duration = Duration::from_millis(150);
+
 /// # Arguments
 ///
 ///    * on_cmd: return true if the connect loop should quit.
@@ -24,9 +31,27 @@ pub(crate) async fn try_connect_tcp<T>(
 
     debug!("Trying to connect to {addrs:?}...");
 
+    // STAGGERED, not all at once. The caller hands these over in preference
+    // order (`device::prefer_routable`: routable before link-local, because
+    // every address derived from a link-local socket is unusable off-host,
+    // the file server's URL among them), and racing them all left that order
+    // deciding nothing: on one LAN both answer in about a millisecond and
+    // whichever future happened to finish first won. A head start per
+    // candidate lets the preferred address win whenever it is reachable, and
+    // still falls through to the next rather than waiting out the whole
+    // timeout, which a plain sequential dial would cost against a stale
+    // advertised address.
     let mut connections: Vec<_> = addrs
         .iter()
-        .map(|addr| Box::pin(tokio::time::timeout(timeout, TcpStream::connect(*addr))))
+        .enumerate()
+        .map(|(rank, addr)| {
+            let addr = *addr;
+            let head_start = CONNECT_STAGGER * rank as u32;
+            Box::pin(tokio::time::timeout(timeout + head_start, async move {
+                tokio::time::sleep(head_start).await;
+                TcpStream::connect(addr).await
+            }))
+        })
         .collect();
 
     let (connection_tx, mut connection_rx) = tokio::sync::oneshot::channel();
@@ -183,3 +208,79 @@ macro_rules! connection_loop {
 //     res += "|\n";
 //     res
 // }
+
+#[cfg(all(test, any_protocol))]
+mod tests {
+    use super::*;
+
+    /// The preferred address wins when both answer.
+    ///
+    /// List order alone never decided this: `select_all` polls in order but
+    /// the futures run concurrently, so on a LAN where both answer in about a
+    /// millisecond the winner was whichever finished first. Both listeners
+    /// here are already accepting, so the head start is the only thing that
+    /// can decide it.
+    #[tokio::test]
+    async fn the_preferred_address_wins_when_both_answer() {
+        let preferred = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let fallback = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let preferred_addr = preferred.local_addr().unwrap();
+        let fallback_addr = fallback.local_addr().unwrap();
+        for listener in [preferred, fallback] {
+            tokio::spawn(async move {
+                let _accepted = listener.accept().await;
+                std::future::pending::<()>().await;
+            });
+        }
+
+        let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let stream = try_connect_tcp(
+            &[preferred_addr, fallback_addr],
+            Duration::from_secs(5),
+            &mut rx,
+            |()| false,
+        )
+        .await
+        .expect("the connect must not fail")
+        .expect("a stream, not a caller quit");
+        assert_eq!(
+            stream.peer_addr().unwrap(),
+            preferred_addr,
+            "the first address must be the one dialed when both answer"
+        );
+    }
+
+    /// And the fallback still happens: a dead candidate ahead of a live one
+    /// costs its head start, not the connect deadline.
+    #[tokio::test]
+    async fn a_dead_first_address_falls_through() {
+        let reachable = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let reachable_addr = reachable.local_addr().unwrap();
+        // Bound, its port learned, then dropped, so connecting is refused.
+        let dead_addr = {
+            let dead = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            dead.local_addr().unwrap()
+        };
+        tokio::spawn(async move {
+            let _accepted = reachable.accept().await;
+            std::future::pending::<()>().await;
+        });
+
+        let (_tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        let started = std::time::Instant::now();
+        let stream = try_connect_tcp(
+            &[dead_addr, reachable_addr],
+            Duration::from_secs(5),
+            &mut rx,
+            |()| false,
+        )
+        .await
+        .expect("the connect must not fail")
+        .expect("a stream, not a caller quit");
+        assert_eq!(stream.peer_addr().unwrap(), reachable_addr);
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "the fallback waited out the timeout instead of the head start"
+        );
+    }
+}

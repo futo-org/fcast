@@ -235,6 +235,10 @@ export global Bridge {
     // moves on, everything else fades on its own.
     in-out property <int> mini-osd-serial: 0;
     in-out property <bool> mini-osd-pinned: false;
+    // Whether the strip is on screen. Published for the tick damper, which
+    // parks `progress-secs` while the chrome is away and must not park it
+    // while this reads it (gui.rs, `playhead_unwatched`).
+    in-out property <bool> mini-osd-visible: false;
     // Who issued the command, when a sender did and had a name; empty for
     // the keyboard.
     in-out property <string> mini-osd-by;
@@ -520,12 +524,16 @@ export global Bridge {
             }
             resume-or-pause();
             return accept;
-        } else if Bridge.is-playing() && event.text == Key.LeftArrow {
+        // `duration-secs > 0` like the scrubber's own arrows above: on a live
+        // stream, or before the duration is known, the division is inf or NaN
+        // and reaches the sender as an unclamped seek, and the badge would
+        // claim a seek that never happened.
+        } else if Bridge.is-playing() && Bridge.duration-secs > 0 && event.text == Key.LeftArrow {
             if !controls-overlay-visible {
                 note-keyboard-seek(-10);
             }
             Bridge.seek-to-percent((Bridge.progress-secs - 10) / Bridge.duration-secs);
-        } else if Bridge.is-playing() && event.text == Key.RightArrow {
+        } else if Bridge.is-playing() && Bridge.duration-secs > 0 && event.text == Key.RightArrow {
             if !controls-overlay-visible {
                 note-keyboard-seek(10);
             }
