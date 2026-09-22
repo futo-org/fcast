@@ -89,7 +89,39 @@ pub(crate) fn sanitize_progress_interval(interval_millis: u64) -> std::time::Dur
     std::time::Duration::from_millis(interval_millis.max(100))
 }
 
+/// Whether `addr` only works on the link it was learned from (169.254/16,
+/// fe80::/10).
+///
+/// A link-local connect itself is fine, the scope id carries the interface.
+/// What is not fine is everything DERIVED from that socket: the local
+/// address of a link-local connection is link-local too, and the file
+/// server hands it to the receiver as a URL, which arrives without a zone
+/// and cannot be fetched (the receiver answers `Internal` and the load
+/// fails).
+pub(crate) fn is_link_local(addr: &IpAddr) -> bool {
+    match std::net::IpAddr::from(addr) {
+        std::net::IpAddr::V4(v4) => v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => v6.is_unicast_link_local(),
+    }
+}
+
+/// Routable addresses first, link-local last (see [`is_link_local`]).
+/// Stable, so whatever order the caller had is kept within each group.
+///
+/// Preference, not exclusion: a link-local-only link (a direct cable, no
+/// DHCP) advertises nothing else, and dropping those would turn a working
+/// cast into no cast. `utils::try_connect_tcp` is what turns this order
+/// into the address actually dialed.
+pub(crate) fn prefer_routable(addrs: &mut [IpAddr]) {
+    addrs.sort_by_key(is_link_local);
+}
+
 pub(crate) fn ips_to_socket_addrs(ips: &[IpAddr], port: u16) -> Vec<SocketAddr> {
+    let mut ips = ips.to_vec();
+    // The connect list is tried in order, and a DeviceInfo can arrive from
+    // anywhere (a `--host` flag, a URL, an app's own list), so the
+    // preference is applied here and not only at discovery.
+    prefer_routable(&mut ips);
     ips.iter()
         .map(|a| match *a {
             IpAddr::V4 { .. } => SocketAddr::new(a.into(), port),
@@ -819,6 +851,57 @@ pub trait CastingDevice: Send + Sync {
 
 #[cfg(test)]
 mod tests {
+    /// A receiver that advertises both is dialed over the routable address.
+    ///
+    /// The link-local connect works, so this is not about reachability: the
+    /// file server derives its URL from the connection's LOCAL address, and
+    /// a link-local one reaches the receiver without a zone and cannot be
+    /// fetched, which the receiver reports as `Internal`. mDNS hands the
+    /// addresses over in a `HashSet`, so before this the choice was a coin
+    /// flip per resolution.
+    #[test]
+    fn a_link_local_address_is_dialed_last() {
+        use super::ips_to_socket_addrs;
+        use crate::IpAddr;
+
+        let link_local = IpAddr::V6 {
+            o1: 0xfe,
+            o2: 0x80,
+            o3: 0,
+            o4: 0,
+            o5: 0,
+            o6: 0,
+            o7: 0,
+            o8: 0,
+            o9: 0xf3,
+            o10: 0x89,
+            o11: 0x8f,
+            o12: 0xb9,
+            o13: 0x87,
+            o14: 0x2b,
+            o15: 0xcd,
+            o16: 0x61,
+            scope_id: 2,
+        };
+        let routable = IpAddr::v4(192, 168, 50, 8);
+        let apipa = IpAddr::v4(169, 254, 1, 1);
+
+        let addrs = ips_to_socket_addrs(&[link_local, routable], 46899);
+        assert_eq!(addrs[0].ip(), std::net::IpAddr::from(&routable));
+        assert!(addrs[1].ip().is_ipv6());
+        // The scope id has to survive the reorder, or the connect itself
+        // fails: a link-local socket address without one is unroutable.
+        let std::net::SocketAddr::V6(v6) = addrs[1] else {
+            panic!("the link-local address must stay v6");
+        };
+        assert_eq!(v6.scope_id(), 2);
+
+        // Already in preference order, and an IPv4 link-local counts too.
+        let addrs = ips_to_socket_addrs(&[routable, apipa], 46899);
+        assert_eq!(addrs[0].ip(), std::net::IpAddr::from(&routable));
+        assert_eq!(addrs[1].ip(), std::net::IpAddr::from(&apipa));
+    }
+
     #[cfg(feature = "fcast")]
     #[test]
     fn test_device_info_from_url() {

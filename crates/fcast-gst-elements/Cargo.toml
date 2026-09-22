@@ -27,18 +27,19 @@ mime = "0.3"
 headers = "0.4"
 sabrump = { path = "../sabrump", features = ["serde"] }
 
-# fimagedec's still/animation decoders.
+# fimagedec's still/animation decoders. avif-native is the dav1d binding, and
+# the receiver reaches the cross-built dav1d through receiver-core, which is
+# what turns on dav1d-sys's `bundled` feature for the whole graph. Checking
+# THIS crate alone for an android target probes the host instead, which is a
+# property of the selection rather than of the build the receiver ships.
 image = { workspace = true, features = [
     "decode",
+    "avif-native",
     "bmp", "dds", "ff", "gif", "ico",
     "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
 ] }
 jxl-oxide = { version = "0.12", features = ["image"] }
 hayro-jpeg2000 = "0.3"
-
-[target.'cfg(not(target_os = "android"))'.dependencies]
-# AVIF decode needs dav1d, which android has no cross-built copy of yet.
-image = { workspace = true, features = ["avif-native"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }

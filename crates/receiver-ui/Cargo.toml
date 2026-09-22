@@ -12,7 +12,7 @@ fcast-video = { path = "../fcast-video" }
 # The hop from a cue's display list to the dodvg renderer's overlay slot, on
 # the lane that draws them. Pulled in by `scene-cues`, not named here, so a
 # build without that lane links neither it nor the renderer through it.
-i-slint-cue = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba", optional = true, default-features = false }
+i-slint-cue = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f", optional = true, default-features = false }
 fcast-protocol = { path = "../fcast-protocol", features = ["tokio-receiver"] }
 fcast-runtime = { path = "../fcast-runtime" }
 anyhow.workspace = true
@@ -55,7 +55,7 @@ ndk-context = "0.1"
 # the slint android backend already pulls in, so nothing is duplicated.
 ndk-sys = "0.6"
 # the video surface behind the window (fork addition)
-i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba" }
+i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f" }
 
 # `v1_28` is the floor the element's software-decode arm needs: gst 1.28 is
 # where GstUdmabufAllocator and GstVideoDmabufPool landed, and the sink

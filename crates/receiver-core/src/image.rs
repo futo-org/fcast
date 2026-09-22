@@ -274,7 +274,6 @@ impl<'a> DecoderContext<'a> {
                 );
                 self.handle_still(decoder, format_str)?;
             }
-            #[cfg(not(target_os = "android"))]
             media_formats::Image::Heif => {
                 let reader = non_fatal!(ImageReader::new(img_data).with_guessed_format(), "HEIF");
                 let decoder = non_fatal!(reader.into_decoder(), "HEIF");
@@ -289,6 +288,9 @@ impl<'a> DecoderContext<'a> {
 pub fn init_extra_decoders() {
     #[cfg(not(target_os = "android"))]
     libheif_rs::integration::image::register_all_decoding_hooks();
+    // No libheif there, the platform decodes HEIF itself.
+    #[cfg(target_os = "android")]
+    crate::android_heif::register_decoding_hooks();
     hayro_jpeg2000::integration::register_decoding_hook();
     jxl_oxide::integration::register_image_decoding_hook();
 }

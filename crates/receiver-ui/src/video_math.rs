@@ -23,43 +23,16 @@ pub(crate) fn letterbox(src_w: u32, src_h: u32, dst_w: u32, dst_h: u32) -> (i32,
     )
 }
 
-/// Coded size scaled to square pixels. Anamorphic content (DVD-era SD, and
-/// anything a broadcaster still stretches) carries a pixel aspect ratio in
-/// the caps, and showing it 1:1 leaves the frame squeezed no matter what the
-/// scene does with it, since `image-fit: contain` only ever preserves the
-/// aspect it is given.
-///
-/// The width carries the correction, which is the rule every player uses:
-/// 720x576 with a 16:15 PAR is the 768x576 4:3 frame it was authored as.
-///
-/// This is the same arithmetic `slint`'s `VideoFrameSource` runs on the raw
-/// size and [`sane_par`], truncating and clamped to one, and it has to stay
-/// the same: the lane anchors its cues against what it computes here and the
-/// renderer draws the picture against what slint computes there, so a
-/// disagreement of one pixel is a subtitle one pixel off the picture. Pinned
-/// by `the_scene_picture_is_the_size_slint_computes`, which asks a real
-/// `slint::Image` rather than trusting the comment.
-pub(crate) fn display_size(coded: (u32, u32), par: (u32, u32)) -> (u32, u32) {
-    let (n, d) = par;
-    if n == 0 || d == 0 || n == d {
-        return coded;
-    }
-    let scaled = ((coded.0 as u64 * n as u64) / d as u64).max(1);
-    (scaled as u32, coded.1)
-}
+// No `display_size` here either, for the same reason and with the same
+// history: the PAR correction it computed is the sink's, published as
+// `Shown::picture`, and the copy here was dead code whose doc claimed a
+// parity test that does not exist. A second implementation of the drawn
+// size is a subtitle one pixel off the picture waiting to happen.
 
-/// The size the picture is drawn at: square pixels, then the frame's own
-/// quarter turn. What [`video_rect`] wants and what a consumer placing
-/// anything in coded pixels has to undo.
-#[allow(dead_code)]
-pub(crate) fn picture_size(coded: (u32, u32), par: (u32, u32), quarter_turn: bool) -> (u32, u32) {
-    let size = display_size(coded, par);
-    if quarter_turn {
-        (size.1, size.0)
-    } else {
-        size
-    }
-}
+// No `picture_size` here on purpose: the sink publishes the drawn size as
+// `Shown::picture`, derived from `BufferTransform::swaps_axes()`, and a second
+// derivation in this crate is what put the mirrored quarter turns on the wrong
+// rect. Take it from the frame.
 
 /// Where the picture sits inside the window, as every lane fits it: aspect
 /// preserved and centered. `picture` is the DISPLAYED size, i.e. already
@@ -435,6 +408,9 @@ mod cue_geometry_tests {
     ///
     /// [`place_with_par`]: slint::wgpu_30::video::place_with_par
     #[cfg(not(target_os = "android"))]
+    // `slint::wgpu_30` arrives with the `desktop` lane's `unstable-wgpu-30`,
+    // so the oracle only exists there.
+    #[cfg(feature = "desktop")]
     #[test]
     fn the_cue_rect_is_the_one_slint_places_the_picture_in() {
         use slint::wgpu_30::video as iv;

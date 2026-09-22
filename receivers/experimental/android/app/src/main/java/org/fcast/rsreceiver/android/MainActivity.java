@@ -387,6 +387,8 @@ public class MainActivity extends NativeActivity {
         // release always drops the lock.
         wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
         updateWifiLockMode(true);
+        // Discovery has to survive the screen going off (see MulticastLease).
+        MulticastLease.acquire(this);
 
         powerManager = (PowerManager) this.getSystemService(Context.POWER_SERVICE);
         cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FCastRsReceiver:WakeLock");
@@ -969,6 +971,7 @@ public class MainActivity extends NativeActivity {
         }
         setPlaybackActive(false, false, false);
         stopService(new Intent(this, ReceiverService.class));
+        MulticastLease.release();
         if (mediaSession != null) {
             mediaSession.release();
             mediaSession = null;

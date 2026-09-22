@@ -17,7 +17,7 @@ fcast-video = { path = "../fcast-video" }
 # The render tier's vocabulary, which the CLI and the settings file carry and
 # the video sink's property is a rename of. No GStreamer and no wgpu in it, so
 # it costs nothing on the arms that never present a frame.
-i-slint-video = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba" }
+i-slint-video = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f" }
 fcast-protocol = { path = "../../crates/fcast-protocol", features = ["tokio-receiver"] }
 sabrump = { path = "../sabrump", features = ["serde"] }
 gethostname = "1"
@@ -57,8 +57,12 @@ headers = "0.4"
 mime = "0.3"
 regex.workspace = true
 self_cell.workspace = true
+# avif-native is the dav1d binding, and dav1d-sys links the archive
+# gstreamer-src cross-built in its own tree, android included, because THIS
+# crate is what turns its `bundled` feature on (see `dav1d-plugin`).
 image = { workspace = true, features = [
     "decode",
+    "avif-native",
     "bmp", "dds", "ff", "gif", "ico",
     "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
 ] }
@@ -99,11 +103,6 @@ gst-plugin-webrtcbin2.workspace = true
 
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
-# AVIF decode, which needs dav1d through the `image` crate's own binding.
-# gstreamer-src does cross-build a dav1d for android now (that is what feeds
-# the dav1d-plugin feature), but nothing has wired THIS consumer to it, so
-# still images in AVIF stay off there.
-image = { workspace = true, features = ["avif-native"] }
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing.workspace = true

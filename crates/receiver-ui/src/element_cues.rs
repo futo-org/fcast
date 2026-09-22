@@ -25,6 +25,24 @@ use slint_gstreamer_video::{BufferTransform, Shown};
 /// interior mutability has to be a lock even though only the UI thread ever
 /// touches it. Uncontended by construction, which is a compare and swap a
 /// frame.
+/// Why the overlay is being pumped, which is what decides how much of the
+/// schedule the read is allowed to move.
+///
+/// The engine offers three reads and they are not interchangeable: one
+/// evaluates at a frame's running time, one advances against a frozen clock
+/// with `PAUSED_CUE_LOOKAHEAD` applied, and one evaluates nothing. Choosing
+/// by "is there a frame in hand" alone put the paused read on the playing
+/// lane, where it starts a cue up to 200 ms early.
+#[derive(Clone, Copy)]
+enum Pump {
+    /// A picture went up, at this running time.
+    Frame(gst::ClockTime),
+    /// The engine reported a change, or the window moved. Paused this
+    /// re-evaluates against the frozen clock, playing it publishes what is
+    /// on screen and leaves the clock to the frame path.
+    Changed,
+}
+
 pub(crate) struct ElementCues {
     engine: CueEngine,
     geometry: crate::video_math::CueGeometry,
@@ -71,15 +89,14 @@ impl ElementCues {
             self.clear(ui);
             return;
         }
-        let quarter_turn = matches!(
-            shown.transform,
-            BufferTransform::Rotate90 | BufferTransform::Rotate270
-        );
         self.upright.store(placeable(shown.transform), Ordering::Relaxed);
         self.note_coded(shown.coded);
         // The picture the cues are anchored against is what the renderer
-        // actually draws: square pixels, then the turn.
-        let picture = crate::video_math::picture_size(shown.coded, shown.par, quarter_turn);
+        // actually draws: square pixels, then the turn. The sink publishes it
+        // (`Shown::picture`) exactly so a consumer does not re-derive it; the
+        // derivation here missed the mirrored quarter turns (`Flipped90`,
+        // `Flipped270`), which swap the axes as much as the plain ones do.
+        let picture = (shown.picture.width, shown.picture.height);
         let window = ui.window().size();
         self.geometry
             .sync(&self.engine, (window.width, window.height), picture);
@@ -87,7 +104,36 @@ impl ElementCues {
         let frame_rt = shown
             .running_time
             .or_else(|| self.engine.video_running_time(shown.pts));
-        self.pump(ui, frame_rt);
+        match frame_rt {
+            Some(rt) => self.pump(ui, Pump::Frame(rt)),
+            // No running time to evaluate against, from either source: the
+            // picture is up, so publish what is on screen rather than moving
+            // the schedule to a clock this frame is not on.
+            None => self.pump(ui, Pump::Changed),
+        }
+    }
+
+    /// Repaint on every engine change, not only when a frame arrives.
+    ///
+    /// The engine marks itself dirty for a raster landing, an activation or
+    /// expiry and a CLEAR, and a load's clear is the one that matters here:
+    /// without this hook the overlay keeps the previous item's cues until the
+    /// next presented frame, which for an audio-only item (or one that never
+    /// draws) is forever. `on_render` below cannot stand in for it, since it
+    /// returns unless the window geometry moved. The android lane has had the
+    /// same hook from the start (`android_subtitles::push`).
+    pub(crate) fn watch_engine(self: &std::sync::Arc<Self>, ui: slint::Weak<crate::MainWindow>) {
+        let weak = std::sync::Arc::downgrade(self);
+        self.engine.set_on_change(move || {
+            let Some(cues) = weak.upgrade() else {
+                return;
+            };
+            // The callback runs on whichever thread noticed, and the pump is
+            // the UI thread's alone.
+            let _ = ui
+                .clone()
+                .upgrade_in_event_loop(move |ui| cues.pump(&ui, Pump::Changed));
+        });
     }
 
     /// Re-anchor and re-publish if the window moved. UI thread only, cheap
@@ -105,7 +151,7 @@ impl ElementCues {
         // The engine re-keys on the new canvas and keeps the previous display
         // list up meanwhile, so this publishes the cue that is already on
         // screen now and the re-laid-out one when the worker answers.
-        self.pump(ui, None);
+        self.pump(ui, Pump::Changed);
     }
 
     /// Take the overlay down, for end of stream and for a lane that has
@@ -121,22 +167,28 @@ impl ElementCues {
     }
 
     /// Advance the schedule and put whatever is showing in front of the
-    /// renderer. UI thread only.
-    ///
-    /// `frame_rt` is the running time of the picture that is up, or `None` for
-    /// a repaint with no frame behind it (a cue landing, expiring or being
-    /// cleared while paused), which re-evaluates against the frozen clock
-    /// exactly as a raster consumer would.
-    fn pump(&self, ui: &crate::MainWindow, frame_rt: Option<gst::ClockTime>) {
+    /// renderer. UI thread only. See [`Pump`].
+    fn pump(&self, ui: &crate::MainWindow, why: Pump) {
         // The overlay lives on the renderer, not in the picture, so a player
         // that lost the screen must not leave a cue over the idle view.
         let bridge = ui.global::<crate::Bridge>();
         let owns_screen = bridge.get_app_state() == crate::ui_types::AppState::Playing.into()
             && bridge.get_player_variant() == crate::ui_types::UiPlayerVariant::Video.into();
-        let shown = match (owns_screen, frame_rt) {
+        // WHICH read, and it is not a detail: `current_scenes` advances the
+        // schedule against the frozen clock and applies
+        // `PAUSED_CUE_LOOKAHEAD`, which is right for a paused item and wrong
+        // for a playing one. Taken for every engine change, it started each
+        // cue that begins within 200 ms of the one leaving early, at every
+        // gap, on the lane the frame path already evaluates.
+        let paused = bridge.get_playback_state() == crate::ui_types::GuiPlaybackState::Paused.into();
+        let shown = match (owns_screen, why) {
             (false, _) => Default::default(),
-            (true, Some(_)) => self.engine.scenes_for(frame_rt),
-            (true, None) => self.engine.current_scenes(),
+            (true, Pump::Frame(rt)) => self.engine.scenes_for(Some(rt)),
+            // Paused there is no frame coming, so the frozen clock is what a
+            // cue starts and ends against. Playing, the frame path owns the
+            // clock and this only publishes what is already on screen.
+            (true, Pump::Changed) if paused => self.engine.current_scenes(),
+            (true, Pump::Changed) => self.engine.shown_scenes(),
         };
         let visible = self
             .overlay

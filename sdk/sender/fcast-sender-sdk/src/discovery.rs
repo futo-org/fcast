@@ -25,8 +25,13 @@ fn strip_service_name(fullname: &str, service_name: &str) -> String {
     }
 }
 
+/// The resolver hands these over in a `HashSet`, so without an order of
+/// our own the list is arbitrary per resolution: the same receiver was
+/// dialed over IPv4 one run and over link-local IPv6 the next, which is
+/// what made the file-server URL fail intermittently (see
+/// [`crate::device::is_link_local`]). Sorted, and routable first.
 fn scoped_ip_to_custom(addrs: &HashSet<ScopedIp>) -> Vec<IpAddr> {
-    addrs
+    let mut addrs = addrs
         .iter()
         .map(|addr| match addr {
             ScopedIp::V4(v4) => IpAddr::from(std::net::IpAddr::V4(*v4.addr())),
@@ -55,7 +60,11 @@ fn scoped_ip_to_custom(addrs: &HashSet<ScopedIp>) -> Vec<IpAddr> {
             }
             _ => IpAddr::from(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)), // NOTE: this case will most likely never be hit
         })
-        .collect()
+        .collect::<Vec<_>>();
+    // Routable first, then by address: both keys are total, so one
+    // receiver resolves to one order every time.
+    addrs.sort_by_key(|a| (crate::device::is_link_local(a), std::net::IpAddr::from(a)));
+    addrs
 }
 
 fn service_resolved(

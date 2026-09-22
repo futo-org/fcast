@@ -159,6 +159,7 @@ pub fn make_sink(
     // know about MainWindow, and the cue engine is scheduled against the
     // picture rather than the clock, so it ticks when a frame is really up.
     let overlay = Arc::new(crate::element_cues::ElementCues::new(cues));
+    overlay.watch_engine(ui.clone());
     let card_ui = ui.clone();
     let ticker = ui.clone();
     let engine = Arc::clone(&overlay);

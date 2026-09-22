@@ -174,8 +174,8 @@ pub mod imp {
         WebP,
         Jxl,
         Jp2,
-        /// HEIC/HEIF via the libheif hooks (see `image::init_extra_decoders`).
-        #[cfg(not(target_os = "android"))]
+        /// HEIC/HEIF via the decoding hooks (see `image::init_extra_decoders`):
+        /// libheif off android, the platform decoder on it.
         Heif,
         /// Still-only formats the image crate reads natively.
         Other(ImageFormat),
@@ -198,7 +198,6 @@ pub mod imp {
                 }
                 "image/jxl" => Some(Self::Jxl),
                 "image/jp2" | "image/x-jpc" => Some(Self::Jp2),
-                #[cfg(not(target_os = "android"))]
                 "image/heic" | "image/heif" => Some(Self::Heif),
                 "image/bmp" => Some(Self::Other(ImageFormat::Bmp)),
                 "image/tiff" => Some(Self::Other(ImageFormat::Tiff)),
@@ -217,7 +216,7 @@ pub mod imp {
 
         /// Sink pad template caps names, kept in sync with `from_caps_name`.
         pub(super) fn caps_names() -> Vec<&'static str> {
-            let base = [
+            let names = [
                 "image/gif",
                 "image/png",
                 "image/apng",
@@ -238,13 +237,10 @@ pub mod imp {
                 "image/x-portable-graymap",
                 "image/x-portable-pixmap",
                 "image/x-portable-anymap",
+                "image/heic",
+                "image/heif",
             ];
-            let heif: &[&str] = if cfg!(not(target_os = "android")) {
-                &["image/heic", "image/heif"]
-            } else {
-                &[]
-            };
-            base.iter().chain(heif).copied().collect()
+            names.to_vec()
         }
     }
 
@@ -559,9 +555,8 @@ pub mod imp {
                     .map_err(|err| DecodeError::Other(format!("JPEG 2000: {err:?}")))?;
                     self.push_still(decoder, "jp2")
                 }
-                #[cfg(not(target_os = "android"))]
                 FormatHint::Heif => {
-                    // The libheif decoding hooks key off the guessed format.
+                    // The HEIF decoding hooks key off the guessed format.
                     let decoder = ImageReader::new(Cursor::new(&bytes))
                         .with_guessed_format()
                         .map_err(image::ImageError::IoError)?
@@ -958,9 +953,7 @@ pub fn player_mime_types() -> &'static [&'static str] {
         "image/x-portable-graymap",
         "image/x-portable-pixmap",
         "image/x-portable-anymap",
-        #[cfg(not(target_os = "android"))]
         "image/heic",
-        #[cfg(not(target_os = "android"))]
         "image/heif",
     ]
 }
@@ -1477,15 +1470,11 @@ mod tests {
     }
 
     /// Every typefinder-produced media type must be decodable here, or a
-    /// typefound file dead-ends in decodebin3. HEIC/HEIF are the sanctioned
-    /// exception when the libheif hooks are compiled out.
+    /// typefound file dead-ends in decodebin3. No exceptions any more: HEIF
+    /// rides libheif off android and the platform decoder on it.
     #[test]
     fn typefinder_caps_all_decodable() {
-        let heif_gated = cfg!(target_os = "android");
         for name in crate::imagetypefind::produced_caps() {
-            if heif_gated && matches!(*name, "image/heic" | "image/heif") {
-                continue;
-            }
             assert!(
                 super::imp::FormatHint::from_caps_name(name).is_some(),
                 "typefinder emits {name} but fimagedec cannot decode it"

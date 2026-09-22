@@ -125,10 +125,18 @@ public class ReceiverService extends Service {
         ensureChannel(this);
         goForeground();
         running = this;
+        // Backgrounded, the service is the process: it carries the
+        // multicast lease so an idle receiver stays discoverable (see
+        // MulticastLease). Once per instance, onDestroy drops the one.
+        if (!leased) {
+            leased = true;
+            MulticastLease.acquire(this);
+        }
         return START_NOT_STICKY;
     }
 
     private int foregroundType = -1;
+    private boolean leased = false;
 
     private int wantedType() {
         if (android.os.Build.VERSION.SDK_INT >= 34) {
@@ -176,6 +184,10 @@ public class ReceiverService extends Service {
     @Override
     public void onDestroy() {
         running = null;
+        if (leased) {
+            leased = false;
+            MulticastLease.release();
+        }
         super.onDestroy();
     }
 

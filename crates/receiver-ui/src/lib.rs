@@ -12,6 +12,18 @@
 // style warning, so the limit is raised here rather than left to fire.
 #![recursion_limit = "256"]
 
+// One of the two lanes has to be named, and `default = []` names neither: a
+// build with no lane has no slint backend, so the generated code's
+// `load_image_from_embedded_data` (i-slint-core's `image-decoders`, which
+// arrives with a backend) is missing, and `element_cues` is compiled while the
+// `cue_overlay` it hops through is behind `scene-cues`. Both surface as
+// screenfuls of errors that name neither cause, so say it here instead.
+#[cfg(not(any(feature = "desktop", feature = "android", target_os = "android")))]
+compile_error!(
+    "receiver-ui needs one of its lane features: `desktop` or `android`. \
+     `cargo check -p receiver-ui --features desktop` is the desktop one."
+);
+
 // Forces the static GStreamer link line and isolates the process from on-disk
 // plugins before main.
 use gst_static_env as _;

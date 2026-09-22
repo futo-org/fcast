@@ -1384,7 +1384,11 @@ impl Application {
         }
 
         let Some(position) = self.player.get_position() else {
-            error!("player does not have a playback position");
+            // Not a defect: a pipeline whose source or demuxer has just
+            // failed has no position to answer with, and this poll runs on a
+            // timer through it. At ERROR it was the loudest line in a crash
+            // report about something else entirely.
+            debug!("no playback position to broadcast yet");
             return Ok(());
         };
         let position = position.seconds_f64();

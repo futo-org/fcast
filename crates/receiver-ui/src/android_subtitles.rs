@@ -194,7 +194,13 @@ fn push(state: &Arc<State>) {
         let (off_x, off_y) = crate::android_surface_video::content_offset_in_window();
         let mut rows = Vec::with_capacity(overlays.len());
         for o in &overlays {
-            if o.width == 0 || o.height == 0 {
+            // usize, not u32: the product of two u32 extents wraps before the
+            // cast. A raster shorter than its own extents (a truncated PGS or
+            // DVB object, a region still being filled) would then index past
+            // the end and panic on the UI thread, which takes the window with
+            // it. The desktop lane drops the same region in `is_empty`.
+            let want = o.width as usize * o.height as usize * 4;
+            if o.width == 0 || o.height == 0 || o.pixels.len() < want {
                 continue;
             }
             // Physical window px first, logical for slint at the end.
@@ -222,8 +228,7 @@ fn push(state: &Arc<State>) {
                 }
             };
             let mut pix = SharedPixelBuffer::<Rgba8Pixel>::new(o.width, o.height);
-            pix.make_mut_bytes()
-                .copy_from_slice(&o.pixels[..(o.width * o.height * 4) as usize]);
+            pix.make_mut_bytes().copy_from_slice(&o.pixels[..want]);
             rows.push(crate::SubtitleOverlay {
                 img: slint::Image::from_rgba8(pix),
                 x: (x + off_x as f32) / scale,

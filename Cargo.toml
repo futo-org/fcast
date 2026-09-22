@@ -106,9 +106,9 @@ tracing-subscriber = "0.3"
 tracing-gstreamer = { git = "https://github.com/MAlba124/tracing-gstreamer.git", rev = "3ad7a1e71a4ca4d1fd9a229642fd09586370acaf" }
 tracing-panic = "0.1.2"
 parking_lot = "0.12"
-slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba", default-features = false }
-slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba" }
-i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "207faa6c04eeba4b4406c8b23a6b14db7beb09ba" }
+slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f", default-features = false }
+slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f" }
+i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f" }
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.23", features = [ "v4" ] }
 bytes = "1"
@@ -235,23 +235,24 @@ opt-level = 3
 [profile.dev.package.byteorder-lite]
 opt-level = 3
 
-# The main flapjack checkout, kept local so a flapjack edit reaches the
-# receiver without a push. The decodebin3/multiqueue replacement merged to
-# flapjack master on 2026-09-16: decodebin3 and the FLAPJACK_DECODE_MANAGER
-# lever are gone and the decode manager is the only core. Drop this block to
-# build the pushed master instead, the workspace dep already tracks it.
-[patch."https://gitlab.futo.org/fcast/flapjack.git"]
-flapjack = { path = "../flapjack/flapjack" }
-simulator = { path = "../flapjack/simulator" }
-flapjack-subparse = { path = "../flapjack/plugins/subparse" }
-# The layout crate in the slint fork names this one directly (it is std-only,
-# so it costs nothing there). Redirected as well, or the graph carries the git
-# copy beside the local one and the two `CueIr`s are different types.
-flapjack-subparse-formats = { path = "../flapjack/plugins/subparse-formats" }
+# flapjack builds from the pushed master (the workspace deps above). To iterate
+# on a local checkout instead, patch all four crates back to it at once:
+# flapjack, simulator, flapjack-subparse and flapjack-subparse-formats. The last
+# one because the slint fork's layout crate names it directly, and a graph that
+# carries the git copy beside the local one has two different `CueIr` types.
 
-# Local checkout of the slint fork, merged with upstream 1.18 (dd7f336f8) but
-# not pushed yet, so the pinned revs above still name the pre-merge tip. Drop
-# this block to build the pushed rev instead.
+# The slint fork, redirected to the local checkout the rev pins above name.
+#
+# The graph no longer NEEDS this: slint-gstreamer-video is taken by rev now and
+# names the same fork rev this workspace does, so dropping the block resolves to
+# one slint, from git. What it buys is the local checkout: work on the fork is
+# picked up by a receiver build without a push and a rev bump, and dropping the
+# block means every such round trip goes through gitlab.
+#
+# Keep both repos naming the same source whatever happens here. A graph that
+# carries slint twice, once from git and once from the checkout, shows up as
+# `expected i_slint_core::api::weak_handle::Weak<_>, found
+# slint::Weak<MainWindow>` and six friends.
 [patch."https://gitlab.futo.org/fcast/slint.git"]
 slint = { path = "../slint-forked/api/rs/slint" }
 slint-build = { path = "../slint-forked/api/rs/build" }
