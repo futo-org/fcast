@@ -21,13 +21,16 @@ def currentVersionName = project.hasProperty('versionName')
 
 android {
     namespace 'org.fcast.rsreceiver.android'
+    // The java glue in the native lane compiles against this same
+    // platform, pinned as ANDROID_PLATFORM in xtask/src/android.rs.
+    // Move both or neither.
     compileSdk 36
 
     sourceSets {
         main {
             java {
                 srcDirs = ['src/main/java']
-                jniLibs.srcDirs = ['libs', 'src/main/jniLibs']
+                jniLibs.srcDirs = ['src/main/jniLibs']
             }
         }
     }

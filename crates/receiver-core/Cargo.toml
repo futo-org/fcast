@@ -9,7 +9,8 @@ gst-static-env.workspace = true
 gstreamer-src.workspace = true
 tokio.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
-flapjack.workspace = true
+# `sabr`: sabrumpsrc for sabrump:// URIs, a flapjack plugin now.
+flapjack = { workspace = true, features = ["sabr"] }
 fcast-gst-elements = { path = "../fcast-gst-elements" }
 flapjack-subparse.workspace = true
 fcast-runtime = { path = "../fcast-runtime" }
@@ -17,9 +18,8 @@ fcast-video = { path = "../fcast-video" }
 # The render tier's vocabulary, which the CLI and the settings file carry and
 # the video sink's property is a rename of. No GStreamer and no wgpu in it, so
 # it costs nothing on the arms that never present a frame.
-i-slint-video = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f" }
+i-slint-video = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e" }
 fcast-protocol = { path = "../../crates/fcast-protocol", features = ["tokio-receiver"] }
-sabrump = { path = "../sabrump", features = ["serde"] }
 gethostname = "1"
 anyhow.workspace = true
 futures.workspace = true
@@ -41,7 +41,7 @@ smallvec.workspace = true
 smol_str.workspace = true
 parking_lot.workspace = true
 bytes.workspace = true
-gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "518b3b9b49ad23c659aa6ea3e587e1846f02b056", features = [ "static" ], optional = true }
+gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "a35f7d35ecd37a0627983c9235e8417457805618", features = [ "static" ], optional = true }
 # Flips the forked crate's bundled feature: the static wrap's dav1d whenever
 # gstreamer-src built one, a normal system probe otherwise.
 dav1d-sys = { version = "0.8", features = ["bundled"], optional = true }

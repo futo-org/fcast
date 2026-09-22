@@ -16,8 +16,6 @@ tokio.workspace = true
 futures.workspace = true
 parking_lot.workspace = true
 bytes.workspace = true
-base64.workspace = true
-serde_json.workspace = true
 tracing.workspace = true
 fcast-runtime = { path = "../fcast-runtime" }
 fcast-protocol = { path = "../fcast-protocol", features = ["tokio-receiver"] }
@@ -25,7 +23,6 @@ self_cell.workspace = true
 url = "2"
 mime = "0.3"
 headers = "0.4"
-sabrump = { path = "../sabrump", features = ["serde"] }
 
 # fimagedec's still/animation decoders. avif-native is the dav1d binding, and
 # the receiver reaches the cross-built dav1d through receiver-core, which is
@@ -41,18 +38,6 @@ image = { workspace = true, features = [
 jxl-oxide = { version = "0.12", features = ["image"] }
 hayro-jpeg2000 = "0.3"
 
-[target.'cfg(target_os = "linux")'.dependencies]
-reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
-
-[target.'cfg(target_os = "android")'.dependencies]
-reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
-
-[target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "gzip", "cookies" ] }
-
-[features]
-textoverlay = []
-
 [dev-dependencies]
 # Tests drive audiotestsrc/videotestsrc pipelines, which shipping builds leave
 # out. Every test target in the tree asks for the same feature set, so the C
@@ -62,7 +47,6 @@ hyper = { workspace = true, features = ["server"] }
 http-body-util = "0.1.1"
 pin-project-lite = "0.2"
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "aws-lc-rs", "tls12" ] }
-gst-check = { package = "gstreamer-check", version = "0.25" }
 ctor = "0.2"
 # Encoders are excluded from shipping builds (binary size); fimagedec's tests
 # encode their own image fixtures.

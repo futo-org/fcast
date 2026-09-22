@@ -12,7 +12,7 @@ fcast-video = { path = "../fcast-video" }
 # The hop from a cue's display list to the dodvg renderer's overlay slot, on
 # the lane that draws them. Pulled in by `scene-cues`, not named here, so a
 # build without that lane links neither it nor the renderer through it.
-i-slint-cue = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f", optional = true, default-features = false }
+i-slint-cue = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e", optional = true, default-features = false }
 fcast-protocol = { path = "../fcast-protocol", features = ["tokio-receiver"] }
 fcast-runtime = { path = "../fcast-runtime" }
 anyhow.workspace = true
@@ -38,10 +38,9 @@ tokio-rustls = { workspace = true, default-features = false, features = [ "loggi
 # video buffer is written here, so none of the crates that describe one are
 # named here either.
 #
-# By rev like every other fork now that the repo is pushed. It names the same
-# slint rev this crate does, and the workspace patch redirects both ends, so
-# the graph carries one i-slint-core and one wgpu.
-slint-gstreamer-video = { git = "https://gitlab.futo.org/fcast/slint-gstreamer-video.git", rev = "d2e46a317ef605f15a5198f0eef5750518a2c3bf" }
+# By rev like every other fork. It names the same slint rev this crate does,
+# so the graph carries one i-slint-core and one wgpu.
+slint-gstreamer-video = { git = "https://gitlab.futo.org/fcast/slint-gstreamer-video.git", rev = "ed565eff27ee5aaed2f5fc26aac2ffb7c0fec601" }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # the software video bridge's appsink
@@ -55,7 +54,7 @@ ndk-context = "0.1"
 # the slint android backend already pulls in, so nothing is duplicated.
 ndk-sys = "0.6"
 # the video surface behind the window (fork addition)
-i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f" }
+i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e" }
 
 # `v1_28` is the floor the element's software-decode arm needs: gst 1.28 is
 # where GstUdmabufAllocator and GstVideoDmabufPool landed, and the sink
@@ -74,7 +73,7 @@ objc2-app-kit = { version = "0.3.2", features = ["NSCursor"] }
 # that feature is off in the lane's own test runs, so the plugin is registered
 # here instead and the test never silently skips. Same rev and same bundled
 # dav1d wiring as receiver-core, or the two would resolve to different copies.
-gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "518b3b9b49ad23c659aa6ea3e587e1846f02b056", features = [ "static" ] }
+gst-plugin-dav1d = { git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", rev = "a35f7d35ecd37a0627983c9235e8417457805618", features = [ "static" ] }
 dav1d-sys = { version = "0.8", features = ["bundled"] }
 
 [dev-dependencies]

@@ -4,11 +4,8 @@ use gst_static_env as _;
 
 pub mod companion_ctx;
 
-#[cfg(feature = "textoverlay")]
-pub mod fcasttextoverlay;
 pub mod fcompsrc;
 pub mod imagedec;
 pub mod imagetypefind;
-pub mod sabrumpsrc;
 #[cfg(target_os = "linux")]
 pub mod vajpegdec;

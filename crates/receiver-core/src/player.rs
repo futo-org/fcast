@@ -154,10 +154,10 @@ pub(crate) fn sid_in(sid: &str) -> Option<flapjack::StreamId> {
 /// User-meaningful buckets for fatal playback errors. Folded from
 /// flapjack's `ErrorKind`, which classifies the gst error domain/code and
 /// which side failed (see `from_flapjack`). `ImageDownloadFailed` is
-/// app-level, never produced here; `Frozen` is the receiver's own watchdog
-/// verdict and flapjack's `Stalled` alike. `Frozen`, `Unexpected` and
-/// `MissingCodec` surface as the report-bug popup, everything else as a
-/// localized toast.
+/// app-level, never produced here; `Frozen` is flapjack's `Stalled`, and only
+/// reaches the user once `stall_recovery`'s reload is spent. `Frozen`,
+/// `Unexpected` and `MissingCodec` surface as the report-bug popup, everything
+/// else as a localized toast.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MediaErrorKind {
     NotFound,
@@ -317,8 +317,8 @@ pub enum PlayerEvent {
     },
     RateChanged(f64),
     /// A seek did not reach the pipeline. `op` names the receiver's own
-    /// request when it was one (the freeze watchdog keys its recovery seek
-    /// on it), `None` for a seek the crate issued on its own behalf.
+    /// request when it was one, `None` for a seek the crate issued on its own
+    /// behalf.
     SeekFailed {
         op: Option<flapjack::OpId>,
     },
@@ -850,9 +850,8 @@ impl Player {
                 seqnum,
             },
             E::RateChanged(rate) => PlayerEvent::RateChanged(rate.get()),
-            // `op` tells the receiver's own seeks apart: the freeze watchdog
-            // keys its recovery seek on it, the transport seeks resolve through
-            // the state machine's edges
+            // `op` rides along to tell the receiver's own seeks apart; the
+            // transport seeks resolve through the state machine's edges
             E::SeekFailed => PlayerEvent::SeekFailed { op },
             // a seek's success and a command discarded before it acted; the
             // receiver derives both from StateChanged and keys nothing else on
@@ -1178,29 +1177,6 @@ impl Player {
         self.seek_internal(Seek::to(position));
     }
 
-    /// The freeze watchdog's recovery seek: a FLUSHING, ACCURATE seek to the
-    /// pipeline's current position at the current rate, performed IN PLACE
-    /// (no transport change). Returns the op it runs under, so its
-    /// `SeekFailed` can be attributed to it.
-    ///
-    /// Deliberately not [`Self::seek`]. That path refuses unless the pipeline
-    /// is settled at PAUSED and drives it there first (`Job::Seek` in
-    /// flapjack), and a starved pipeline can NEVER complete a
-    /// PLAYING->PAUSED transition: it needs a buffer to preroll with and none
-    /// will arrive, so every sink returns ASYNC and stays there
-    /// (`gstbasesink.c:5815-5834`, `needs_preroll` at `:3749`). The seek would
-    /// park forever waiting for a settled-PAUSED edge, and a parked seek
-    /// silences the very progress tick the watchdog escalates from. The
-    /// crate's refresh seek is the one API that sends the flush in place: the
-    /// FLUSH flag is mandatory and the seqnum must be fresh, or the demuxer
-    /// drops the seek.
-    pub fn freeze_recovery_seek(&self) -> flapjack::OpId {
-        let op = self.fcast.allocate_op();
-        let id = op.id();
-        self.fcast.refresh_seek(op);
-        id
-    }
-
     fn applied_track_selection(&self) -> TrackSelection {
         self.selected.clone()
     }
@@ -1280,13 +1256,6 @@ impl Player {
         // The in-flight refresh seek, if any, was settled by the crate when
         // it translated this ASYNC_DONE; dispatch whatever was parked
         // behind it.
-        self.pump_selection();
-    }
-
-    /// The receiver's own refresh seek (the freeze watchdog's recovery) could
-    /// not perform its seek, already recorded by the crate; this is the pump
-    /// trigger. The engine's own refreshes report nothing.
-    pub fn subtitle_refresh_failed(&mut self) {
         self.pump_selection();
     }
 
@@ -1555,15 +1524,6 @@ impl Player {
     /// still in flight.
     pub fn is_pipeline_stable(&self) -> bool {
         self.fcast.is_settled()
-    }
-
-    /// Whether an async state change is in progress (a re-preroll, a flushing
-    /// seek's preroll). NOT the complement of
-    /// [`is_pipeline_stable`](Self::is_pipeline_stable): a flushing seek in
-    /// PLAYING re-prerolls with `pending` still VoidPending, so only this one
-    /// sees it.
-    pub fn has_async_transition(&self) -> bool {
-        self.fcast.has_async_transition()
     }
 
     /// Diagnostic (load-stall investigation): explain why a load has not

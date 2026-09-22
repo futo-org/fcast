@@ -34,9 +34,7 @@ use crate::{
         self, CompanionContext, InitialV4State, Operation, ReceiverToSenderMessage, SessionDriver,
         TranslatableMessage, WrappedPlayMessage,
     },
-    fcompsrc,
-    freeze_watchdog::{self, FreezeAction, FreezeSample},
-    fwebrtcsrc, gcast,
+    fcompsrc, fwebrtcsrc, gcast,
     gui::{self, GuiController},
     image,
     media_formats::SupportedFormats,
@@ -44,6 +42,7 @@ use crate::{
     message::{Mdns, Message, Raop, ReceiverToFCastSender},
     player::{self, PlayerState},
     queue_cache, raop,
+    stall_recovery::{self, StallAction},
     ui_types::{AppState, GuiPlaybackState, UiMediaTrack, UiPlayerVariant, UiToastKind},
     utils::{current_time_millis, map_to_header_map},
 };
@@ -726,9 +725,9 @@ pub struct Application {
     source_backoff: Option<(Instant, u64)>,
     /// Bumped per backoff change/clear so a stale `SourceBackoffTick` no-ops.
     source_backoff_epoch: u64,
-    /// Detects a silently wedged pipeline and drives recovery. Lever:
-    /// `FCAST_NO_FREEZE_WATCHDOG`.
-    freeze_watchdog: freeze_watchdog::FreezeWatchdog,
+    /// What to do about a stall flapjack reported after its own repairs
+    /// failed. Lever: `FCAST_NO_STALL_RECOVERY`.
+    stall_recovery: stall_recovery::StallRecovery,
     current_image_id: image::ImageId,
     current_image_download_id: image::ImageDownloadId,
     /// True while the load is an image routed through the player pipeline
@@ -1069,7 +1068,7 @@ impl Application {
             load_watchdog_epoch: 0,
             source_backoff: None,
             source_backoff_epoch: 0,
-            freeze_watchdog: freeze_watchdog::FreezeWatchdog::new(),
+            stall_recovery: stall_recovery::StallRecovery::new(),
             current_image_id: 0,
             image_via_player: false,
             have_audio_track_cover: false,
@@ -2622,91 +2621,29 @@ impl Application {
         });
     }
 
-    /// One tick of the freeze watchdog. Must run on EVERY progress tick,
-    /// including while paused/loading/stopped: the detector owns every
-    /// exclusion, and skipping ticks would let excluded time count as
-    /// pinned playback on the first resumed tick.
-    fn poll_freeze_watchdog(&mut self) -> Result<()> {
-        if !self.freeze_watchdog.enabled() {
-            return Ok(());
-        }
-
-        let playing = self.player.player_state() == PlayerState::Playing;
-        let sample = FreezeSample {
-            now: Instant::now(),
-            item: self.current_media_item_id,
-            playing,
-            // Asked of the pipeline, not predicted: a flushing seek re-prerolls with
-            // `pending` still VoidPending, so only the async query sees it.
-            pipeline_settled: playing && !self.player.has_async_transition(),
-            have_media_info: self.player.have_media_info(),
-            loading: self.is_loading_media,
-            image: self.image_via_player,
-            live: self.player.is_live(),
-            seekable: self.player.seekable,
-            // Every shape of "a seek is outstanding".
-            seek_pending: self.player.is_seeking()
-                || self.gui_seek_hold.is_some()
-                || self.pending_seek_op.is_some()
-                || self.gapless_parked_op.is_some(),
-            rate: self.player.rate(),
-            position: playing.then(|| self.player.get_position()).flatten(),
-            duration: self.current_duration,
-        };
-
-        let action = self.freeze_watchdog.poll(&sample);
-        let pinned_for = match action {
-            FreezeAction::None => return Ok(()),
-            FreezeAction::Seek { pinned_for }
-            | FreezeAction::Reload { pinned_for }
-            | FreezeAction::GiveUp { pinned_for } => pinned_for,
-        };
-        let position = sample.position.unwrap_or(gst::ClockTime::ZERO);
-        self.log_freeze_diagnostics(action, position, pinned_for);
-
-        match action {
-            FreezeAction::None => (),
-            FreezeAction::Seek { .. } => {
-                let op = self.player.freeze_recovery_seek();
-                self.freeze_watchdog.note_recovery_seek(op);
-            }
-            FreezeAction::Reload { .. } => {
-                let rate = self.player.rate() as f32;
-                self.reload_current_item_at(position, rate);
-                // Adopt the reload's new item id WITHOUT resetting the per-item cap, or a
-                // permanently wedging stream would alternate seek and reload forever.
-                self.freeze_watchdog
-                    .note_recovery_reload(self.current_media_item_id);
-            }
-            FreezeAction::GiveUp { .. } => {
-                self.media_error(
-                    player::MediaErrorKind::Frozen,
-                    None,
-                    "Playback froze and could not be recovered".to_owned(),
-                )?;
-            }
-        }
-
-        Ok(())
+    /// Reload the stalled item where it stopped. flapjack has already flushed
+    /// in place and been refused by the wedge, so this rebuilds the pipeline
+    /// rather than trying to unstick the one that is there.
+    fn recover_stalled_item(&mut self, position: gst::ClockTime) {
+        let rate = self.player.rate() as f32;
+        self.reload_current_item_at(position, rate);
+        // Adopt the reload's new item id WITHOUT rearming the per-item cap, or a
+        // permanently wedging stream would reload forever.
+        self.stall_recovery
+            .note_recovery_reload(self.current_media_item_id);
     }
 
-    /// One self-contained diagnostic line. The `.dot` dump only writes when
-    /// `GST_DEBUG_DUMP_DOT_DIR` is set.
-    fn log_freeze_diagnostics(
-        &self,
-        action: FreezeAction,
-        position: gst::ClockTime,
-        pinned_for: Duration,
-    ) {
+    /// One self-contained diagnostic line per stall report. The `.dot` dump
+    /// only writes when `GST_DEBUG_DUMP_DOT_DIR` is set.
+    fn log_stall_diagnostics(&self, action: StallAction, position: gst::ClockTime, report: &str) {
         let (current, pending) = self.player.dbg_state_summary();
         let buffering = self.player.dbg_buffering();
         warn!(
             recovery = ?action,
-            stage = self.freeze_watchdog.stage_name(),
+            report,
             item = self.current_media_item_id,
             source = self.current_source_kind(),
             image = self.image_via_player,
-            pinned_for_ms = pinned_for.as_millis(),
             position_s = position.seconds_f64(),
             duration_s = self.current_duration.map(|d| d.seconds_f64()),
             rate = self.player.rate(),
@@ -2726,10 +2663,10 @@ impl Application {
             unsettled = ?self.player.dbg_unsettled_elements(),
             sources = ?self.player.dbg_sources(),
             video_sink = ?self.player.dbg_video_sink_stats(),
-            "FREEZE WATCHDOG: playback position pinned while the receiver believes it is playing"
+            "STALL: the driver reported a wedge its own flushing repairs did not clear"
         );
         self.player
-            .dump_dot(&format!("freeze-item{}", self.current_media_item_id));
+            .dump_dot(&format!("stall-item{}", self.current_media_item_id));
     }
 
     /// Coarse identity of what is playing, for diagnostics.
@@ -4540,17 +4477,8 @@ impl Application {
                     self.video_stream_unavailable();
                 }
             }
-            player::PlayerEvent::SeekFailed { op } => {
-                // The freeze watchdog's recovery seek rides flapjack's refresh
-                // seek and comes back under its own op; only the escalation can
-                // recover from its refusal, and the transport state machine has
-                // no seek of its own to fail for it.
-                if op.is_some_and(|op| self.freeze_watchdog.is_recovery_seek(op)) {
-                    warn!("FREEZE WATCHDOG: the recovery seek was refused by the pipeline");
-                    self.player.subtitle_refresh_failed();
-                } else {
-                    self.player.seek_failed();
-                }
+            player::PlayerEvent::SeekFailed { .. } => {
+                self.player.seek_failed();
             }
             player::PlayerEvent::ClockLost => {
                 // a report only, flapjack re-elects the clock itself
@@ -4576,6 +4504,26 @@ impl Application {
                         debug!(?failed_uri, message, "Dropping error from a stale input");
                     }
                     flapjack::ErrorOrigin::Main | flapjack::ErrorOrigin::Unknown => {
+                        // A stall is not a bus error. It is flapjack's verdict
+                        // after its own flushing repairs did not move the
+                        // playhead, and the rung left is the receiver's: reload
+                        // the item where it stopped, once. Everything below is
+                        // for an item that will not play, which a stall only is
+                        // after that (see `stall_recovery`).
+                        let stall = (kind == player::MediaErrorKind::Frozen).then(|| {
+                            let action = self.stall_recovery.on_stall(self.current_media_item_id);
+                            // Queried ONCE: on a wedged pipeline the traversal
+                            // can block behind whatever wedged it.
+                            let position =
+                                self.player.get_position().unwrap_or(gst::ClockTime::ZERO);
+                            self.log_stall_diagnostics(action, position, &message);
+                            (action, position)
+                        });
+                        if let Some((StallAction::Reload, position)) = stall {
+                            self.recover_stalled_item(position);
+                            return Ok(());
+                        }
+
                         self.player.stop();
                         if let Some(origin) = self.current_media.as_ref().map(|m| m.origin) {
                             self.send_error(origin, media_error_kind_to_error(kind));
@@ -4590,6 +4538,16 @@ impl Application {
                         let mut diagnostic = message;
                         if let Some(uri) = &failed_uri {
                             diagnostic.push_str(&format!(" (uri {})", strip_uri_query(uri)));
+                        }
+                        // A photographed bug report should say which of the two
+                        // ladders ran out, and flapjack's half of the message
+                        // cannot know about this one.
+                        if stall.is_some() {
+                            diagnostic.push_str(if self.stall_recovery.reload_spent() {
+                                "; reloading the item did not clear it either"
+                            } else {
+                                "; the receiver's reload is disabled"
+                            });
                         }
                         self.media_error(kind, detail, diagnostic)?;
                     }
@@ -6116,11 +6074,6 @@ impl Application {
                             }
                             self.send_v4_progress_updates();
                             self.maybe_prearm_gapless();
-                        }
-                        // Deliberately outside the Playing gate: the detector must see the
-                        // excluded ticks or they count as pinned playback.
-                        if let Err(err) = self.poll_freeze_watchdog() {
-                            error!(?err, "Freeze watchdog recovery failed");
                         }
                     }
                     session = listener_stream.select_next_some() => {

@@ -6,7 +6,6 @@ members = [
     "senders/terminal",
     "crates/fcast-protocol",
     "crates/mirroring-core",
-    "crates/sabrump",
     "senders/desktop",
     "senders/android",
     "tools/fast",
@@ -39,7 +38,6 @@ members = [
 default-members = [
     "xtask",
     "crates/fcast-protocol",
-    "crates/sabrump",
     "crates/receiver-core",
     "crates/receiver-ui",
     "receivers/desktop",
@@ -75,16 +73,16 @@ gst = { package = "gstreamer", version = "0.25" }
 gst-app = { package = "gstreamer-app", version = "0.25", features = [ "v1_24" ] }
 gst-video = { package = "gstreamer-video", version = "0.25", features = [ "v1_24" ] }
 gst-base = { package = "gstreamer-base", version = "0.25", features = [ "v1_24" ] }
-gst-plugin-rtp = { rev = "518b3b9b49ad23c659aa6ea3e587e1846f02b056", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false, features = [ "static", "depay", "rtpbin2" ] }
-gst-plugin-webrtc = { rev = "518b3b9b49ad23c659aa6ea3e587e1846f02b056", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false }
+gst-plugin-rtp = { rev = "a35f7d35ecd37a0627983c9235e8417457805618", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false, features = [ "static", "depay", "rtpbin2" ] }
+gst-plugin-webrtc = { rev = "a35f7d35ecd37a0627983c9235e8417457805618", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false }
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
 # The Rust WebRTC stack the desktop receiver mirrors through: webrtcbin2
 # (librice ICE, dimpl DTLS, rtpbin2 underneath) and fcast's receive bins on
 # it, registered on every platform (`gstreamer.rs` plugin_register_static,
 # no cfg). rice-proto is a Rust crate from the librice fork now, so there is
 # no cross-built C ABI and no build-rice-proto.sh wiring left to carry.
-gst-plugin-webrtcbin2 = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "14833cc2b278fff935657bbe02f46f23c45b114b" }
-fcast-webrtc = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "14833cc2b278fff935657bbe02f46f23c45b114b" }
+gst-plugin-webrtcbin2 = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "827eed7e10188e59e19ce894ab9fe2199cea0a66" }
+fcast-webrtc = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "827eed7e10188e59e19ce894ab9fe2199cea0a66" }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
 # flapjack's in-tree subparse: the player and the receiver must share ONE
 # `CueIr`, the cue engine keys its raster cache on the same `Arc`.
@@ -106,9 +104,13 @@ tracing-subscriber = "0.3"
 tracing-gstreamer = { git = "https://github.com/MAlba124/tracing-gstreamer.git", rev = "3ad7a1e71a4ca4d1fd9a229642fd09586370acaf" }
 tracing-panic = "0.1.2"
 parking_lot = "0.12"
-slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f", default-features = false }
-slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f" }
-i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7a593efd72644dcde77a151b309c97c57882806f" }
+# The slint fork, by rev from git. slint-gstreamer-video names the same rev
+# and so must every i-slint-* pin in the tree: two revs in one graph is two
+# i-slint-core types, which reads as `expected slint::Weak<_>, found
+# slint::Weak<MainWindow>` and six friends.
+slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e", default-features = false }
+slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e" }
+i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "e5fa998f5f7bea6e281459a1e6ff4a6286d4ca7e" }
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.23", features = [ "v4" ] }
 bytes = "1"
@@ -241,37 +243,13 @@ opt-level = 3
 # one because the slint fork's layout crate names it directly, and a graph that
 # carries the git copy beside the local one has two different `CueIr` types.
 
-# The slint fork, redirected to the local checkout the rev pins above name.
-#
-# The graph no longer NEEDS this: slint-gstreamer-video is taken by rev now and
-# names the same fork rev this workspace does, so dropping the block resolves to
-# one slint, from git. What it buys is the local checkout: work on the fork is
-# picked up by a receiver build without a push and a rev bump, and dropping the
-# block means every such round trip goes through gitlab.
-#
-# Keep both repos naming the same source whatever happens here. A graph that
-# carries slint twice, once from git and once from the checkout, shows up as
-# `expected i_slint_core::api::weak_handle::Weak<_>, found
-# slint::Weak<MainWindow>` and six friends.
-[patch."https://gitlab.futo.org/fcast/slint.git"]
-slint = { path = "../slint-forked/api/rs/slint" }
-slint-build = { path = "../slint-forked/api/rs/build" }
-i-slint-backend-winit = { path = "../slint-forked/internal/backends/winit" }
-# receiver-ui pins these itself, so they need redirecting as well or the graph
-# ends up with one i-slint-core from git and one from the checkout.
-i-slint-cue = { path = "../slint-forked/internal/cue" }
-i-slint-video = { path = "../slint-forked/internal/video" }
-i-slint-video-wgpu = { path = "../slint-forked/internal/video-wgpu" }
-i-slint-video-import = { path = "../slint-forked/internal/video-import" }
-i-slint-backend-android-activity = { path = "../slint-forked/internal/backends/android-activity" }
-
 [patch.crates-io]
 # librice fork: rice-c consumes rice-proto as a Rust crate (its capi feature),
 # not a cargo-c C staticlib. Drops the .a's bundled std (which collided with the
 # LTO'd std in release builds), bindgen, system-deps, and the per-ABI rice-proto
 # cross-build. Patching librice cascades: its rice-c/rice-proto are path deps in
 # the fork workspace, so they come from the fork too.
-librice = { git = "https://gitlab.futo.org/fcast/librice.git", rev = "134c5da390164cd1f2e9bb5670d818ac927f1315" }
+librice = { git = "https://gitlab.futo.org/fcast/librice.git", rev = "17ef3a67f949f71b686968496365269bdeff449f" }
 # flapjack's reqwest fork, branched from the 0.13.4 tag: HTTP/3 without the
 # `reqwest_unstable` gate, taken through Alt-Svc, and `http3` on quinn's
 # aws-lc-rs provider so ring stays out of the tree. Every 0.13 reqwest in the
