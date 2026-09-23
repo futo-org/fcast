@@ -1,0 +1,6 @@
+# The image is built from the Dockerfile alone. Everything else in this
+# directory is app source the job clones itself, or build output: jniLibs and
+# app/build are hundreds of megabytes of context that would be uploaded to
+# the daemon and then thrown away.
+*
+!Dockerfile
