@@ -2,14 +2,33 @@ plugins {
     alias(libs.plugins.android.application)
 }
 
-// Release signing comes from an untracked keystore.properties next to the
-// root build.gradle (storeFile/storePassword/keyAlias/keyPassword). Absent,
-// release stays debug-signed so adb install keeps working locally; Play
-// uploads need the real keystore.
+// Release signing, in the order the machines that build this actually hold a
+// key. /certs/key.properties is what the CI runner mounts, and what the
+// stable receiver and the sender both read, so one secret signs all three and
+// this app keeps the upload key its applicationId already belongs to. Then an
+// untracked keystore.properties next to the root build.gradle, for a
+// developer holding the real key.
+//
+// With neither, release is debug-signed so `adb install` keeps working, and
+// `-PrequireSigning=true` turns that into a build failure. CI passes it: an
+// unsigned release fails at install, which is obvious, but a debug-signed one
+// installs fine and can then never be updated.
 def keystoreProps = new Properties()
-def keystorePropsFile = rootProject.file('keystore.properties')
-if (keystorePropsFile.exists()) {
+def keystorePropsFile = [
+        rootProject.file('/certs/key.properties'),
+        rootProject.file('keystore.properties'),
+].find { it.exists() }
+if (keystorePropsFile != null) {
     keystorePropsFile.withInputStream { keystoreProps.load(it) }
+    println("Signing with the key named by ${keystorePropsFile}")
+}
+
+def haveSigningKey = keystoreProps.getProperty('storeFile') != null
+if (!haveSigningKey && project.hasProperty('requireSigning')
+        && project.property('requireSigning').toString().toBoolean()) {
+    throw new GradleException('requireSigning is set, but no signing key was '
+            + 'found: expected storeFile in /certs/key.properties or in '
+            + 'keystore.properties next to the root build.gradle')
 }
 
 // CI injects -PversionCode/-PversionName at upload time, same scheme as the
@@ -70,7 +89,7 @@ android {
 
     signingConfigs {
         release {
-            if (keystoreProps.getProperty('storeFile')) {
+            if (haveSigningKey) {
                 storeFile rootProject.file(keystoreProps['storeFile'])
                 storePassword keystoreProps['storePassword']
                 keyAlias keystoreProps['keyAlias']
@@ -82,9 +101,7 @@ android {
     buildTypes {
         release {
             minifyEnabled false
-            signingConfig keystoreProps.getProperty('storeFile') != null
-                    ? signingConfigs.release
-                    : signingConfigs.debug
+            signingConfig haveSigningKey ? signingConfigs.release : signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }

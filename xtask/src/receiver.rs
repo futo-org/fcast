@@ -54,6 +54,10 @@ pub struct PackageArgs {
     /// Package the jniLibs already in the tree instead of rebuilding them.
     #[clap(long)]
     pub skip_native: bool,
+    /// Fail rather than fall back to the debug key. What CI passes: a
+    /// debug-signed release installs once and can never be updated.
+    #[clap(long)]
+    pub require_signing: bool,
 }
 
 #[derive(Args)]
@@ -448,12 +452,17 @@ impl ReceiverArgs {
                         };
                         let version_code = p.version_code.to_string();
                         let version_name = p.version_name;
+                        let signing: &[&str] = if p.require_signing {
+                            &["-PrequireSigning=true"]
+                        } else {
+                            &[]
+                        };
 
                         {
                             let _dir = sh.push_dir(&project);
                             cmd!(
                                 sh,
-                                "./gradlew --stacktrace {task}
+                                "./gradlew --stacktrace {task} {signing...}
                                  -PversionCode={version_code} -PversionName={version_name}"
                             )
                             .run()?;
