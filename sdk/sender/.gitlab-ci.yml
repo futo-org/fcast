@@ -116,7 +116,18 @@ crossCompileForDarwinCSharp:
       - crossCompileForDarwinCSharp/binary/target/x86_64-apple-darwin/release/libfcast_sender_sdk.dylib
   when: manual
 
+# .cargo/config.toml pins clang + wild for the x86_64 linux host, which these
+# images lack. Build scripts run on that host in every cross job too. The git
+# CLI fetches the workspace [patch] forks faster and more reliably than libgit2.
+.csharpHostLinker:
+  variables:
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER: cc
+    RUSTFLAGS: ""
+    CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    CARGO_NET_RETRY: "10"
+
 crossCompileForAarch64LinuxCSharp:
+  extends: .csharpHostLinker
   stage: buildSenderSDK
   image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev-cross-aarch64-unknown-linux-gnu:latest
   script:
@@ -133,6 +144,7 @@ crossCompileForAarch64LinuxCSharp:
   when: manual
 
 compileForx64LinuxCSharp:
+  extends: .csharpHostLinker
   stage: buildSenderSDK
   image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev-cross-x86_64-unknown-linux-gnu:latest
   script:
@@ -149,6 +161,7 @@ compileForx64LinuxCSharp:
   when: manual
 
 compileForx64WindowsCSharp:
+  extends: .csharpHostLinker
   stage: buildSenderSDK
   image: gitlab.futo.org:5050/videostreaming/fcast/sender-sdk-dev-cross-x86_64-pc-windows-gnu:latest
   script:
