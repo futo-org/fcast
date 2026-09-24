@@ -34,6 +34,10 @@ sender_sdk_csharp_task:
   name: crossCompileForDarwinCSharp
   macos_instance:
     image: ghcr.io/cirruslabs/macos-sequoia-xcode:26.2
+  # The workspace [patch] forks are all cloned, and libgit2 over SecureTransport keeps dropping
+  env:
+    CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+    CARGO_NET_RETRY: "10"
   buildSenderSdkDarwin_script:
     - brew install rustup-init protobuf
     - rustup-init -y

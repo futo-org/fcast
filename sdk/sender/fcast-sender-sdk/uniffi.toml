@@ -4,3 +4,10 @@ package_name = "org.fcast.sender_sdk"
 [bindings.csharp]
 namespace = "FCast.SenderSDK"
 access_modifier = "public"
+
+# C# nests enum variants as records deriving from the enum, so a field PascalCased
+# to a sibling variant's name (Video.Url vs LoadRequest.Url) is CS8866.
+# Keys are the full Rust module path of the item.
+[bindings.csharp.rename."fcast_sender_sdk::device"]
+"LoadRequest.Video.url" = "media_url"
+"LoadRequest.Image.url" = "media_url"
