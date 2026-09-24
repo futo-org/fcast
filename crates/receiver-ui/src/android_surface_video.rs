@@ -8,11 +8,18 @@
 //! SURFACE LIFECYCLE PROTOCOL, every rule below exists because breaking it
 //! produced a field bug:
 //!
-//! * One surface per item. The view is hidden on caps drop, which destroys the
-//!   surface. Destroying it is what clears the previous item's last frame AND
-//!   what sheds a CPU producer connection: after any ANativeWindow_lock (the
-//!   sink's raw blit path) a MediaCodec can never connect to that surface again
-//!   (media_status_t -10000).
+//! * ONE SURFACE, kept across items. It used to be destroyed between them (the
+//!   view was hidden on caps drop) and that teardown raced every codec that
+//!   configured against it: the codec would adopt a surface already abandoned,
+//!   never dequeue a buffer, and the item would never start, permanently,
+//!   because the handoff saw its own seq unchanged and never re-handed. Now the
+//!   view is parked at 1x1 instead, which keeps the surface alive (only a zero
+//!   size or a hide destroys it) while showing none of the last frame.
+//! * The one exception is a CPU-connected surface. After any
+//!   ANativeWindow_lock (the sink's raw blit path, which stills and software
+//!   formats take) a MediaCodec can never connect to that surface again
+//!   (media_status_t -10000), so `video_window_cpu_locked` forces the old
+//!   hide-and-remake for exactly that case and nothing else.
 //! * Hand the window before the codec builds. A codec that starts windowless
 //!   rebuilds when the window arrives and then drops every frame until the
 //!   stream's next keyframe (seconds of frozen video). `preopen_current` runs
@@ -22,9 +29,11 @@
 //!   caps-drop path and `app_visibility(false)` do set_video_window null first;
 //!   the generation bump it causes is also what lets a codec that already
 //!   grabbed the dying window recover instead of erroring.
-//! * The creation seq (from the Java view) identifies which surface the player
-//!   holds; a changed seq means hidden-and-remade and the window must be
-//!   re-acquired. The handoff never re-hands an unchanged seq.
+//! * The surface seq (from the Java view) identifies which surface the player
+//!   holds; a changed seq means the surface was destroyed or remade and the
+//!   window must be re-acquired. The handoff never re-hands an unchanged seq,
+//!   so a window adopted under a stale seq would never be corrected: the
+//!   acquire is seq-checked on both sides of the JNI read for that reason.
 //! * All geometry runs on the slint UI thread; a 0x0 window means the activity
 //!   is stopped and the relayout retries on a timer, because a resume to the
 //!   pre-stop size emits no resize event.
@@ -115,7 +124,12 @@ pub(crate) fn park_current() {
     this.handoff.lock().unwrap().preopen_pending = false;
     // nothing is coming, a decoder must not wait for it
     crate::set_video_window_pending(false);
-    let _ = this.surface.set_visible(false);
+    if crate::video_window_cpu_locked() {
+        let _ = this.surface.set_visible(false);
+    } else {
+        // parked, not destroyed; see the lifecycle notes at the top
+        let _ = this.surface.set_rect(0, 0, 1, 1);
+    }
 }
 
 pub(crate) fn preopen_current() {
@@ -243,9 +257,14 @@ impl SurfaceVideo {
                     // blit path made (a codec can never connect after one).
                     // Take the window away from the player first, the next
                     // codec must not configure against a dead surface.
+                    // Ask before the null: the flag belongs to the window the
+                    // player still holds, and set_video_window clears it.
+                    let poisoned = crate::video_window_cpu_locked();
                     crate::set_video_window(std::ptr::null_mut());
                     {
                         let mut st = this.handoff.lock().unwrap();
+                        // zeroed either way: the next codec needs the window
+                        // handed to it again, same surface or not
                         st.handed_seq = 0;
                     }
                     // also ends a zero-size relayout retry chain
@@ -254,7 +273,18 @@ impl SurfaceVideo {
                     // this state is process-wide and would stick otherwise
                     this.rotation
                         .store(0, std::sync::atomic::Ordering::Relaxed);
-                    let _ = this.surface.set_visible(false);
+                    if poisoned {
+                        // The blit CPU-connected this surface and no codec can
+                        // ever attach to it again. Only here is the teardown
+                        // race worth taking.
+                        info!("surface video: surface was CPU-locked, remaking it");
+                        let _ = this.surface.set_visible(false);
+                    } else {
+                        // Park, do not destroy: 1x1 keeps the surface and its
+                        // BufferQueue alive for the next codec while showing
+                        // effectively none of the last frame.
+                        let _ = this.surface.set_rect(0, 0, 1, 1);
+                    }
                     // A load racing this teardown pre-opened the surface for
                     // its codec; give it a fresh one instead of leaving it
                     // windowless (that costs a rebuild and a keyframe wait).
@@ -263,7 +293,7 @@ impl SurfaceVideo {
                     // coalesces into the same layout pass, the surface
                     // survives, and the previous item's last frame flashes
                     // under the next one.
-                    if this.handoff.lock().unwrap().preopen_pending {
+                    if poisoned && this.handoff.lock().unwrap().preopen_pending {
                         let _ = ui.upgrade_in_event_loop(move |_| {
                             slint::Timer::single_shot(
                                 std::time::Duration::from_millis(80),
@@ -387,6 +417,18 @@ impl SurfaceVideo {
                         return;
                     }
                     if let Some(window) = this.surface.acquire_native_window() {
+                        // Seqlock: the seq and the surface are two reads, and
+                        // the view can be hidden and remade between them. A
+                        // window that outlived its seq belongs to an abandoned
+                        // BufferQueue, and handing it wedges the codec for the
+                        // life of the process, so drop it and look again.
+                        if this.surface.surface_seq() != seq {
+                            unsafe {
+                                ndk_sys::ANativeWindow_release(window.as_ptr().cast())
+                            };
+                            std::thread::sleep(std::time::Duration::from_millis(25));
+                            continue;
+                        }
                         info!(seq, "video surface live, handing it to the player");
                         crate::set_video_window(window.as_ptr().cast());
                         // acquire_native_window acquired a reference for US

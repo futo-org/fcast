@@ -50,8 +50,9 @@ pub fn clear_current() {
         return;
     };
     subs.0.engine.clear();
-    subs.0.last.lock().unwrap().clear();
-    push(&subs.0);
+    // Forced: the scene must end up empty whatever the dedup believes. It has
+    // believed wrong, see `push`.
+    push(&subs.0, true);
 }
 
 pub fn attach(engine: CueEngine, sink: &gst::Element, ui: &crate::MainWindow) -> Subtitles {
@@ -77,7 +78,7 @@ pub fn attach(engine: CueEngine, sink: &gst::Element, ui: &crate::MainWindow) ->
     engine.warm();
     {
         let state = state.clone();
-        engine.set_on_change(move || push(&state));
+        engine.set_on_change(move || push(&state, false));
     }
 
     let Some(pad) = sink.static_pad("sink") else {
@@ -126,10 +127,9 @@ pub fn resync(subs: &Subtitles, ui: &crate::MainWindow) {
     sync_geometry(&subs.0, size, picture);
     // A fullscreen toggle can move the letterbox and the content offset
     // without changing the engine's canvas or its raster set at all
-    // (overlay bars keep the sizes), so the signature dedup in push would
-    // keep the shown cues at their old spot. Invalidate and re-place.
-    subs.0.last.lock().unwrap().clear();
-    push(&subs.0);
+    // (overlay bars keep the sizes), so the dedup in push would keep the
+    // shown cues at their old spot. Force the re-place.
+    push(&subs.0, true);
 }
 
 /// Push canvas and picture rect. The canvas stops above a persistent
@@ -147,7 +147,17 @@ fn sync_geometry(state: &State, size: (u32, u32), picture: (u32, u32)) {
     }
 }
 
-fn push(state: &Arc<State>) {
+/// `force` skips the dedup for the two callers that must reach the scene
+/// whatever it says: the item-boundary clear and a geometry re-place.
+///
+/// The dedup keys on the signature of what was last WRITTEN, so it is only
+/// honest if nothing else edits that record. Clearing it to "nothing painted"
+/// to force a write does the opposite when the new set is also empty: both
+/// sides match, the write is skipped, and from then on the record claims an
+/// empty scene while a cue is still painted. Every later push, the item
+/// boundary's included, then dedups against that lie and the cue never comes
+/// down (2026-09-23, a paused cue surviving into the next item forever).
+fn push(state: &Arc<State>, force: bool) {
     let state = state.clone();
     let _ = state.ui.clone().upgrade_in_event_loop(move |ui| {
         // Same space as the SurfaceView's rect, or cues drift off the picture
@@ -179,7 +189,7 @@ fn push(state: &Arc<State>) {
             .collect();
         {
             let mut last = state.last.lock().unwrap();
-            if *last == sig {
+            if !force && *last == sig {
                 return;
             }
             *last = sig;

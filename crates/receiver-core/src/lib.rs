@@ -109,6 +109,8 @@ pub use flapjack::android::set_video_window;
 #[cfg(target_os = "android")]
 pub use flapjack::android::set_video_window_pending;
 #[cfg(target_os = "android")]
+pub use flapjack::android::video_window_cpu_locked;
+#[cfg(target_os = "android")]
 pub use flapjack::android::set_app_visible;
 
 #[cfg(target_os = "android")]
