@@ -81,8 +81,6 @@ body:
         - "Android"
         - "AndroidTV"
         - "Roku"
-        - "WebOS"
-        - "TizenOS"
         - "tvOS"
     validations:
       required: true

@@ -36,8 +36,6 @@ A "receiver", in this context, is a software implementation running on various p
 - Receivers
     - [**Android**](https://github.com/futo-org/fcast/tree/master/receivers/android) native.
     - [**Linux, Windows, MacOS**](https://github.com/futo-org/fcast/tree/master/receivers/desktop)
-    - [**webOS**](https://github.com/futo-org/fcast/tree/master/receivers/webos)
-    - [**Tizen**](https://github.com/futo-org/fcast/tree/master/receivers/tizen)
 
 - Senders
     - [**Grayjay**](https://github.com/futo-org/grayjay-android) is a player that exposes multiple video websites as sources in the app.
