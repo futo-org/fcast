@@ -17,9 +17,12 @@ rustflags = ["-C", "link-arg=--ld-path=wild", "-Clink-arg=-Wl,-z,pack-relative-r
 # dependency, so no pkg-config stubs or shims are involved. Every value here
 # is a default a real environment variable still overrides.
 [env]
-# Our fork is 1.29.2 plus the patch set, one commit each.
+# Our fork is 1.29.2 plus the patch set, one commit each, on branch fcast/1.29.2.
+# Pinned by commit rather than by that branch: gstreamer-src holds a checkout
+# to a commit, while a branch is cloned once and never refetched, so a host's
+# tree silently falls behind the fork. Bump the sha to pick up fork work.
 GSTREAMER_SRC_REPO = "https://gitlab.futo.org/fcast/gstreamer.git"
-GSTREAMER_SRC_REF = "fcast/1.29.2"
+GSTREAMER_SRC_REF = "5edeb37d69d324fcfd1adef059b0650ee44fc533"
 # Deterministic build-tree location, independent of any global cargo build-dir.
 GSTREAMER_SRC_BUILD_ROOT = { value = "target/gst-static", relative = true }
 # Target-scoped C toolchain for cc-rs build scripts (ring, skia glue, ...):

@@ -273,6 +273,7 @@ gstreamer-webrtc-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git",
 gstreamer-sdp-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
 gstreamer-rtp-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
 gstreamer-net-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
+gstreamer-check-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", branch = "fcast/0.25.3" }
 glib-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", branch = "fcast/0.22.8" }
 gobject-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", branch = "fcast/0.22.8" }
 gio-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", branch = "fcast/0.22.8" }
