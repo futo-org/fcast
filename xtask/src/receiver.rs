@@ -183,7 +183,7 @@ fn build_android_native(
             "receiver-android",
         ];
         if release {
-            args.push("--release");
+            args.extend(["--profile", "release-android"]);
         }
 
         cmd!(sh, "cargo ndk {args...}").run()?;
