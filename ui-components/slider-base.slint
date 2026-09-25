@@ -49,8 +49,8 @@ export component SliderBase {
 
 
             if (!root.handle-has-hover) {
-                root.set-value((!root.vertical ? root.size-to-value(touch-area.mouse-x, root.width) :
-                    root.size-to-value(root.height - touch-area.mouse-y, root.height)) + root.minimum);
+                root.set-value((!root.vertical ? root.size-to-value(touch-area.mouse-x - root.ref-size / 2, root.width - root.ref-size) :
+                    root.size-to-value(root.height - root.ref-size / 2 - touch-area.mouse-y, root.height - root.ref-size)) + root.minimum);
             }
 
             self.pressed-value = value;
