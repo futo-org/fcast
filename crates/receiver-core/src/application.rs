@@ -65,6 +65,21 @@ const BUFFERED_RANGES_INTERVAL: Duration = Duration::from_millis(1000);
 const SEEK_HOLD_TOLERANCE: f64 = 0.75;
 /// Safety net so a dropped/failed seek can't freeze the thumb forever.
 const SEEK_HOLD_TIMEOUT: Duration = Duration::from_secs(12);
+/// How far inside the stream a seek target is held. A seek to the duration
+/// itself selects an empty segment, so every branch EOSes with nothing
+/// decoded and no frame is shown.
+const SEEK_END_GUARD: gst::ClockTime = gst::ClockTime::from_mseconds(250);
+
+/// Hold `time` far enough inside `duration` that a frame still follows it.
+fn seek_target_in_stream(time: gst::ClockTime, duration: gst::ClockTime) -> gst::ClockTime {
+    if duration == gst::ClockTime::ZERO {
+        return time;
+    }
+    // Halve the guard against the duration so a clip shorter than it stays
+    // seekable at all.
+    let guard = SEEK_END_GUARD.nseconds().min(duration.nseconds() / 2);
+    time.min(gst::ClockTime::from_nseconds(duration.nseconds() - guard))
+}
 
 /// Cap on events held for a pending pre-arm (see
 /// `Application::held_prearm_events`). The window is at most the aqueue
@@ -2806,13 +2821,16 @@ impl Application {
     /// cancel round-trip. Known caveat: after a swap `current_duration` can
     /// be the next item's.
     fn clamp_seek_target(&mut self, origin: PacketOrigin, time: gst::ClockTime) -> gst::ClockTime {
-        match self.current_duration {
-            Some(duration) if duration > gst::ClockTime::ZERO && time > duration => {
-                self.send_error(origin, ErrorKind::SeekOutOfRange);
-                duration
-            }
-            _ => time,
+        let Some(duration) = self.current_duration else {
+            return time;
+        };
+        if duration == gst::ClockTime::ZERO {
+            return time;
         }
+        if time > duration {
+            self.send_error(origin, ErrorKind::SeekOutOfRange);
+        }
+        seek_target_in_stream(time, duration)
     }
 
     /// Send an already-clamped seek to the pipeline, or park it until the
@@ -5544,8 +5562,10 @@ impl Application {
                     if let Ok(pos) = gst::ClockTime::try_from_seconds_f64(
                         percent as f64 * duration.seconds_f64(),
                     ) {
+                        // Same clamp the operation applies, or the hold waits
+                        // for a position the pipeline will never report.
                         self.gui_seek_hold = Some(GuiSeekHold {
-                            target: pos.min(duration).seconds_f64(),
+                            target: seek_target_in_stream(pos, duration).seconds_f64(),
                             since: Instant::now(),
                         });
                         return self.handle_operation(Operation::Seek(pos), PacketOrigin::Gui);
@@ -6149,6 +6169,36 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Scrubbing to the far end asks for the duration itself, which selects an
+    /// empty segment. Targets inside the stream must pass through untouched.
+    #[test]
+    fn a_seek_target_never_reaches_the_duration() {
+        let dur = gst::ClockTime::from_seconds(60);
+        assert_eq!(
+            seek_target_in_stream(dur, dur),
+            dur - SEEK_END_GUARD,
+            "the end of the stream is held one guard back"
+        );
+        assert_eq!(
+            seek_target_in_stream(gst::ClockTime::from_seconds(90), dur),
+            dur - SEEK_END_GUARD,
+            "an over-long target clamps to the same place"
+        );
+        let mid = gst::ClockTime::from_seconds(30);
+        assert_eq!(seek_target_in_stream(mid, dur), mid);
+
+        // Shorter than the guard: half the clip, not zero and not negative.
+        let tiny = gst::ClockTime::from_mseconds(100);
+        assert_eq!(
+            seek_target_in_stream(tiny, tiny),
+            gst::ClockTime::from_mseconds(50)
+        );
+
+        // No duration known yet, nothing to clamp against.
+        let t = gst::ClockTime::from_seconds(5);
+        assert_eq!(seek_target_in_stream(t, gst::ClockTime::ZERO), t);
+    }
 
     /// The two-masters window: a stale-looking generation matching the
     /// pending pre-arm is the pipeline's future and must be held, never
