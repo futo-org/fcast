@@ -210,7 +210,6 @@ wgpu-types = { opt-level = 3 }
 naga = { opt-level = 3 }
 ash = { opt-level = 3 }
 gpu-allocator = { opt-level = 3 }
-gpu-descriptor = { opt-level = 3 }
 i-slint-video-wgpu = { opt-level = 3 }
 
 [profile.dev.package.image]
