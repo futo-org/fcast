@@ -33,7 +33,7 @@ rustup default nightly
 Step "Installing build tools via winget"
 $wingetIds = @(
   "NASM.NASM", "Kitware.CMake", "LLVM.LLVM",
-  "Python.Python.3.14", "Ninja-build.Ninja", "Google.flatbuffers"
+  "Python.Python.3.14", "Ninja-build.Ninja"
 )
 foreach ($id in $wingetIds) {
   Write-Host "--- winget install $id"
@@ -99,7 +99,7 @@ if (-not (Get-Command cl -ErrorAction SilentlyContinue)) { throw "cl not on PATH
 # The real check that provisioning worked. --version too: Get-Command also
 # matches the Windows Store python.exe alias stub.
 Step "Verifying toolchain"
-foreach ($tool in @("git","rustup","cargo","python","ninja","cmake","clang-cl","nasm","flatc","wix")) {
+foreach ($tool in @("git","rustup","cargo","python","ninja","cmake","clang-cl","nasm","wix")) {
   if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
     throw "provisioning failed: '$tool' is not on PATH"
   }
