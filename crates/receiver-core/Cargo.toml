@@ -19,7 +19,6 @@ sabrump = { path = "../sabrump", features = ["serde"] }
 gethostname = "1"
 anyhow.workspace = true
 futures.workspace = true
-tokio-stream = "0.1"
 url = "2"
 thiserror = "2"
 mdns-sd.workspace = true
@@ -85,7 +84,6 @@ ctr = { version = "0.9", optional = true }
 apple-fairplay = { path = "../apple-fairplay", optional = true }
 
 # Google Cast
-rustls-pki-types.workspace = true
 google-cast-protocol = { path = "../google-cast-protocol" }
 rcgen.workspace = true
 uuid.workspace = true
@@ -107,9 +105,6 @@ inhibit-screensaver.path = "../inhibit-screensaver"
 image = { workspace = true, features = ["encode"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
-glutin_egl_sys = { version = "0.7.1" }
-pipewire = { version = "0.10", features = ["v0_3_50"] }
-libspa = "0.10"
 libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image" ] }
@@ -118,11 +113,9 @@ tokio-rustls = { workspace = true, default-features = false, features = [ "loggi
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = "0.6"
 gst-gl-egl = { package = "gstreamer-gl-egl", version = "0.25" }
-glutin_egl_sys = { version = "0.7.1" }
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing = { workspace = true, features = [ "log" ] }
-jni = "0.21.1"
 reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "gzip", "cookies" ] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
 
@@ -130,15 +123,9 @@ tokio-rustls = { version = "0.26.4", default-features = false, features = [ "log
 reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "gzip", "cookies" ] }
 app-updater = { path = "../app-updater"}
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "ring", "tls12" ] }
-receiver-resources.path = "../receiver-resources"
 libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", "image", "embedded-libheif" ] }
 
 [dev-dependencies]
-hyper = { workspace = true, features = ["server"] }
-http-body-util = "0.1.1"
-pin-project-lite = "0.2"
-gst-check = { package = "gstreamer-check", version = "0.25" }
-ctor = "0.2"
 # Encoders are excluded from shipping builds (binary size); tests encode
 # their own image fixtures.
 image = { workspace = true, features = ["encode"] }

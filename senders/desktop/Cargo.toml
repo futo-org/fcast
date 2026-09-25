@@ -22,7 +22,6 @@ parking_lot.workspace = true
 bytes.workspace = true
 smallvec.workspace = true
 serde.workspace = true
-flume = "0.11.1"
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 futures.workspace = true
@@ -30,7 +29,6 @@ gst-plugin-rtp.workspace = true
 webbrowser = "1.0.6"
 directories.workspace = true
 toml_edit.workspace = true
-fcast-protocol = { path = "../../crates/fcast-protocol" }
 mcore.path = "../../crates/mirroring-core/"
 image = { version = "0.25", default-features = false, features = [ "decode", "png", "jpeg", "webp", "avif", "rayon" ] }
 url = "2"

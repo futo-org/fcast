@@ -22,7 +22,6 @@ oneshot = { version = "0.2", features = ["std"] }
 glow.workspace = true
 gst = { workspace = true, features = [ "v1_26" ] }
 gst-base.workspace = true
-gst-video.workspace = true
 
 [dependencies.slint]
 workspace = true

@@ -291,11 +291,8 @@ version = "0.0.1"
 dependencies = [
  "android_logger",
  "anyhow",
- "async-channel",
  "crossbeam-channel",
- "fcast-protocol 0.2.0",
  "fcast-sender-sdk 0.3.0",
- "futures-core",
  "glow",
  "gst-static-env",
  "gstreamer",
@@ -309,7 +306,6 @@ dependencies = [
  "log",
  "mcore",
  "mimalloc",
- "ndk-context",
  "parking_lot",
  "slint",
  "slint-build",
@@ -432,7 +428,6 @@ dependencies = [
  "osakit",
  "reqwest",
  "serde",
- "serde_json",
  "tar",
  "tempfile",
  "tracing",
@@ -2128,10 +2123,8 @@ dependencies = [
  "core-foundation 0.10.1",
  "directories",
  "enable-ansi-support",
- "fcast-protocol 0.2.0",
  "fcast-sender-sdk 0.3.0",
  "file-server",
- "flume 0.11.1",
  "futures",
  "gst-plugin-rtp",
  "gst-static-env",
@@ -2332,10 +2325,8 @@ checksum = "f678cf4a922c215c63e0de95eb1ff08a958a81d47e485cf9da1e27bf6305cfa5"
 name = "egl-sys"
 version = "0.1.0"
 dependencies = [
- "bindgen",
  "gl_generator",
  "libloading 0.9.0",
- "pkg-config",
 ]
 
 [[package]]
@@ -2597,7 +2588,6 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "bytes",
- "ctor 0.2.9",
  "fcast-protocol 0.2.0",
  "fcast-runtime",
  "futures",
@@ -2618,7 +2608,6 @@ dependencies = [
  "hyper",
  "image",
  "jxl-oxide",
- "libc",
  "libspa",
  "mime",
  "parking_lot",
@@ -2842,7 +2831,6 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "bytes",
- "http-body-util",
  "http-range",
  "hyper",
  "hyper-util",
@@ -2963,18 +2951,6 @@ name = "float_next_after"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8bf7cc16383c4b8d58b9905a8509f02926ce3058053c056376248d958c9df1e8"
-
-[[package]]
-name = "flume"
-version = "0.11.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da0e4dd2a88388a1f4ccc7c9ce104604dab68d9f408dc34cd45823d5a9069095"
-dependencies = [
- "futures-core",
- "futures-sink",
- "nanorand",
- "spin",
-]
 
 [[package]]
 name = "flume"
@@ -3361,10 +3337,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ff2abc00be7fca6ebc474524697ae276ad847ad0a6b3faa4bcb027e9a4614ad0"
 dependencies = [
  "cfg-if",
- "js-sys",
  "libc",
  "wasi",
- "wasm-bindgen",
 ]
 
 [[package]]
@@ -5146,7 +5120,6 @@ dependencies = [
  "image",
  "infer",
  "log",
- "num_cpus",
  "slint",
  "slint-build",
 ]
@@ -6141,7 +6114,6 @@ dependencies = [
  "anyhow",
  "app-updater",
  "bytes",
- "fcast-protocol 0.2.0",
  "fcast-sender-sdk 0.3.0",
  "futures",
  "gst-plugin-webrtc",
@@ -6195,7 +6167,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f18d8ec9d1869796fb2910d95f4d957072df0b6a22e247a1d760d8b4c805e17a"
 dependencies = [
  "fastrand",
- "flume 0.12.0",
+ "flume",
  "if-addrs",
  "log",
  "mio",
@@ -6346,15 +6318,6 @@ name = "multimap"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d87ecb2933e8aeadb3e3a02b828fed80a7528047e68b4f424523a0981a3a084"
-
-[[package]]
-name = "nanorand"
-version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a51313c5820b0b02bd422f4b44776fbf47961755c74ce64afc73bfad10226c3"
-dependencies = [
- "getrandom 0.2.17",
-]
 
 [[package]]
 name = "native-tls"
@@ -8080,8 +8043,6 @@ name = "receiver-android"
 version = "0.1.0"
 dependencies = [
  "android_logger",
- "anyhow",
- "env_logger",
  "jni 0.21.1",
  "log",
  "log-panics",
@@ -8106,7 +8067,6 @@ dependencies = [
  "bytes",
  "cbc",
  "clap",
- "ctor 0.2.9",
  "ctr",
  "dav1d-sys",
  "directories",
@@ -8120,7 +8080,6 @@ dependencies = [
  "futures",
  "gethostname",
  "glow",
- "glutin_egl_sys",
  "google-cast-protocol 0.1.0",
  "gst-plugin-dav1d",
  "gst-plugin-rtp",
@@ -8132,7 +8091,6 @@ dependencies = [
  "gstreamer-app",
  "gstreamer-audio",
  "gstreamer-base",
- "gstreamer-check",
  "gstreamer-gl-egl",
  "gstreamer-pbutils",
  "gstreamer-src",
@@ -8140,36 +8098,28 @@ dependencies = [
  "gstreamer-video",
  "hayro-jpeg2000",
  "headers",
- "http-body-util",
- "hyper",
  "if-addrs",
  "image",
  "inhibit-screensaver",
- "jni 0.21.1",
  "jxl-oxide",
  "lazy_static",
  "libc",
  "libheif-rs",
  "libplacebo",
- "libspa",
  "md-5 0.11.0",
  "mdns-sd",
  "mime",
  "nom 7.1.3",
  "oneshot",
  "parking_lot",
- "pin-project-lite",
- "pipewire",
  "plist",
  "rand 0.10.1",
  "rcgen",
- "receiver-resources",
  "regex",
  "reqwest",
  "rsa",
  "rtp-types",
  "rtsp-types",
- "rustls-pki-types",
  "sabrump",
  "sdp-types",
  "self_cell",
@@ -8182,7 +8132,6 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-rustls",
- "tokio-stream",
  "toml_edit",
  "tracing",
  "tracing-gstreamer",
@@ -8192,10 +8141,6 @@ dependencies = [
  "url",
  "uuid",
 ]
-
-[[package]]
-name = "receiver-resources"
-version = "0.1.0"
 
 [[package]]
 name = "receiver-ui"
@@ -8212,7 +8157,6 @@ dependencies = [
  "gstreamer",
  "gstreamer-base",
  "gstreamer-src",
- "gstreamer-video",
  "i-slint-backend-winit",
  "libplacebo",
  "objc2-app-kit 0.3.2",

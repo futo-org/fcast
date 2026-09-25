@@ -8,6 +8,4 @@ license.workspace = true
 libloading.workspace = true
 
 [build-dependencies]
-bindgen.workspace = true
-pkg-config = "0.3.17"
 gl_generator = "0.14.0"

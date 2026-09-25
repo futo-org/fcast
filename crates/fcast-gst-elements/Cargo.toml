@@ -41,7 +41,6 @@ hayro-jpeg2000 = "0.3"
 [target.'cfg(target_os = "linux")'.dependencies]
 pipewire = { version = "0.10", features = ["v0_3_50"] }
 libspa = "0.10"
-libc = "0.2"
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 
 [target.'cfg(target_os = "android")'.dependencies]
@@ -63,7 +62,6 @@ http-body-util = "0.1.1"
 pin-project-lite = "0.2"
 tokio-rustls = { workspace = true, default-features = false, features = [ "logging", "ring", "tls12" ] }
 gst-check = { package = "gstreamer-check", version = "0.25" }
-ctor = "0.2"
 # Encoders are excluded from shipping builds (binary size); fimagedec's tests
 # encode their own image fixtures.
 image = { workspace = true, features = ["encode"] }
