@@ -1474,11 +1474,12 @@ export component VideoPlayerView inherits Rectangle {
         }
     }
 
-    // CPU-delivered video, behind every control. The desktop libplacebo
-    // path leaves the source empty and paints under the window instead.
-    // Black bars around the frame, but only while this path presents;
-    // an unconditional fill would cover the under-window video paths.
-    if Bridge.sw-video-active: Rectangle {
+    // In-window video, behind every control, with black bars around the
+    // frame. Desktop always fills: its video is in the window, and gating on
+    // the first presented frame showed the gray window background between
+    // the loading view and that frame. Android fills only while this path
+    // presents, since a fill would cover the surface behind the window.
+    if Bridge.sw-video-active || !Bridge.behind-window-video: Rectangle {
         width: 100%;
         height: 100%;
         background: black;
