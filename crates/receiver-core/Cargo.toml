@@ -18,7 +18,7 @@ fcast-video = { path = "../fcast-video" }
 # The render tier's vocabulary, which the CLI and the settings file carry and
 # the video sink's property is a rename of. No GStreamer and no wgpu in it, so
 # it costs nothing on the arms that never present a frame.
-i-slint-video = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "a13373a73fb3b13fadf1e57bc0378e2c082f850c" }
+i-slint-video = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "f6ddf0c5a7fc1c2886963030d5c7dd90fdc142d5" }
 fcast-protocol = { path = "../../crates/fcast-protocol", features = ["tokio-receiver"] }
 gethostname = "1"
 anyhow.workspace = true
