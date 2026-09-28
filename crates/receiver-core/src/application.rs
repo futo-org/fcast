@@ -1508,6 +1508,10 @@ impl Application {
         self.current_image_id += 1;
         self.current_image_download_id += 1;
         self.clear_source_backoff();
+        // The GUI's live flag otherwise only moves on progress ticks, and a
+        // new item posts none until it prerolls (a SABR backoff holds that for
+        // a minute), so the previous livestream's red LIVE badge outlived it.
+        self.gui.set_is_live(false);
 
         if continue_to_play == ContinueToPlay::No {
             self.set_media_title("".to_owned());
@@ -4402,6 +4406,7 @@ impl Application {
             }
             player::PlayerEvent::IsLive => {
                 self.player.set_is_live(true);
+                self.gui.set_is_live(true);
             }
             player::PlayerEvent::StateChanged {
                 old,
