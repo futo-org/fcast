@@ -48,6 +48,9 @@ component IdleText inherits FText {
 }
 
 export component IdleView inherits Rectangle {
+    // Connected-senders card, off until a later UI iteration reworks it.
+    property <bool> show-senders-card: false;
+
     Image {
         source: Assets.background-dark;
         width: 100%;
@@ -142,7 +145,7 @@ export component IdleView inherits Rectangle {
 
                     // Who is connected, from each sender's own introduction.
                     // The QR code stays up beside it so another can join.
-                    if Bridge.senders.length > 0: Rectangle {
+                    if show-senders-card && Bridge.senders.length > 0: Rectangle {
                         background: @linear-gradient(222.86deg, #262626 7.47%, #0E0F10 95.53%);
                         border-radius: 8px;
                         border-width: 1px;
