@@ -113,6 +113,25 @@ enum ContinueToPlay {
     No,
 }
 
+/// The window as it was before playback took it over. Recorded by the first
+/// item only, so a load that replaces an item neither hides the window in
+/// between (on Wayland that destroys it) nor loses the original state.
+#[derive(Default, Debug, PartialEq, Eq)]
+struct WindowRestore {
+    visible: Option<bool>,
+    fullscreen: Option<bool>,
+}
+
+impl WindowRestore {
+    fn record_visible(&mut self, was: bool) {
+        self.visible.get_or_insert(was);
+    }
+
+    fn record_fullscreen(&mut self, was: bool) {
+        self.fullscreen.get_or_insert(was);
+    }
+}
+
 struct RaopServer {
     config: raop::Configuration,
 }
@@ -786,8 +805,7 @@ pub struct Application {
     gcast_tx: GCastUpdateSender,
     #[cfg(not(target_os = "android"))]
     settings: Settings,
-    window_visible_before_playing: Option<bool>,
-    window_fullscreen_before_playing: Option<bool>,
+    window_restore: WindowRestore,
     image_downloader: image::Downloader,
     image_decoder: image::Decoder,
     /// Prefetched bytes for queue items around the current index.
@@ -1117,8 +1135,7 @@ impl Application {
             gcast_tx,
             #[cfg(not(target_os = "android"))]
             settings,
-            window_visible_before_playing: None,
-            window_fullscreen_before_playing: None,
+            window_restore: WindowRestore::default(),
             image_downloader,
             image_decoder,
             queue_cache: queue_cache::Cache::new(),
@@ -1527,14 +1544,20 @@ impl Application {
             if preserve_playlist == PreservePlaylist::No {
                 self.gui.update_playlist(0, 0);
             }
+        }
+    }
 
-            if let Some(fullscreen) = self.window_fullscreen_before_playing.take() {
-                self.gui.set_fullscreen(fullscreen);
-            }
-
-            if let Some(visible) = self.window_visible_before_playing.take() {
-                self.gui.set_window_visibility(visible);
-            }
+    /// Playback has ended: hand the window back as the first item found it.
+    fn restore_window(&mut self) {
+        let WindowRestore {
+            visible,
+            fullscreen,
+        } = std::mem::take(&mut self.window_restore);
+        if let Some(fullscreen) = fullscreen {
+            self.gui.set_fullscreen(fullscreen);
+        }
+        if let Some(visible) = visible {
+            self.gui.set_window_visibility(visible);
         }
     }
 
@@ -1642,6 +1665,7 @@ impl Application {
         error!(?kind, msg = diagnostic, "Media error");
 
         self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
+        self.restore_window();
         self.current_media = None;
         self.queue_cache.clear();
 
@@ -1950,6 +1974,7 @@ impl Application {
         // keep working after the last sender disconnects.
         if self.updates_tx.receiver_count() == 0 && self.autoplay_next_index().is_none() {
             self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes);
+            self.restore_window();
             self.current_media = None;
         }
 
@@ -2216,14 +2241,16 @@ impl Application {
             UiPlayerVariant::Raop => (),
         }
 
-        self.window_visible_before_playing = Some(self.gui.set_window_visibility(true));
+        let was_visible = self.gui.set_window_visibility(true);
+        self.window_restore.record_visible(was_visible);
         if self.fullscreen_player_wanted() {
             // If the window was hidden, it takes some time before it can be
             // fullscreened. Android has no hidden-window state to wait out,
             // fullscreen there is the immersive toggle.
             #[cfg(not(target_os = "android"))]
             self.gui.wait_for_is_visible();
-            self.window_fullscreen_before_playing = Some(self.gui.set_fullscreen(true));
+            let was_fullscreen = self.gui.set_fullscreen(true);
+            self.window_restore.record_fullscreen(was_fullscreen);
         }
 
         let mut media_title = None;
@@ -2450,6 +2477,7 @@ impl Application {
             self.player.stop();
             self.transition_app_state(AppState::Idle);
             self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
+            self.restore_window();
             self.current_media = None;
             self.queue_cache.clear();
             #[cfg(not(target_os = "android"))]
@@ -6172,6 +6200,41 @@ impl Application {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A cast replacing the current item must not hand the window back in
+    /// between: the second item's record sees the first one's fullscreen
+    /// window, and the end of playback restores what was there before both.
+    #[test]
+    fn a_replacing_item_keeps_the_first_items_window_record() {
+        let mut restore = WindowRestore::default();
+        // Hidden to the tray, windowed.
+        restore.record_visible(false);
+        restore.record_fullscreen(false);
+        // The next cast finds the window the first one made.
+        restore.record_visible(true);
+        restore.record_fullscreen(true);
+        assert_eq!(
+            std::mem::take(&mut restore),
+            WindowRestore {
+                visible: Some(false),
+                fullscreen: Some(false),
+            }
+        );
+        assert_eq!(restore, WindowRestore::default(), "taken at the end of playback");
+    }
+
+    #[test]
+    fn a_windowed_player_records_no_fullscreen() {
+        let mut restore = WindowRestore::default();
+        restore.record_visible(true);
+        assert_eq!(
+            restore,
+            WindowRestore {
+                visible: Some(true),
+                fullscreen: None,
+            }
+        );
+    }
 
     /// Scrubbing to the far end asks for the duration itself, which selects an
     /// empty segment. Targets inside the stream must pass through untouched.
