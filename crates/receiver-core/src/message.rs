@@ -233,7 +233,13 @@ pub enum Message {
     InspectorBitrateTick,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     AppUpdate(AppUpdate),
-    GuiWindowClosed(oneshot::Sender<()>),
+    /// The renderer is going away. `shows` is the count of window shows the
+    /// GUI thread had carried out when it started, a newer request means the
+    /// window is already being brought back.
+    GuiWindowClosed {
+        shows: u64,
+        feedback: oneshot::Sender<()>,
+    },
     FCastSenderDisconnect(SenderId),
     /// A sender said who it is (v3 initial message, v4 introduction).
     SenderIntroduced {

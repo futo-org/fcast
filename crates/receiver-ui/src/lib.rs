@@ -229,11 +229,26 @@ pub fn run(settings: Settings) -> Result<()> {
                     gui_is_visible.set(false);
 
                     let (feedback_tx, feedback_rx) = oneshot::channel::<()>();
-                    msg_tx.send(Message::GuiWindowClosed(feedback_tx));
-                    match feedback_rx.recv_timeout(Duration::from_millis(2500)) {
-                        Ok(_) => debug!("Player shutdown successfully"),
-                        Err(err) => {
-                            error!(?err, "Failed to receive feedback of player shutdown")
+                    // The GUI thread's own count: a show the application has
+                    // asked for but this thread has not carried out is queued
+                    // behind this teardown and ends the wait below.
+                    let shows = gui_is_visible.shows_processed();
+                    msg_tx.send(Message::GuiWindowClosed {
+                        shows,
+                        feedback: feedback_tx,
+                    });
+                    match gui::await_player_release(
+                        &feedback_rx,
+                        &gui_is_visible,
+                        shows,
+                        Duration::from_millis(2500),
+                    ) {
+                        gui::TeardownWait::Released => debug!("Player shutdown successfully"),
+                        gui::TeardownWait::ShowRequested => {
+                            debug!("Window shown again during its teardown, not waiting on the player")
+                        }
+                        gui::TeardownWait::TimedOut => {
+                            error!("Timed out waiting for the player to shut down")
                         }
                     }
                     // The overlay's scene pool outlives the renderer that
@@ -322,7 +337,7 @@ pub fn run(settings: Settings) -> Result<()> {
             }
         };
 
-        gui::spawn_command_handler(ui.as_weak(), gui_rx, on_show_tray);
+        gui::spawn_command_handler(ui.as_weak(), gui_rx, gui_is_visible.clone(), on_show_tray);
         Some(gui_tx)
     } else {
         None
@@ -523,7 +538,7 @@ pub fn run(
     {
         // no renderer thread on android, the dropped receiver makes the
         // handler's renderer sends no-ops
-        gui::spawn_command_handler(ui.as_weak(), gui_rx, Box::new(|| {}));
+        gui::spawn_command_handler(ui.as_weak(), gui_rx, gui_is_visible.clone(), Box::new(|| {}));
     }
     let gui = GuiController::new(Some(gui_tx), gui_is_visible);
 

@@ -5816,8 +5816,15 @@ impl Application {
             Message::InspectorBitrateTick => self.inspector_tick(),
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             Message::AppUpdate(event) => return self.handle_app_update_event(event),
-            Message::GuiWindowClosed(feedback) => {
-                self.player.shutdown(feedback);
+            Message::GuiWindowClosed { shows, feedback } => {
+                // A show requested past the ones the teardown saw carried out
+                // means the player serves the next window's load, and a
+                // shutdown would blind the application to it.
+                if shows == self.gui.shows() {
+                    self.player.shutdown(feedback);
+                } else {
+                    debug!(shows, "Ignoring a teardown the window has since come back from");
+                }
             }
             Message::FCastSenderDisconnect(id) => {
                 self.fcast_senders.remove(&id);

@@ -1061,6 +1061,7 @@ fn set_graph_dump(ui: &MainWindow, dump: GraphDumpData) {
 pub fn spawn_command_handler(
     ui_weak: slint::Weak<MainWindow>,
     mut cmd_rx: UnboundedReceiver<UpdateGuiCommand>,
+    gui_is_visible: GuiIsVisible,
     // Runs on the event-loop thread; the tray handle is `!Send`. A no-op when there is no tray.
     on_show_tray: Box<dyn FnOnce()>,
 ) {
@@ -1083,6 +1084,11 @@ pub fn spawn_command_handler(
                         show();
                     }
                     continue;
+                }
+                // Counted here, on the thread a renderer teardown blocks, so the
+                // teardown's snapshot never includes a show still queued behind it.
+                if let UpdateGuiCommand::SetWindowVisibility { visible: true, .. } = &cmd {
+                    gui_is_visible.note_show_processed();
                 }
                 handle_command(ui, cmd, &mut damper);
             } else {

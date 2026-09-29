@@ -5,6 +5,8 @@
 //! layer's job; see `receiver-ui`'s module of the same name.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant};
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::ui_types::UiUpdaterState;
@@ -234,6 +236,10 @@ pub enum UpdateGuiCommand {
 struct GuiIsVisibleHandle {
     is_visible: Mutex<bool>,
     cvar: Condvar,
+    /// Window shows the application has asked for, see [`await_player_release`].
+    shows: AtomicU64,
+    /// Of those, the shows the GUI thread has carried out.
+    shows_processed: AtomicU64,
 }
 
 #[derive(Clone)]
@@ -244,6 +250,8 @@ impl GuiIsVisible {
         let handle = GuiIsVisibleHandle {
             is_visible: Mutex::new(false),
             cvar: Condvar::new(),
+            shows: AtomicU64::new(0),
+            shows_processed: AtomicU64::new(0),
         };
 
         Self(Arc::new(handle))
@@ -256,6 +264,68 @@ impl GuiIsVisible {
 
     pub fn get(&self) -> bool {
         *self.0.is_visible.lock()
+    }
+
+    /// Counted before the request is sent, so a teardown blocking the GUI
+    /// thread sees it while the application waits on that thread.
+    pub fn note_show(&self) {
+        self.0.shows.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub fn shows(&self) -> u64 {
+        self.0.shows.load(Ordering::Acquire)
+    }
+
+    /// Counted by the GUI thread as it carries a show out. A teardown snapshots
+    /// this one: a show asked for but not yet carried out is still ahead of it.
+    pub fn note_show_processed(&self) {
+        self.0.shows_processed.fetch_add(1, Ordering::AcqRel);
+    }
+
+    pub fn shows_processed(&self) -> u64 {
+        self.0.shows_processed.load(Ordering::Acquire)
+    }
+}
+
+/// How a renderer teardown's wait for the player to let go ended.
+#[derive(Debug, PartialEq, Eq)]
+pub enum TeardownWait {
+    Released,
+    /// A show came in after the teardown began: the application is blocked
+    /// on the GUI thread and cannot answer, and the next window is coming.
+    ShowRequested,
+    TimedOut,
+}
+
+const TEARDOWN_POLL: Duration = Duration::from_millis(10);
+
+/// Waits for the player shutdown a teardown asked for, but never for a
+/// window that is already being brought back. `shows_processed` is the GUI
+/// thread's own count at teardown, so a show requested before the teardown
+/// but carried out after it ends the wait too, instead of stalling here and
+/// then shutting the player down under that show's load.
+pub fn await_player_release(
+    released: &oneshot::Receiver<()>,
+    visible: &GuiIsVisible,
+    shows_processed: u64,
+    timeout: Duration,
+) -> TeardownWait {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let slice = deadline.saturating_duration_since(Instant::now()).min(TEARDOWN_POLL);
+        match released.recv_timeout(slice) {
+            // A dropped sender is an application that chose not to shut down.
+            Ok(()) | Err(oneshot::RecvTimeoutError::Disconnected) => {
+                return TeardownWait::Released;
+            }
+            Err(oneshot::RecvTimeoutError::Timeout) => {}
+        }
+        if visible.shows() != shows_processed {
+            return TeardownWait::ShowRequested;
+        }
+        if Instant::now() >= deadline {
+            return TeardownWait::TimedOut;
+        }
     }
 }
 
@@ -526,6 +596,9 @@ impl GuiController {
 
     /// Returns the the previous window visibility state.
     pub fn set_window_visibility(&self, visible: bool) -> bool {
+        if visible {
+            self.is_visible.note_show();
+        }
         let (prev_tx, prev_rx) = oneshot::channel();
         self.send(UpdateGuiCommand::SetWindowVisibility { visible, prev_tx });
         match prev_rx.recv() {
@@ -553,6 +626,11 @@ impl GuiController {
         self.send(UpdateGuiCommand::QuitLoop);
     }
 
+    /// See [`GuiIsVisible::note_show`].
+    pub fn shows(&self) -> u64 {
+        self.is_visible.shows()
+    }
+
     pub fn wait_for_is_visible(&self) -> bool {
         if !self.is_visible.get() {
             let mut is_visible = self.is_visible.0.is_visible.lock();
@@ -564,5 +642,89 @@ impl GuiController {
         } else {
             true
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const LONG: Duration = Duration::from_secs(5);
+
+    #[test]
+    fn a_shutdown_answer_releases_the_teardown() {
+        let visible = GuiIsVisible::new();
+        let (tx, rx) = oneshot::channel();
+        tx.send(()).unwrap();
+        assert_eq!(await_player_release(&rx, &visible, visible.shows_processed(), LONG), TeardownWait::Released);
+    }
+
+    #[test]
+    fn a_declined_shutdown_releases_the_teardown() {
+        let visible = GuiIsVisible::new();
+        let (tx, rx) = oneshot::channel::<()>();
+        drop(tx);
+        assert_eq!(await_player_release(&rx, &visible, visible.shows_processed(), LONG), TeardownWait::Released);
+    }
+
+    #[test]
+    fn a_show_during_the_teardown_ends_the_wait() {
+        // The item-change deadlock: the application asked for a show and blocks
+        // on the GUI thread, which blocks here on the application.
+        let visible = GuiIsVisible::new();
+        let shows = visible.shows_processed();
+        let (_tx, rx) = oneshot::channel::<()>();
+        let app = {
+            let visible = visible.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(30));
+                visible.note_show();
+            })
+        };
+        let start = Instant::now();
+        assert_eq!(await_player_release(&rx, &visible, shows, LONG), TeardownWait::ShowRequested);
+        assert!(start.elapsed() < Duration::from_secs(1), "{:?}", start.elapsed());
+        app.join().unwrap();
+    }
+
+    #[test]
+    fn a_show_requested_before_the_teardown_but_not_yet_carried_out_ends_the_wait() {
+        // The GUI thread reads its count after the application already asked for
+        // the show that is queued behind this teardown.
+        let visible = GuiIsVisible::new();
+        visible.note_show();
+        let (_tx, rx) = oneshot::channel::<()>();
+        let wait = await_player_release(&rx, &visible, visible.shows_processed(), LONG);
+        assert_eq!(wait, TeardownWait::ShowRequested);
+    }
+
+    #[test]
+    fn a_carried_out_show_is_no_show_in_flight() {
+        let visible = GuiIsVisible::new();
+        visible.note_show();
+        visible.note_show_processed();
+        let (_tx, rx) = oneshot::channel::<()>();
+        let short = Duration::from_millis(50);
+        let wait = await_player_release(&rx, &visible, visible.shows_processed(), short);
+        assert_eq!(wait, TeardownWait::TimedOut);
+    }
+
+    #[test]
+    fn an_unanswered_teardown_times_out() {
+        let visible = GuiIsVisible::new();
+        let (_tx, rx) = oneshot::channel::<()>();
+        let wait = await_player_release(&rx, &visible, visible.shows_processed(), Duration::from_millis(50));
+        assert_eq!(wait, TeardownWait::TimedOut);
+    }
+
+    #[test]
+    fn only_a_show_counts() {
+        let visible = GuiIsVisible::new();
+        let gui = GuiController::new(None, visible.clone());
+        gui.set_window_visibility(false);
+        assert_eq!(visible.shows(), 0);
+        gui.set_window_visibility(true);
+        assert_eq!(visible.shows(), 1);
+        assert_eq!(visible.shows_processed(), 0, "only the GUI thread counts these");
     }
 }
