@@ -25,18 +25,6 @@ GSTREAMER_SRC_REPO = "https://gitlab.futo.org/fcast/gstreamer.git"
 GSTREAMER_SRC_REF = "4bc4ce36f117ab067684acf02c7c9eedc2a67b9d"
 # Deterministic build-tree location, independent of any global cargo build-dir.
 GSTREAMER_SRC_BUILD_ROOT = { value = "target/gst-static", relative = true }
-# Target-scoped C toolchain for cc-rs build scripts (ring, skia glue, ...):
-# the nix host clang wrapper cannot cross-compile to android. The wrappers
-# resolve the NDK like the linkers do.
-CC_aarch64-linux-android = { value = "android-linker-aarch64", relative = true }
-CXX_aarch64-linux-android = { value = "android-cxx-aarch64", relative = true }
-AR_aarch64-linux-android = { value = "android-ar", relative = true }
-CC_x86_64-linux-android = { value = "android-linker-x86_64", relative = true }
-CXX_x86_64-linux-android = { value = "android-cxx-x86_64", relative = true }
-AR_x86_64-linux-android = { value = "android-ar", relative = true }
-CC_armv7-linux-androideabi = { value = "android-linker-armv7", relative = true }
-CXX_armv7-linux-androideabi = { value = "android-cxx-armv7", relative = true }
-AR_armv7-linux-androideabi = { value = "android-ar", relative = true }
 
 # NDK clang as the final-link linker for android targets (executable paths
 # with separators in config are config-relative since cargo 1.73). The

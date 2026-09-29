@@ -23,8 +23,8 @@ pub const ANDROID_PLATFORM: &str = "android-36";
 /// The API level the native libraries link against. cargo-ndk picks the
 /// sysroot from it, and its own default of 21 has no libnativewindow and no
 /// libaaudio, both of which the video and audio lanes call. Matches the
-/// GSTREAMER_SRC_ANDROID_API default in the android-linker-* wrappers, which
-/// is what the C build uses, and `minSdk` in the app's build.gradle.
+/// GSTREAMER_SRC_ANDROID_API default the gstreamer-src C build uses, and
+/// `minSdk` in the app's build.gradle.
 pub const ANDROID_API: u32 = 28;
 const ANDROID_BUILD_TOOLS: &str = "36.0.0";
 
