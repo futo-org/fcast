@@ -170,7 +170,7 @@ pub fn run(settings: Settings) -> Result<()> {
 
         ui.window().set_rendering_notifier({
             let ui_weak = ui.as_weak();
-            let mut start_fullscreen = Some(settings.fullscreen());
+            let mut start_fullscreen = settings.fullscreen();
             let msg_tx = msg_tx.clone();
             let gui_is_visible = gui_is_visible.clone();
             let cues = Arc::clone(&cues);
@@ -186,8 +186,10 @@ pub fn run(settings: Settings) -> Result<()> {
                         error!("Failed to upgrade ui");
                         return;
                     };
-                    if let Some(fullscreen) = start_fullscreen.take() {
-                        ui.window().set_fullscreen(fullscreen);
+                    // Only ever a set: a first cast's fullscreen can land before
+                    // this first setup, and a startup "false" undid it.
+                    if std::mem::take(&mut start_fullscreen) {
+                        ui.window().set_fullscreen(true);
                     }
                     // Where the cue overlay goes in the item tree: right
                     // after the marker rectangle the player view paints with
