@@ -12,7 +12,7 @@ fcast-video = { path = "../fcast-video" }
 # The hop from a cue's display list to the dodvg renderer's overlay slot, on
 # the lane that draws them. Pulled in by `scene-cues`, not named here, so a
 # build without that lane links neither it nor the renderer through it.
-i-slint-cue = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "efe63e573af692b66972f91708e60b6184dcd766", optional = true, default-features = false }
+i-slint-cue = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "f46fb05748a4e082c978d8ea60a8a386c295fc09", optional = true, default-features = false }
 fcast-protocol = { path = "../fcast-protocol", features = ["tokio-receiver"] }
 fcast-runtime = { path = "../fcast-runtime" }
 anyhow.workspace = true
@@ -39,7 +39,7 @@ tokio-rustls = { workspace = true, default-features = false, features = [ "loggi
 #
 # By rev like every other fork. It names the same slint rev this crate does,
 # so the graph carries one i-slint-core and one wgpu.
-slint-gstreamer-video = { git = "https://gitlab.futo.org/fcast/slint-gstreamer-video.git", rev = "766cf7ec0560ebd0ca14d0aea4ee216b5fef3d7b" }
+slint-gstreamer-video = { git = "https://gitlab.futo.org/fcast/slint-gstreamer-video.git", rev = "2269fe42d2fd13a4efedc05590de2f5a22ad86ad" }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # the software video bridge's appsink
@@ -53,7 +53,7 @@ ndk-context = "0.1"
 # the slint android backend already pulls in, so nothing is duplicated.
 ndk-sys = "0.6"
 # the video surface behind the window (fork addition)
-i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "efe63e573af692b66972f91708e60b6184dcd766" }
+i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "f46fb05748a4e082c978d8ea60a8a386c295fc09" }
 
 # `v1_28` is the floor the element's software-decode arm needs: gst 1.28 is
 # where GstUdmabufAllocator and GstVideoDmabufPool landed, and the sink

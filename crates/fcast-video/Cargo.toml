@@ -13,12 +13,12 @@ gst-video.workspace = true
 tracing.workspace = true
 # `OverlaySpace` and the placement vocabulary, so the renderer that honours the
 # distinction is the one that defines it. No GStreamer and no wgpu in it.
-i-slint-video = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "efe63e573af692b66972f91708e60b6184dcd766" }
+i-slint-video = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "f46fb05748a4e082c978d8ea60a8a386c295fc09" }
 parking_lot.workspace = true
 # The text rasterizer, which moved to the slint fork: parley lays a cue out
 # and ends at a display list, vello_cpu paints one when a consumer needs
 # pixels rather than primitives. Nothing here links pango or cairo.
-i-slint-cue = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "efe63e573af692b66972f91708e60b6184dcd766", features = [ "engine", "raster" ] }
+i-slint-cue = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "f46fb05748a4e082c978d8ea60a8a386c295fc09", features = [ "engine", "raster" ] }
 # flapjack-subparse is here for its `pango_markup` re-export alone; the
 # plugin's elements are registered by receiver-core, not by us.
 flapjack-subparse.workspace = true
