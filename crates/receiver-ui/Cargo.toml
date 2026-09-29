@@ -57,9 +57,9 @@ i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.
 
 # `v1_28` is the floor the element's software-decode arm needs: gst 1.28 is
 # where GstUdmabufAllocator and GstVideoDmabufPool landed, and the sink
-# proposes that pair to software decoders. Linux only, which is also the only
-# place the bindings exist.
-[target.'cfg(target_os = "linux")'.dependencies]
+# proposes that pair to software decoders. Linux and android, the two
+# places the bindings exist and the android AHardwareBuffer lane reads caps.
+[target.'cfg(any(target_os = "linux", target_os = "android"))'.dependencies]
 gst-video = { workspace = true, features = [ "v1_28" ] }
 
 # The cursor-hide callback in gui.rs sets the macOS cursor directly.
