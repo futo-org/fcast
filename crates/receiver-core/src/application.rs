@@ -25,6 +25,7 @@ use tokio::{
 };
 use tracing::{debug, error, info, warn};
 
+use crate::bug_report;
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::message;
 use crate::{
@@ -111,6 +112,15 @@ enum PreservePlaylist {
 enum ContinueToPlay {
     Yes,
     No,
+}
+
+/// What a bug report says about the item that failed, taken before the
+/// error path drops it.
+struct ReportContext {
+    source: Option<fcast_bug_report::Source>,
+    host: String,
+    sender: Option<fcast_bug_report::Sender>,
+    decoders: String,
 }
 
 /// The window as it was before playback took it over. Recorded by the first
@@ -493,14 +503,13 @@ fn uri_host(uri: &str) -> Option<&str> {
     (!host.is_empty()).then_some(host)
 }
 
-const ISSUE_TRACKER_URL: &str = "https://github.com/futo-org/fcast/issues";
-
 /// Ring depth for the bug-report context and per-entry message cap, so one
 /// debug dump cannot flood the diagnostic block.
 const RECENT_WARNINGS_CAP: usize = 10;
 const RECENT_WARNING_MSG_MAX: usize = 200;
 
-type RecentWarnings = VecDeque<(Instant, &'static str, String)>;
+/// Time of the latest repeat, code, message, repeats.
+type RecentWarnings = VecDeque<(Instant, &'static str, String, u32)>;
 
 fn push_recent_warning(ring: &mut RecentWarnings, at: Instant, code: &'static str, message: &str) {
     let mut message = message.to_owned();
@@ -512,37 +521,32 @@ fn push_recent_warning(ring: &mut RecentWarnings, at: Instant, code: &'static st
         message.truncate(cut);
         message.push_str("...");
     }
+    // A storm of one warning is one line with a count, not the whole ring.
+    if let Some(last) = ring.back_mut()
+        && last.1 == code
+        && last.2 == message
+    {
+        last.0 = at;
+        last.3 += 1;
+        return;
+    }
     if ring.len() == RECENT_WARNINGS_CAP {
         ring.pop_front();
     }
-    ring.push_back((at, code, message));
+    ring.push_back((at, code, message, 1));
 }
 
 /// The warnings preceding a fatal error are usually the actual story (a
-/// missing codec, a track that stopped), so the bug-report block carries them.
-fn format_recent_warnings(ring: &RecentWarnings, now: Instant) -> String {
-    if ring.is_empty() {
-        return "no recent warnings".to_owned();
-    }
-    let mut out = String::from("recent warnings");
-    for (at, code, message) in ring {
-        let secs = now.saturating_duration_since(*at).as_secs();
-        out.push_str(&format!("\n{secs}s ago {code} {message}"));
-    }
-    out
-}
-
-fn issue_tracker_qr() -> Option<crate::ui_types::QrCode> {
-    let qrcode = fast_qr::QRBuilder::new(ISSUE_TRACKER_URL.as_bytes())
-        .build()
-        .ok()?;
-    let dims = qrcode.size as u32;
-    let module_count = (dims * dims) as usize;
-    let dark = qrcode.data[0..module_count]
-        .iter()
-        .map(|module| *module != fast_qr::Module::LIGHT)
-        .collect();
-    Some(crate::ui_types::QrCode { size: dims, dark })
+/// missing codec, a track that stopped), so the bug report carries them.
+fn report_warnings(ring: &RecentWarnings, now: Instant) -> Vec<fcast_bug_report::Warning> {
+    ring.iter()
+        .map(|(at, code, message, repeats)| fcast_bug_report::Warning {
+            secs_ago: now.saturating_duration_since(*at).as_secs() as u32,
+            code: fcast_bug_report::Code::parse(code).unwrap_or_default(),
+            repeats: *repeats,
+            message: message.clone(),
+        })
+        .collect()
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -653,6 +657,9 @@ struct MediaSourceState {
     pending_thumbnail_download: Option<image::ImageDownloadId>,
     /// Owns the STABLE advertised track ids for the current item's externals.
     externals: external_subtitles::Catalog,
+    /// Who cast it, taken at load: a fire-and-forget sender is gone from the
+    /// senders map by the time its item fails.
+    sender: Option<crate::gui::SenderInfo>,
 }
 
 impl MediaSourceState {
@@ -664,6 +671,7 @@ impl MediaSourceState {
             pending_thumbnail: None,
             pending_thumbnail_download: None,
             externals: external_subtitles::Catalog::default(),
+            sender: None,
         }
     }
 
@@ -1664,6 +1672,9 @@ impl Application {
 
         error!(?kind, msg = diagnostic, "Media error");
 
+        // Taken before the cleanup below drops the item: the report names
+        // what was playing and who cast it.
+        let context = self.report_context();
         self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
         self.restore_window();
         self.current_media = None;
@@ -1689,7 +1700,7 @@ impl Application {
 
         match media_error_toast_kind(kind) {
             Some(toast) => self.gui.show_toast(toast, detail, kind.code()),
-            None => self.show_bug_report(kind, detail.as_deref(), &diagnostic),
+            None => self.show_bug_report(kind, detail.as_deref(), &diagnostic, context),
         }
 
         Ok(())
@@ -1704,25 +1715,130 @@ impl Application {
         kind: player::MediaErrorKind,
         detail: Option<&str>,
         diagnostic: &str,
+        context: ReportContext,
     ) {
         if self.bug_report_shown_for == Some(self.current_media_item_id) {
             return;
         }
         self.bug_report_shown_for = Some(self.current_media_item_id);
-        let head = match detail {
-            Some(detail) => format!("{} {:?} ({detail})", kind.code(), kind),
-            None => format!("{} {:?}", kind.code(), kind),
+        let draft = bug_report::Draft {
+            report: fcast_bug_report::Report {
+                code: fcast_bug_report::Code::parse(kind.code()).unwrap_or_default(),
+                detail: detail.unwrap_or_default().to_owned(),
+                message: diagnostic.to_owned(),
+                receiver_version: env!("CARGO_PKG_VERSION").to_owned(),
+                device: bug_report::device(),
+                source: context.source,
+                sender: context.sender,
+                warnings: report_warnings(&self.recent_warnings, Instant::now()),
+                decoders: context.decoders,
+            },
+            host: context.host,
         };
-        let block = format!(
-            "{}\nreceiver {}\n{}\n{}\n{}",
-            head,
-            env!("CARGO_PKG_VERSION"),
-            gst::version_string(),
-            diagnostic,
-            format_recent_warnings(&self.recent_warnings, Instant::now()),
-        );
-        self.gui
-            .show_bug_report(block, kind.code(), issue_tracker_qr());
+        self.gui.show_bug_report(draft, kind.code());
+    }
+
+    /// What a bug report says about the current item, taken while it is
+    /// still current.
+    fn report_context(&self) -> ReportContext {
+        let (source, host) = self.current_source();
+        ReportContext {
+            source,
+            host,
+            sender: self.current_sender(),
+            decoders: self.player.video_decoders().join(", "),
+        }
+    }
+
+    /// The source section of a bug report, its location the address with the
+    /// query stripped, and the host alone for the checklist's default. An
+    /// address with no host, a local file, names its scheme instead.
+    fn current_source(&self) -> (Option<fcast_bug_report::Source>, String) {
+        use fcast_bug_report::SourceKind;
+        let kind = match self.current_media.as_ref().map(|m| &m.source) {
+            Some(MediaSource::Single(_)) => SourceKind::Single,
+            Some(MediaSource::Playlist { .. }) => SourceKind::Playlist,
+            Some(MediaSource::Queue(_)) => SourceKind::Queue,
+            Some(MediaSource::Raop) => SourceKind::Raop,
+            Some(MediaSource::AirPlayMirror { .. }) => SourceKind::AirplayMirror,
+            None => return (None, String::new()),
+        };
+        let item = match self.current_media.as_ref().map(|m| &m.source) {
+            Some(MediaSource::Single(play)) => match play.as_ref() {
+                fcast::WrappedPlayMessage::Legacy(msg) => {
+                    Some((msg.container.clone(), msg.url.clone()))
+                }
+                fcast::WrappedPlayMessage::V4(packet) => packet
+                    .borrow_dependent()
+                    .source_as_single()
+                    .map(|s| (s.container().to_owned(), Some(s.source_url().to_owned()))),
+                fcast::WrappedPlayMessage::Chromecast(cast) => {
+                    Some((cast.container.clone(), Some(cast.url.clone())))
+                }
+            },
+            Some(MediaSource::Playlist { content, index }) => content
+                .items
+                .get(*index)
+                .map(|item| (item.container.clone(), item.url.clone())),
+            Some(MediaSource::Queue(queue)) => {
+                queue.items.get(queue.current_idx as usize).map(|item| {
+                    let item = item.to_media_item();
+                    (item.container, item.url)
+                })
+            }
+            Some(MediaSource::Raop | MediaSource::AirPlayMirror { .. }) | None => None,
+        };
+        let (container, url) = item.unwrap_or_default();
+        let host = url
+            .as_deref()
+            .map(|url| match uri_host(url) {
+                Some(host) => host.to_owned(),
+                None => url
+                    .split_once("://")
+                    .map(|(scheme, _)| format!("{scheme}://"))
+                    .unwrap_or_default(),
+            })
+            .unwrap_or_default();
+        let location = url
+            .as_deref()
+            .map(|url| strip_uri_query(url).to_owned())
+            .unwrap_or_default();
+        (
+            Some(fcast_bug_report::Source {
+                kind,
+                container,
+                location,
+            }),
+            host,
+        )
+    }
+
+    /// The sender section: the app, version and protocol the caster
+    /// introduced itself with, or which lane it came in on when it said
+    /// nothing. Never its display name, which is the user's device name and
+    /// tells a bug report nothing.
+    fn current_sender(&self) -> Option<fcast_bug_report::Sender> {
+        use fcast_bug_report::{Protocol, Sender};
+        let media = self.current_media.as_ref()?;
+        if let Some(info) = &media.sender {
+            return Some(Sender {
+                app: info.app_name.clone(),
+                version: info.app_version.clone(),
+                protocol: info.protocol,
+            });
+        }
+        let protocol = match media.origin {
+            PacketOrigin::Gui => Protocol::Gui,
+            PacketOrigin::AutoPlay => Protocol::Autoplay,
+            PacketOrigin::FCast { .. } => Protocol::FcastUnintroduced,
+            PacketOrigin::GCast { .. } => Protocol::Chromecast,
+            PacketOrigin::Raop => Protocol::Raop,
+            PacketOrigin::AirPlay => Protocol::Airplay,
+        };
+        Some(Sender {
+            protocol,
+            ..Sender::default()
+        })
     }
 
     fn media_warning(
@@ -2116,6 +2232,11 @@ impl Application {
         // Taken unconditionally: surviving one of the early exits would relocate a
         // LATER load.
         let start_override = self.load_start_override.take();
+        if let Some(media) = self.current_media.as_mut()
+            && let PacketOrigin::FCast { sender_id, .. } = media.origin
+        {
+            media.sender = self.senders.get(&sender_id).cloned();
+        }
         let current_media = self.current_media.as_ref().ok_or(LoadMediaError::NoItem)?;
         // TODO: this shouldn't be v3 item
         let item = match &current_media.source {
@@ -5813,6 +5934,7 @@ impl Application {
                 }
             }
             Message::InspectorRefresh => self.refresh_inspector_graph(),
+            Message::SoftKeyboardVisible(visible) => self.gui.set_soft_keyboard_visible(visible),
             Message::InspectorBitrateTick => self.inspector_tick(),
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             Message::AppUpdate(event) => return self.handle_app_update_event(event),
@@ -6600,19 +6722,48 @@ mod tests {
             format!("m{}", RECENT_WARNINGS_CAP + 4)
         );
 
-        let formatted = format_recent_warnings(&ring, t0 + Duration::from_secs(7));
-        assert!(formatted.starts_with("recent warnings"));
-        assert!(formatted.contains("7s ago FC-W02"));
-        assert_eq!(
-            format_recent_warnings(&RecentWarnings::new(), t0),
-            "no recent warnings"
-        );
+        let warnings = report_warnings(&ring, t0 + Duration::from_secs(7));
+        assert_eq!(warnings.len(), RECENT_WARNINGS_CAP);
+        assert_eq!(warnings[0].secs_ago, 7);
+        assert_eq!(warnings[0].code, fcast_bug_report::Code::warning(2));
+        assert!(report_warnings(&RecentWarnings::new(), t0).is_empty());
+    }
+
+    /// The format's name table mirrors these kinds; a new kind here without
+    /// a name there renders as "?" in every report.
+    #[test]
+    fn every_error_and_warning_code_is_named_by_the_report_format() {
+        use player::{MediaErrorKind as E, MediaWarningKind as W};
+        for kind in [
+            E::NotFound, E::AccessDenied, E::NetworkFailure, E::UnsupportedFormat,
+            E::MissingCodec, E::DecodeFailed, E::DrmProtected, E::OutputFailure,
+            E::ImageDownloadFailed, E::Frozen, E::Unexpected,
+        ] {
+            let code = fcast_bug_report::Code::parse(kind.code()).expect(kind.code());
+            assert_eq!(code.name(), format!("{kind:?}"), "{}", kind.code());
+        }
+        for kind in [W::MissingCodecForTrack, W::SubtitleFormatUnsupported, W::Unknown] {
+            let code = fcast_bug_report::Code::parse(kind.code()).expect(kind.code());
+            assert_eq!(code.name(), format!("{kind:?}"), "{}", kind.code());
+        }
     }
 
     #[test]
-    fn issue_tracker_qr_builds() {
-        let qr = issue_tracker_qr().expect("static URL must encode");
-        assert!(qr.size > 0);
-        assert_eq!(qr.dark.len(), (qr.size * qr.size) as usize);
+    fn a_repeated_warning_is_one_line_with_a_count() {
+        let t0 = Instant::now();
+        let mut ring = RecentWarnings::new();
+        push_recent_warning(&mut ring, t0, "FC-W01", "first");
+        for i in 0..300 {
+            push_recent_warning(&mut ring, t0 + Duration::from_secs(i), "FC-W02", "stalled");
+        }
+        push_recent_warning(&mut ring, t0, "FC-W02", "other");
+        assert_eq!(ring.len(), 3, "{ring:?}");
+        assert_eq!(ring[1].3, 300);
+        let warnings = report_warnings(&ring, t0 + Duration::from_secs(299));
+        assert_eq!((warnings[1].secs_ago, warnings[1].repeats), (0, 300));
+        assert_eq!(warnings[0].repeats, 1);
+        // A repeat that is not the latest entry starts a new line.
+        push_recent_warning(&mut ring, t0, "FC-W02", "stalled");
+        assert_eq!(ring.len(), 4);
     }
 }

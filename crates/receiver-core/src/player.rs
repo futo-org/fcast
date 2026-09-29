@@ -1562,6 +1562,30 @@ impl Player {
         self.fcast.dump_dot(name);
     }
 
+    /// The video decoder elements in the pipeline right now, by factory name,
+    /// for the bug report: a black-video report needs to say whether the
+    /// hardware or the software decoder was in the chain. A read-only walk,
+    /// nothing the crate's worker serializes against.
+    pub fn video_decoders(&self) -> Vec<String> {
+        use gst::prelude::*;
+        let mut names = Vec::new();
+        for element in self.fcast.pipeline().iterate_recurse().into_iter().flatten() {
+            let Some(factory) = element.factory() else {
+                continue;
+            };
+            if !factory.has_type(gst::ElementFactoryType::DECODER)
+                || !factory.has_type(gst::ElementFactoryType::MEDIA_VIDEO)
+            {
+                continue;
+            }
+            let name = factory.name().to_string();
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+        names
+    }
+
     /// The GStreamer stream id of the `idx`th advertised stream.
     pub fn stream_id_of(&self, idx: u32) -> Option<String> {
         self.streams.get(idx as usize).map(Stream::sid)

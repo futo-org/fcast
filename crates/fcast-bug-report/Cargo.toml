@@ -1,0 +1,17 @@
+[package]
+name = "fcast-bug-report"
+version = "0.1.0"
+edition = "2024"
+license.workspace = true
+description = "The receiver's bug report as it travels in the issue link a QR carries: a binary record, brotli against a shared dictionary, base64url'd"
+
+[[bin]]
+name = "fcast-bug-report-decode"
+path = "src/bin/decode.rs"
+
+[dependencies]
+base64 = "0.22"
+# pure rust, both halves; the decoder half is in the tree already
+brotli = "8"
+brotli-decompressor = { version = "5", features = ["std"] }
+thiserror = "2"

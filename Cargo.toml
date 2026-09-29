@@ -11,6 +11,7 @@ members = [
     "tools/fast",
     "crates/file-server",
     "senders/android",
+    "crates/fcast-bug-report",
     "crates/receiver-core",
     "crates/receiver-ui",
     "receivers/desktop",

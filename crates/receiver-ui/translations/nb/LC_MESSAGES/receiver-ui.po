@@ -33,7 +33,7 @@ msgstr "Enhetsnavn"
 
 #: crates/receiver-core/ui/views/idle.slint:133
 msgctxt "IdleView"
-msgid "Local IP Address"
+msgid "Local IP address"
 msgstr "Lokal IP adresse"
 
 #: crates/receiver-core/ui/views/idle.slint:141
@@ -118,7 +118,7 @@ msgstr "Undertekster"
 
 #: crates/receiver-core/ui/views/video-player.slint:472
 msgctxt "PlaybackControls"
-msgid "Playback Speed"
+msgid "Playback speed"
 msgstr "Avspillingshastighet"
 
 #: crates/receiver-core/ui/views/video-player.slint:489

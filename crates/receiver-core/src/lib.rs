@@ -15,6 +15,7 @@ mod airplay;
 #[cfg(target_os = "android")]
 mod android_heif;
 pub mod application;
+pub mod bug_report;
 pub mod config;
 mod external_subtitles;
 pub mod fcast;

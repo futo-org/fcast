@@ -229,6 +229,9 @@ pub enum Message {
     /// sampling state.
     InspectorActive(bool),
     InspectorRefresh,
+    /// android: the soft keyboard came up or went away, from the activity's
+    /// window insets. A text field in edit mode folds when it goes.
+    SoftKeyboardVisible(bool),
     /// One bitrate sample while the inspector is open (driven by its timer).
     InspectorBitrateTick,
     #[cfg(any(target_os = "macos", target_os = "windows"))]

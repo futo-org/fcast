@@ -1238,6 +1238,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "brotli"
+version = "8.0.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5cc91aac060a7a1e25823bdccbfb6af1875b88f17c6daac97894eed8207166b3"
+dependencies = [
+ "alloc-no-stdlib",
+ "alloc-stdlib",
+ "brotli-decompressor",
+]
+
+[[package]]
 name = "brotli-decompressor"
 version = "5.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2734,6 +2745,16 @@ dependencies = [
  "fcast-sender-sdk 0.3.0",
  "file-server",
  "tokio",
+]
+
+[[package]]
+name = "fcast-bug-report"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "brotli",
+ "brotli-decompressor",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -7581,7 +7602,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -8590,6 +8611,7 @@ dependencies = [
  "dav1d-sys",
  "directories",
  "fast_qr",
+ "fcast-bug-report",
  "fcast-gst-elements",
  "fcast-protocol 0.2.0",
  "fcast-runtime",
@@ -10649,7 +10671,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "69fff37da548239c3bf9e64a12193d261e8b22b660991c6fd2df057c168f435f"
 dependencies = [
  "cc",
- "windows-targets 0.48.5",
+ "windows-targets 0.52.6",
 ]
 
 [[package]]
@@ -11623,7 +11645,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

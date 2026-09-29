@@ -130,29 +130,42 @@ component ToggleRow inherits Rectangle {
 // The row, not the field, is the tab stop: browsing the list with a remote
 // lands on the row and shows the value, and only selecting it (Enter, or a
 // click) brings the field up and focuses it, which is what opens the on-screen
-// keyboard. The field exists only while editing, so tab traversal can never
-// reach it on its own. Enter, Escape, or focus leaving the field saves and
-// hands focus back to the row.
+// keyboard. The field is invisible while not editing, so tab traversal can
+// never reach it on its own. Enter, Escape, Back, the soft keyboard being
+// dismissed, or focus leaving the field saves and hands focus back to the row.
 component TextRow inherits Rectangle {
     in property <string> label;
     in property <string> setting-key;
     in property <string> placeholder;
     in-out property <string> value;
     property <bool> editing: false;
+    // On android the soft keyboard going away leaves the field. Mirrored
+    // here because `changed` watches an element's own properties.
+    property <bool> keyboard: Bridge.soft-keyboard-visible;
 
     background: row-focus.has-focus || root.editing
         ? RowTint.focused
         : (touch.has-hover ? RowTint.hovered : transparent);
     animate background { duration: 100ms; }
 
+    // Focus by name once the field is visible: a focus() from a conditional
+    // element's init is not reliable, and a field left in edit mode with
+    // no focus shows no keyboard and answers no key.
     function begin-edit() {
         root.editing = true;
+        field.focus();
+    }
+
+    changed keyboard => {
+        if (!root.keyboard && root.editing) {
+            root.end-edit(field.text);
+        }
     }
 
     function end-edit(text: string) {
         Bridge.set-string-setting(root.setting-key, text);
-        // A field destroyed here never reports losing focus, so the flag the
-        // window keys its arrow capture on is cleared by hand.
+        // Cleared by hand too: the flag the window keys its arrow capture on
+        // must be down before focus moves to the row.
         Bridge.text-edit-focused = false;
         root.editing = false;
         row-focus.focus();
@@ -203,39 +216,46 @@ component TextRow inherits Rectangle {
         VerticalLayout {
             alignment: center;
 
-            // The value at rest: the field's footprint, none of its focus.
-            if !root.editing: Rectangle {
+            // One slot for both faces of the value: an invisible element
+            // still takes its place in a layout, so they overlap here.
+            Rectangle {
                 width: 190px;
                 height: 32px;
-                border-radius: 4px;
-                background: FCastPalette.opacity-light-1100;
 
-                HorizontalLayout {
-                    padding-left: 10px;
-                    padding-right: 10px;
+                // The value at rest: the field's footprint, none of its focus.
+                Rectangle {
+                    visible: !root.editing;
+                    border-radius: 4px;
+                    background: FCastPalette.opacity-light-1100;
 
-                    Text {
-                        text: root.value == "" ? root.placeholder : root.value;
-                        color: root.value == "" ? FCastPalette.opacity-light-500 : FCastPalette.foreground;
-                        font-size: 14px;
-                        vertical-alignment: center;
-                        overflow: elide;
+                    HorizontalLayout {
+                        padding-left: 10px;
+                        padding-right: 10px;
+
+                        Text {
+                            text: root.value == "" ? root.placeholder : root.value;
+                            color: root.value == "" ? FCastPalette.opacity-light-500 : FCastPalette.foreground;
+                            font-size: 14px;
+                            vertical-alignment: center;
+                            overflow: elide;
+                        }
                     }
                 }
-            }
 
-            if root.editing: LineEdit {
-                width: 190px;
+            field := LineEdit {
+                visible: root.editing;
+                width: parent.width;
+                height: parent.height;
                 text <=> root.value;
                 placeholder-text: root.placeholder;
-                init => {
-                    self.focus();
-                }
                 accepted => {
                     root.end-edit(self.text);
                 }
+                // Back on a remote leaves the field like Escape does. On
+                // android the first Back only hides the keyboard, the second
+                // reaches here; unhandled it would close the whole drawer.
                 key-pressed(event) => {
-                    if event.text == Key.Escape {
+                    if event.text == Key.Escape || event.text == Key.Back {
                         root.end-edit(self.text);
                         return accept;
                     }
@@ -244,7 +264,7 @@ component TextRow inherits Rectangle {
                 }
                 changed has-focus => {
                     Bridge.text-edit-focused = self.has-focus;
-                    if !self.has-focus {
+                    if !self.has-focus && root.editing {
                         // Focus moved on by itself (a click elsewhere, the
                         // remote stepping past): save and fold, but leave
                         // focus where it went.
@@ -252,6 +272,7 @@ component TextRow inherits Rectangle {
                         root.editing = false;
                     }
                 }
+            }
             }
         }
     }
@@ -420,10 +441,17 @@ export component SettingsDrawer inherits Rectangle {
     property <float> reveal: root.open ? 1.0 : 0.0;
 
     // Opening hands the keyboard to the panel: from there the guards below keep
-    // tab traversal inside it, and main.slint takes focus back on close.
+    // tab traversal inside it, and main.slint takes focus back on close. On TV
+    // the close button takes it, so the remote has something to act on. On
+    // desktop the head guard holds it instead: invisible, no ring for a pointer
+    // user, and the first Tab lands on the close button all the same.
     changed open => {
         if root.open {
-            close-btn.focus();
+            if (Bridge.tv-mode || Bridge.android) {
+                close-btn.focus();
+            } else {
+                head-guard.focus();
+            }
         }
     }
 
@@ -502,8 +530,7 @@ export component SettingsDrawer inherits Rectangle {
                     vertical-alignment: center;
                 }
 
-                // Focus is the same tinted disc the playback drawer's
-                // header buttons show, not the widget's ring.
+                // Focus is the widget's ring, like every other button.
                 Rectangle {
                     width: 34px;
                     height: 34px;
@@ -513,15 +540,9 @@ export component SettingsDrawer inherits Rectangle {
                         height: parent.height;
                         icon: Icons.close;
                         icon-size: 13px;
-                        focus-ring: false;
                         clicked => {
                             Bridge.show-settings = false;
                         }
-                    }
-
-                    if close-btn.has-focus: Rectangle {
-                        border-radius: self.height / 2;
-                        background: RowTint.focused;
                     }
                 }
             }

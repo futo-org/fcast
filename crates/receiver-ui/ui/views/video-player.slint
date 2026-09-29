@@ -5,6 +5,7 @@ import {
     Button,
     ListView,
 } from "../../../../ui-components/std-widgets.slint";
+import { FocusBorder } from "../../../../ui-components/components.slint";
 import {
     AppState,
     Bridge,
@@ -36,8 +37,8 @@ component SecondaryButton inherits Button {
 }
 
 // The side bar header's action button: close on the start page, back on the
-// others. It draws its own ring because the side bar's keyboard cursor decides
-// what is highlighted, not slint focus.
+// others. It draws the widget's focus ring itself because the side bar's
+// keyboard cursor decides what is highlighted, not slint focus.
 component HeaderButton inherits Rectangle {
     in property <image> icon;
     in property <length> icon-size: 13px;
@@ -69,9 +70,8 @@ component HeaderButton inherits Rectangle {
         }
     }
 
-    if root.focused: Rectangle {
+    if root.focused: FocusBorder {
         border-radius: root.height / 2;
-        background: RowTint.focused;
     }
 }
 
@@ -433,7 +433,10 @@ component PlaybackControls inherits Rectangle {
         // header button. Only backing out of a category returns to it.
         selected-row-start = 1;
         settings-cursor = 1;
-        settings-kb-nav = false;
+        // On TV the cursor is drawn from the start, or the first Down lands one
+        // row below a highlight that was never seen. Desktop keeps its ring
+        // for the first key press, a pointer user never sees one.
+        settings-kb-nav = Bridge.tv-mode || Bridge.android;
         show-settings = true;
         settings-focus.focus();
     }
@@ -1025,7 +1028,7 @@ component PlaybackControls inherits Rectangle {
                     }
 
                     PlaybackSettingsMenuItem {
-                        label: @tr("Playback Speed");
+                        label: @tr("Playback speed");
                         icon: Icons.playback-rate;
                         focused: settings-kb-nav && settings-cursor == row-rate;
 

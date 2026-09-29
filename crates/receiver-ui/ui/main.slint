@@ -103,7 +103,7 @@ export component MainWindow inherits Window {
     changed show-inspector => {
         Bridge.inspector-toggled(self.show-inspector);
         if (!self.show-inspector) {
-            fs.focus();
+            reclaim-focus();
         }
     }
 
@@ -113,19 +113,29 @@ export component MainWindow inherits Window {
     // view so unhandled keys from any focused widget bubble up into the
     // global handler, and the watchers below reclaim focus whenever the
     // subtree that held it goes away.
+    //
+    // Never while the report-bug popup is up: it places focus on its own
+    // controls, and an error raises it in the same burst as the state and
+    // variant changes below, whose handlers run late enough to steal it.
+    function reclaim-focus() {
+        if (!Bridge.bug-report-visible) {
+            fs.focus();
+        }
+    }
+
     property <bool> settings-open: Bridge.show-settings;
     changed settings-open => {
         if (!self.settings-open) {
             // a field destroyed with the drawer never reports losing focus
             Bridge.text-edit-focused = false;
-            fs.focus();
+            reclaim-focus();
         }
     }
 
     property <bool> starting-up: Bridge.starting-up;
     changed starting-up => {
         if (!self.starting-up) {
-            fs.focus();
+            reclaim-focus();
         }
     }
 
@@ -133,19 +143,19 @@ export component MainWindow inherits Window {
     changed app-state => {
         // On entry into Playing the video player's own scope focuses itself.
         if (self.app-state != AppState.Playing) {
-            fs.focus();
+            reclaim-focus();
         }
     }
 
     property <UiPlayerVariant> player-variant: Bridge.player-variant;
     changed player-variant => {
         if (self.player-variant != UiPlayerVariant.Video) {
-            fs.focus();
+            reclaim-focus();
         }
     }
 
     property <UiUpdaterState> updater-state: Bridge.updater-state;
-    changed updater-state => fs.focus();
+    changed updater-state => reclaim-focus();
 
     // The popup's own FocusScope grabs focus on show; reclaim it on dismiss.
     property <bool> bug-report-visible: Bridge.bug-report-visible;

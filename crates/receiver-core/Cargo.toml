@@ -27,6 +27,8 @@ url = "2"
 thiserror = "2"
 mdns-sd.workspace = true
 fast_qr = { version = "0.13", features = [ "svg" ] }
+# the bug report as the QR carries it, and its decoder's format
+fcast-bug-report = { path = "../fcast-bug-report" }
 gst-app.workspace = true
 gst-video.workspace = true
 gst-base.workspace = true
@@ -121,6 +123,8 @@ tokio-rustls = { workspace = true, default-features = false, features = [ "loggi
 
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = "0.6"
+# the bug report's device model, read from the system properties
+libc = "0.2"
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
 tracing = { workspace = true, features = [ "log" ] }

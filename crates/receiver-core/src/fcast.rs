@@ -725,6 +725,7 @@ impl State {
                     display_name: msg.display_name.unwrap_or_default(),
                     app_name: msg.app_name.unwrap_or_default(),
                     app_version: msg.app_version.unwrap_or_default(),
+                    protocol: fcast_bug_report::Protocol::FcastV3,
                 })
             }
             Opcode::SetPlaylistItem => {
@@ -832,6 +833,7 @@ impl State {
                     display_name: info.display_name().unwrap_or_default().to_owned(),
                     app_name: info.app_name().unwrap_or_default().to_owned(),
                     app_version: info.app_version().unwrap_or_default().to_owned(),
+                    protocol: fcast_bug_report::Protocol::FcastV4,
                 })
             }
             v4::flat::Message::Load => Action::Op(Operation::PlayNew(WrappedPlayMessage::V4(

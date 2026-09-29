@@ -24,6 +24,22 @@ use receiver_core::{
 
 // Re-exported so `gui::UpdateGuiCommand` names the same type on both sides.
 pub use receiver_core::gui::*;
+use receiver_core::bug_report;
+
+/// The report behind the popup on screen, for its callbacks. One popup at
+/// a time, so one slot.
+static LAST_BUG_REPORT: parking_lot::Mutex<Option<bug_report::Draft>> =
+    parking_lot::Mutex::new(None);
+
+fn bug_report_include(source: bool, source_path: bool, sender: bool, device: bool, warnings: bool) -> bug_report::Include {
+    bug_report::Include {
+        source,
+        source_path,
+        sender,
+        device,
+        warnings,
+    }
+}
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
 use crate::UiUpdaterState;
@@ -382,6 +398,48 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         }
     });
 
+    bridge.on_bug_report_text(|source, source_path, sender, device, warnings| {
+        let include = bug_report_include(source, source_path, sender, device, warnings);
+        match LAST_BUG_REPORT.lock().as_ref() {
+            Some(draft) => draft.build(include).render().to_shared_string(),
+            None => SharedString::default(),
+        }
+    });
+
+    bridge.on_bug_report_issue_url(|source, source_path, sender, device, warnings| {
+        let include = bug_report_include(source, source_path, sender, device, warnings);
+        match LAST_BUG_REPORT.lock().as_ref() {
+            Some(draft) => draft.issue_url(include).0.to_shared_string(),
+            None => bug_report::ISSUE_TRACKER_URL.into(),
+        }
+    });
+
+    bridge.on_bug_report_link_note(|source, source_path, sender, device, warnings| {
+        let include = bug_report_include(source, source_path, sender, device, warnings);
+        let Some(fit) = LAST_BUG_REPORT.lock().as_ref().map(|draft| draft.issue_url(include).1) else {
+            return SharedString::default();
+        };
+        let mut note = String::new();
+        if fit.warnings_kept < fit.warnings_total {
+            note.push_str(&format!(
+                "The code carries the newest {} of {} warnings.",
+                fit.warnings_kept, fit.warnings_total
+            ));
+        }
+        if fit.message_cut {
+            if !note.is_empty() {
+                note.push(' ');
+            }
+            note.push_str("The error text is shortened in it.");
+        }
+        note.to_shared_string()
+    });
+
+    bridge.on_bug_report_qr(|url| match bug_report::qr_for(&url) {
+        Some(qr) => slint::Image::from_rgb8(qr_pixbuf(&qr)),
+        None => slint::Image::default(),
+    });
+
     bridge.on_inspector_tick({
         let msg_tx = msg_tx.clone();
         move || {
@@ -732,20 +790,23 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
                 bridge.set_is_showing_error_message(true);
             }
         }
-        UpdateGuiCommand::ShowBugReport {
-            diagnostic,
-            code,
-            qr,
-        } => {
-            bridge.set_bug_report_diagnostic(diagnostic.to_shared_string());
+        UpdateGuiCommand::ShowBugReport { draft, code } => {
             bridge.set_bug_report_code(code.into());
-            bridge.set_bug_report_qr(match qr {
-                Some(qr) => slint::Image::from_rgb8(qr_pixbuf(&qr.0)),
-                None => slint::Image::default(),
-            });
+            let head = format!("{}\n{}", draft.report.title(), draft.report.message);
+            bridge.set_bug_report_head(head.to_shared_string());
+            // The text, link and QR callbacks read it from here.
+            *LAST_BUG_REPORT.lock() = Some(draft);
+            // A new report starts from the checklist's defaults.
+            let defaults = bug_report::Include::default();
+            bridge.set_bug_report_include_source(defaults.source);
+            bridge.set_bug_report_include_source_path(defaults.source_path);
+            bridge.set_bug_report_include_sender(defaults.sender);
+            bridge.set_bug_report_include_device(defaults.device);
+            bridge.set_bug_report_include_warnings(defaults.warnings);
             bridge.set_bug_report_visible(true);
         }
         UpdateGuiCommand::HideBugReport => bridge.set_bug_report_visible(false),
+        UpdateGuiCommand::SetSoftKeyboardVisible(visible) => bridge.set_soft_keyboard_visible(visible),
         UpdateGuiCommand::SetPlaybackState(state) => bridge.set_playback_state(state.into()),
         UpdateGuiCommand::ClearImageState => {
             bridge.set_image_preview(CompoundImage::default());

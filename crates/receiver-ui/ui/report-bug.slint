@@ -1,18 +1,97 @@
 import {
     FText,
     Button,
+    RoundBackButton,
+    Switch,
     ScrollView,
     Icons,
 } from "../../../ui-components/std-widgets.slint";
-import { FCastPalette } from "../../../ui-components/styling.slint";
+import { FCastPalette, RowTint } from "../../../ui-components/styling.slint";
 import { Bridge } from "globals.slint";
 
-// Popup for errors that warrant a report (Frozen/Unexpected/MissingCodec). The
-// diagnostic block is raw technical text, deliberately not localized, it is
+// A checklist entry, the settings drawer's toggle row: the switch is the
+// tab stop, the whole row tints while it holds focus, and a click anywhere
+// on the row toggles.
+component ChecklistRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> enabled: true;
+    in-out property <bool> value;
+    out property <bool> has-focus: sw.has-focus;
+
+    background: sw.has-focus ? RowTint.focused : (touch.has-hover ? RowTint.hovered : transparent);
+    border-radius: 8px;
+    animate background { duration: 100ms; }
+    opacity: root.enabled ? 1.0 : 0.5;
+    forward-focus: sw;
+
+    touch := TouchArea {
+        enabled: root.enabled;
+        clicked => {
+            root.value = !root.value;
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 12px;
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+
+        Text {
+            text: root.label;
+            color: FCastPalette.foreground;
+            font-size: 14px;
+            horizontal-stretch: 1;
+            vertical-alignment: center;
+            wrap: word-wrap;
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            sw := Switch {
+                focus-ring: false;
+                enabled: root.enabled;
+                checked <=> root.value;
+            }
+        }
+    }
+}
+
+// Popup for errors that warrant a report (Frozen/Unexpected/MissingCodec).
+// Two pages: a card saying what happened, then a full-screen report page,
+// instructions and the checklist on the left, the QR and the block on the
+// right. The block is raw technical text, deliberately not localized, it is
 // what goes into the bug report. Shown at most once per loaded item (the
 // receiver latches it).
 export component ReportBugPopup inherits Rectangle {
     background: #000000B0;
+
+    // false: what happened. true: the report page.
+    property <bool> reporting: false;
+    property <bool> on-tv: Bridge.tv-mode || Bridge.android;
+    property <string> report-text: Bridge.bug-report-text(
+        Bridge.bug-report-include-source,
+        Bridge.bug-report-include-source-path,
+        Bridge.bug-report-include-sender,
+        Bridge.bug-report-include-device,
+        Bridge.bug-report-include-warnings);
+    property <string> issue-url: Bridge.bug-report-issue-url(
+        Bridge.bug-report-include-source,
+        Bridge.bug-report-include-source-path,
+        Bridge.bug-report-include-sender,
+        Bridge.bug-report-include-device,
+        Bridge.bug-report-include-warnings);
+    // 0 until the report page opens: a QR is worth building only when shown.
+    property <image> qr: reporting ? Bridge.bug-report-qr(issue-url) : Bridge.bug-report-qr("");
+    property <string> link-note: reporting ? Bridge.bug-report-link-note(
+        Bridge.bug-report-include-source,
+        Bridge.bug-report-include-source-path,
+        Bridge.bug-report-include-sender,
+        Bridge.bug-report-include-device,
+        Bridge.bug-report-include-warnings) : "";
+    property <bool> copied: false;
 
     // Clicking the scrim dismisses (desktop nicety); the card swallows its
     // own clicks below so only true outside-clicks land here.
@@ -22,23 +101,148 @@ export component ReportBugPopup inherits Rectangle {
         }
     }
 
-    FocusScope {
-        init => {
-            self.focus();
-        }
+    // On TV focus lives on a control of the page shown, the primary button
+    // on the card and the first row of the report, so a remote's OK acts on
+    // it from the first press. On desktop nothing is pre-focused, no ring
+    // appears for a pointer user, and the popup's own scope takes focus so
+    // Escape and Tab still route into it. Both pages exist and toggle by
+    // visibility, so the controls can be named here; an invisible one is no
+    // tab stop.
+    init => {
+        root.place-focus();
+    }
+    changed reporting => {
+        root.done-from = -1;
+        root.place-focus();
+    }
 
+    function place-focus() {
+        if (!root.on-tv) {
+            popup-scope.focus();
+        } else if (root.reporting) {
+            first-row.focus();
+        } else {
+            report-btn.focus();
+        }
+    }
+
+    property <bool> row-focused: first-row.has-focus || row-path.has-focus
+        || row-sender.has-focus || row-device.has-focus || last-row.has-focus;
+    // The toggle that sent focus to Done, so Left and Down return there.
+    // -1: Done was reached along the top bar.
+    property <int> done-from: -1;
+
+    function focused-row() -> int {
+        if (first-row.has-focus) { return 0; }
+        if (row-path.has-focus) { return 1; }
+        if (row-sender.has-focus) { return 2; }
+        if (row-device.has-focus) { return 3; }
+        if (last-row.has-focus) { return 4; }
+        return -1;
+    }
+
+    function focus-row(index: int) {
+        if (index == 1) { row-path.focus(); }
+        else if (index == 2) { row-sender.focus(); }
+        else if (index == 3) { row-device.focus(); }
+        else if (index == 4) { last-row.focus(); }
+        else { first-row.focus(); }
+    }
+
+    // This scope only catches what bubbles up from the page's controls, and
+    // holds focus itself on desktop.
+    popup-scope := FocusScope {
+        // Back on a remote peels one page, like Escape, and never reaches the
+        // global handler that backgrounds the app.
         key-pressed(event) => {
-            if (event.text == Key.Escape
-                || event.text == Key.Return
-                || event.text == Key.Space
-                || event.text == Key.Backspace) {
-                Bridge.bug-report-visible = false;
+            if (event.text == Key.Escape || event.text == Key.Backspace || event.text == Key.Back) {
+                if (root.reporting) {
+                    root.reporting = false;
+                } else {
+                    Bridge.bug-report-visible = false;
+                }
                 return accept;
+            }
+            // The report page's arrows follow its shape instead of the tab
+            // chain the remote otherwise walks: the top bar is one row, the
+            // toggles the column under it.
+            if (root.reporting) {
+                if (back-btn.has-focus) {
+                    if (event.text == Key.RightArrow) {
+                        root.done-from = -1;
+                        done-btn.focus();
+                        return accept;
+                    }
+                    if (event.text == Key.DownArrow) {
+                        first-row.focus();
+                        return accept;
+                    }
+                    if (event.text == Key.UpArrow || event.text == Key.LeftArrow) {
+                        return accept;
+                    }
+                }
+                if (done-btn.has-focus) {
+                    if (event.text == Key.LeftArrow) {
+                        if (root.done-from >= 0) {
+                            focus-row(root.done-from);
+                        } else {
+                            back-btn.focus();
+                        }
+                        return accept;
+                    }
+                    if (event.text == Key.DownArrow) {
+                        focus-row(max(root.done-from, 0));
+                        return accept;
+                    }
+                    if (event.text == Key.UpArrow || event.text == Key.RightArrow) {
+                        return accept;
+                    }
+                }
+                if (root.row-focused) {
+                    if (first-row.has-focus && event.text == Key.UpArrow) {
+                        back-btn.focus();
+                        return accept;
+                    }
+                    if (last-row.has-focus && event.text == Key.DownArrow && root.on-tv) {
+                        return accept;
+                    }
+                    // Done is the only control to the right of the column.
+                    if (event.text == Key.RightArrow) {
+                        root.done-from = focused-row();
+                        done-btn.focus();
+                        return accept;
+                    }
+                    if (event.text == Key.LeftArrow) {
+                        return accept;
+                    }
+                }
             }
             reject
         }
 
+        // Tab traversal knows nothing about modal layers, so two guards fence
+        // the popup in, the settings drawer's trick: whichever one traversal
+        // lands on hands focus to the far end of the page shown, so the idle
+        // screen behind the scrim stays out of reach. They bracket the pages,
+        // so they must stay first and last here.
+        head-guard := FocusScope {
+            width: 0;
+            height: 0;
+
+            focus-gained(reason) => {
+                if reason == FocusReason.tab-navigation {
+                    if (root.reporting) {
+                        last-row.focus();
+                    } else {
+                        report-btn.focus();
+                    }
+                }
+            }
+        }
+
+        // Page one: what happened.
         card := Rectangle {
+            visible: !root.reporting;
             width: min(720px, root.width - 60px);
             height: min(content.preferred-height, root.height - 60px);
             background: @linear-gradient(222.86deg, #262626 7.47%, #0E0F10 95.53%);
@@ -73,76 +277,295 @@ export component ReportBugPopup inherits Rectangle {
                 }
 
                 FText {
-                    text: @tr("This looks like a bug in the receiver. Please report it by scanning the code, and include the details below.");
+                    text: @tr("This looks like a bug in the receiver. A report with the details below helps us fix it. You choose what the report contains.");
                     wrap: word-wrap;
                     color: FCastPalette.opacity-light-500;
                 }
 
+                Rectangle {
+                    background: #00000066;
+                    border-radius: 8px;
+                    height: min(head.preferred-height, 160px);
+                    clip: true;
+
+                    ScrollView {
+                        head := VerticalLayout {
+                            padding: 12px;
+
+                            FText {
+                                text: Bridge.bug-report-head;
+                                font-size: 12px;
+                                wrap: word-wrap;
+                                color: FCastPalette.opacity-light-500;
+                            }
+                        }
+                    }
+                }
+
                 HorizontalLayout {
-                    spacing: 20px;
+                    alignment: end;
+                    spacing: 10px;
 
-                    if Bridge.bug-report-qr.width > 0: Rectangle {
-                        width: 140px;
-                        height: 140px;
-                        border-radius: 8px;
-                        background: white;
-                        clip: true;
-
-                        Image {
-                            width: parent.width - 12px;
-                            height: parent.height - 12px;
-                            source: Bridge.bug-report-qr;
-                            image-rendering: pixelated;
+                    dismiss-btn := Button {
+                        text: @tr("Dismiss");
+                        clicked => {
+                            Bridge.bug-report-visible = false;
                         }
                     }
 
+                    report-btn := Button {
+                        text: @tr("Report this bug");
+                        clicked => {
+                            root.reporting = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Page two: the report, full screen.
+        page := Rectangle {
+            visible: root.reporting;
+            width: root.width;
+            height: root.height;
+            background: @linear-gradient(222.86deg, #262626 7.47%, #0E0F10 95.53%);
+
+            // The page's geometry, from the page and not from the columns:
+            // the QR is sized from these, and a column's size depends on
+            // the QR's, which would loop.
+            property <length> page-padding: 24px;
+            property <length> top-row-height: 36px;
+            property <length> column-gap: 32px;
+            property <length> column-width: (root.width - 2 * page-padding - column-gap) / 2;
+            property <length> body-height: root.height - 2 * page-padding - 20px - top-row-height;
+
+            TouchArea { }
+
+            VerticalLayout {
+                padding: page-padding;
+                spacing: 20px;
+
+                // Back on the left, Done on the right, the title between.
+                // Its own height only, the body below takes the rest.
+                HorizontalLayout {
+                    spacing: 16px;
+                    height: top-row-height;
+                    vertical-stretch: 0;
+
+                    back-btn := RoundBackButton {
+                        clicked => {
+                            root.reporting = false;
+                        }
+                    }
+
+                    FText {
+                        text: @tr("Report this bug") + " (" + Bridge.bug-report-code + ")";
+                        font-size: 22px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
+                    }
+
+                    done-btn := Button {
+                        text: @tr("Done");
+                        clicked => {
+                            Bridge.bug-report-visible = false;
+                        }
+                    }
+                }
+
+                HorizontalLayout {
+                    spacing: column-gap;
+                    vertical-stretch: 1;
+
+                    // Left: what to do, what to send, and the actions at the
+                    // bottom.
                     VerticalLayout {
-                        alignment: center;
-                        spacing: 8px;
+                        spacing: 14px;
+                        width: column-width;
 
-                        // The URL itself, not localized. Clickable on
-                        // platforms that can open a browser.
-                        link := TouchArea {
-                            mouse-cursor: pointer;
+                        // The one line that must not be skimmed past: a tinted
+                        // callout in the palette's red, white text so it reads
+                        // as a notice and not as an error of its own.
+                        Rectangle {
+                            background: FCastPalette.negative-600.with-alpha(0.14);
+                            border-color: FCastPalette.negative-600.with-alpha(0.55);
+                            border-width: 1px;
+                            border-radius: 8px;
+                            vertical-stretch: 0;
 
-                            clicked => {
-                                Platform.open-url("https://github.com/futo-org/fcast/issues");
-                            }
-
+                            // Sized by the layout it holds, padding included.
                             HorizontalLayout {
-                                alignment: start;
-                                spacing: 6px;
+                                padding-left: 12px;
+                                padding-right: 12px;
+                                padding-top: 10px;
+                                padding-bottom: 10px;
 
                                 FText {
-                                    text: "github.com/futo-org/fcast/issues";
-                                    font-size: 16px;
+                                    text: @tr("Reports are posted as public issues on GitHub. Anyone can read them.");
                                     wrap: word-wrap;
-                                    opacity: link.has-hover ? 1.0 : 0.85;
-                                }
-
-                                Image {
-                                    source: Icons.open-external;
-                                    width: 14px;
-                                    opacity: link.has-hover ? 1.0 : 0.85;
+                                    color: FCastPalette.foreground;
+                                    font-weight: 600;
                                 }
                             }
                         }
 
-                        // Scrolls: with the recent-warnings ring the block
-                        // can be long, and the Dismiss button must stay on
-                        // screen whatever its size.
+                        // The steps, worded for where the report ends up.
+                        VerticalLayout {
+                            spacing: 4px;
+                            vertical-stretch: 0;
+
+                            FText {
+                                text: @tr("1. Choose what the report includes. The preview on the right is exactly what is sent.");
+                                wrap: word-wrap;
+                                color: FCastPalette.opacity-light-500;
+                            }
+                            FText {
+                                text: root.on-tv
+                                    ? @tr("2. Scan the code with your phone. It opens a new issue with the report attached in compressed form.")
+                                    : @tr("2. Copy the report, or open a new issue with it attached in compressed form.");
+                                wrap: word-wrap;
+                                color: FCastPalette.opacity-light-500;
+                            }
+                            FText {
+                                text: @tr("3. Add what you were playing and what you expected, then submit.");
+                                wrap: word-wrap;
+                                color: FCastPalette.opacity-light-500;
+                            }
+                        }
+
+                        // The checklist. Each row rebuilds the preview, the
+                        // link and the QR.
+                        VerticalLayout {
+                            spacing: 2px;
+                            vertical-stretch: 0;
+
+                            first-row := ChecklistRow {
+                                label: @tr("What was playing (kind, format, host)");
+                                value <=> Bridge.bug-report-include-source;
+                            }
+                            row-path := ChecklistRow {
+                                label: @tr("The full media address");
+                                enabled: Bridge.bug-report-include-source;
+                                value <=> Bridge.bug-report-include-source-path;
+                            }
+                            row-sender := ChecklistRow {
+                                label: @tr("Who cast it (app, version, protocol)");
+                                value <=> Bridge.bug-report-include-sender;
+                            }
+                            row-device := ChecklistRow {
+                                label: @tr("This device (OS, architecture, model)");
+                                value <=> Bridge.bug-report-include-device;
+                            }
+                            last-row := ChecklistRow {
+                                label: @tr("Recent warnings");
+                                value <=> Bridge.bug-report-include-warnings;
+                            }
+                        }
+
+                        // Pushes the actions to the bottom edge.
+                        Rectangle {
+                            vertical-stretch: 1;
+                        }
+
+                        if !root.on-tv: HorizontalLayout {
+                            spacing: 10px;
+                            alignment: start;
+                            vertical-stretch: 0;
+
+                            // The clipboard route: the platform copies a
+                            // TextInput's selection, so the block sits in one
+                            // that is never shown. Desktop only, with the
+                            // button that uses it: on a TV a focused text input
+                            // raises the on-screen keyboard.
+                            clipboard := TextInput {
+                                visible: false;
+                                width: 0;
+                                height: 0;
+                                text: root.report-text;
+                                read-only: true;
+                            }
+
+                            Button {
+                                text: root.copied ? @tr("Copied") : @tr("Copy report");
+                                clicked => {
+                                    clipboard.select-all();
+                                    clipboard.copy();
+                                    root.copied = true;
+                                }
+                            }
+
+                            Button {
+                                text: @tr("Open a new issue");
+                                clicked => {
+                                    Platform.open-url(root.issue-url);
+                                }
+                            }
+                        }
+                    }
+
+                    // Right: the block sized to its text at the bottom, the
+                    // QR taking whatever is left above it, as large as the
+                    // column allows. A phone across the room needs every
+                    // pixel of it.
+                    right := VerticalLayout {
+                        spacing: 14px;
+                        width: column-width;
+                        property <length> note-height: root.link-note != "" ? 34px : 0px;
+                        property <length> preview-height: min(preview-content.preferred-height, body-height * 0.45);
+                        property <length> qr-side: min(column-width, body-height - preview-height - self.spacing - note-height);
+
+                        if root.qr.width > 0: HorizontalLayout {
+                            alignment: center;
+                            vertical-stretch: 1;
+
+                            VerticalLayout {
+                                spacing: 6px;
+                                alignment: center;
+
+                                Rectangle {
+                                    width: right.qr-side;
+                                    height: right.qr-side;
+                                    border-radius: 8px;
+                                    background: white;
+                                    clip: true;
+
+                                    Image {
+                                        width: parent.width - 16px;
+                                        height: parent.height - 16px;
+                                        source: root.qr;
+                                        image-rendering: pixelated;
+                                    }
+                                }
+
+                                if root.link-note != "": FText {
+                                    width: right.qr-side;
+                                    height: 28px;
+                                    text: root.link-note;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                    horizontal-alignment: center;
+                                    color: FCastPalette.opacity-light-500;
+                                }
+                            }
+                        }
+
+                        // The preview, exactly what leaves the box. Its own
+                        // height up to just under half the column, then it
+                        // scrolls.
                         Rectangle {
                             background: #00000066;
                             border-radius: 8px;
-                            height: min(diag.preferred-height, 240px);
+                            height: right.preview-height;
+                            vertical-stretch: 0;
                             clip: true;
 
                             ScrollView {
-                                diag := VerticalLayout {
+                                preview-content := VerticalLayout {
                                     padding: 12px;
 
                                     FText {
-                                        text: Bridge.bug-report-diagnostic;
+                                        text: root.report-text;
                                         font-size: 12px;
                                         wrap: word-wrap;
                                         color: FCastPalette.opacity-light-500;
@@ -152,16 +575,19 @@ export component ReportBugPopup inherits Rectangle {
                         }
                     }
                 }
+            }
+        }
 
-                HorizontalLayout {
-                    alignment: end;
+        tail-guard := FocusScope {
+            width: 0;
+            height: 0;
 
-                    Button {
-                        text: @tr("Dismiss");
-
-                        clicked => {
-                            Bridge.bug-report-visible = false;
-                        }
+            focus-gained(reason) => {
+                if reason == FocusReason.tab-navigation {
+                    if (root.reporting) {
+                        back-btn.focus();
+                    } else {
+                        dismiss-btn.focus();
                     }
                 }
             }

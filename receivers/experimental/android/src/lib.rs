@@ -177,6 +177,21 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeMediaComm
     });
 }
 
+/// The soft keyboard came up or went away. The activity watches the window
+/// insets animation for it; slint's backend consumes the same insets for
+/// layout and tells the app nothing.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeSoftKeyboardVisible<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    visible: jni::sys::jboolean,
+) {
+    let _ = EVENT_CHANNEL
+        .0
+        .send(rcore::message::Message::SoftKeyboardVisible(visible != 0));
+}
+
 /// Absolute seek from the session (lock screen scrubber, BT remote).
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]

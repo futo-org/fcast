@@ -105,6 +105,8 @@ pub struct SenderInfo {
     pub display_name: String,
     pub app_name: String,
     pub app_version: String,
+    /// The protocol the session spoke when it introduced itself.
+    pub protocol: fcast_bug_report::Protocol,
 }
 
 #[derive(Debug)]
@@ -160,16 +162,18 @@ pub enum UpdateGuiCommand {
         /// Stable short code (FC-Exx/FC-Wxx), shown beside the text.
         code: &'static str,
     },
-    /// The report-bug popup for unexpected failures. `diagnostic` is the raw
-    /// technical block (never localized), `qr` encodes the issue-tracker URL.
+    /// The report-bug popup for unexpected failures. The sections are raw
+    /// technical text (never localized), the GUI composes them by the user's
+    /// checklist and asks for the QR of the result.
     ShowBugReport {
-        diagnostic: String,
+        draft: crate::bug_report::Draft,
         code: &'static str,
-        qr: Option<IgnoredDebug<QrCode>>,
     },
     /// Dismisses the report-bug popup so a stale one never sits over the
     /// next item. Sent on every new load.
     HideBugReport,
+    /// android: the soft keyboard's visibility, see [`crate::message::Message::SoftKeyboardVisible`].
+    SetSoftKeyboardVisible(bool),
     SetPlaybackState(GuiPlaybackState),
     ClearImageState,
     SetImageViaPlayer(bool),
@@ -512,16 +516,16 @@ impl GuiController {
         self.send(UpdateGuiCommand::ShowToastMessage { kind, detail, code });
     }
 
-    pub fn show_bug_report(&self, diagnostic: String, code: &'static str, qr: Option<QrCode>) {
-        self.send(UpdateGuiCommand::ShowBugReport {
-            diagnostic,
-            code,
-            qr: qr.map(IgnoredDebug),
-        });
+    pub fn show_bug_report(&self, draft: crate::bug_report::Draft, code: &'static str) {
+        self.send(UpdateGuiCommand::ShowBugReport { draft, code });
     }
 
     pub fn hide_bug_report(&self) {
         self.send(UpdateGuiCommand::HideBugReport);
+    }
+
+    pub fn set_soft_keyboard_visible(&self, visible: bool) {
+        self.send(UpdateGuiCommand::SetSoftKeyboardVisible(visible));
     }
 
     pub fn set_playback_state(&mut self, state: GuiPlaybackState) {

@@ -349,6 +349,34 @@ public class MainActivity extends NativeActivity {
         // Not immersive at start: the player's fullscreen toggle drives
         // it. Insets flow through slint's own android backend into
         // Window.safe-area-insets, no bridge needed.
+        //
+        // The soft keyboard's comings and goings do need one: a text field
+        // left in edit mode after the user dismissed the keyboard shows no
+        // keyboard again and answers no key. Watched on the decor view, an
+        // ancestor of slint's input view, which keeps its own callback; the
+        // subtree dispatch mode lets both run.
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            getWindow().getDecorView().setWindowInsetsAnimationCallback(
+                    new android.view.WindowInsetsAnimation.Callback(
+                            android.view.WindowInsetsAnimation.Callback.DISPATCH_MODE_CONTINUE_ON_SUBTREE) {
+                        @Override
+                        public android.view.WindowInsets onProgress(
+                                android.view.WindowInsets insets,
+                                java.util.List<android.view.WindowInsetsAnimation> running) {
+                            return insets;
+                        }
+
+                        @Override
+                        public void onEnd(android.view.WindowInsetsAnimation animation) {
+                            if ((animation.getTypeMask() & android.view.WindowInsets.Type.ime()) == 0) {
+                                return;
+                            }
+                            android.view.WindowInsets root = getWindow().getDecorView().getRootWindowInsets();
+                            nativeSoftKeyboardVisible(
+                                    root != null && root.isVisible(android.view.WindowInsets.Type.ime()));
+                        }
+                    });
+        }
 
         netThread = new HandlerThread("fcast-net");
         netThread.start();
@@ -530,6 +558,8 @@ public class MainActivity extends NativeActivity {
     /// Transport commands from the MediaSession and the notification:
     /// 0 stop, 1 pause, 2 resume. Static so ReceiverService can send too.
     static native void nativeMediaCommand(int code);
+    /// The soft keyboard came up (true) or went away (false).
+    static native void nativeSoftKeyboardVisible(boolean visible);
 
     /// Absolute seek from the session (lock screen, BT remote), seconds.
     static native void nativeMediaSeek(double seconds);
