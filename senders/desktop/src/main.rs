@@ -2713,7 +2713,7 @@ fn main() -> Result<()> {
         .with(vec_layer)
         .init();
 
-    if let Err(err) = rustls::crypto::ring::default_provider().install_default() {
+    if let Err(err) = rustls::crypto::aws_lc_rs::default_provider().install_default() {
         error!(
             ?err,
             "Failed to register ring as rustls default crypto provider"

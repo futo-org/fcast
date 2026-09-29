@@ -90,7 +90,7 @@ impl Connection {
     }
 
     async fn upgrade_tls(&mut self, fingerprint: Option<&[u8]>) -> Result<()> {
-        let provider = Arc::new(rustls::crypto::ring::default_provider());
+        let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
         let verifier = match fingerprint {
             Some(fp) => CertVerifier::new(fp.to_vec(), provider.clone()),
             None => CertVerifier::new_no_fingerprint_check(provider.clone()),
@@ -548,6 +548,10 @@ impl<'a> Engine<'a> {
 
     async fn settle(&mut self) -> Result<()> {
         let started = Instant::now();
+        // A case's own SleepMillis is not the receiver being slow, so it does
+        // not count against the cap. Charging it did: any hold longer than
+        // MAX_SETTLE failed here however healthy the receiver was.
+        let deadline = self.sleep_until.unwrap_or(started).max(started) + MAX_SETTLE;
         loop {
             let now = Instant::now();
             let sleeping = self.sleep_until.is_some_and(|d| d > now);
@@ -555,8 +559,9 @@ impl<'a> Engine<'a> {
                 return Ok(());
             }
             ensure!(
-                now.duration_since(started) < MAX_SETTLE,
-                "gave up after {MAX_SETTLE:?} still waiting for: {}",
+                now < deadline,
+                "gave up {MAX_SETTLE:?} past the step, {:?} in total, still waiting for: {}",
+                now.duration_since(started),
                 self.expect.describe()
             );
 

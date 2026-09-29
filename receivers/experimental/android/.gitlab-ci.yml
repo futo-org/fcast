@@ -1,0 +1,71 @@
+build_receiver_android_native_docker_container:
+  stage: buildDockerContainers
+  image: docker:20.10.16
+  services:
+    - docker:20.10.16-dind
+  tags:
+    - fcast-instance-runner
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login $CI_REGISTRY -u $CI_REGISTRY_USER --password-stdin
+    - docker build -t $CI_REGISTRY/videostreaming/fcast/receiver-android-native-dev:latest receivers/experimental/android/
+    - docker push $CI_REGISTRY/videostreaming/fcast/receiver-android-native-dev:latest
+  when: manual
+
+build_receiver_android_native:
+  stage: receiverAndroid
+  image: gitlab.futo.org:5050/videostreaming/fcast/receiver-android-native-dev:latest
+  tags:
+    - fcast-instance-runner
+  variables:
+    ANDROID_VERSION_NAME: "1"
+    ANDROID_VERSION_CODE: "1"
+    # Cacheable locations must live under the project dir.
+    CARGO_HOME: "$CI_PROJECT_DIR/.cargo"
+    GRADLE_USER_HOME: "$CI_PROJECT_DIR/.gradle"
+  cache:
+    # The static GStreamer build dominates this job: from cold it is a full
+    # meson+ninja build per ABI. Its tree is keyed by the crate on the build
+    # env, so a stale entry is ignored rather than mixed in, and Cargo.lock as
+    # the cache key retires it when the pinned gstreamer-src moves.
+    key:
+      files:
+        - Cargo.lock
+    paths:
+      - .cargo/registry/
+      - .cargo/git/
+      - .gradle/
+      - target/gst-static/
+  script:
+    # --require-signing: the runner mounts /certs/key.properties, the same file
+    # the stable receiver and the sender sign with. If it ever goes missing the
+    # job fails here rather than shipping a debug-signed release.
+    #
+    # The SDK and NDK overrides belong to `android`, so they come before the
+    # subcommand, the same shape the sender job uses. One command builds the
+    # jniLibs for both shipping ABIs, points gradle at the SDK baked into the
+    # image (gradle reads local.properties before ANDROID_HOME, and xtask
+    # writes that file), and assembles the apk.
+    - cargo xtask receiver android
+      --android-home-override="$ANDROID_HOME"
+      --android-ndk-root-override="$ANDROID_NDK_ROOT"
+      package --release --require-signing
+      --version-code "$ANDROID_VERSION_CODE"
+      --version-name "$ANDROID_VERSION_NAME"
+    # The bundle packages the libraries the step above already built. Without
+    # --skip-native it would link them a second time, which is the expensive
+    # half of this job.
+    - cargo xtask receiver android
+      --android-home-override="$ANDROID_HOME"
+      --android-ndk-root-override="$ANDROID_NDK_ROOT"
+      package --release --bundle --skip-native --require-signing
+      --version-code "$ANDROID_VERSION_CODE"
+      --version-name "$ANDROID_VERSION_NAME"
+  artifacts:
+    untracked: false
+    when: on_success
+    access: all
+    expire_in: "30 days"
+    paths:
+      - receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk
+      - receivers/experimental/android/app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab
+  when: manual

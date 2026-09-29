@@ -2,6 +2,7 @@
 name = "receiver-android"
 version = "0.1.0"
 edition = "2024"
+license = "GPL-3.0-only"
 
 [dependencies]
 rcore = { package = "receiver-ui", path = "../../../crates/receiver-ui", features = ["android"] }
@@ -15,11 +16,3 @@ parking_lot.workspace = true
 [lib]
 name = "fcastreceiver"
 crate-type = ["cdylib"]
-
-[package.metadata.android]
-package = "org.fcast.receiver"
-build_targets = ["aarch64-linux-android", "armv7-linux-androideabi", "x86_64-linux-android", "i686-linux-android"]
-
-[package.metadata.android.sdk]
-min_sdk_version = 25
-target_sdk_version = 35

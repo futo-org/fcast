@@ -20,6 +20,7 @@ variables:
 include:
   - local: 'docs/.gitlab-ci.yml'
   - local: 'receivers/android/.gitlab-ci.yml'
+  - local: 'receivers/experimental/android/.gitlab-ci.yml'
   - local: 'receivers/desktop/.gitlab-ci.yml'
   - local: 'sdk/sender/.gitlab-ci.yml'
   - local: 'senders/android/.gitlab-ci.yml'

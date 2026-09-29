@@ -6,7 +6,6 @@ members = [
     "senders/terminal",
     "crates/fcast-protocol",
     "crates/mirroring-core",
-    "crates/sabrump",
     "senders/desktop",
     "senders/android",
     "tools/fast",
@@ -18,10 +17,6 @@ members = [
     "receivers/experimental/android",
     "crates/app-updater",
     "crates/google-cast-protocol",
-    "crates/libplacebo-sys",
-    "crates/libplacebo",
-    "crates/libplacebo-vulkan",
-    "crates/egl-sys",
     "crates/inhibit-screensaver",
     "crates/fcast-gst-elements",
     "crates/fcast-runtime",
@@ -42,16 +37,11 @@ members = [
 default-members = [
     "xtask",
     "crates/fcast-protocol",
-    "crates/sabrump",
     "crates/receiver-core",
     "crates/receiver-ui",
     "receivers/desktop",
     "crates/app-updater",
     "crates/google-cast-protocol",
-    "crates/libplacebo-sys",
-    "crates/libplacebo",
-    "crates/libplacebo-vulkan",
-    "crates/egl-sys",
     "crates/inhibit-screensaver",
     "crates/fcast-gst-elements",
     "crates/fcast-runtime",
@@ -71,20 +61,30 @@ license = "MIT"
 gstreamer-src = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branch = "master" }
 gst-static-link = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branch = "master" }
 gst-static-env = { git = "https://gitlab.futo.org/fcast/gstreamer-src.git", branch = "master" }
-# The media player library and its test harness, extracted 2026-08-23.
-flapjack = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "stable" }
-flapjack-test = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "stable" }
+# The media player library and its test simulator, extracted 2026-08-23. The
+# android line and the Rust network elements live on master.
+flapjack = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "master" }
+simulator = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "master" }
 tokio = { version = "1.52", features = [ "full" ] }
 serde = { version = "1.0", features = [ "derive" ] }
 gst = { package = "gstreamer", version = "0.25" }
 gst-app = { package = "gstreamer-app", version = "0.25", features = [ "v1_24" ] }
 gst-video = { package = "gstreamer-video", version = "0.25", features = [ "v1_24" ] }
 gst-base = { package = "gstreamer-base", version = "0.25", features = [ "v1_24" ] }
-gst-plugin-rtp = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false, features = [ "static", "depay" ] }
-gst-plugin-webrtc = { rev = "f8bdc4929ff79e2567d97c5e95ac90b452812c79", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false }
+gst-plugin-rtp = { rev = "a35f7d35ecd37a0627983c9235e8417457805618", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false, features = [ "static", "depay", "rtpbin2" ] }
+gst-plugin-webrtc = { rev = "a35f7d35ecd37a0627983c9235e8417457805618", git = "https://gitlab.futo.org/fcast/gst-plugins-rs.git", default-features = false }
 gst-webrtc = { package = "gstreamer-webrtc", version = "0.25" }
+# The Rust WebRTC stack the desktop receiver mirrors through: webrtcbin2
+# (librice ICE, dimpl DTLS, rtpbin2 underneath) and fcast's receive bins on
+# it, registered on every platform (`gstreamer.rs` plugin_register_static,
+# no cfg). rice-proto is a Rust crate from the librice fork now, so there is
+# no cross-built C ABI and no build-rice-proto.sh wiring left to carry.
+gst-plugin-webrtcbin2 = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "827eed7e10188e59e19ce894ab9fe2199cea0a66" }
+fcast-webrtc = { git = "https://gitlab.futo.org/fcast/webrtcbin2.git", rev = "827eed7e10188e59e19ce894ab9fe2199cea0a66" }
 gst-pbutils = { package = "gstreamer-pbutils", version = "0.25" }
-gst-subparse = { git = "https://github.com/MAlba124/gst-subparse-rs.git", rev = "506831f" }
+# flapjack's in-tree subparse: the player and the receiver must share ONE
+# `CueIr`, the cue engine keys its raster cache on the same `Arc`.
+flapjack-subparse = { git = "https://gitlab.futo.org/fcast/flapjack.git", branch = "master" }
 # The cue-IR renderer stack (crates/fcast-video/src/cue_ir.rs). vello_cpu keeps
 # the exact revision the upstream cueir-demo pins: the parley workspace's own,
 # which its examples (and our rasterizer) are written against.
@@ -102,9 +102,13 @@ tracing-subscriber = "0.3"
 tracing-gstreamer = { git = "https://github.com/MAlba124/tracing-gstreamer.git", rev = "3ad7a1e71a4ca4d1fd9a229642fd09586370acaf" }
 tracing-panic = "0.1.2"
 parking_lot = "0.12"
-slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "8796fa98619e560970a3ab82bc97efa0a5894778", default-features = false }
-slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "8796fa98619e560970a3ab82bc97efa0a5894778" }
-i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "8796fa98619e560970a3ab82bc97efa0a5894778" }
+# The slint fork, by rev from git. slint-gstreamer-video names the same rev
+# and so must every i-slint-* pin in the tree: two revs in one graph is two
+# i-slint-core types, which reads as `expected slint::Weak<_>, found
+# slint::Weak<MainWindow>` and six friends.
+slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "f46fb05748a4e082c978d8ea60a8a386c295fc09", default-features = false }
+slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "f46fb05748a4e082c978d8ea60a8a386c295fc09" }
+i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "f46fb05748a4e082c978d8ea60a8a386c295fc09" }
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.23", features = [ "v4" ] }
 bytes = "1"
@@ -139,12 +143,17 @@ infer = "0.19.0"
 image = { version = "0.25", default-features = false }
 base64 = "0.22"
 x509-parser = "0.17"
-rcgen = "0.14"
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
 
 [profile.release]
 lto = "fat"
 codegen-units = 1
 strip = "symbols"
+
+# naga only runs at pipeline-cache misses (a few times per stream), so size
+# beats speed for it; measured -481 KiB with ~2ms one-time compile cost
+[profile.release.package.naga]
+opt-level = "z"
 
 [profile.release-dbg]
 inherits = "release"
@@ -155,6 +164,11 @@ strip = false
 inherits = "release"
 opt-level = "s"
 panic = "abort"
+
+[profile.release-android]
+inherits = "release"
+lto = "thin"
+codegen-units = 16
 
 [profile.release-prof]
 inherits = "release"
@@ -189,6 +203,17 @@ kurbo = { opt-level = 2 }
 peniko = { opt-level = 2 }
 color = { opt-level = 2 }
 bytemuck = { opt-level = 2 }
+# The wgpu video lane at debug opt drops frames wholesale; the stack is
+# stable dependency code, so debug builds get it optimized. Our own small
+# crate is included since the per-frame readback memcpy lives there.
+wgpu = { opt-level = 3 }
+wgpu-core = { opt-level = 3 }
+wgpu-hal = { opt-level = 3 }
+wgpu-types = { opt-level = 3 }
+naga = { opt-level = 3 }
+ash = { opt-level = 3 }
+gpu-allocator = { opt-level = 3 }
+i-slint-video-wgpu = { opt-level = 3 }
 
 [profile.dev.package.image]
 opt-level = 3
@@ -214,7 +239,24 @@ opt-level = 3
 [profile.dev.package.byteorder-lite]
 opt-level = 3
 
+# flapjack builds from the pushed master (the workspace deps above). To iterate
+# on a local checkout instead, patch all four crates back to it at once:
+# flapjack, simulator, flapjack-subparse and flapjack-subparse-formats. The last
+# one because the slint fork's layout crate names it directly, and a graph that
+# carries the git copy beside the local one has two different `CueIr` types.
+
 [patch.crates-io]
+# librice fork: rice-c consumes rice-proto as a Rust crate (its capi feature),
+# not a cargo-c C staticlib. Drops the .a's bundled std (which collided with the
+# LTO'd std in release builds), bindgen, system-deps, and the per-ABI rice-proto
+# cross-build. Patching librice cascades: its rice-c/rice-proto are path deps in
+# the fork workspace, so they come from the fork too.
+librice = { git = "https://gitlab.futo.org/fcast/librice.git", rev = "17ef3a67f949f71b686968496365269bdeff449f" }
+# flapjack's reqwest fork, branched from the 0.13.4 tag: HTTP/3 without the
+# `reqwest_unstable` gate, taken through Alt-Svc, and `http3` on quinn's
+# aws-lc-rs provider so ring stays out of the tree. Every 0.13 reqwest in the
+# tree resolves to it.
+reqwest = { git = "https://gitlab.futo.org/fcast/reqwest.git", rev = "cd3a562866982a624ab103f4919897d8ed3124d1" }
 # Disable encoders
 image = { git = "https://gitlab.futo.org/fcast/image-rs.git", rev = "9ee78f3f" }
 rustls = { git = "https://gitlab.futo.org/fcast/rustls.git", rev = "72ec207b" }
@@ -237,5 +279,8 @@ gstreamer-net-sys = { git = "https://gitlab.futo.org/fcast/gstreamer-rs.git", br
 glib-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", branch = "fcast/0.22.8" }
 gobject-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", branch = "fcast/0.22.8" }
 gio-sys = { git = "https://gitlab.futo.org/fcast/gtk-rs-core.git", branch = "fcast/0.22.8" }
+# dav1d-sys fork: `bundled` links the dav1d archive gstreamer-src built
+# in-tree whenever it exported one, android included, and probes the host
+# otherwise.
 dav1d-sys = { git = "https://gitlab.futo.org/fcast/dav1d-rs.git", branch = "fcast/0.11.1" }
 

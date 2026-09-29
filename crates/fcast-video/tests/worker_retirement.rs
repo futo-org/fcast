@@ -1,7 +1,7 @@
 //! Idle retirement of the engine's two worker threads, proved against the
 //! operating system rather than the engine's own bookkeeping.
 //!
-//! `fvid-cue-raster` and `fvid-sub-decode` are lazily spawned and lazily
+//! `slint-cue` and `fvid-sub-decode` are lazily spawned and lazily
 //! unspawned. An idle worker ends its thread and the next piece of work
 //! spawns a fresh one. Otherwise a long-lived receiver accumulates parked
 //! worker threads.
@@ -22,7 +22,7 @@ use std::{
 
 use fcast_video::{
     cue::{CueEngine, CueInput, TextFormat},
-    subpic::{BitmapFormat, BitmapPacket, BitmapRegion, DisplayUpdate, SubpicDecoder},
+    subpic::{BitmapSubFormat, BitmapPacket, BitmapRegion, DisplayUpdate, SubpicDecoder},
 };
 
 /// Short enough to watch, long enough that a loaded machine does not retire a
@@ -99,7 +99,7 @@ impl SubpicDecoder for TagDecoder {
 
 fn packet(tag: u8, rt_ms: u64) -> BitmapPacket {
     BitmapPacket {
-        format: BitmapFormat::Pgs,
+        format: BitmapSubFormat::Pgs,
         data: gst::Buffer::from_slice(vec![tag, 0xAA]),
         codec_data: None,
         rt: gst::ClockTime::from_mseconds(rt_ms),
@@ -115,8 +115,7 @@ fn packet(tag: u8, rt_ms: u64) -> BitmapPacket {
 #[test]
 fn an_idle_decode_worker_retires_and_comes_back() {
     gst::init().expect("gst init");
-    let engine = CueEngine::new();
-    engine.set_worker_idle_for_test(IDLE);
+    let engine = CueEngine::with_worker_idle_for_test(IDLE);
     let pushes = Arc::new(AtomicU64::new(0));
     let counter = pushes.clone();
     engine.set_decoder_factory(move |_format| {
@@ -165,8 +164,7 @@ fn an_idle_decode_worker_retires_and_comes_back() {
 #[test]
 fn an_idle_raster_worker_retires_and_comes_back() {
     gst::init().expect("gst init");
-    let engine = CueEngine::new();
-    engine.set_worker_idle_for_test(IDLE);
+    let engine = CueEngine::with_worker_idle_for_test(IDLE);
     // Without a canvas no raster is ever asked for and the worker under test
     // would never start.
     engine.set_canvas(1920, 1080);
@@ -192,14 +190,14 @@ fn an_idle_raster_worker_retires_and_comes_back() {
     });
     assert!(engine.workers_live().0, "the raster worker never started");
     #[cfg(target_os = "linux")]
-    assert_eq!(threads_named("fvid-cue-raster"), 1);
+    assert_eq!(threads_named("slint-cue"), 1);
 
     wait_for("the idle raster worker to retire", || {
         !engine.workers_live().0
     });
     #[cfg(target_os = "linux")]
     wait_for("the raster worker's thread to end", || {
-        threads_named("fvid-cue-raster") == 0
+        threads_named("slint-cue") == 0
     });
 
     // A respawn inherits the warm-up. The retired worker's fontmap died with

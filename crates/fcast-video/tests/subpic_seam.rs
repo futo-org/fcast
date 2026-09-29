@@ -17,7 +17,7 @@ use std::{
 
 use fcast_video::{
     cue::CueEngine,
-    subpic::{BitmapFormat, BitmapPacket, BitmapRegion, DisplayUpdate, SubpicDecoder},
+    subpic::{BitmapSubFormat, BitmapPacket, BitmapRegion, DisplayUpdate, SubpicDecoder},
     video::OverlaySpace,
 };
 
@@ -78,7 +78,7 @@ fn wait_for(what: &str, condition: impl Fn() -> bool) {
 
 fn packet(tag: u8, rt: u64) -> BitmapPacket {
     BitmapPacket {
-        format: BitmapFormat::Pgs,
+        format: BitmapSubFormat::Pgs,
         data: gst::Buffer::from_slice(vec![tag, 0xAA]),
         codec_data: None,
         rt: gst::ClockTime::from_mseconds(rt),
@@ -95,7 +95,7 @@ fn an_out_of_crate_decoder_reaches_the_screen_through_the_public_seam() {
     let pushes = Arc::new(AtomicU64::new(0));
     let counter = pushes.clone();
     engine.set_decoder_factory(move |format| {
-        assert_eq!(format, BitmapFormat::Pgs);
+        assert_eq!(format, BitmapSubFormat::Pgs);
         let decoder: Box<dyn SubpicDecoder> = Box::new(TagDecoder {
             pushes: counter.clone(),
             size: None,

@@ -2,6 +2,7 @@ use std::{collections::HashMap, sync::Arc};
 
 use anyhow::{Context, Result};
 use bytes::Bytes;
+use flapjack::HttpHeaders;
 use gst::prelude::*;
 use parking_lot::Mutex;
 use tracing::warn;
@@ -11,34 +12,34 @@ use crate::user_agent;
 /// Bytes handed downstream per `need-data` pull.
 const BYTES_CHUNK: u64 = 256 * 1024;
 
-/// Apply request headers + a browser user-agent to an `fcasthttpsrc`.
-pub fn configure_http_source(elem: &gst::Element, headers: Option<&HashMap<String, String>>) {
-    let mut did_set_user_agent = false;
+/// The request headers for a load: the sender's, plus a browser user-agent
+/// when the sender did not name one. They ride on the item as
+/// [`flapjack::MediaInput::uri_with_headers`], so flapjack's HTTP source
+/// sends them with every request the item makes.
+pub fn request_headers(headers: Option<&HashMap<String, String>>) -> HttpHeaders {
+    let mut out = HttpHeaders::new();
+    let mut has_user_agent = false;
     if let Some(headers) = headers {
-        let mut extra = gst::Structure::builder("reqwesthttpsrc-extra-headers");
-        for (k, v) in headers {
-            if k.eq_ignore_ascii_case("user-agent") {
-                elem.set_property("user-agent", v);
-                did_set_user_agent = true;
-            } else {
-                extra = extra.field(k, v);
-            }
+        for (name, value) in headers {
+            has_user_agent |= name.eq_ignore_ascii_case("user-agent");
+            out.push(name.clone(), value.clone());
         }
-        elem.set_property("extra-headers", extra.build());
     }
-    if !did_set_user_agent {
-        elem.set_property("user-agent", user_agent::random_browser_user_agent(None));
+    if !has_user_agent {
+        out.push("User-Agent", user_agent::random_browser_user_agent(None));
     }
+    out
 }
 
-/// Build a urisourcebin for an HTTP/file/DASH/HLS/`data:` URI, applying
-/// `headers` per-load to THIS urisourcebin's `fcasthttpsrc` (no global side
-/// channel). It parses its streams, so its src pads feed decodebin3 directly.
-pub fn build_uri_source(
-    uri: &str,
-    headers: Option<HashMap<String, String>>,
-) -> Result<gst::Element> {
-    build_uri_source_with_head(uri, headers, None)
+/// The `extra-headers` structure flapjack's HTTP source reads, for a source
+/// this crate builds itself: flapjack applies an item's headers only to the
+/// urisourcebin it builds.
+fn extra_headers(headers: &HttpHeaders) -> gst::Structure {
+    let mut structure = gst::Structure::new_empty("extra-headers");
+    for (name, value) in headers.iter() {
+        structure.set(name, value.to_string());
+    }
+    structure
 }
 
 /// A prefetched head of the resource, injected into the per-load source
@@ -49,12 +50,16 @@ pub struct PreloadedHead {
     pub total: Option<u64>,
 }
 
-/// `build_uri_source` plus an optional prefetched head for the source element
-/// urisourcebin creates (fcasthttpsrc or fcompsrc).
+/// Build a urisourcebin for an HTTP/file/DASH/HLS/`data:` URI with a
+/// prefetched head for the source element urisourcebin creates (rshttpsrc or
+/// fcompsrc). `headers` apply to THIS urisourcebin's rshttpsrc (no global side
+/// channel). It parses its streams, so its src pads feed decodebin3 directly.
+/// A load without a head is [`flapjack::MediaInput::uri_with_headers`]
+/// instead, and flapjack builds the bin.
 pub fn build_uri_source_with_head(
     uri: &str,
-    headers: Option<HashMap<String, String>>,
-    head: Option<PreloadedHead>,
+    headers: HttpHeaders,
+    head: PreloadedHead,
 ) -> Result<gst::Element> {
     let usb = gst::ElementFactory::make("urisourcebin")
         .property("uri", uri)
@@ -63,14 +68,13 @@ pub fn build_uri_source_with_head(
         .build()
         .context("creating urisourcebin")?;
     if let Some(bin) = usb.downcast_ref::<gst::Bin>() {
+        let extra = extra_headers(&headers);
         bin.connect_deep_element_added(move |_, _, elem| {
             match elem.factory().map(|f| f.name()).as_deref() {
-                Some("fcasthttpsrc") => {
-                    configure_http_source(elem, headers.as_ref());
+                Some("rshttpsrc") => {
+                    elem.set_property("extra-headers", &extra);
                     // http needs the total up front; without it the head is unusable.
-                    if let Some(head) = head.as_ref()
-                        && let Some(total) = head.total
-                    {
+                    if let Some(total) = head.total {
                         elem.set_property(
                             "preloaded-head",
                             gst::glib::Bytes::from_owned(head.bytes.clone()),
@@ -79,12 +83,10 @@ pub fn build_uri_source_with_head(
                     }
                 }
                 Some("fcompsrc") => {
-                    if let Some(head) = head.as_ref() {
-                        elem.set_property(
-                            "preloaded-head",
-                            gst::glib::Bytes::from_owned(head.bytes.clone()),
-                        );
-                    }
+                    elem.set_property(
+                        "preloaded-head",
+                        gst::glib::Bytes::from_owned(head.bytes.clone()),
+                    );
                 }
                 _ => {}
             }
@@ -209,6 +211,10 @@ fn wrap_with_parsebin(source: gst::Element, name: &str) -> Result<gst::Element> 
     static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let bin = gst::Bin::builder().name(format!("{name}-{seq}")).build();
+    // Whatever parsebin autoplugs below here, before it is brought up:
+    // `deep-element-added` fires on `gst_bin_add` for every descendant, which
+    // is the only moment this crate sees an element it did not create.
+    bin.connect_deep_element_added(|_, _, element| repair_rtp_depayloader(element));
     bin.add(&source).context("adding source to the parse bin")?;
     source.connect_pad_added({
         let bin = bin.downgrade();
@@ -226,6 +232,45 @@ fn wrap_with_parsebin(source: gst::Element, name: &str) -> Result<gst::Element> 
         }
     }
     Ok(bin.upcast())
+}
+
+/// Let a depayloader repair a stream it has lost part of, which by default it
+/// does not even try to do.
+///
+/// `request-keyframe` and `wait-for-keyframe` are both FALSE out of the box,
+/// in the C depayloaders (`gstrtpvp8depay.c`, `gstrtph264depay.c`) and in the
+/// Rust ones alike. With them off, a single lost packet is permanent: nothing
+/// asks the sender for a fresh keyframe, and the depayloader keeps pushing
+/// frames that reference data it never received, so the decoder paints
+/// smears and stale rectangles until the sender happens to send a keyframe of
+/// its own accord. On a screen share that can be a long time, and the
+/// negotiated feedback carries no NACK, so a retransmission will not save it
+/// either: a keyframe is the only repair there is.
+///
+/// Both on, the two halves are one recovery: ask upstream for a keyframe, and
+/// drop what cannot be decoded until it arrives. The request becomes a PLI at
+/// `rtprecv`, which is machinery this receiver already has and never
+/// triggered.
+///
+/// Keyed on the PROPERTIES rather than on the element type, because every
+/// depayloader that can do this spells them the same, and an element without
+/// them has nothing to turn on. That also makes it a no-op on the container
+/// sources that share this wrapper, whose parsebin autoplugs demuxers and
+/// parsers instead.
+///
+/// `wait-for-keyframe` is only safe because the request can now be ANSWERED.
+/// It could not before: a receive-only WebRTC session was a `webrtcrecv`
+/// alone, and `rtprecv` has no RTCP source pad, so nothing this endpoint asked
+/// for ever left it. Waiting on an answer that cannot come is a frozen picture
+/// rather than a smeared one, which is what this looked like until
+/// `fcast-webrtc`'s receive core started pairing a `webrtcsend` with its
+/// `webrtcrecv` to carry the RTCP out.
+fn repair_rtp_depayloader(element: &gst::Element) {
+    for property in ["request-keyframe", "wait-for-keyframe"] {
+        if element.has_property_with_type(property, bool::static_type()) {
+            element.set_property(property, true);
+        }
+    }
 }
 
 /// Add a `parsebin` for one source pad and ghost its parsed output out of
@@ -386,7 +431,7 @@ mod tests {
     fn gapless_fcomp_next_item_plays_to_its_end() {
         use fcast_protocol::companion;
         use flapjack::{
-            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint,
+            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint, VideoSink,
         };
         use std::{
             sync::mpsc,
@@ -409,12 +454,13 @@ mod tests {
         );
 
         let player = Player::new(Sinks {
-            video: None,
+            video: VideoSink::Fake,
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
                     .property("sync", true)
                     .build()?)
             })),
+            subtitle: flapjack::SubtitleSink::None,
         })
         .unwrap();
 
@@ -439,7 +485,7 @@ mod tests {
         });
 
         let (tx, rx) = mpsc::channel();
-        player.set_event_handler(Some(hook), move |event, _generation| match event {
+        player.set_event_handler(Some(hook), move |flapjack::Event { kind: event, .. }| match event {
             PlayerEvent::PreparedActivated => {
                 let _ = tx.send("activated");
             }
@@ -449,32 +495,29 @@ mod tests {
             _ => {}
         });
 
-        let head = |bytes: Bytes, total: u64| {
-            Some(super::PreloadedHead {
-                bytes,
-                total: Some(total),
-            })
+        let head = |bytes: Bytes, total: u64| super::PreloadedHead {
+            bytes,
+            total: Some(total),
         };
         let a_src = super::build_uri_source_with_head(
             &companion::create_url(0, 0),
-            None,
+            flapjack::HttpHeaders::new(),
             head(a_bytes, a_len),
         )
         .unwrap();
         let b_src = super::build_uri_source_with_head(
             &companion::create_url(0, 1),
-            None,
+            flapjack::HttpHeaders::new(),
             head(b_bytes, b_len),
         )
         .unwrap();
 
         player
-            .load(MediaInput::Element(a_src), StartPoint::Live)
-            .unwrap();
+            .load(MediaInput::Element(a_src), StartPoint::Live);
         // Pre-arm up front so `pending` is set before A's EOS reaches the hold.
-        player.prepare_next_async(MediaInput::Element(b_src));
+        player.prepare_next(MediaInput::Element(b_src));
         let t0 = Instant::now();
-        player.play().unwrap();
+        player.play(player.allocate_op());
 
         let mut activated = false;
         let eos_elapsed = loop {
@@ -506,7 +549,7 @@ mod tests {
     fn gapless_fcomp_survives_a_midplayback_prearm() {
         use fcast_protocol::companion;
         use flapjack::{
-            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint,
+            AudioSink, MediaInput, MessageHook, Player, PlayerEvent, Sinks, StartPoint, VideoSink,
         };
         use std::{
             sync::mpsc,
@@ -527,12 +570,13 @@ mod tests {
         );
 
         let player = Player::new(Sinks {
-            video: None,
+            video: VideoSink::Fake,
             audio: AudioSink::Factory(Box::new(|| {
                 Ok(gst::ElementFactory::make("fakesink")
                     .property("sync", true)
                     .build()?)
             })),
+            subtitle: flapjack::SubtitleSink::None,
         })
         .unwrap();
         // Audio-only, so flapjack's decoupling queue is shallow (the deep
@@ -558,7 +602,7 @@ mod tests {
             false
         });
         let (tx, rx) = mpsc::channel();
-        player.set_event_handler(Some(hook), move |event, _g| match event {
+        player.set_event_handler(Some(hook), move |flapjack::Event { kind: event, .. }| match event {
             PlayerEvent::PreparedActivated => {
                 let _ = tx.send("activated");
             }
@@ -569,18 +613,17 @@ mod tests {
         });
         let a_src = super::build_uri_source_with_head(
             &companion::create_url(0, 0),
-            None,
-            Some(super::PreloadedHead {
+            flapjack::HttpHeaders::new(),
+            super::PreloadedHead {
                 bytes: a_bytes,
                 total: Some(a_len),
-            }),
+            },
         )
         .unwrap();
         player
-            .load(MediaInput::Element(a_src), StartPoint::Live)
-            .unwrap();
+            .load(MediaInput::Element(a_src), StartPoint::Live);
         let t0 = Instant::now();
-        player.play().unwrap();
+        player.play(player.allocate_op());
 
         // Pre-arm MID-playback (2s into A's 5s): the swap and activation land
         // while A's decoded tail is still draining.
@@ -589,14 +632,14 @@ mod tests {
             std::thread::sleep(Duration::from_secs(2));
             let b_src = super::build_uri_source_with_head(
                 &companion::create_url(0, 1),
-                None,
-                Some(super::PreloadedHead {
+                flapjack::HttpHeaders::new(),
+                super::PreloadedHead {
                     bytes: b_bytes,
                     total: Some(b_len),
-                }),
+                },
             )
             .unwrap();
-            pb2.prepare_next_async(MediaInput::Element(b_src));
+            pb2.prepare_next(MediaInput::Element(b_src));
         });
 
         let mut activated = false;
@@ -778,5 +821,42 @@ mod tests {
         );
 
         pipeline.set_state(gst::State::Null).unwrap();
+    }
+
+    /// A depayloader added anywhere under the wrapper comes up able to repair
+    /// itself, however deep parsebin put it.
+    ///
+    /// The element is added by hand rather than autoplugged, because the point
+    /// under test is the hook and not parsebin: what this catches is the hook
+    /// going away, the properties being renamed, or a build that no longer
+    /// carries the depayloader at all. A mirroring session without it decodes
+    /// a lost frame into smears that never clear.
+    #[test]
+    fn a_depayloader_under_the_wrapper_repairs_itself() {
+        init();
+        let Ok(depay) = gst::ElementFactory::make("rtpvp8depay").build() else {
+            panic!("this build carries no rtpvp8depay, which mirroring needs");
+        };
+        assert!(
+            !depay.property::<bool>("request-keyframe"),
+            "the default changed upstream, so this hook may be redundant now"
+        );
+
+        let source = gst::ElementFactory::make("fakesrc").build().unwrap();
+        let wrapper = super::wrap_with_parsebin(source, "test-depay-repair").unwrap();
+        let wrapper = wrapper.downcast::<gst::Bin>().expect("the wrapper is a bin");
+        // One level down, which is where parsebin's own children land.
+        let nested = gst::Bin::builder().name("test-nested").build();
+        wrapper.add(&nested).unwrap();
+        nested.add(&depay).unwrap();
+
+        assert!(
+            depay.property::<bool>("request-keyframe"),
+            "a lost packet would never be repaired"
+        );
+        assert!(
+            depay.property::<bool>("wait-for-keyframe"),
+            "undecodable frames would still reach the decoder"
+        );
     }
 }

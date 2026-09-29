@@ -22,7 +22,7 @@ use std::{
 
 use fcast_video::{
     cue::{CueEngine, CueInput, TextFormat},
-    subpic::{BitmapFormat, BitmapPacket, dvb::fixtures, pgs::ALLOCATION_BUDGET},
+    subpic::{BitmapSubFormat, BitmapPacket, dvb::fixtures, pgs::ALLOCATION_BUDGET},
 };
 
 /// Run length. Long enough for clears to land mid-decode many times, short
@@ -38,7 +38,7 @@ fn duration() -> Duration {
 
 fn packet(bytes: Vec<u8>, rt_ms: u64) -> BitmapPacket {
     BitmapPacket {
-        format: BitmapFormat::Dvb,
+        format: BitmapSubFormat::Dvb,
         data: gst::Buffer::from_slice(bytes),
         codec_data: None,
         rt: gst::ClockTime::from_mseconds(rt_ms),
