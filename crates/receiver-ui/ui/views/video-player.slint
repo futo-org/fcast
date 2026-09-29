@@ -404,10 +404,11 @@ component PlaybackControls inherits Rectangle {
     property <int> selected-row-subtitle: 1;
     property <int> selected-row-rate: 1;
 
-    // Start page row layout: a menu entry per track kind that has tracks, then
-    // playback speed. -1 means the entry is not shown.
-    property <int> n-video: Bridge.video-tracks.length > 0 ? 1 : 0;
-    property <int> n-audio: Bridge.audio-tracks.length > 0 ? 1 : 0;
+    // Start page row layout: a menu entry per track kind that offers a choice,
+    // then playback speed. -1 means the entry is not shown. One video or audio
+    // track is no choice; one subtitle track is, since off is an option.
+    property <int> n-video: Bridge.video-tracks.length > 1 ? 1 : 0;
+    property <int> n-audio: Bridge.audio-tracks.length > 1 ? 1 : 0;
     property <int> n-subtitle: Bridge.subtitle-tracks.length > 0 ? 1 : 0;
     property <int> row-video: n-video > 0 ? 1 : -1;
     property <int> row-audio: n-audio > 0 ? 1 + n-video : -1;
@@ -988,7 +989,7 @@ component PlaybackControls inherits Rectangle {
                 VerticalLayout {
                     padding-top: 10px;
 
-                    if Bridge.video-tracks.length > 0: PlaybackSettingsMenuItem {
+                    if n-video > 0: PlaybackSettingsMenuItem {
                         label: @tr("Video");
                         icon: Icons.settings-video;
                         focused: settings-kb-nav && settings-cursor == row-video;
@@ -1001,7 +1002,7 @@ component PlaybackControls inherits Rectangle {
                         }
                     }
 
-                    if Bridge.audio-tracks.length > 0: PlaybackSettingsMenuItem {
+                    if n-audio > 0: PlaybackSettingsMenuItem {
                         label: @tr("Audio");
                         icon: Icons.details-audio;
                         focused: settings-kb-nav && settings-cursor == row-audio;
