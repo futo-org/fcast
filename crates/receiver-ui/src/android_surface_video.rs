@@ -8,23 +8,23 @@
 //! SURFACE LIFECYCLE PROTOCOL, every rule below exists because breaking it
 //! produced a field bug:
 //!
-//! * ONE SURFACE, kept across items. It used to be destroyed between them (the
-//!   view was hidden on caps drop) and that teardown raced every codec that
-//!   configured against it: the codec would adopt a surface already abandoned,
-//!   never dequeue a buffer, and the item would never start, permanently,
-//!   because the handoff saw its own seq unchanged and never re-handed. Now the
-//!   view is parked at 1x1 instead, which keeps the surface alive (only a zero
-//!   size or a hide destroys it) while showing none of the last frame.
-//! * The one exception is a CPU-connected surface. After any
-//!   ANativeWindow_lock (the sink's raw blit path, which stills and software
-//!   formats take) a MediaCodec can never connect to that surface again
-//!   (media_status_t -10000), so `video_window_cpu_locked` forces the old
-//!   hide-and-remake for exactly that case and nothing else.
+//! * A FRESH SURFACE PER ITEM. When an item's caps drop, or the receiver goes
+//!   idle, the view is hidden, which destroys the surface. A surface kept
+//!   across items (parked at 1x1) carries the previous item's last frame
+//!   into the next: it showed stretched under the loading screen and again
+//!   at the new rect until the new codec rendered. Parking existed because a
+//!   destroy used to race the polled handoff; the handoff now follows the
+//!   view's surface events, so a codec on a dying surface is taken off it in
+//!   time and the new surface is always handed.
+//! * A show must not share a layout pass with the hide before it, or the old
+//!   surface survives. `destroying_seq` marks a destroy in flight, and pre-open
+//!   and relayout wait for its `Destroyed` event, which resumes them.
 //! * Hand the window before the codec builds. A codec that starts windowless
 //!   rebuilds when the window arrives and then drops every frame until the
 //!   stream's next keyframe (seconds of frozen video). `preopen_current` runs
-//!   at LoadingMedia for that; `preopen_pending` re-fires it when the old
-//!   item's caps-drop teardown races it.
+//!   at LoadingMedia for that; `preopen_pending` re-fires it once the old
+//!   item's surface is destroyed, and the decoder is promised a window
+//!   meanwhile.
 //! * Clear the player's window BEFORE the surface dies, never after. Both the
 //!   caps-drop path and `app_visibility(false)` do set_video_window null first;
 //!   the generation bump it causes is also what lets a codec that already
@@ -60,10 +60,6 @@ pub struct SurfaceVideo {
 // setup's instance, for the app-state hook in gui.rs
 static CURRENT: OnceLock<(Arc<SurfaceVideo>, slint::Weak<crate::MainWindow>)> = OnceLock::new();
 
-/// Shows the surface full-window and hands its window to the player ahead
-/// of a load, so the first codec already builds in direct mode. Mostly
-/// matters for the first cast after launch; later items inherit the
-/// surface, it survives between items.
 /// Activity start/stop. The SurfaceView's surface dies with the activity;
 /// clearing the player's window first bumps the surface generation, so a
 /// codec mid-frame recovers through the swap path instead of erroring on
@@ -125,14 +121,24 @@ pub(crate) fn park_current() {
     this.handoff.lock().unwrap().preopen_pending = false;
     // nothing is coming, a decoder must not wait for it
     crate::set_video_window_pending(false);
-    if crate::video_window_cpu_locked() {
-        let _ = this.surface.set_visible(false);
-    } else {
-        // parked, not destroyed; see the lifecycle notes at the top
-        let _ = this.surface.set_rect(0, 0, 1, 1);
+    this.retire_surface();
+}
+
+/// A retired surface is gone: whatever waited on it (the next item's caps, or
+/// a pre-open) may show the view again now.
+fn resume_after_retire() {
+    let Some((this, ui)) = CURRENT.get() else {
+        return;
+    };
+    if this.video_size.lock().unwrap().0 != 0 {
+        this.relayout(ui);
+    } else if this.handoff.lock().unwrap().preopen_pending {
+        preopen_current();
     }
 }
 
+/// Shows the surface full-window and hands its window to the player ahead
+/// of a load, so the first codec already builds in direct mode.
 pub(crate) fn preopen_current() {
     let Some((this, ui)) = CURRENT.get() else {
         return;
@@ -155,6 +161,10 @@ pub(crate) fn preopen_current() {
         }
         if this.video_size.lock().unwrap().0 != 0 {
             // caps already drove a real layout, nothing to pre-open
+            return;
+        }
+        if this.handoff.lock().unwrap().destroying_seq != 0 {
+            // the old surface's destruction re-fires this
             return;
         }
         let _ = this
@@ -184,6 +194,8 @@ struct Handoff {
     live: Option<(WindowRef, i32)>,
     // seq of the surface flapjack holds, 0 for none
     handed_seq: i32,
+    // seq of a surface we hid and whose destruction is still coming, 0 for none
+    destroying_seq: i32,
     relayout_queued: bool,
     // a load wants the surface up before its codec builds
     preopen_pending: bool,
@@ -290,69 +302,29 @@ impl SurfaceVideo {
                 let caps = pad.current_caps();
                 info!(?caps, "surface video: sink caps notify");
                 let Some(caps) = caps else {
-                    // Caps drop when the item unlinks. The surface must be
-                    // destroyed between items: hiding clears the previous
-                    // frame AND sheds any CPU producer connection the raw
-                    // blit path made (a codec can never connect after one).
-                    // Take the window away from the player first, the next
-                    // codec must not configure against a dead surface.
-                    // Ask before the null: the flag belongs to the window the
-                    // player still holds, and set_video_window clears it.
-                    let poisoned = crate::video_window_cpu_locked();
+                    // Caps drop when the item unlinks. Take the window away
+                    // from the player first, the next codec must not configure
+                    // against a surface that is about to die.
                     crate::set_video_window(std::ptr::null_mut());
-                    {
+                    let load_waiting = {
                         let mut st = this.handoff.lock().unwrap();
-                        // zeroed either way: the next codec needs the window
-                        // handed to it again, same surface or not
                         st.handed_seq = 0;
-                        // A poisoned surface is dead to codecs now, not when
-                        // the async hide below destroys it: a load's preopen
-                        // landing in between must wait for the new one.
-                        if poisoned {
-                            st.live = None;
-                        }
-                    }
+                        st.preopen_pending
+                    };
                     // also ends a zero-size relayout retry chain
                     *this.video_size.lock().unwrap() = (0, 0);
                     // the next item is unrotated until its own tag arrives;
                     // this state is process-wide and would stick otherwise
                     this.rotation
                         .store(0, std::sync::atomic::Ordering::Relaxed);
-                    if poisoned {
-                        // The blit CPU-connected this surface and no codec can
-                        // ever attach to it again. Only here is the teardown
-                        // race worth taking.
-                        info!("surface video: surface was CPU-locked, remaking it");
-                        let _ = this.surface.set_visible(false);
-                    } else {
-                        // Park, do not destroy: 1x1 keeps the surface and its
-                        // BufferQueue alive for the next codec while showing
-                        // effectively none of the last frame.
-                        let _ = this.surface.set_rect(0, 0, 1, 1);
+                    if load_waiting {
+                        // a load is on its way and its surface comes after the
+                        // destroy, the decoder waits for it instead of going
+                        // headless
+                        crate::set_video_window_pending(true);
                     }
-                    // A load racing this teardown pre-opened the surface for
-                    // its codec; give it a fresh one instead of leaving it
-                    // windowless (that costs a rebuild and a keyframe wait).
-                    // Deferred one layout beat: the zero-size park must
-                    // actually destroy the old surface first, or the re-open
-                    // coalesces into the same layout pass, the surface
-                    // survives, and the previous item's last frame flashes
-                    // under the next one.
-                    if poisoned && this.handoff.lock().unwrap().preopen_pending {
-                        let _ = ui.upgrade_in_event_loop(move |_| {
-                            slint::Timer::single_shot(
-                                std::time::Duration::from_millis(80),
-                                || {
-                                    let pending = CURRENT.get().is_some_and(|(t, _)| {
-                                        t.handoff.lock().unwrap().preopen_pending
-                                    });
-                                    if pending {
-                                        preopen_current();
-                                    }
-                                },
-                            );
-                        });
-                    }
+                    info!("surface video: item ended, retiring its surface");
+                    this.retire_surface();
                     return;
                 };
                 let Some(s) = caps.structure(0) else { return };
@@ -418,6 +390,10 @@ impl SurfaceVideo {
                 }
                 return;
             }
+            if this.handoff.lock().unwrap().destroying_seq != 0 {
+                // the old surface's destruction re-runs this
+                return;
+            }
             let (x, y, w, h) = letterbox(vw, vh, win.width, win.height);
             info!(vw, vh, x, y, w, h, "surface video: rect");
             crate::android_immersive::set_video_aspect(vw, vh);
@@ -431,8 +407,26 @@ impl SurfaceVideo {
         });
     }
 
+    /// Hides the view, which destroys its surface (see the lifecycle notes).
+    fn retire_surface(&self) {
+        {
+            let mut st = self.handoff.lock().unwrap();
+            if st.handed_seq != 0 {
+                crate::set_video_window(std::ptr::null_mut());
+                st.handed_seq = 0;
+            }
+            // Its frames belong to the leaving item: forgotten now, not when
+            // the async hide lands. A destroy only follows for a live surface.
+            if let Some((_, seq)) = st.live.take() {
+                st.destroying_seq = seq;
+            }
+        }
+        let _ = self.surface.set_visible(false);
+    }
+
     /// The view's surface events, on the android UI thread.
     fn on_surface(&self, event: SurfaceEvent) {
+        let mut resume = false;
         let mut st = self.handoff.lock().unwrap();
         match event {
             SurfaceEvent::Created { window, seq } => {
@@ -450,7 +444,15 @@ impl SurfaceVideo {
                 if st.live.as_ref().is_some_and(|(_, live)| *live == seq) {
                     st.live = None;
                 }
+                if st.destroying_seq == seq {
+                    st.destroying_seq = 0;
+                    resume = true;
+                }
             }
+        }
+        drop(st);
+        if resume {
+            resume_after_retire();
         }
     }
 
