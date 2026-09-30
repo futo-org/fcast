@@ -39,11 +39,14 @@
              Studio profiler) on Android 10+; ignored below that. -->
         <profileable android:shell="true" tools:targetApi="29" />
 
-        <!-- Opaque launch trampoline: its starting window brands the cold
-             start that the translucent NativeActivity below cannot. Same task
-             as MainActivity so it sits behind it during the draw gap. -->
+        <!-- Opaque launch trampoline (SplashActivity): its starting window
+             brands the cold start that the translucent NativeActivity below
+             cannot. Same task as MainActivity so it sits behind it during the
+             draw gap. Declared under the Kotlin receiver's launcher component
+             name so pinned icons, TV favorites and autostart apps survive the
+             update from it. -->
         <activity
-            android:name=".SplashActivity"
+            android:name="com.futo.fcast.receiver.MainActivity"
             android:exported="true"
             android:excludeFromRecents="true"
             android:theme="@style/Theme.FCastReceiver">
