@@ -19,6 +19,13 @@
     <!-- The wifi permissions above imply required wifi hardware on Play and
          touchscreen is required by default; both would filter set-top and TV
          devices, the natural hosts for a cast target. -->
+    <!-- The overlay prompt checks the settings page exists first. -->
+    <queries>
+        <intent>
+            <action android:name="android.settings.action.MANAGE_OVERLAY_PERMISSION" />
+        </intent>
+    </queries>
+
     <uses-feature android:name="android.hardware.wifi" android:required="false" />
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />

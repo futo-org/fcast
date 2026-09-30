@@ -234,8 +234,7 @@ final class Updater {
                 PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
 
         // The notification is the fallback for a refused background start
-        // (no overlay grant, or 15+ without a visible window). The activity
-        // cancels it when it does come up.
+        // (no overlay grant). The activity cancels it when it does come up.
         ReceiverService.ensureChannel(ctx);
         Notification n = new Notification.Builder(ctx, ReceiverService.CHANNEL_ID)
                 .setSmallIcon(R.drawable.ic_stat_cast)

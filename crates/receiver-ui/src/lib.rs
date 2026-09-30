@@ -71,6 +71,14 @@ mod android_immersive;
 pub fn android_app_visibility(visible: bool) {
     android_surface_video::app_visibility(visible);
 }
+/// The overlay grant and whether a settings page for it exists, from the
+/// activity on every focus gain.
+#[cfg(target_os = "android")]
+pub fn android_overlay_state(granted: bool, can_open_settings: bool) {
+    android_overlay::set_state(granted, can_open_settings);
+}
+#[cfg(target_os = "android")]
+mod android_overlay;
 #[cfg(target_os = "android")]
 mod android_subtitles;
 #[cfg(target_os = "android")]
@@ -528,6 +536,7 @@ pub fn run(
     ui.global::<Bridge>().set_behind_window_video(true);
     ui.global::<Bridge>().set_android(true);
     android_immersive::init(&android_app);
+    android_overlay::init(&ui);
     // starts with system bars, the player's toggle enters immersive
     ui.global::<Bridge>().set_is_fullscreen(false);
     let gui_is_visible = gui::GuiIsVisible::new();

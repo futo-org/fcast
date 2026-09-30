@@ -331,8 +331,11 @@ public class MainActivity extends NativeActivity {
         if (android.os.Build.VERSION.SDK_INT >= 33 && !isTelevision()
                 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
                         != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            // the overlay prompt waits for this one's answer
             requestPermissions(
                     new String[] { android.Manifest.permission.POST_NOTIFICATIONS }, 1);
+        } else {
+            maybePromptOverlayPermission();
         }
 
         // A cast receiver is a full-bleed surface: immersive sticky, video
@@ -625,11 +628,79 @@ public class MainActivity extends NativeActivity {
     private boolean castActiveLocal = false;
     private boolean visible = false;
 
+    // Long enough for a permitted bring-to-front to land first.
+    private static final long CAST_WAITING_DELAY_MS = 1500;
+    private final Runnable castWaitingCheck = () -> {
+        if (!visible && castActiveLocal && !destroyed) {
+            ReceiverService.notifyCastWaiting(this);
+        }
+    };
+
+    private static final String PREFS = "receiver";
+    private static final String KEY_OVERLAY_PROMPTED = "overlay_prompted";
+
+    /// Asks once for the overlay grant, the only way a cast arriving in the
+    /// background can open the receiver by itself. Not every TV build has a
+    /// settings page for it, then there is nothing to ask.
+    private void maybePromptOverlayPermission() {
+        if (android.provider.Settings.canDrawOverlays(this)) {
+            return;
+        }
+        android.content.SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
+        if (prefs.getBoolean(KEY_OVERLAY_PROMPTED, false)) {
+            return;
+        }
+        if (!canOpenOverlaySettings()) {
+            return;
+        }
+        prefs.edit().putBoolean(KEY_OVERLAY_PROMPTED, true).apply();
+        new android.app.AlertDialog.Builder(this,
+                android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(R.string.overlay_prompt_title)
+                .setMessage(R.string.overlay_prompt_message)
+                .setPositiveButton(R.string.overlay_prompt_allow, (d, w) -> openOverlaySettings())
+                .setNegativeButton(R.string.overlay_prompt_later, null)
+                .show();
+    }
+
+    private Intent overlaySettingsIntent() {
+        return new Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                android.net.Uri.parse("package:" + getPackageName()));
+    }
+
+    private boolean hasOverlayPermission() {
+        return android.provider.Settings.canDrawOverlays(this);
+    }
+
+    private boolean canOpenOverlaySettings() {
+        return overlaySettingsIntent().resolveActivity(getPackageManager()) != null;
+    }
+
+    /// The settings drawer's overlay row, from native code on any thread.
+    public void openOverlaySettings() {
+        runOnUiThread(() -> {
+            try {
+                startActivity(overlaySettingsIntent());
+            } catch (android.content.ActivityNotFoundException e) {
+                Log.w(TAG, "no overlay permission settings", e);
+            }
+        });
+    }
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions,
+            @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == 1) {
+            maybePromptOverlayPermission();
+        }
+    }
+
     /// A cast arriving while the activity is backgrounded should put the
     /// receiver on screen, the whole point of a TV cast target. Background
     /// activity starts need the overlay permission (the Kotlin receiver
-    /// ships the same way); without it the FGS notification's tap-to-open
-    /// stays the only route and the attempt is just skipped.
+    /// ships the same way, verified on Android 14); without it the start is
+    /// refused silently and castWaitingCheck posts a tap-to-play instead.
     private void bringToFront() {
         Intent i = new Intent(this, MainActivity.class);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
@@ -759,6 +830,11 @@ public class MainActivity extends NativeActivity {
         runOnUiThread(() -> {
             if (active && !visible) {
                 bringToFront();
+                handler.removeCallbacks(castWaitingCheck);
+                handler.postDelayed(castWaitingCheck, CAST_WAITING_DELAY_MS);
+            } else if (!active) {
+                handler.removeCallbacks(castWaitingCheck);
+                ReceiverService.cancelCastWaiting(this);
             }
             // The screen only pins for content someone is looking at; an
             // audio cast relies on the wake lock instead.
@@ -876,7 +952,14 @@ public class MainActivity extends NativeActivity {
         if (hasFocus && immersiveWanted) {
             enterImmersive();
         }
+        // Focus, not onStart: TV settings open as a side panel that only
+        // pauses the activity, and the prompt dialog never stops it.
+        if (hasFocus) {
+            nativeOverlayState(hasOverlayPermission(), canOpenOverlaySettings());
+        }
     }
+
+    static native void nativeOverlayState(boolean granted, boolean canOpenSettings);
 
     private boolean castVisual = false;
     private volatile android.util.Rational videoAspect = new android.util.Rational(16, 9);
@@ -975,6 +1058,8 @@ public class MainActivity extends NativeActivity {
     protected void onStart() {
         super.onStart();
         visible = true;
+        handler.removeCallbacks(castWaitingCheck);
+        ReceiverService.cancelCastWaiting(this);
         Updater.onActivityStarted(this);
         // The activity is back; its own lifecycle keeps the process warm.
         stopService(new Intent(this, ReceiverService.class));

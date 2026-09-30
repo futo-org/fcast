@@ -12,7 +12,7 @@ pub(crate) fn init(app: &slint::android::AndroidApp) {
     ACTIVITY.store(app.activity_as_ptr() as usize, Ordering::Release);
 }
 
-fn with_activity(
+pub(crate) fn with_activity(
     what: &str,
     f: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<()>,
 ) -> bool {

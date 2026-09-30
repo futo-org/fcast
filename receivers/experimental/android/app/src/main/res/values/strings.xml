@@ -4,4 +4,10 @@
     <string name="notification_casting">Casting</string>
     <string name="notification_stop">Stop</string>
     <string name="notification_updated">Updated. Tap to start the receiver.</string>
+    <string name="notification_cast_waiting">New content received. Tap to play.</string>
+    <string name="channel_cast_waiting">Incoming casts</string>
+    <string name="overlay_prompt_title">Open casts automatically</string>
+    <string name="overlay_prompt_message">To start playing when a cast arrives while another app is on screen, FCast Receiver needs permission to display over other apps.</string>
+    <string name="overlay_prompt_allow">Allow</string>
+    <string name="overlay_prompt_later">Not now</string>
 </resources>

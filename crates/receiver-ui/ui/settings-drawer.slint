@@ -124,6 +124,81 @@ component ToggleRow inherits Rectangle {
     }
 }
 
+// android: the overlay grant, which the system holds rather than the config.
+// The switch mirrors it, a toggle opens the system page and the switch snaps
+// back until the grant itself changes. Disabled where no such page exists.
+component OverlayPermissionRow inherits Rectangle {
+    in property <string> label;
+    property <bool> granted: Bridge.overlay-permission;
+    changed granted => {
+        sw.checked = self.granted;
+    }
+
+    background: sw.has-focus ? RowTint.focused : (touch.has-hover ? RowTint.hovered : transparent);
+    animate background { duration: 100ms; }
+
+    function open() {
+        sw.checked = root.granted;
+        if Bridge.overlay-permission-settings {
+            Bridge.open-overlay-settings();
+        }
+    }
+
+    touch := TouchArea {
+        clicked => {
+            root.open();
+        }
+    }
+
+    HorizontalLayout {
+        spacing: 12px;
+        padding-left: 24px;
+        padding-right: 20px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+
+        VerticalLayout {
+            horizontal-stretch: 1;
+            alignment: center;
+            spacing: 2px;
+
+            Text {
+                text: root.label;
+                color: FCastPalette.foreground;
+                font-size: 14px;
+                wrap: word-wrap;
+            }
+
+            if !root.granted: Text {
+                text: Bridge.overlay-permission-settings
+                    ? @tr("Needs permission to display over other apps")
+                    : @tr("Not available on this device");
+                color: FCastPalette.opacity-light-500;
+                font-size: 11px;
+                wrap: word-wrap;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center;
+
+            sw := Switch {
+                focus-ring: false;
+                enabled: Bridge.overlay-permission-settings;
+                checked: root.granted;
+                toggled => {
+                    root.open();
+                }
+                changed has-focus => {
+                    if self.has-focus {
+                        SettingsScroll.reveal(root.absolute-position.y, root.height);
+                    }
+                }
+            }
+        }
+    }
+}
+
 // A free-text setting. Autosaves on Enter or when focus leaves the field, so a
 // half-typed value is never written.
 //
@@ -626,6 +701,9 @@ export component SettingsDrawer inherits Rectangle {
                     SectionHeader {
                         title: @tr("Interface");
                         icon: Icons.tv-outline;
+                    }
+                    if Bridge.android: OverlayPermissionRow {
+                        label: @tr("Open casts automatically");
                     }
                     // Window management is a desktop concept: no tray, no
                     // start-fullscreen, no headless on android, and its

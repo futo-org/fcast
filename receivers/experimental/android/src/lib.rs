@@ -361,3 +361,15 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_Updater_nativeInstallFailed<
             rcore::message::AppUpdate::InstallFailed(message),
         ));
 }
+
+/// The overlay grant, pushed by the activity on every window focus gain.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeOverlayState<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    granted: jni::sys::jboolean,
+    can_open_settings: jni::sys::jboolean,
+) {
+    rcore::android_overlay_state(granted != 0, can_open_settings != 0);
+}

@@ -23,6 +23,10 @@ import android.os.Looper;
 /// content mirrors the MediaSession MainActivity owns.
 public class ReceiverService extends Service {
     static final String CHANNEL_ID = "receiver";
+    // Alerting, unlike the low-importance ongoing one above.
+    private static final String WAITING_CHANNEL_ID = "cast_waiting";
+    // 2 is Updater's
+    private static final int WAITING_NOTIFICATION_ID = 3;
     static final String ACTION_STOP_CAST = "org.fcast.rsreceiver.android.STOP_CAST";
     private static final int NOTIFICATION_ID = 1;
 
@@ -64,6 +68,32 @@ public class ReceiverService extends Service {
                 NotificationManager.IMPORTANCE_LOW);
         channel.setShowBadge(false);
         nm.createNotificationChannel(channel);
+    }
+
+    /// A cast arrived while backgrounded and the activity did not come up:
+    /// background starts are blocked from 10 on without the overlay grant,
+    /// and silently, so this is posted whenever the activity stays hidden.
+    static void notifyCastWaiting(Context ctx) {
+        NotificationManager nm = ctx.getSystemService(NotificationManager.class);
+        nm.createNotificationChannel(new NotificationChannel(
+                WAITING_CHANNEL_ID,
+                ctx.getString(R.string.channel_cast_waiting),
+                NotificationManager.IMPORTANCE_HIGH));
+        Intent open = new Intent(ctx, MainActivity.class);
+        open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        PendingIntent openPi = PendingIntent.getActivity(ctx, 4, open,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+        nm.notify(WAITING_NOTIFICATION_ID, new Notification.Builder(ctx, WAITING_CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_cast)
+                .setContentTitle(ctx.getString(R.string.app_name))
+                .setContentText(ctx.getString(R.string.notification_cast_waiting))
+                .setContentIntent(openPi)
+                .setAutoCancel(true)
+                .build());
+    }
+
+    static void cancelCastWaiting(Context ctx) {
+        ctx.getSystemService(NotificationManager.class).cancel(WAITING_NOTIFICATION_ID);
     }
 
     private Notification buildNotification() {

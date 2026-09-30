@@ -309,6 +309,11 @@ export global Bridge {
     in property <bool> tv-mode;
     // The platform, not an input style: desktop-only settings hide on it.
     in property <bool> android;
+    // android: whether a cast arriving in the background may bring the
+    // receiver to the front (the overlay grant), and whether this device has
+    // a settings page to grant it on.
+    in property <bool> overlay-permission;
+    in property <bool> overlay-permission-settings;
     // Mirrored by the player scrubber so the remote branch below can keep
     // Left/Right as the 10s seek while the scrubber is the focused widget.
     in-out property <bool> scrubber-focused;
@@ -397,6 +402,8 @@ export global Bridge {
     callback select-track(id: int, variant: UiMediaTrackType);
     callback select-playlist-item(idx: int);
     callback perform-app-update();
+    // android: the system page for the overlay grant
+    callback open-overlay-settings();
     callback restart-app();
     callback video-obstructed-changed(obstructed: bool);
     // Fired whenever the window's logical size changes, including after our own
