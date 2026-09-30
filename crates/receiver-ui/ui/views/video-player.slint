@@ -21,6 +21,7 @@ import {
     MasterButton,
     ScrubbyMcScrub,
     VolumePreview,
+    VideoFrame,
 } from "../common.slint";
 import {
     FCastPalette,
@@ -1478,38 +1479,8 @@ export component VideoPlayerView inherits Rectangle {
         }
     }
 
-    // In-window video, behind every control, with black bars around the
-    // frame. Desktop always fills: its video is in the window, and gating on
-    // the first presented frame showed the gray window background between
-    // the loading view and that frame. Android fills only while this path
-    // presents, since a fill would cover the surface behind the window.
-    if Bridge.sw-video-active || !Bridge.behind-window-video: Rectangle {
-        width: 100%;
-        height: 100%;
-        background: black;
-    }
-    // Two elements, one clip rect apart, because binding a source-clip at all
-    // turns an Image into a clipped one whose rect is taken literally. Only
-    // android's zero-copy lane ever needs one (its texture is the whole
-    // gralloc allocation, decoder padding included); every other path hands
-    // over an image that is already exactly the picture and keeps the plain
-    // element it has always had.
-    if Bridge.sw-video-clip-width <= 0 || Bridge.sw-video-clip-height <= 0: Image {
-        width: 100%;
-        height: 100%;
-        source: Bridge.sw-video-frame;
-        image-fit: contain;
-    }
-    if Bridge.sw-video-clip-width > 0 && Bridge.sw-video-clip-height > 0: Image {
-        width: 100%;
-        height: 100%;
-        source: Bridge.sw-video-frame;
-        image-fit: contain;
-        source-clip-x: Bridge.sw-video-clip-x;
-        source-clip-y: Bridge.sw-video-clip-y;
-        source-clip-width: Bridge.sw-video-clip-width;
-        source-clip-height: Bridge.sw-video-clip-height;
-    }
+    // In-window video, behind every control.
+    VideoFrame { }
 
     // Subtitle cues above the video, below the controls. The engine lays
     // them out in window coordinates, so anchor to the window origin no
