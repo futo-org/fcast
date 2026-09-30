@@ -3,4 +3,5 @@
     <string name="notification_ready">Ready to cast</string>
     <string name="notification_casting">Casting</string>
     <string name="notification_stop">Stop</string>
+    <string name="notification_updated">Updated. Tap to start the receiver.</string>
 </resources>

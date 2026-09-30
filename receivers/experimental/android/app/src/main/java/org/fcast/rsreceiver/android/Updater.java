@@ -1,9 +1,12 @@
 package org.fcast.rsreceiver.android;
 
 import android.app.Activity;
+import android.app.Notification;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageInfo;
 import android.content.pm.PackageInstaller;
@@ -36,6 +39,12 @@ final class Updater {
     // The certificate the published apks are signed with.
     private static final String RELEASE_CERT_SHA256 =
             "ef81eda98f617f7f1707d80509f28dae4e50f56e41e077eb3024d9c9072d074e";
+
+    private static final String PREFS = "updater";
+    private static final String KEY_RELAUNCH_AT = "relaunch_at";
+    // An older marker belongs to an install that never completed.
+    private static final long RELAUNCH_WINDOW_MS = 30 * 60 * 1000;
+    private static final int UPDATED_NOTIFICATION_ID = 2;
 
     // False in a process that never loaded the library, like one started
     // only to deliver an install status.
@@ -141,6 +150,7 @@ final class Updater {
                     }
                     session.fsync(out);
                 }
+                prefs(ctx).edit().putLong(KEY_RELAUNCH_AT, System.currentTimeMillis()).commit();
                 PendingIntent status = PendingIntent.getBroadcast(ctx, 0,
                         new Intent(ctx, UpdateStatusReceiver.class),
                         PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_MUTABLE);
@@ -174,6 +184,7 @@ final class Updater {
 
     static void installFailed(Context ctx, String message) {
         Log.w(TAG, "update not installed: " + message);
+        prefs(ctx).edit().remove(KEY_RELAUNCH_AT).apply();
         synchronized (Updater.class) {
             pendingConfirm = null;
         }
@@ -183,7 +194,8 @@ final class Updater {
     }
 
     static void onActivityCreated(Context ctx) {
-        // a finished install never cleans up after itself
+        // a finished install leaves its notification and never cleans up
+        ctx.getSystemService(NotificationManager.class).cancel(UPDATED_NOTIFICATION_ID);
         prepareDownload(ctx);
     }
 
@@ -198,6 +210,55 @@ final class Updater {
 
     static synchronized void onActivityStopped() {
         activityStarted = false;
+    }
+
+    /**
+     * The in-app update just replaced this app, put the receiver back on
+     * screen. Only after an in-app update, a Play or adb update of a
+     * backgrounded app should not pop it up.
+     */
+    static void relaunchAfterUpdate(Context ctx) {
+        SharedPreferences prefs = prefs(ctx);
+        long at = prefs.getLong(KEY_RELAUNCH_AT, 0);
+        prefs.edit().remove(KEY_RELAUNCH_AT).commit();
+        long age = System.currentTimeMillis() - at;
+        if (at == 0 || age < 0 || age > RELAUNCH_WINDOW_MS) {
+            return;
+        }
+        Intent launch = ctx.getPackageManager().getLaunchIntentForPackage(ctx.getPackageName());
+        if (launch == null) {
+            return;
+        }
+        launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        PendingIntent open = PendingIntent.getActivity(ctx, 3, launch,
+                PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE);
+
+        // The notification is the fallback for a refused background start
+        // (no overlay grant, or 15+ without a visible window). The activity
+        // cancels it when it does come up.
+        ReceiverService.ensureChannel(ctx);
+        Notification n = new Notification.Builder(ctx, ReceiverService.CHANNEL_ID)
+                .setSmallIcon(R.drawable.ic_stat_cast)
+                .setContentTitle(ctx.getString(R.string.app_name))
+                .setContentText(ctx.getString(R.string.notification_updated))
+                .setContentIntent(open)
+                .setAutoCancel(true)
+                .build();
+        ctx.getSystemService(NotificationManager.class).notify(UPDATED_NOTIFICATION_ID, n);
+
+        // the same route as MainActivity.bringToFront
+        if (android.os.Build.VERSION.SDK_INT < 29
+                || android.provider.Settings.canDrawOverlays(ctx)) {
+            try {
+                open.send();
+            } catch (PendingIntent.CanceledException e) {
+                Log.w(TAG, "relaunch after update refused", e);
+            }
+        }
+    }
+
+    private static SharedPreferences prefs(Context ctx) {
+        return ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
     private static PackageInfo selfInfo(Context ctx, int flags) {

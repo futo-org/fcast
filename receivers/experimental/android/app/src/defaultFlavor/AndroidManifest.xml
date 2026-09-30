@@ -9,6 +9,15 @@
         <receiver
             android:name="org.fcast.rsreceiver.android.UpdateStatusReceiver"
             android:exported="false" />
+
+        <!-- Relaunches the receiver after an in-app update replaced it. -->
+        <receiver
+            android:name="org.fcast.rsreceiver.android.UpdatedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>
