@@ -516,7 +516,6 @@ pub fn find_formats() -> HashSet<media_formats::Image> {
         il!(Qoi),
         Image::Jpeg2000,
         Image::JpegXl,
-        #[cfg(not(target_os = "android"))]
         Image::Heif,
     ])
 }
