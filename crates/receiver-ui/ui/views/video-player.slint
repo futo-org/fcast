@@ -770,7 +770,8 @@ component PlaybackControls inherits Rectangle {
 
             Rectangle { }
 
-            SecondaryButton {
+            // TV fullscreen follows playback, there is nothing to toggle
+            if !Bridge.tv-mode: SecondaryButton {
                 fade: elems-opacity;
                 icon: Bridge.is-fullscreen ? Icons.minimize : Icons.maximize;
 
