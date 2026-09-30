@@ -124,7 +124,7 @@ pub fn device() -> fcast_bug_report::Device {
 /// An android system property, the model and release a TV bug most needs.
 /// Empty on the other platforms, which have no such table.
 #[cfg(target_os = "android")]
-fn system_property(name: &std::ffi::CStr) -> String {
+pub(crate) fn system_property(name: &std::ffi::CStr) -> String {
     // PROP_VALUE_MAX
     let mut value = [0 as libc::c_char; 92];
     // SAFETY: the name is a NUL-terminated C string and the buffer is
@@ -138,7 +138,7 @@ fn system_property(name: &std::ffi::CStr) -> String {
 }
 
 #[cfg(not(target_os = "android"))]
-fn system_property(_name: &std::ffi::CStr) -> String {
+pub(crate) fn system_property(_name: &std::ffi::CStr) -> String {
     String::new()
 }
 

@@ -14,6 +14,8 @@ pub use tracing;
 mod airplay;
 #[cfg(target_os = "android")]
 mod android_heif;
+#[cfg(any(target_os = "android", test))]
+pub mod android_updater;
 pub mod application;
 pub mod bug_report;
 pub mod config;

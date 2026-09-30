@@ -235,6 +235,12 @@ export component IdleView inherits Rectangle {
                         }
                     }
 
+                    if Bridge.updater-state == UiUpdaterState.Installing: VerticalLayout {
+                        IdleText {
+                            text: @tr("Installing update...");
+                        }
+                    }
+
                     if Bridge.updater-state == UiUpdaterState.DownloadFailed: VerticalLayout {
                         IdleText {
                             text: @tr("Failed to download update: {}", Bridge.updater-error-msg);

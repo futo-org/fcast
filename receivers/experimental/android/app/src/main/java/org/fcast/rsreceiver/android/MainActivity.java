@@ -289,6 +289,7 @@ public class MainActivity extends NativeActivity {
         // One self-contained library: GStreamer is statically linked inside
         // and initialized by the native side, no java glue involved.
         System.loadLibrary("fcastreceiver");
+        Updater.nativeLoaded = true;
     }
 
     private boolean isTelevision() {
@@ -325,6 +326,7 @@ public class MainActivity extends NativeActivity {
 
         createMediaSession();
         ReceiverService.ensureChannel(this);
+        Updater.onActivityCreated(this);
         // No prompt on TV: no notification shade worth the dialog there.
         if (android.os.Build.VERSION.SDK_INT >= 33 && !isTelevision()
                 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
@@ -646,6 +648,23 @@ public class MainActivity extends NativeActivity {
         }
     }
 
+    /// Self-update (Updater), called from native code on any thread.
+    public int updaterMode() {
+        return Updater.mode(this);
+    }
+
+    public long installedVersionCode() {
+        return Updater.installedVersionCode(this);
+    }
+
+    public String prepareUpdateDownload() {
+        return Updater.prepareDownload(this);
+    }
+
+    public void installUpdate(String path, long versionCode) {
+        Updater.install(this, path, versionCode);
+    }
+
     /// Called from native code on state edges and a 1 Hz keepalive.
     /// Any thread; MediaSession is thread-safe.
     @SuppressLint("WakelockTimeout")
@@ -956,6 +975,7 @@ public class MainActivity extends NativeActivity {
     protected void onStart() {
         super.onStart();
         visible = true;
+        Updater.onActivityStarted(this);
         // The activity is back; its own lifecycle keeps the process warm.
         stopService(new Intent(this, ReceiverService.class));
         updateWifiLockMode(true);
@@ -965,6 +985,7 @@ public class MainActivity extends NativeActivity {
     @Override
     protected void onStop() {
         visible = false;
+        Updater.onActivityStopped();
         updateWifiLockMode(false);
         nativeAppVisibility(false);
         // Backgrounded: without foreground priority the process is a cached

@@ -26,7 +26,7 @@ use tokio::{
 use tracing::{debug, error, info, warn};
 
 use crate::bug_report;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 use crate::message;
 use crate::{
     FCAST_TCP_PORT, GCastUpdateSender, MediaItemId, MessageSender, SenderId,
@@ -698,6 +698,26 @@ impl FCastSenderHandle {
     }
 }
 
+/// The self-update flow. A newer release only replaces an offer, never a
+/// download or install under way. Failures fall back to the offer, so the
+/// next check can show the dialog again.
+#[cfg(target_os = "android")]
+enum AndroidUpdate {
+    Idle,
+    Offered {
+        channel: String,
+        release: crate::android_updater::Release,
+    },
+    Downloading {
+        channel: String,
+        release: crate::android_updater::Release,
+    },
+    Installing {
+        channel: String,
+        release: crate::android_updater::Release,
+    },
+}
+
 pub struct Application {
     // (vm, activity) jobject ptrs captured once at startup so playback code
     // never touches android-activity's RwLock, see set_playback_active
@@ -810,6 +830,8 @@ pub struct Application {
     gui: GuiController,
     #[cfg(any(target_os = "macos", target_os = "windows"))]
     update: Option<app_updater::Release>,
+    #[cfg(target_os = "android")]
+    android_update: AndroidUpdate,
     gcast_tx: GCastUpdateSender,
     #[cfg(not(target_os = "android"))]
     settings: Settings,
@@ -1042,6 +1064,15 @@ impl Application {
         image::init_extra_decoders();
         let image_decoder = image::Decoder::new(msg_tx.clone())?;
         let http_client = reqwest::Client::new();
+        #[cfg(target_os = "android")]
+        tokio::spawn(crate::android_updater::run_checker(
+            (
+                android_app.vm_as_ptr() as usize,
+                android_app.activity_as_ptr() as usize,
+            ),
+            http_client.clone(),
+            msg_tx.clone(),
+        ));
         let image_downloader =
             image::Downloader::new(msg_tx.clone(), http_client.clone(), companion_ctx.clone());
         let queue_prefetcher = queue_cache::Prefetcher::new(
@@ -1140,6 +1171,8 @@ impl Application {
             gui,
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             update: None,
+            #[cfg(target_os = "android")]
+            android_update: AndroidUpdate::Idle,
             gcast_tx,
             #[cfg(not(target_os = "android"))]
             settings,
@@ -5312,6 +5345,87 @@ impl Application {
         Ok(false)
     }
 
+    #[cfg(target_os = "android")]
+    fn handle_app_update_event(&mut self, event: message::AppUpdate) -> Result<bool> {
+        use crate::{android_updater as upd, ui_types::UiUpdaterState};
+        let phase = std::mem::replace(&mut self.android_update, AndroidUpdate::Idle);
+        self.android_update = match (event, phase) {
+            (
+                message::AppUpdate::UpdateAvailable { channel, release },
+                AndroidUpdate::Idle | AndroidUpdate::Offered { .. },
+            ) => {
+                info!(version = %release.version, "update available");
+                self.gui.set_updater_state(UiUpdaterState::ShowingDialog);
+                AndroidUpdate::Offered { channel, release }
+            }
+            (message::AppUpdate::UpdateApplication, AndroidUpdate::Offered { channel, release }) => {
+                match upd::prepare_download(self.android_jni) {
+                    Some(dest) => {
+                        self.gui.set_update_download_progress(0);
+                        self.gui.set_updater_state(UiUpdaterState::Downloading);
+                        let client = self.http_client.clone();
+                        let msg_tx = self.msg_tx.clone();
+                        let gui_tx = self.gui.tx.clone();
+                        let (task_channel, task_release) = (channel.clone(), release.clone());
+                        tokio::spawn(async move {
+                            let mut shown = 0;
+                            let res = upd::download(
+                                &client,
+                                &task_channel,
+                                &task_release,
+                                &dest,
+                                |got, total| {
+                                    let pct = upd::percent(got, total);
+                                    if pct != shown {
+                                        shown = pct;
+                                        if let Some(tx) = &gui_tx {
+                                            let _ = tx.send(gui::UpdateGuiCommand::SetUpdateDownloadProgress(pct));
+                                        }
+                                    }
+                                },
+                            )
+                            .await;
+                            msg_tx.app_update(message::AppUpdate::Downloaded(res.map(|()| dest)));
+                        });
+                        AndroidUpdate::Downloading { channel, release }
+                    }
+                    None => {
+                        self.gui.set_updater_state(UiUpdaterState::DownloadFailed);
+                        self.gui.set_updater_error("no place to download it to".to_owned());
+                        AndroidUpdate::Offered { channel, release }
+                    }
+                }
+            }
+            (message::AppUpdate::Downloaded(Ok(apk)), AndroidUpdate::Downloading { channel, release }) => {
+                if upd::install(self.android_jni, &apk, release.version_code) {
+                    self.gui.set_updater_state(UiUpdaterState::Installing);
+                    AndroidUpdate::Installing { channel, release }
+                } else {
+                    self.gui.set_updater_state(UiUpdaterState::InstallFailed);
+                    self.gui.set_updater_error("the installer could not be started".to_owned());
+                    AndroidUpdate::Offered { channel, release }
+                }
+            }
+            (message::AppUpdate::Downloaded(Err(err)), AndroidUpdate::Downloading { channel, release }) => {
+                error!(%err, "update download failed");
+                self.gui.set_updater_state(UiUpdaterState::DownloadFailed);
+                self.gui.set_updater_error(err.to_string());
+                AndroidUpdate::Offered { channel, release }
+            }
+            (message::AppUpdate::InstallFailed(msg), AndroidUpdate::Installing { channel, release }) => {
+                warn!(%msg, "update install failed");
+                self.gui.set_updater_state(UiUpdaterState::InstallFailed);
+                self.gui.set_updater_error(msg);
+                AndroidUpdate::Offered { channel, release }
+            }
+            (event, phase) => {
+                debug!(?event, "update event does not apply in this phase");
+                phase
+            }
+        };
+        Ok(false)
+    }
+
     fn handle_image_event(&mut self, event: image::Event) -> Result<bool> {
         match event {
             image::Event::DownloadResult { id, res } => {
@@ -5936,7 +6050,7 @@ impl Application {
             Message::InspectorRefresh => self.refresh_inspector_graph(),
             Message::SoftKeyboardVisible(visible) => self.gui.set_soft_keyboard_visible(visible),
             Message::InspectorBitrateTick => self.inspector_tick(),
-            #[cfg(any(target_os = "macos", target_os = "windows"))]
+            #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
             Message::AppUpdate(event) => return self.handle_app_update_event(event),
             Message::GuiWindowClosed { shows, feedback } => {
                 // A show requested past the ones the teardown saw carried out

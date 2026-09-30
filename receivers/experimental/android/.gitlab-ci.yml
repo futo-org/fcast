@@ -60,6 +60,16 @@ build_receiver_android_native:
       package --release --bundle --skip-native --require-signing
       --version-code "$ANDROID_VERSION_CODE"
       --version-name "$ANDROID_VERSION_NAME"
+    # The self-update channel (crates/receiver-core/src/android_updater.rs):
+    # a versioned apk and the latest.json naming it, both uploaded to
+    # dl.fcast.org/receiver/android/, the apk first.
+    - |
+      OUT=receivers/experimental/android/channel
+      APK="fcast-receiver-android-$ANDROID_VERSION_CODE.apk"
+      mkdir -p "$OUT"
+      cp receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk "$OUT/$APK"
+      printf '{\n    "version": "%s",\n    "version_code": %s,\n    "file": "%s"\n}\n' \
+        "$ANDROID_VERSION_NAME" "$ANDROID_VERSION_CODE" "$APK" > "$OUT/latest.json"
   artifacts:
     untracked: false
     when: on_success
@@ -68,4 +78,5 @@ build_receiver_android_native:
     paths:
       - receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk
       - receivers/experimental/android/app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab
+      - receivers/experimental/android/channel/
   when: manual

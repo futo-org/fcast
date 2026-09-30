@@ -57,7 +57,7 @@ impl MessageSender {
         self.send(Message::Mdns(msg));
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     pub fn app_update(&self, msg: AppUpdate) {
         self.send(Message::AppUpdate(msg));
     }
@@ -138,6 +138,21 @@ pub enum AppUpdate {
     UpdateAvailable(app_updater::Release),
     UpdateApplication,
     RestartApp,
+}
+
+#[cfg(target_os = "android")]
+#[derive(Debug)]
+pub enum AppUpdate {
+    /// `channel` is where it was found, the download comes from there too.
+    UpdateAvailable {
+        channel: String,
+        release: crate::android_updater::Release,
+    },
+    UpdateApplication,
+    /// The apk is on disk, or why it is not.
+    Downloaded(Result<std::path::PathBuf, crate::android_updater::Error>),
+    /// PackageInstaller refused it or the user cancelled, from the activity.
+    InstallFailed(String),
 }
 
 /// User's choice from the port-conflict dialog. No `Quit` variant: the Quit
@@ -234,7 +249,7 @@ pub enum Message {
     SoftKeyboardVisible(bool),
     /// One bitrate sample while the inspector is open (driven by its timer).
     InspectorBitrateTick,
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     AppUpdate(AppUpdate),
     /// The renderer is going away. `shows` is the count of window shows the
     /// GUI thread had carried out when it started, a newer request means the

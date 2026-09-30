@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Self-update, the sideload build only: Play forbids the permission
+         and updates the playstore flavor itself. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+
+    <application>
+        <receiver
+            android:name="org.fcast.rsreceiver.android.UpdateStatusReceiver"
+            android:exported="false" />
+    </application>
+
+</manifest>

@@ -342,3 +342,22 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeSetAddres
         error!(?err, "Failed to send mDNS event");
     }
 }
+
+/// PackageInstaller refused the update, or the user cancelled it.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_Updater_nativeInstallFailed<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    message: jni::objects::JString<'local>,
+) {
+    let message = env
+        .get_string(&message)
+        .map(String::from)
+        .unwrap_or_default();
+    let _ = EVENT_CHANNEL
+        .0
+        .send(rcore::message::Message::AppUpdate(
+            rcore::message::AppUpdate::InstallFailed(message),
+        ));
+}

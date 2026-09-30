@@ -42,6 +42,8 @@ pub enum UiUpdaterState {
     None,
     ShowingDialog,
     Downloading,
+    /// Handed to the system installer, waiting on it (android).
+    Installing,
     DownloadFailed,
     InstallFailed,
     InstallSuccessful,

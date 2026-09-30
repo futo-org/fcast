@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 use crate::ui_types::UiUpdaterState;
 use crate::{
     image::DecodedImage,
@@ -196,11 +196,11 @@ pub enum UpdateGuiCommand {
         total_ms: u64,
     },
     SetPlaybackRate(f32),
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     SetUpdateState(UiUpdaterState),
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     SetUpdateDownloadProgress(i32),
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     SetUpdaterError(String),
     /// Run a closure on the UI thread. Commands are already applied on the
     /// event loop, so this is how non-UI code (the updater) gets there
@@ -593,9 +593,19 @@ impl GuiController {
         }
     }
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     pub fn set_updater_state(&self, state: UiUpdaterState) {
         self.send(UpdateGuiCommand::SetUpdateState(state));
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn set_updater_error(&self, msg: String) {
+        self.send(UpdateGuiCommand::SetUpdaterError(msg));
+    }
+
+    #[cfg(target_os = "android")]
+    pub fn set_update_download_progress(&self, percent: i32) {
+        self.send(UpdateGuiCommand::SetUpdateDownloadProgress(percent));
     }
 
     /// Returns the the previous window visibility state.

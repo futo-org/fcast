@@ -41,7 +41,7 @@ fn bug_report_include(source: bool, source_path: bool, sender: bool, device: boo
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 use crate::UiUpdaterState;
 use crate::{
     AppState, Bridge, CompoundImage, GuiPlaybackState, MainWindow, UiMediaTrack, UiMediaTrackType,
@@ -88,13 +88,14 @@ impl From<ui_types::UiPlayerVariant> for UiPlayerVariant {
     }
 }
 
-#[cfg(any(target_os = "macos", target_os = "windows"))]
+#[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 impl From<ui_types::UiUpdaterState> for UiUpdaterState {
     fn from(s: ui_types::UiUpdaterState) -> Self {
         match s {
             ui_types::UiUpdaterState::None => UiUpdaterState::None,
             ui_types::UiUpdaterState::ShowingDialog => UiUpdaterState::ShowingDialog,
             ui_types::UiUpdaterState::Downloading => UiUpdaterState::Downloading,
+            ui_types::UiUpdaterState::Installing => UiUpdaterState::Installing,
             ui_types::UiUpdaterState::DownloadFailed => UiUpdaterState::DownloadFailed,
             ui_types::UiUpdaterState::InstallFailed => UiUpdaterState::InstallFailed,
             ui_types::UiUpdaterState::InstallSuccessful => UiUpdaterState::InstallSuccessful,
@@ -375,7 +376,7 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         }
     });
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     bridge.on_perform_app_update({
         let msg_tx = msg_tx.clone();
         move || {
@@ -839,13 +840,13 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
             bridge.set_source_backoff_total_ms(total_ms.min(i32::MAX as u64) as i32);
         }
         UpdateGuiCommand::SetPlaybackRate(rate) => bridge.set_playback_rate(rate),
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
         UpdateGuiCommand::SetUpdateState(state) => bridge.set_updater_state(state.into()),
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
         UpdateGuiCommand::SetUpdateDownloadProgress(progress) => {
             bridge.set_update_download_progress(progress)
         }
-        #[cfg(any(target_os = "macos", target_os = "windows"))]
+        #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
         UpdateGuiCommand::SetUpdaterError(err) => bridge.set_updater_error_msg(err.into()),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         UpdateGuiCommand::RunOnMainThread(f) => (f.0)(),
