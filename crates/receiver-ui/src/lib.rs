@@ -47,20 +47,6 @@ slint::include_modules!();
 
 mod video_math;
 
-/// The android AHardwareBuffer lane's gating, kept off the FFI so it can be
-/// tested on a host with no NDK.
-#[cfg(any(target_os = "android", test))]
-mod ahb_plan;
-
-/// A gralloc-backed allocator and pool proposed to android's software
-/// decoders, so their frames arrive as memory the GPU can sample instead of
-/// as pixels the bridge has to convert and upload.
-#[cfg(target_os = "android")]
-mod android_ahb;
-/// The other half of that: AHardwareBuffer to GL texture through EGL, with
-/// no renderer type anywhere in it.
-#[cfg(target_os = "android")]
-mod android_ahb_gl;
 #[cfg(target_os = "android")]
 mod android_immersive;
 

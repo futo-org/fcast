@@ -47,10 +47,8 @@ gst-app.workspace = true
 # the immersive toggle's call into the activity
 jni = "0.21"
 ndk-context = "0.1"
-# AHardwareBuffer, for the zero-copy software video lane. Raw bindings, not
-# the safe `ndk` wrapper: its HardwareBuffer is behind an api-level feature
-# and does not expose lockPlanes, which is the whole point here. Same version
-# the slint android backend already pulls in, so nothing is duplicated.
+# ANativeWindow reference counting for the video surface handoff. Same
+# version the slint android backend pulls in, so nothing is duplicated.
 ndk-sys = "0.6"
 # the video surface behind the window (fork addition)
 i-slint-backend-android-activity = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "fad17f69a76a694540a88f015803a829feb2c46a" }

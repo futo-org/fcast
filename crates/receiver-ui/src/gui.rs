@@ -692,11 +692,6 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
             ) {
                 bridge.set_sw_video_frame(slint::Image::default());
                 bridge.set_sw_video_active(false);
-                // The zero-copy android arm also holds gst buffers behind
-                // that image, and those are pool slots the next item's
-                // decoder wants back.
-                #[cfg(target_os = "android")]
-                crate::android_video::release_frames();
                 // and so does its bitmap subtitle
                 bridge.set_bitmap_subtitle(crate::SubtitleOverlay::default());
                 // and the text cues, engine memory included

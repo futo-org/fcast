@@ -147,14 +147,6 @@ export global Bridge {
     in property <image> sw-video-frame;
     // a sw frame is being presented, the view paints black behind it
     in property <bool> sw-video-active;
-    // The picture inside that image, in source pixels. Zero width or height
-    // means the whole image, which is every path but android's zero-copy
-    // one: a gralloc frame's texture also covers the decoder's trailing
-    // padding and the display window a crop meta asked for.
-    in property <int> sw-video-clip-x;
-    in property <int> sw-video-clip-y;
-    in property <int> sw-video-clip-width;
-    in property <int> sw-video-clip-height;
     // android subtitle cues, drawn over the video; empty on desktop
     in property <[SubtitleOverlay]> subtitle-overlays;
     // Bitmap subtitles (PGS, VobSub, DVB) on the desktop wgpu lane. They are
