@@ -242,7 +242,7 @@ export component VideoFrame {
     width: 100%;
     height: 100%;
 
-    if Bridge.sw-video-active || !Bridge.behind-window-video: Rectangle {
+    if Bridge.sw-video-active || !Bridge.behind-window-video || Bridge.video-frame-pending: Rectangle {
         width: 100%;
         height: 100%;
         background: black;

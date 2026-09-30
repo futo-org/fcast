@@ -16,6 +16,11 @@
 //!   destroy used to race the polled handoff; the handoff now follows the
 //!   view's surface events, so a codec on a dying surface is taken off it in
 //!   time and the new surface is always handed.
+//! * The scene fills the video hole (`video-frame-pending`) from an item
+//!   boundary until that item's first buffer reaches the sink. An empty new
+//!   surface is not enough on Amlogic TV boxes: their video plane keeps the
+//!   previous item's last frame below it, visible through the hole for as
+//!   long as the next source takes to start (a UMP backoff, say).
 //! * A show must not share a layout pass with the hide before it, or the old
 //!   surface survives. `destroying_seq` marks a destroy in flight, and pre-open
 //!   and relayout wait for its `Destroyed` event, which resumes them.
@@ -55,6 +60,9 @@ pub struct SurfaceVideo {
     /// layout's half of the same fact.
     rotation: std::sync::atomic::AtomicI32,
     handoff: Mutex<Handoff>,
+    /// Mirrors `video-frame-pending`: set at an item boundary, cleared by the
+    /// item's first buffer at the sink.
+    frame_pending: std::sync::atomic::AtomicBool,
 }
 
 // setup's instance, for the app-state hook in gui.rs
@@ -133,18 +141,32 @@ fn resume_after_retire() {
     if this.video_size.lock().unwrap().0 != 0 {
         this.relayout(ui);
     } else if this.handoff.lock().unwrap().preopen_pending {
-        preopen_current();
+        preopen_current(false);
     }
 }
 
 /// Shows the surface full-window and hands its window to the player ahead
 /// of a load, so the first codec already builds in direct mode.
-pub(crate) fn preopen_current() {
+///
+/// `new_item` retires whatever the surface still shows: the previous item's
+/// caps do not always drop at the boundary (a branch kept for the next
+/// source, which can take a while to start, a UMP backoff for one), and its
+/// last frame would sit under the loading screen the whole time.
+pub(crate) fn preopen_current(new_item: bool) {
     let Some((this, ui)) = CURRENT.get() else {
         return;
     };
     let this = this.clone();
     this.handoff.lock().unwrap().preopen_pending = true;
+    if new_item {
+        this.set_frame_pending(ui, true);
+        *this.video_size.lock().unwrap() = (0, 0);
+        this.rotation.store(0, std::sync::atomic::Ordering::Relaxed);
+        this.handoff.lock().unwrap().retired_at_boundary = true;
+        this.retire_surface();
+        // the load's surface comes after the destroy, its decoder waits
+        crate::set_video_window_pending(true);
+    }
     let _ = ui.upgrade_in_event_loop(move |ui| {
         // same space note as in relayout
         let win = {
@@ -196,6 +218,9 @@ struct Handoff {
     handed_seq: i32,
     // seq of a surface we hid and whose destruction is still coming, 0 for none
     destroying_seq: i32,
+    // a new item retired the surface before the old item's caps dropped, so
+    // that drop, when it comes, is not the new item's to act on
+    retired_at_boundary: bool,
     relayout_queued: bool,
     // a load wants the surface up before its codec builds
     preopen_pending: bool,
@@ -240,6 +265,7 @@ impl SurfaceVideo {
             video_size: Mutex::new((0, 0)),
             rotation: std::sync::atomic::AtomicI32::new(0),
             handoff: Mutex::new(Handoff::default()),
+            frame_pending: std::sync::atomic::AtomicBool::new(false),
         });
 
         let sink = match gst::ElementFactory::make("amcsurfacesink").build() {
@@ -265,6 +291,19 @@ impl SurfaceVideo {
                 if let Some(this) = this.upgrade() {
                     this.on_surface(event);
                 }
+            }
+        });
+        // The first buffer after a boundary reaches the sink just before it is
+        // presented (preroll shows it at once, a playing sink is at most a
+        // frame ahead), which is when the hole may open again.
+        pad.add_probe(gst::PadProbeType::BUFFER, {
+            let this = this.clone();
+            let ui = ui.as_weak();
+            move |_pad, _info| {
+                if this.frame_pending.load(std::sync::atomic::Ordering::Relaxed) {
+                    this.set_frame_pending(&ui, false);
+                }
+                gst::PadProbeReturn::Ok
             }
         });
         // The display rotation arrives as a TAG, not in caps, on the same
@@ -302,6 +341,11 @@ impl SurfaceVideo {
                 let caps = pad.current_caps();
                 info!(?caps, "surface video: sink caps notify");
                 let Some(caps) = caps else {
+                    if std::mem::take(&mut this.handoff.lock().unwrap().retired_at_boundary) {
+                        // the new item already retired this item's surface, and
+                        // the window the player holds may be the new one
+                        return;
+                    }
                     // Caps drop when the item unlinks. Take the window away
                     // from the player first, the next codec must not configure
                     // against a surface that is about to die.
@@ -323,6 +367,7 @@ impl SurfaceVideo {
                         // headless
                         crate::set_video_window_pending(true);
                     }
+                    this.set_frame_pending(&ui, true);
                     info!("surface video: item ended, retiring its surface");
                     this.retire_surface();
                     return;
@@ -332,7 +377,12 @@ impl SurfaceVideo {
                     return;
                 };
                 if w > 0 && h > 0 {
-                    this.handoff.lock().unwrap().preopen_pending = false;
+                    {
+                        let mut st = this.handoff.lock().unwrap();
+                        st.preopen_pending = false;
+                        // a new item's caps: a later drop is its own
+                        st.retired_at_boundary = false;
+                    }
                     *this.video_size.lock().unwrap() = (w as u32, h as u32);
                     this.relayout(&ui);
                 }
@@ -405,6 +455,18 @@ impl SurfaceVideo {
             ui.window().request_redraw();
             this.ensure_window_handoff();
         });
+    }
+
+    fn set_frame_pending(&self, ui: &slint::Weak<crate::MainWindow>, pending: bool) {
+        if self
+            .frame_pending
+            .swap(pending, std::sync::atomic::Ordering::Relaxed)
+            != pending
+        {
+            let _ = ui.upgrade_in_event_loop(move |ui| {
+                ui.global::<crate::Bridge>().set_video_frame_pending(pending);
+            });
+        }
     }
 
     /// Hides the view, which destroys its surface (see the lifecycle notes).

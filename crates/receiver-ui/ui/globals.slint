@@ -134,6 +134,10 @@ export global Bridge {
     // scene must stay transparent so the hole is real. Independent of
     // touch-mode, which is off on TV while the surface still sits behind.
     in property <bool> behind-window-video;
+    // android: the current item has not put a frame on its surface yet. The
+    // hole stays filled meanwhile: some TV chips' video planes keep showing
+    // the previous item's last frame below an empty surface.
+    in property <bool> video-frame-pending;
     // The window's safe-area insets, mirrored here by MainWindow so views
     // can pad by them (the Window element is out of their scope). Zero
     // without a notch/system bars. Video stays full-bleed, chrome pads.
