@@ -1167,6 +1167,23 @@ pub struct InitialV4State {
     pub playback_state: v4::PlaybackState,
 }
 
+/// What a v3 sender gets in `Initial`: the item a legacy sender cast, with
+/// the current time, volume and speed, then the playback state.
+pub struct InitialLegacyState {
+    pub play_data: v3::PlayMessage,
+    pub playback: v3::PlaybackUpdateMessage,
+}
+
+/// The receiver as it stood at accept time, sent once the session activates.
+// TODO: not refreshed between accept and handshake, so an update in that window is
+// missed
+pub struct SessionSeed {
+    pub volume: f32,
+    pub display_name: Option<String>,
+    pub v4: Option<InitialV4State>,
+    pub legacy: Option<InitialLegacyState>,
+}
+
 pub struct SessionDriver {
     stream: NetworkStream,
     id: SenderId,
@@ -1178,12 +1195,7 @@ pub struct SessionDriver {
     req_id_gen: companion::RequestIdGenerator,
     mirroring_offer_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
     receiver_info: Arc<ReceiverInfo>,
-    // TODO: not refreshed between accept and handshake, so an update in that window is
-    // missed
-    initial_v4_state: Option<InitialV4State>,
-    /// Volume at accept time, sent once the session activates. Same staleness
-    /// caveat as `initial_v4_state`.
-    initial_volume: f32,
+    seed: SessionSeed,
     pending_tls_upgrade: bool,
 }
 
@@ -1195,8 +1207,7 @@ impl SessionDriver {
         companion_ctx: CompanionContext,
         internal_companion_tx: CompanionMsgSender,
         receiver_info: Arc<ReceiverInfo>,
-        initial_v4_state: Option<InitialV4State>,
-        initial_volume: f32,
+        seed: SessionSeed,
     ) -> Self {
         Self {
             stream: NetworkStream::new(stream),
@@ -1209,8 +1220,7 @@ impl SessionDriver {
             req_id_gen: companion::RequestIdGenerator::default(),
             mirroring_offer_tx: None,
             receiver_info,
-            initial_v4_state,
-            initial_volume,
+            seed,
             pending_tls_upgrade: false,
         }
     }
@@ -1341,10 +1351,10 @@ impl SessionDriver {
 
         // Volume seed: it only broadcasts on change, so a fresh sender would start with
         // a stale level.
-        let volume_msg = v4::MessageBuilder::new().volume_changed(self.initial_volume);
+        let volume_msg = v4::MessageBuilder::new().volume_changed(self.seed.volume);
         self.send_bin_msg(Opcode::Flatbuf, &volume_msg).await?;
 
-        if let Some(initial) = self.initial_v4_state.take()
+        if let Some(initial) = self.seed.v4.take()
             && let WrappedPlayMessage::V4(play_msg) = initial.play_data.as_ref()
         {
             let load = play_msg.borrow_dependent();
@@ -1367,10 +1377,24 @@ impl SessionDriver {
         };
         let msg = TranslatableMessage::VolumeUpdate(VolumeUpdateMessage {
             generation_time: current_time_millis(),
-            volume: self.initial_volume as f64,
+            volume: self.seed.volume as f64,
         });
         if let Some(body) = msg.translate_and_serialize(*version) {
             self.send_bin_msg(Opcode::VolumeUpdate, &body).await?;
+        }
+        Ok(())
+    }
+
+    async fn send_connect_playback(
+        &mut self,
+        update: v3::PlaybackUpdateMessage,
+    ) -> anyhow::Result<()> {
+        let StateVariant::Active { version } = &self.state.variant else {
+            return Ok(());
+        };
+        let msg = TranslatableMessage::PlaybackUpdate(update);
+        if let Some(body) = msg.translate_and_serialize(*version) {
+            self.send_bin_msg(Opcode::PlaybackUpdate, &body).await?;
         }
         Ok(())
     }
@@ -1425,11 +1449,16 @@ impl SessionDriver {
                     msg_tx.operation(origin, operation);
                 }
                 Action::SendInitial => {
+                    let legacy = self.seed.legacy.take();
                     self.write_packet(Packet::Initial(v3::InitialReceiverMessage {
-                        display_name: self.receiver_info.device_info.display_name.clone(),
+                        display_name: self
+                            .seed
+                            .display_name
+                            .clone()
+                            .or_else(|| self.receiver_info.device_info.display_name.clone()),
                         app_name: self.receiver_info.device_info.app_name.clone(),
                         app_version: self.receiver_info.device_info.app_version.clone(),
-                        play_data: None,
+                        play_data: legacy.as_ref().map(|l| l.play_data.clone()),
                         experimental_capabilities: Some(ReceiverCapabilities {
                             av: Some(v3::AVCapabilities {
                                 livestream: Some(v3::LivestreamCapabilities { whep: Some(true) }),
@@ -1438,6 +1467,10 @@ impl SessionDriver {
                     }))
                     .await?;
                     self.send_connect_volume().await?;
+                    // the state now, not at the next progress tick
+                    if let Some(legacy) = legacy {
+                        self.send_connect_playback(legacy.playback).await?;
+                    }
                 }
                 Action::SendVolume => self.send_connect_volume().await?,
                 Action::Forward {

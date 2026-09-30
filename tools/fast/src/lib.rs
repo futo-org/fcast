@@ -296,6 +296,23 @@ pub enum Step {
         tolerance_ms: u64,
         samples: usize,
     },
+    /// A fresh v3 sender connects. Its `Initial` must carry a display name
+    /// and `playData` for `item` with the live time, volume and speed, or no
+    /// `playData` when `item` is None. For an item a `PlaybackUpdate`, in
+    /// `state` when given, must come right behind it.
+    ExpectInitialOnNewV3Sender {
+        item: Option<InitialItem>,
+        state: Option<fcast_protocol::PlaybackState>,
+    },
+}
+
+/// What a v3 `Initial`'s `playData` must describe.
+#[derive(Debug, Clone, Copy)]
+pub enum InitialItem {
+    /// The served file with this id.
+    File(u32),
+    /// A playlist, sent as JSON content.
+    Playlist,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -356,6 +373,8 @@ cases!(
     cast_video_with_headers_v3,
     cast_simple_playlist_with_headers,
     cast_video_with_start_speed_volume_v3,
+    initial_play_data_v3,
+    initial_play_data_playlist_v3,
     connect_version_4,
     heartbeat_v4,
     cast_video_v4,
@@ -738,6 +757,53 @@ define_test_case!(
         Step::SleepMillis(500),
         send!(Send::Pause),
         send!(Send::Resume),
+        send!(Send::Stop),
+    ]
+);
+
+// A v3 sender joining mid-play learns what is playing from `Initial`, the
+// old Kotlin receiver's behavior.
+define_test_case!(
+    initial_play_data_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        Step::ExpectInitialOnNewV3Sender {
+            item: None,
+            state: None
+        },
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV3 { file_id: 0 }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::Pause),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Paused),
+        Step::ExpectInitialOnNewV3Sender {
+            item: Some(InitialItem::File(0)),
+            state: Some(fcast_protocol::PlaybackState::Paused)
+        },
+        send!(Send::Stop),
+    ]
+);
+
+define_test_case!(
+    initial_play_data_playlist_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        serve!("image/flowers.jpg", 0, "image/jpeg"),
+        serve!("image/garden.jpg", 1, "image/jpeg"),
+        send!(Send::PlaylistV3 {
+            items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 },]
+        }),
+        Step::SleepMillis(1000),
+        Step::ExpectInitialOnNewV3Sender {
+            item: Some(InitialItem::Playlist),
+            state: None
+        },
         send!(Send::Stop),
     ]
 );

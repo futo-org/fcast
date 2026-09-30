@@ -23,7 +23,7 @@ use tokio_rustls::{TlsConnector, rustls};
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
-use crate::{PlaylistItem, QueueMutationKind, Receive, Send as Op, Step, TrackKind};
+use crate::{InitialItem, PlaylistItem, QueueMutationKind, Receive, Send as Op, Step, TrackKind};
 
 const IDLE_TIMEOUT: Duration = Duration::from_secs(4);
 // The cap on how long we wait for an expected event (a track-change confirm, a
@@ -1154,6 +1154,9 @@ impl<'a> Engine<'a> {
                 self.await_queue_select(*index).await?;
             }
             Step::OpenSecondSender => self.open_second_sender().await?,
+            Step::ExpectInitialOnNewV3Sender { item, state } => {
+                self.expect_initial_on_new_v3_sender(*item, *state).await?
+            }
             Step::SetSecondSenderInterval { millis } => {
                 let micros = Duration::from_millis(*millis).as_micros() as u64;
                 let msg = v4::MessageBuilder::new()
@@ -1366,6 +1369,105 @@ impl<'a> Engine<'a> {
         }
         self.second = Some(conn);
         Ok(())
+    }
+
+    async fn expect_initial_on_new_v3_sender(
+        &mut self,
+        item: Option<InitialItem>,
+        state: Option<PlaybackState>,
+    ) -> Result<()> {
+        // Sent together with Initial. A periodic update (every 500ms) lands in
+        // this window a third of the time, so a missing one mostly fails.
+        const WITH_INITIAL: Duration = Duration::from_millis(150);
+
+        let mut conn = Connection::connect(&self.addr).await?;
+        let pkt = conn.recv().await?;
+        ensure!(
+            pkt.opcode == Opcode::Version,
+            "expected Version from receiver, got {:?}",
+            pkt.opcode
+        );
+        let version = serde_json::to_vec(&VersionMessage { version: 3 })?;
+        conn.write(Opcode::Version, Some(&version)).await?;
+        let hello = InitialSenderMessage {
+            display_name: Some("fast-v3".to_owned()),
+            app_name: Some("fast-v3".to_owned()),
+            app_version: Some("test".to_owned()),
+        };
+        conn.write(Opcode::Initial, Some(&serde_json::to_vec(&hello)?))
+            .await?;
+
+        let deadline = Instant::now() + MAX_SETTLE;
+        let mut initial_at = None;
+        loop {
+            let now = Instant::now();
+            ensure!(
+                now < deadline,
+                "new v3 sender never received {}",
+                if initial_at.is_none() {
+                    "Initial"
+                } else {
+                    "PlaybackUpdate"
+                }
+            );
+            let pkt = match tokio::time::timeout(deadline - now, conn.recv()).await {
+                Ok(p) => p?,
+                Err(_) => continue,
+            };
+            match pkt.opcode {
+                Opcode::Ping => conn.write(Opcode::Pong, None).await?,
+                Opcode::Initial => {
+                    let msg: v3::InitialReceiverMessage = parse(pkt.opcode, pkt.body.as_deref())?;
+                    ensure!(
+                        msg.display_name.as_deref().is_some_and(|n| !n.is_empty()),
+                        "Initial has no displayName: {msg:?}"
+                    );
+                    let Some(item) = item else {
+                        ensure!(msg.play_data.is_none(), "expected no playData: {msg:?}");
+                        return Ok(());
+                    };
+                    let Some(play) = msg.play_data else {
+                        bail!("Initial has no playData for the playing item");
+                    };
+                    match item {
+                        InitialItem::File(id) => {
+                            let (url, mime, _) = self.file(id)?;
+                            ensure!(
+                                play.url.as_deref() == Some(url.as_str()) && play.container == mime,
+                                "playData names another item: {play:?}"
+                            );
+                        }
+                        InitialItem::Playlist => ensure!(
+                            play.container == "application/json" && play.content.is_some(),
+                            "playData is not the playlist: {play:?}"
+                        ),
+                    }
+                    ensure!(
+                        play.time.is_some() && play.volume.is_some() && play.speed.is_some(),
+                        "playData lacks the live time, volume or speed: {play:?}"
+                    );
+                    initial_at = Some(Instant::now());
+                }
+                Opcode::PlaybackUpdate => {
+                    let Some(at) = initial_at else { continue };
+                    ensure!(
+                        at.elapsed() < WITH_INITIAL,
+                        "no PlaybackUpdate with Initial, the first came {:?} later",
+                        at.elapsed()
+                    );
+                    let update: v3::PlaybackUpdateMessage = parse(pkt.opcode, pkt.body.as_deref())?;
+                    if let Some(state) = state {
+                        ensure!(
+                            update.state == state,
+                            "PlaybackUpdate with Initial is {:?}, expected {state:?}",
+                            update.state
+                        );
+                    }
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
     }
 
     async fn expect_load_on_second_sender(&mut self) -> Result<()> {

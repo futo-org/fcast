@@ -33,7 +33,7 @@ use crate::{
     external_subtitles::{self, ExternalSubtitle, is_external_track_id},
     fcast::{
         self, CompanionContext, InitialV4State, Operation, ReceiverToSenderMessage, SessionDriver,
-        TranslatableMessage, WrappedPlayMessage,
+        SessionSeed, TranslatableMessage, WrappedPlayMessage,
     },
     fcompsrc, fwebrtcsrc, gcast,
     gui::{self, GuiController},
@@ -660,6 +660,10 @@ struct MediaSourceState {
     /// Who cast it, taken at load: a fire-and-forget sender is gone from the
     /// senders map by the time its item fails.
     sender: Option<crate::gui::SenderInfo>,
+    /// The v3 play message a legacy sender cast this with, the `playData` a
+    /// v3 sender connecting mid-play gets. None for v4 and Chromecast loads,
+    /// which legacy senders are never told about.
+    legacy_play: Option<v3::PlayMessage>,
 }
 
 impl MediaSourceState {
@@ -672,6 +676,7 @@ impl MediaSourceState {
             pending_thumbnail_download: None,
             externals: external_subtitles::Catalog::default(),
             sender: None,
+            legacy_play: None,
         }
     }
 
@@ -3427,10 +3432,10 @@ impl Application {
                 if msg.container == "application/json" {
                     self.handle_playlist_play_request(msg);
                 } else {
-                    self.current_media = Some(MediaSourceState::new(
-                        origin,
-                        MediaSource::Single(Arc::clone(&play_data)),
-                    ));
+                    let mut media =
+                        MediaSourceState::new(origin, MediaSource::Single(Arc::clone(&play_data)));
+                    media.legacy_play = Some(msg.clone());
+                    self.current_media = Some(media);
                     self.load_media();
                 }
 
@@ -5883,13 +5888,13 @@ impl Application {
                     return Ok(false);
                 };
 
-                let Some(content) = play_message.content else {
+                let Some(content) = play_message.content.as_deref() else {
                     // Unreachable
                     error!("Playlist play message is missing content");
                     return Ok(false);
                 };
 
-                let playlist = serde_json::from_str::<v3::PlaylistContent>(&content)?;
+                let playlist = serde_json::from_str::<v3::PlaylistContent>(content)?;
 
                 let start_idx = match playlist.offset {
                     Some(idx) => idx as usize,
@@ -5906,13 +5911,15 @@ impl Application {
                     return Ok(false);
                 }
 
-                self.current_media = Some(MediaSourceState::new(
+                let mut media = MediaSourceState::new(
                     PacketOrigin::Gui,
                     MediaSource::Playlist {
                         content: playlist,
                         index: start_idx,
                     },
-                ));
+                );
+                media.legacy_play = Some(play_message);
+                self.current_media = Some(media);
                 self.load_media();
 
                 self.gui.update_playlist(start_idx as i32, length as i32);
@@ -6131,6 +6138,33 @@ impl Application {
         }
     }
 
+    /// The current item for a v3 sender's `Initial`, as the old receiver sent
+    /// it: the cast play message with the live time, volume and speed.
+    fn initial_legacy_state(&self) -> Option<fcast::InitialLegacyState> {
+        let msg = self.current_media.as_ref()?.legacy_play.as_ref()?;
+        let time = self
+            .player
+            .get_position()
+            .map_or(self.last_position_updated, |p| p.seconds_f64());
+        let speed = self.player.rate();
+        Some(fcast::InitialLegacyState {
+            play_data: v3::PlayMessage {
+                time: Some(time),
+                volume: Some(self.player.volume() as f64),
+                speed: Some(speed),
+                ..msg.clone()
+            },
+            playback: v3::PlaybackUpdateMessage {
+                generation_time: current_time_millis(),
+                time: Some(time),
+                duration: self.current_duration.map(|d| d.seconds_f64()),
+                state: self.player.wire_playback_state(),
+                speed: Some(speed),
+                item_index: None,
+            },
+        })
+    }
+
     fn handle_new_fcast_session(&mut self, stream: tokio::net::TcpStream, session_id: SenderId) {
         debug!("New connection id={session_id}");
 
@@ -6157,7 +6191,12 @@ impl Application {
             } else {
                 None
             };
-            let initial_volume = self.player.volume();
+            let seed = SessionSeed {
+                volume: self.player.volume(),
+                display_name: self.device_name.clone(),
+                v4: initial_v4_state,
+                legacy: self.initial_legacy_state(),
+            };
             async move {
                 if let Err(err) = SessionDriver::new(
                     stream,
@@ -6166,8 +6205,7 @@ impl Application {
                     companion_ctx,
                     comp_tx,
                     receiver_info,
-                    initial_v4_state,
-                    initial_volume,
+                    seed,
                 )
                 .run(updates_rx, &msg_tx, comp_rx, recv_to_f_rx)
                 .await
