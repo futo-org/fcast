@@ -29,11 +29,12 @@
 //!   caps-drop path and `app_visibility(false)` do set_video_window null first;
 //!   the generation bump it causes is also what lets a codec that already
 //!   grabbed the dying window recover instead of erroring.
-//! * The surface seq (from the Java view) identifies which surface the player
-//!   holds; a changed seq means the surface was destroyed or remade and the
-//!   window must be re-acquired. The handoff never re-hands an unchanged seq,
-//!   so a window adopted under a stale seq would never be corrected: the
-//!   acquire is seq-checked on both sides of the JNI read for that reason.
+//! * The view reports its surface's life (`SurfaceEvent`) on the android UI
+//!   thread. A creation is handed to the player at once; a destruction takes
+//!   the window off the player before it returns, which is before the
+//!   surface dies. The seq identifies which surface the player holds, and a
+//!   parked surface (still alive, taken off the player at caps drop) is handed
+//!   again from the kept reference, since no new creation comes for it.
 //! * All geometry runs on the slint UI thread; a 0x0 window means the activity
 //!   is stopped and the relayout retries on a timer, because a resume to the
 //!   pre-stop size emits no resize event.
@@ -41,7 +42,7 @@
 use std::sync::{Arc, Mutex, OnceLock};
 
 use gst::prelude::*;
-use i_slint_backend_android_activity::VideoSurface;
+use i_slint_backend_android_activity::{SurfaceEvent, VideoSurface};
 use slint::ComponentHandle;
 use tracing::{info, warn};
 
@@ -164,18 +165,46 @@ pub(crate) fn preopen_current() {
     });
 }
 
-/// The surface handoff state. Hiding the view between items destroys the
-/// surface (that is what clears the previous video's last frame), so the
-/// handoff keys on the surface's creation seq, not a one-shot flag.
+/// A window reference we own, released on drop.
+struct WindowRef(std::ptr::NonNull<std::ffi::c_void>);
+
+// ANativeWindow reference counting is thread-safe.
+unsafe impl Send for WindowRef {}
+
+impl Drop for WindowRef {
+    fn drop(&mut self) {
+        unsafe { ndk_sys::ANativeWindow_release(self.0.as_ptr().cast()) };
+    }
+}
+
+/// The surface handoff state, fed by the view's surface events.
 #[derive(Default)]
 struct Handoff {
+    // the surface the platform has right now, with its seq
+    live: Option<(WindowRef, i32)>,
     // seq of the surface flapjack holds, 0 for none
     handed_seq: i32,
-    polling: bool,
     relayout_queued: bool,
     // a load wants the surface up before its codec builds
     preopen_pending: bool,
 }
+
+impl Handoff {
+    fn hand_live(&mut self) {
+        if let Some((window, seq)) = &self.live
+            && self.handed_seq != *seq
+        {
+            info!(seq, "video surface live, handing it to the player");
+            // takes its own reference, and fulfils the pending promise
+            crate::set_video_window(window.0.as_ptr().cast());
+            self.handed_seq = *seq;
+        }
+    }
+}
+
+/// How long a view that is up may go without a surface before the promise to
+/// the decoder is dropped and it builds headless.
+const SURFACE_GIVE_UP: std::time::Duration = std::time::Duration::from_secs(5);
 
 pub(crate) use crate::video_math::letterbox;
 
@@ -216,6 +245,16 @@ impl SurfaceVideo {
         };
         info!("surface video: sink ready, waiting for caps");
         let _ = CURRENT.set((this.clone(), ui.as_weak()));
+        // Before the view is ever shown: the fork does not replay a surface
+        // that already exists.
+        this.surface.set_surface_handler({
+            let this = Arc::downgrade(&this);
+            move |event| {
+                if let Some(this) = this.upgrade() {
+                    this.on_surface(event);
+                }
+            }
+        });
         // The display rotation arrives as a TAG, not in caps, on the same
         // pad. 90/270 swap the fitted aspect below.
         pad.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, {
@@ -266,6 +305,12 @@ impl SurfaceVideo {
                         // zeroed either way: the next codec needs the window
                         // handed to it again, same surface or not
                         st.handed_seq = 0;
+                        // A poisoned surface is dead to codecs now, not when
+                        // the async hide below destroys it: a load's preopen
+                        // landing in between must wait for the new one.
+                        if poisoned {
+                            st.live = None;
+                        }
                     }
                     // also ends a zero-size relayout retry chain
                     *this.video_size.lock().unwrap() = (0, 0);
@@ -386,67 +431,48 @@ impl SurfaceVideo {
         });
     }
 
-    /// The SurfaceView's surface materializes asynchronously after the
-    /// first non-zero visible layout; poll it off-thread and hand it to
-    /// flapjack whenever its creation seq moved past the one already
-    /// handed. A codec that started in copy mode, or against a since-dead
-    /// surface, rebuilds itself on the surface generation bump.
+    /// The view's surface events, on the android UI thread.
+    fn on_surface(&self, event: SurfaceEvent) {
+        let mut st = self.handoff.lock().unwrap();
+        match event {
+            SurfaceEvent::Created { window, seq } => {
+                // the view is only up for video, a new surface goes straight on
+                st.live = Some((WindowRef(window), seq));
+                st.hand_live();
+            }
+            SurfaceEvent::Destroyed { seq } => {
+                if st.handed_seq == seq {
+                    // off the player before the surface dies, so a codec on it
+                    // recovers through the generation bump instead of erroring
+                    crate::set_video_window(std::ptr::null_mut());
+                    st.handed_seq = 0;
+                }
+                if st.live.as_ref().is_some_and(|(_, live)| *live == seq) {
+                    st.live = None;
+                }
+            }
+        }
+    }
+
+    /// The view is up: hand its surface, or promise the decoder one is on its
+    /// way (a layout pass and a SurfaceFlinger round trip, ~100ms), so a codec
+    /// that builds in the meantime waits for it instead of starting headless
+    /// and losing video until the next keyframe. UI thread.
     fn ensure_window_handoff(self: &Arc<Self>) {
         {
             let mut st = self.handoff.lock().unwrap();
-            if st.polling {
+            if st.live.is_some() {
+                st.hand_live();
                 return;
             }
-            st.polling = true;
         }
-        // The view is up, so a window is on its way: a codec that builds in
-        // the meantime waits for it (bounded) instead of starting headless
-        // and losing video until the next keyframe. The handoff below clears
-        // the promise, as does giving up.
         crate::set_video_window_pending(true);
         let this = self.clone();
-        std::thread::spawn(move || {
-            for _ in 0..200 {
-                let seq = this.surface.surface_seq();
-                if seq != 0 {
-                    let handed = this.handoff.lock().unwrap().handed_seq;
-                    if seq == handed {
-                        // the surface flapjack holds is still the live one
-                        crate::set_video_window_pending(false);
-                        this.handoff.lock().unwrap().polling = false;
-                        return;
-                    }
-                    if let Some(window) = this.surface.acquire_native_window() {
-                        // Seqlock: the seq and the surface are two reads, and
-                        // the view can be hidden and remade between them. A
-                        // window that outlived its seq belongs to an abandoned
-                        // BufferQueue, and handing it wedges the codec for the
-                        // life of the process, so drop it and look again.
-                        if this.surface.surface_seq() != seq {
-                            unsafe {
-                                ndk_sys::ANativeWindow_release(window.as_ptr().cast())
-                            };
-                            std::thread::sleep(std::time::Duration::from_millis(25));
-                            continue;
-                        }
-                        info!(seq, "video surface live, handing it to the player");
-                        crate::set_video_window(window.as_ptr().cast());
-                        // acquire_native_window acquired a reference for US
-                        // and set_video_window took its own; without this
-                        // release every item leaks a window (and its
-                        // BufferQueue, tens of MB at 4K)
-                        unsafe { ndk_sys::ANativeWindow_release(window.as_ptr().cast()) };
-                        let mut st = this.handoff.lock().unwrap();
-                        st.handed_seq = seq;
-                        st.polling = false;
-                        return;
-                    }
-                }
-                std::thread::sleep(std::time::Duration::from_millis(25));
+        slint::Timer::single_shot(SURFACE_GIVE_UP, move || {
+            if this.handoff.lock().unwrap().live.is_none() {
+                warn!("video surface never materialized, video stays headless");
+                crate::set_video_window_pending(false);
             }
-            warn!("video surface never materialized, video stays headless");
-            crate::set_video_window_pending(false);
-            this.handoff.lock().unwrap().polling = false;
         });
     }
 }

@@ -107,9 +107,9 @@ parking_lot = "0.12"
 # and so must every i-slint-* pin in the tree: two revs in one graph is two
 # i-slint-core types, which reads as `expected slint::Weak<_>, found
 # slint::Weak<MainWindow>` and six friends.
-slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "fad17f69a76a694540a88f015803a829feb2c46a", default-features = false }
-slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "fad17f69a76a694540a88f015803a829feb2c46a" }
-i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "fad17f69a76a694540a88f015803a829feb2c46a" }
+slint = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7172750269f537a4bbd2fe458cb42aeacfec9c12", default-features = false }
+slint-build = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7172750269f537a4bbd2fe458cb42aeacfec9c12" }
+i-slint-backend-winit = { git = "https://gitlab.futo.org/fcast/slint.git", rev = "7172750269f537a4bbd2fe458cb42aeacfec9c12" }
 clap = { version = "4.5", features = ["derive"] }
 uuid = { version = "1.23", features = [ "v4" ] }
 bytes = "1"
