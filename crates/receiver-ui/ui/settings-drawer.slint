@@ -590,9 +590,13 @@ export component SettingsDrawer inherits Rectangle {
         // Absorb clicks inside the panel so they don't reach the scrim.
         TouchArea { }
 
+        // The panel runs under the system bars, its content stays inside them.
         VerticalLayout {
+            padding-right: Bridge.safe-area-right;
+
             HorizontalLayout {
                 padding: 20px;
+                padding-top: 20px + Bridge.safe-area-top;
                 padding-bottom: 12px;
                 spacing: 12px;
 
@@ -787,6 +791,7 @@ export component SettingsDrawer inherits Rectangle {
 
             VerticalLayout {
                 padding: 16px;
+                padding-bottom: 16px + Bridge.safe-area-bottom;
                 spacing: 5px;
 
                 Text {

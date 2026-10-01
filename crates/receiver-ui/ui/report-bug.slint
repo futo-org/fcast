@@ -243,8 +243,10 @@ export component ReportBugPopup inherits Rectangle {
         // Page one: what happened.
         card := Rectangle {
             visible: !root.reporting;
-            width: min(720px, root.width - 60px);
-            height: min(content.preferred-height, root.height - 60px);
+            width: min(720px, root.width - 60px - Bridge.safe-area-left - Bridge.safe-area-right);
+            height: min(content.preferred-height, root.height - 60px - Bridge.safe-area-top - Bridge.safe-area-bottom);
+            x: Bridge.safe-area-left + (root.width - Bridge.safe-area-left - Bridge.safe-area-right - self.width) / 2;
+            y: Bridge.safe-area-top + (root.height - Bridge.safe-area-top - Bridge.safe-area-bottom - self.height) / 2;
             background: @linear-gradient(222.86deg, #262626 7.47%, #0E0F10 95.53%);
             border-radius: 12px;
             border-width: 1px;
@@ -336,13 +338,16 @@ export component ReportBugPopup inherits Rectangle {
             property <length> page-padding: 24px;
             property <length> top-row-height: 36px;
             property <length> column-gap: 32px;
-            property <length> column-width: (root.width - 2 * page-padding - column-gap) / 2;
-            property <length> body-height: root.height - 2 * page-padding - 20px - top-row-height;
+            property <length> column-width: (root.width - 2 * page-padding - Bridge.safe-area-left - Bridge.safe-area-right - column-gap) / 2;
+            property <length> body-height: root.height - 2 * page-padding - Bridge.safe-area-top - Bridge.safe-area-bottom - 20px - top-row-height;
 
             TouchArea { }
 
             VerticalLayout {
-                padding: page-padding;
+                padding-left: page-padding + Bridge.safe-area-left;
+                padding-right: page-padding + Bridge.safe-area-right;
+                padding-top: page-padding + Bridge.safe-area-top;
+                padding-bottom: page-padding + Bridge.safe-area-bottom;
                 spacing: 20px;
 
                 // Back on the left, Done on the right, the title between.
