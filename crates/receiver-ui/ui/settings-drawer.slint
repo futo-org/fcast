@@ -67,6 +67,16 @@ global SettingsScroll {
     }
 }
 
+// A tap anywhere but a text field ends its edit. Rows take no focus on a
+// tap and the scroll view grabs the press, so no focus change would.
+global SettingsEdit {
+    in-out property <int> folds;
+
+    public function fold() {
+        self.folds += 1;
+    }
+}
+
 // A boolean setting: label on the left, a Switch on the right. Toggling
 // autosaves through `set-bool-setting`. The switch is the tab stop; the whole
 // row tints while it holds focus, and a click anywhere on the row toggles.
@@ -85,6 +95,7 @@ component ToggleRow inherits Rectangle {
 
     touch := TouchArea {
         clicked => {
+            SettingsEdit.fold();
             root.toggle();
         }
     }
@@ -112,6 +123,7 @@ component ToggleRow inherits Rectangle {
                 focus-ring: false;
                 checked <=> root.value;
                 toggled => {
+                    SettingsEdit.fold();
                     Bridge.set-bool-setting(root.setting-key, self.checked);
                 }
                 changed has-focus => {
@@ -146,6 +158,7 @@ component OverlayPermissionRow inherits Rectangle {
 
     touch := TouchArea {
         clicked => {
+            SettingsEdit.fold();
             root.open();
         }
     }
@@ -187,6 +200,7 @@ component OverlayPermissionRow inherits Rectangle {
                 enabled: Bridge.overlay-permission-settings;
                 checked: root.granted;
                 toggled => {
+                    SettingsEdit.fold();
                     root.open();
                 }
                 changed has-focus => {
@@ -217,6 +231,7 @@ component TextRow inherits Rectangle {
     // On android the soft keyboard going away leaves the field. Mirrored
     // here because `changed` watches an element's own properties.
     property <bool> keyboard: Bridge.soft-keyboard-visible;
+    property <int> folds: SettingsEdit.folds;
 
     background: row-focus.has-focus || root.editing
         ? RowTint.focused
@@ -234,6 +249,13 @@ component TextRow inherits Rectangle {
     changed keyboard => {
         if (!root.keyboard && root.editing) {
             root.end-edit(field.text);
+        }
+    }
+
+    // Losing focus saves and folds, see the field's has-focus.
+    changed folds => {
+        if root.editing {
+            field.clear-focus();
         }
     }
 
@@ -401,6 +423,7 @@ component SelectRow inherits Rectangle {
 
     touch := TouchArea {
         clicked => {
+            SettingsEdit.fold();
             root.step(1);
         }
     }
@@ -464,6 +487,7 @@ component SelectRow inherits Rectangle {
 
                 prev-touch := TouchArea {
                     clicked => {
+                        SettingsEdit.fold();
                         root.step(-1);
                     }
                 }
@@ -497,6 +521,7 @@ component SelectRow inherits Rectangle {
 
                 next-touch := TouchArea {
                     clicked => {
+                        SettingsEdit.fold();
                         root.step(1);
                     }
                 }
@@ -588,7 +613,11 @@ export component SettingsDrawer inherits Rectangle {
         }
 
         // Absorb clicks inside the panel so they don't reach the scrim.
-        TouchArea { }
+        TouchArea {
+            clicked => {
+                SettingsEdit.fold();
+            }
+        }
 
         // The panel runs under the system bars, its content stays inside them.
         VerticalLayout {
@@ -639,6 +668,15 @@ export component SettingsDrawer inherits Rectangle {
                 changed visible-height => {
                     SettingsScroll.visible-height = self.visible-height;
                     SettingsScroll.top = self.absolute-position.y;
+                }
+
+                // Taps between the rows land here, the flickable keeps them
+                // from the panel's area behind it. Not a layout, so it
+                // leaves the content height to the rows.
+                TouchArea {
+                    clicked => {
+                        SettingsEdit.fold();
+                    }
                 }
 
                 VerticalLayout {

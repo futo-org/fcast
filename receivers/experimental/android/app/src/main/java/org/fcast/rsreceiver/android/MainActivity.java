@@ -49,6 +49,8 @@ public class MainActivity extends NativeActivity {
     // tens of ms on some devices: off the main looper.
     private HandlerThread netThread = null;
     private android.os.Handler netHandler = null;
+    // Last soft keyboard state reported below API 30.
+    private boolean keyboardShown = false;
 
     /// The name registrations always use. Never reassigned: adopting a
     /// collision-renamed value as the new base compounds " (2)" suffixes on
@@ -381,6 +383,20 @@ public class MainActivity extends NativeActivity {
                                     root != null && root.isVisible(android.view.WindowInsets.Type.ime()));
                         }
                     });
+        } else {
+            // No ime insets before 30: a keyboard is the visible frame
+            // losing more than the nav bar's share of the window.
+            final android.view.View decor = getWindow().getDecorView();
+            decor.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
+                android.graphics.Rect visible = new android.graphics.Rect();
+                decor.getWindowVisibleDisplayFrame(visible);
+                int height = decor.getRootView().getHeight();
+                boolean shown = height > 0 && height - visible.bottom > height * 15 / 100;
+                if (shown != keyboardShown) {
+                    keyboardShown = shown;
+                    nativeSoftKeyboardVisible(shown);
+                }
+            });
         }
 
         netThread = new HandlerThread("fcast-net");
