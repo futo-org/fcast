@@ -25,12 +25,15 @@ static EVENT_CHANNEL: LazyLock<(
 fn android_main(app: slint::android::AndroidApp) {
     log_panics::init();
 
+    // The activity's files dir, where the drawer's settings persist.
+    let settings = rcore::Settings::load(app.internal_data_path().as_deref());
+
     // Debug only in debug builds: every tracing debug! line is a logcat
-    // write, and a release apk has no reader for them.
-    let level = if cfg!(debug_assertions) {
-        log::LevelFilter::Debug
-    } else {
-        log::LevelFilter::Info
+    // write, and a release apk has no reader for them. A configured level wins.
+    let level = match settings.log_level() {
+        Some(level) => log_filter(level),
+        None if cfg!(debug_assertions) => log::LevelFilter::Debug,
+        None => log::LevelFilter::Info,
     };
     android_logger::init_once(
         android_logger::Config::default()
@@ -55,7 +58,7 @@ fn android_main(app: slint::android::AndroidApp) {
 
     let event_rx = EVENT_CHANNEL.1.lock().take().expect("android_main ran twice");
 
-    rcore::run(app, event_rx).unwrap();
+    rcore::run(app, event_rx, settings).unwrap();
 
     // The activity is gone (Destroy broke the event loop), but android keeps
     // the process around and serves the NEXT activity from it, which runs
@@ -66,6 +69,52 @@ fn android_main(app: slint::android::AndroidApp) {
     // instead. The next launch gets a fresh process and an honest cold start,
     // which the splash window already covers.
     std::process::exit(0);
+}
+
+fn log_filter(level: rcore::tracing::level_filters::LevelFilter) -> log::LevelFilter {
+    use rcore::tracing::Level;
+    match level.into_level() {
+        None => log::LevelFilter::Off,
+        Some(Level::ERROR) => log::LevelFilter::Error,
+        Some(Level::WARN) => log::LevelFilter::Warn,
+        Some(Level::INFO) => log::LevelFilter::Info,
+        Some(Level::DEBUG) => log::LevelFilter::Debug,
+        Some(Level::TRACE) => log::LevelFilter::Trace,
+    }
+}
+
+/// The FCast and RAOP names to register, `{fcast, raop}` with null for a
+/// disabled service. Read from the config before the receiver is up.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeServiceNames<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    files_dir: jni::objects::JString,
+    hostname: jni::objects::JString,
+) -> jni::sys::jobjectArray {
+    // no unwraps in extern "C": a panic here aborts the process
+    let (Ok(files_dir), Ok(hostname)) = (env.get_string(&files_dir), env.get_string(&hostname))
+    else {
+        return std::ptr::null_mut();
+    };
+    let files_dir = std::path::PathBuf::from(files_dir.to_string_lossy().into_owned());
+    let (fcast, raop) = rcore::android_service_names(&files_dir, &hostname.to_string_lossy());
+
+    let Ok(names) = env.new_object_array(2, "java/lang/String", jni::objects::JObject::null())
+    else {
+        return std::ptr::null_mut();
+    };
+    for (idx, name) in [fcast, raop].into_iter().enumerate() {
+        let Some(name) = name else { continue };
+        let Ok(name) = env.new_string(name) else {
+            return std::ptr::null_mut();
+        };
+        if env.set_object_array_element(&names, idx as i32, name).is_err() {
+            return std::ptr::null_mut();
+        }
+    }
+    names.into_raw()
 }
 
 /// The fcast TXT records for the NSD registration. Returns false while the

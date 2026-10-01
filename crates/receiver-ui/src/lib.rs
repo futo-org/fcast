@@ -486,6 +486,7 @@ pub fn run(settings: Settings) -> Result<()> {
 pub fn run(
     android_app: slint::android::AndroidApp,
     mut platform_event_rx: mpsc::UnboundedReceiver<Message>,
+    settings: Settings,
 ) -> Result<()> {
     let start = std::time::Instant::now();
 
@@ -614,6 +615,7 @@ pub fn run(
                             Some(video_sink),
                             Some(cue_engine),
                             msg_tx,
+                            settings,
                             android_app,
                         )
                         .await;

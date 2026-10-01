@@ -4,7 +4,6 @@ use gst_static_env as _;
 
 use tokio::sync::mpsc::UnboundedSender;
 use tracing::debug;
-#[cfg(not(target_os = "android"))]
 use tracing::level_filters::LevelFilter;
 
 #[cfg(not(target_os = "android"))]
@@ -289,7 +288,7 @@ impl Settings {
             .fcast
             .name
             .as_deref()
-            .map(expand_name_vars)
+            .map(|name| expand_name_vars(name, &mdns::hostname()))
             .unwrap_or_else(mdns::fcast_device_name)
     }
 
@@ -300,7 +299,7 @@ impl Settings {
             .raop
             .name
             .as_deref()
-            .map(expand_name_vars)
+            .map(|name| expand_name_vars(name, &mdns::hostname()))
             .unwrap_or_else(mdns::fcast_device_name)
     }
 
@@ -311,7 +310,7 @@ impl Settings {
             .chromecast
             .name
             .as_deref()
-            .map(expand_name_vars)
+            .map(|name| expand_name_vars(name, &mdns::hostname()))
             .unwrap_or_else(mdns::chromecast_device_name)
     }
 
@@ -388,7 +387,6 @@ fn parse_render_profile(value: &str) -> Option<RenderProfile> {
     parsed
 }
 
-#[cfg(not(target_os = "android"))]
 fn parse_log_level(value: &str) -> Option<LevelFilter> {
     match value.parse::<LevelFilter>() {
         Ok(level) => Some(level),
@@ -401,9 +399,62 @@ fn parse_log_level(value: &str) -> Option<LevelFilter> {
 
 /// Expand `{hostname}`, the only variable allowed in a configured broadcast
 /// name.
-#[cfg(not(target_os = "android"))]
-fn expand_name_vars(template: &str) -> String {
-    template.replace("{hostname}", &mdns::hostname())
+fn expand_name_vars(template: &str, hostname: &str) -> String {
+    template.replace("{hostname}", hostname)
+}
+
+/// The config file in the app's private files dir.
+#[cfg(target_os = "android")]
+const ANDROID_CONFIG_FILE: &str = "config.toml";
+
+/// android: the persisted config alone, there is no command line. The
+/// activity registers the services, see [`android_service_names`].
+#[cfg(target_os = "android")]
+pub struct Settings {
+    pub config: config::ConfigStore,
+}
+
+#[cfg(target_os = "android")]
+impl Settings {
+    /// `files_dir` is the activity's files dir, `None` keeps edits in memory.
+    pub fn load(files_dir: Option<&std::path::Path>) -> Self {
+        let config = match files_dir {
+            Some(dir) => config::ConfigStore::open(dir.join(ANDROID_CONFIG_FILE)),
+            None => config::ConfigStore::in_memory(),
+        };
+        Self { config }
+    }
+
+    pub fn log_level(&self) -> Option<LevelFilter> {
+        self.config
+            .get()
+            .log
+            .level
+            .as_deref()
+            .and_then(parse_log_level)
+    }
+
+    pub fn fcast_enabled(&self) -> bool {
+        self.config.get().fcast.enabled
+    }
+
+    pub fn raop_enabled(&self) -> bool {
+        self.config.get().raop.enabled
+    }
+}
+
+/// The FCast and RAOP names the activity registers, read from the config in
+/// `files_dir`, `None` for a disabled service. `hostname` fills `{hostname}`
+/// and the `FCast-<hostname>` default. The activity asks before the receiver
+/// is up, so this reads the file itself.
+#[cfg(target_os = "android")]
+pub fn android_service_names(
+    files_dir: &std::path::Path,
+    hostname: &str,
+) -> (Option<String>, Option<String>) {
+    config::ConfigStore::open(files_dir.join(ANDROID_CONFIG_FILE))
+        .get()
+        .advertised_names(hostname)
 }
 
 /// Cap the number of glibc malloc arenas: GStreamer's many short-lived worker

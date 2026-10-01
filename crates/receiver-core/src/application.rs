@@ -47,8 +47,9 @@ use crate::{
     ui_types::{AppState, GuiPlaybackState, UiMediaTrack, UiPlayerVariant, UiToastKind},
     utils::{current_time_millis, map_to_header_map},
 };
+use crate::Settings;
 #[cfg(not(target_os = "android"))]
-use crate::{Settings, mdns};
+use crate::mdns;
 #[cfg(feature = "airplay")]
 use crate::{airplay, message::AirPlay};
 
@@ -838,7 +839,6 @@ pub struct Application {
     #[cfg(target_os = "android")]
     android_update: AndroidUpdate,
     gcast_tx: GCastUpdateSender,
-    #[cfg(not(target_os = "android"))]
     settings: Settings,
     window_restore: WindowRestore,
     image_downloader: image::Downloader,
@@ -937,7 +937,7 @@ impl Application {
         // The video sink's subtitle cue state; `None` when headless.
         cue_engine: Option<fcast_video::cue::CueEngine>,
         msg_tx: MessageSender,
-        #[cfg(not(target_os = "android"))] settings: Settings,
+        settings: Settings,
         #[cfg(target_os = "android")] android_app: android_activity::AndroidApp,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
@@ -1179,7 +1179,6 @@ impl Application {
             #[cfg(target_os = "android")]
             android_update: AndroidUpdate::Idle,
             gcast_tx,
-            #[cfg(not(target_os = "android"))]
             settings,
             window_restore: WindowRestore::default(),
             image_downloader,
@@ -2151,18 +2150,11 @@ impl Application {
     }
 
     fn is_fcast_enabled(&self) -> bool {
-        #[cfg(not(target_os = "android"))]
-        {
-            self.settings.fcast_enabled()
-        }
-        #[cfg(target_os = "android")]
-        {
-            true
-        }
+        self.settings.fcast_enabled()
     }
 
     /// Whether playback should enter fullscreen (immersive on android) on
-    /// its own. Android has no config store yet, so the default stands.
+    /// its own. Android shows no such setting, so the default stands.
     fn fullscreen_player_wanted(&self) -> bool {
         #[cfg(not(target_os = "android"))]
         {
@@ -5010,10 +5002,7 @@ impl Application {
     fn handle_raop_event(&mut self, event: Raop) -> Result<bool> {
         match event {
             Raop::ConfigAvailable(config) => {
-                #[cfg(not(target_os = "android"))]
                 let run_raop = self.settings.raop_enabled();
-                #[cfg(target_os = "android")]
-                let run_raop = true;
 
                 if run_raop && self.raop_server.is_none() {
                     info!(?config, "Starting raop server");
@@ -6080,30 +6069,20 @@ impl Application {
                 self.gui.set_senders(self.senders.values().cloned().collect());
             }
             Message::SetConfigBool { key, value } => {
-                #[cfg(not(target_os = "android"))]
-                {
-                    let mut known = false;
-                    let res = self
-                        .settings
-                        .config
-                        .update(|config| known = config.set_bool(&key, value));
-                    self.report_config_change(&key, known, res);
-                }
-                #[cfg(target_os = "android")]
-                let _ = (key, value);
+                let mut known = false;
+                let res = self
+                    .settings
+                    .config
+                    .update(|config| known = config.set_bool(&key, value));
+                self.report_config_change(&key, known, res);
             }
             Message::SetConfigString { key, value } => {
-                #[cfg(not(target_os = "android"))]
-                {
-                    let mut known = false;
-                    let res = self
-                        .settings
-                        .config
-                        .update(|config| known = config.set_string(&key, &value));
-                    self.report_config_change(&key, known, res);
-                }
-                #[cfg(target_os = "android")]
-                let _ = (key, value);
+                let mut known = false;
+                let res = self
+                    .settings
+                    .config
+                    .update(|config| known = config.set_string(&key, &value));
+                self.report_config_change(&key, known, res);
             }
         }
 
@@ -6111,14 +6090,17 @@ impl Application {
     }
 
     /// Push the current persisted config into the settings drawer's bindings.
-    #[cfg(not(target_os = "android"))]
     fn push_settings_to_ui(&self) {
-        let path = self
-            .settings
-            .config
-            .path()
-            .map(|p| p.display().to_string())
-            .unwrap_or_default();
+        // The app's private files dir means nothing to a user, android shows no path.
+        let path = match cfg!(target_os = "android") {
+            true => String::new(),
+            false => self
+                .settings
+                .config
+                .path()
+                .map(|p| p.display().to_string())
+                .unwrap_or_default(),
+        };
         self.gui.init_settings(
             self.settings.config.get().clone(),
             path,
@@ -6127,7 +6109,6 @@ impl Application {
     }
 
     /// Log the outcome of an autosaved settings change from the UI.
-    #[cfg(not(target_os = "android"))]
     fn report_config_change(&self, key: &str, known: bool, result: std::io::Result<()>) {
         if !known {
             warn!(key, "Ignoring unknown setting from the settings UI");
@@ -6335,7 +6316,6 @@ impl Application {
         fin_tx: tokio::sync::oneshot::Sender<()>,
     ) -> Result<()> {
         // Seed the settings drawer with the current persisted config.
-        #[cfg(not(target_os = "android"))]
         self.push_settings_to_ui();
 
         // `None` means the user quit before anything was bound. When FCast is disabled

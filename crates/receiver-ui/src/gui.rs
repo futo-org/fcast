@@ -880,7 +880,6 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
                 bridge.set_show_port_conflict(false);
             }
         }
-        #[cfg(not(target_os = "android"))]
         UpdateGuiCommand::InitSettings {
             config,
             config_path,

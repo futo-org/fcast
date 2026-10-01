@@ -52,10 +52,11 @@ public class MainActivity extends NativeActivity {
     // Last soft keyboard state reported below API 30.
     private boolean keyboardShown = false;
 
-    /// The name registrations always use. Never reassigned: adopting a
-    /// collision-renamed value as the new base compounds " (2)" suffixes on
-    /// every re-registration cycle.
-    private String baseServiceName;
+    /// The names registrations always use, from the settings, null for a
+    /// disabled service. Never reassigned: adopting a collision-renamed value
+    /// as the new base compounds " (2)" suffixes on every re-registration cycle.
+    private String fcastServiceName;
+    private String raopServiceName;
     // The listener instance IS the registration handle: one fresh instance per
     // register call, never reused, so re-registration cycles cannot trip
     // NsdManager's listener-in-use checks.
@@ -179,6 +180,7 @@ public class MainActivity extends NativeActivity {
     native void nativeSetAddresses(List<ByteBuffer> addrs);
     native void setMdnsDeviceName(String name);
     native String getDeviceNameRaopHash(String name);
+    static native String[] nativeServiceNames(String filesDir, String hostname);
     native void getRaopTxtAttribs(Map<String, String> attrs);
     native boolean getFCastTxtAttribs(Map<String, String> attrs);
     native int getFCastPort();
@@ -415,9 +417,19 @@ public class MainActivity extends NativeActivity {
         } else {
             modelName = android.os.Build.MODEL;
         }
-        baseServiceName = truncateUtf8("FCast-" + android.os.Build.MANUFACTURER + "-" + modelName, 63);
+        // Fills {hostname} and the default names. Settings apply on restart,
+        // so reading them once here is enough.
+        String hostname = android.os.Build.MANUFACTURER + "-" + modelName;
+        String[] names = nativeServiceNames(getFilesDir().getPath(), hostname);
+        if (names == null) {
+            names = new String[] { "FCast-" + hostname, "FCast-" + hostname };
+        }
+        fcastServiceName = names[0] == null ? null : truncateUtf8(names[0], 63);
+        raopServiceName = names[1] == null ? null : truncateUtf8(names[1], 63);
 
-        setMdnsDeviceName(baseServiceName);
+        setMdnsDeviceName(fcastServiceName != null ? fcastServiceName
+                : raopServiceName != null ? raopServiceName
+                : truncateUtf8("FCast-" + hostname, 63));
         registerServices();
 
         connectivityManager = (ConnectivityManager) this.getSystemService(Context.CONNECTIVITY_SERVICE);
@@ -468,19 +480,23 @@ public class MainActivity extends NativeActivity {
         quietUnregister(raopReg);
         raopReg = null;
 
-        registerRaop();
-        registerFCastWhenReady(fcastPollGen);
+        if (raopServiceName != null) {
+            registerRaop();
+        }
+        if (fcastServiceName != null) {
+            registerFCastWhenReady(fcastPollGen);
+        }
     }
 
     private void registerRaop() {
-        String raopHash = getDeviceNameRaopHash(baseServiceName);
+        String raopHash = getDeviceNameRaopHash(raopServiceName);
         if (raopHash == null) {
             Log.e(TAG, "raop hash unavailable, skipping raop registration");
             return;
         }
         NsdServiceInfo raopServiceInfo = new NsdServiceInfo();
         // the combined instance name also lives under DNS-SD's 63 bytes
-        raopServiceInfo.setServiceName(truncateUtf8(raopHash + "@" + baseServiceName, 63));
+        raopServiceInfo.setServiceName(truncateUtf8(raopHash + "@" + raopServiceName, 63));
         raopServiceInfo.setServiceType("_raop._tcp");
         raopServiceInfo.setPort(33505);
         Map<String, String> raopAttrs = new HashMap<>();
@@ -504,7 +520,7 @@ public class MainActivity extends NativeActivity {
             return;
         }
         NsdServiceInfo info = new NsdServiceInfo();
-        info.setServiceName(baseServiceName);
+        info.setServiceName(fcastServiceName);
         info.setServiceType("_fcast._tcp");
         info.setPort(port);
         for (Map.Entry<String, String> a : attrs.entrySet()) {

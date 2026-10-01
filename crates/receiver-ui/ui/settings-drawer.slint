@@ -714,16 +714,18 @@ export component SettingsDrawer inherits Rectangle {
                         value <=> Bridge.cfg-raop-name;
                     }
 
-                    SectionHeader {
+                    // android runs no Google Cast server, its activity
+                    // registers no _googlecast record
+                    if !Bridge.android: SectionHeader {
                         title: @tr("Google Cast");
                         icon: Icons.gcast-small;
                     }
-                    ToggleRow {
+                    if !Bridge.android: ToggleRow {
                         label: @tr("Enabled");
                         setting-key: "chromecast.enabled";
                         value <=> Bridge.cfg-chromecast-enabled;
                     }
-                    TextRow {
+                    if !Bridge.android: TextRow {
                         label: @tr("Name");
                         setting-key: "chromecast.name";
                         placeholder: "Chromecast-{hostname}";
@@ -750,7 +752,7 @@ export component SettingsDrawer inherits Rectangle {
                     // Window management is a desktop concept: no tray, no
                     // start-fullscreen, no headless on android, and its
                     // fullscreen player is hardwired on rather than a
-                    // setting (no config store there yet).
+                    // setting.
                     if !Bridge.android: ToggleRow {
                         label: @tr("Show window on start");
                         setting-key: "interface.show_window";
@@ -779,30 +781,33 @@ export component SettingsDrawer inherits Rectangle {
                     }
                     // "tv" is the 10-foot layout and the default. "auto" gives
                     // that only on TV-sized panels, "desktop" never. A literal
-                    // factor is config-file only, not dropdown material.
-                    SelectRow {
+                    // factor is config-file only, not dropdown material. android
+                    // keeps the system density, nothing installs a scaler.
+                    if !Bridge.android: SelectRow {
                         label: @tr("UI size");
                         setting-key: "interface.ui_scale";
                         model: ["tv", "auto", "desktop"];
                         value <=> Bridge.cfg-interface-ui-scale;
                     }
 
-                    SectionHeader {
+                    // Render profiles and interface excludes steer the desktop
+                    // video lane and mdns daemon, android has neither.
+                    if !Bridge.android: SectionHeader {
                         title: @tr("Video");
                         icon: Icons.settings-video;
                     }
-                    SelectRow {
+                    if !Bridge.android: SelectRow {
                         label: @tr("Render profile");
                         setting-key: "video.render_profile";
                         model: ["Default", "fast", "balanced", "high-quality"];
                         value <=> Bridge.cfg-video-render-profile;
                     }
 
-                    SectionHeader {
+                    if !Bridge.android: SectionHeader {
                         title: @tr("Network");
                         icon: Icons.network;
                     }
-                    TextRow {
+                    if !Bridge.android: TextRow {
                         label: @tr("Exclude interfaces (regex)");
                         setting-key: "discovery.exclude_interfaces";
                         placeholder: @tr("none");

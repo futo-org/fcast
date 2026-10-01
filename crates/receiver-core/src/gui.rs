@@ -228,7 +228,6 @@ pub enum UpdateGuiCommand {
     ShowSystemTray,
     /// Push the current persisted config into the settings drawer's bindings;
     /// sent once at startup.
-    #[cfg(not(target_os = "android"))]
     InitSettings {
         config: crate::config::Config,
         config_path: String,
@@ -370,7 +369,6 @@ impl GuiController {
         self.send(UpdateGuiCommand::DeviceDisconnected);
     }
 
-    #[cfg(not(target_os = "android"))]
     pub fn init_settings(
         &self,
         config: crate::config::Config,
