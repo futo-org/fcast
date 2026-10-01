@@ -248,7 +248,7 @@ component TextRow inherits Rectangle {
 
     changed keyboard => {
         if (!root.keyboard && root.editing) {
-            root.end-edit(field.text);
+            root.end-edit();
         }
     }
 
@@ -259,13 +259,15 @@ component TextRow inherits Rectangle {
         }
     }
 
-    function end-edit(text: string) {
-        Bridge.set-string-setting(root.setting-key, text);
+    function end-edit() {
         // Cleared by hand too: the flag the window keys its arrow capture on
         // must be down before focus moves to the row.
         Bridge.text-edit-focused = false;
         root.editing = false;
         row-focus.focus();
+        // Saved after the focus move: leaving the field commits the soft
+        // keyboard's composing word into it, Enter alone does not.
+        Bridge.set-string-setting(root.setting-key, field.text);
     }
 
     touch := TouchArea {
@@ -346,14 +348,14 @@ component TextRow inherits Rectangle {
                 text <=> root.value;
                 placeholder-text: root.placeholder;
                 accepted => {
-                    root.end-edit(self.text);
+                    root.end-edit();
                 }
                 // Back on a remote leaves the field like Escape does. On
                 // android the first Back only hides the keyboard, the second
                 // reaches here; unhandled it would close the whole drawer.
                 key-pressed(event) => {
                     if event.text == Key.Escape || event.text == Key.Back {
-                        root.end-edit(self.text);
+                        root.end-edit();
                         return accept;
                     }
 
