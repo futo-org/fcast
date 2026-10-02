@@ -70,9 +70,8 @@ fn clear_frame(ui: &crate::MainWindow) {
 }
 
 /// The player's android video sink: a synced appsink whose frames land in the
-/// `sw-video-frame` bridge image.
-pub fn make_sink(ui: &crate::MainWindow) -> gst::Element {
-    let ui = ui.as_weak();
+/// attached UI's `sw-video-frame` bridge image, dropped while none is.
+pub fn make_sink() -> gst::Element {
     let appsink = gst_app::AppSink::builder()
         .caps(
             &gst_video::VideoCapsBuilder::new()
@@ -91,7 +90,6 @@ pub fn make_sink(ui: &crate::MainWindow) -> gst::Element {
     appsink.set_callbacks(
         gst_app::AppSinkCallbacks::builder()
             .new_sample({
-                let ui = ui.clone();
                 move |sink| {
                     let sample = sink.pull_sample().map_err(|_| gst::FlowError::Eos)?;
                     let (Some(buffer), Some(caps)) = (sample.buffer(), sample.caps()) else {
@@ -106,6 +104,9 @@ pub fn make_sink(ui: &crate::MainWindow) -> gst::Element {
                     else {
                         return Ok(gst::FlowSuccess::Ok);
                     };
+                    let Some(ui) = crate::android_ui::current() else {
+                        return Ok(gst::FlowSuccess::Ok);
+                    };
                     if let Some(pix) = frame_to_rgba(&frame) {
                         let _ = ui.upgrade_in_event_loop(move |ui| {
                             let bridge = ui.global::<crate::Bridge>();
@@ -117,7 +118,9 @@ pub fn make_sink(ui: &crate::MainWindow) -> gst::Element {
                 }
             })
             .eos(move |_| {
-                let _ = ui.upgrade_in_event_loop(|ui| clear_frame(&ui));
+                if let Some(ui) = crate::android_ui::current() {
+                    let _ = ui.upgrade_in_event_loop(|ui| clear_frame(&ui));
+                }
             })
             .build(),
     );

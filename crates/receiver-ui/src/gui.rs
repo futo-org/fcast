@@ -697,9 +697,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
                 bridge.set_sw_video_active(false);
                 // and so does its bitmap subtitle
                 bridge.set_bitmap_subtitle(crate::SubtitleOverlay::default());
-                // and the text cues, engine memory included
-                #[cfg(target_os = "android")]
-                crate::android_subtitles::clear_current();
+                // the text cues are cleared core-side, see start_core's hook
             }
             bridge.set_app_state(state.into());
             unhide_cursor_outside_video_scene(&ui);

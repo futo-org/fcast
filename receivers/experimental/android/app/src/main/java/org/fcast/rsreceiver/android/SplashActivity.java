@@ -5,8 +5,10 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.view.Choreographer;
 import android.view.View;
 import android.view.ViewTreeObserver;
+import java.lang.ref.WeakReference;
 
 /**
  * Branded launch splash. MainActivity is a NativeActivity whose window is
@@ -15,21 +17,30 @@ import android.view.ViewTreeObserver;
  * window or splash for it, leaving a black cold-start gap that reads as a crash
  * on slow TV hardware.
  *
- * This activity is opaque with a real content view painting the splash art, so
- * it holds the screen while it is up. It launches MainActivity after a short
- * beat (letting its own window draw first) and lingers behind the translucent
- * MainActivity, showing through until the receiver paints its idle screen.
+ * This activity is opaque with a real content view painting the splash art. It
+ * launches MainActivity once its own frame is submitted and lingers behind the
+ * translucent MainActivity until the receiver reports its first frame (retire).
  */
 public class SplashActivity extends Activity {
-    // A short buffer after the splash's first draw so the frame is actually
-    // presented before MainActivity's window comes up, guarding pre-emption
-    // without the old fixed lead-in.
-    private static final long PRESENT_BUFFER_MS = 120;
-    // Retire after MainActivity has had time to paint over us. Its cold start
-    // measured ~2s on the slowest box, so leave headroom.
-    private static final long RETIRE_MS = 3000;
+    // A window that never commits a frame still hands off.
+    private static final long LAUNCH_BACKSTOP_MS = 1000;
+    // A receiver that never paints (crash, failed gst registration).
+    private static final long RETIRE_BACKSTOP_MS = 10_000;
+
+    private static WeakReference<SplashActivity> current = new WeakReference<>(null);
 
     private final Handler handler = new Handler(Looper.getMainLooper());
+    private boolean launched = false;
+
+    /// The receiver presented its first frame, the splash has nothing left to
+    /// cover. Main thread only.
+    static void retire() {
+        SplashActivity splash = current.get();
+        current = new WeakReference<>(null);
+        if (splash != null && !splash.isFinishing()) {
+            splash.finish();
+        }
+    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -41,32 +52,57 @@ public class SplashActivity extends Activity {
             return;
         }
 
+        // Warm: the receiver is up and has drawn, there is nothing to cover.
+        if (MainActivity.painted) {
+            launchMain();
+            finish();
+            return;
+        }
+
         // A plain view carrying the splash art. Guarantees a drawn frame, so
         // the window is shown rather than held as an empty starting window that
         // the eager MainActivity launch could pre-empt.
         final View splash = new View(this);
         splash.setBackgroundResource(R.drawable.splash_window);
         setContentView(splash);
+        current = new WeakReference<>(this);
 
-        // Hand off the moment the splash has actually painted, not on a fixed
-        // timer. The pre-draw fires once the first frame is ready; a small
-        // buffer lets the compositor present it, then MainActivity launches.
-        splash.getViewTreeObserver().addOnPreDrawListener(
-                new ViewTreeObserver.OnPreDrawListener() {
-                    @Override
-                    public boolean onPreDraw() {
-                        splash.getViewTreeObserver().removeOnPreDrawListener(this);
-                        handler.postDelayed(SplashActivity.this::launchMain, PRESENT_BUFFER_MS);
-                        return true;
-                    }
-                });
-        handler.postDelayed(this::finish, RETIRE_MS);
+        // Hand off once the splash frame is submitted, not on a timer.
+        if (android.os.Build.VERSION.SDK_INT >= 29) {
+            splash.getViewTreeObserver().registerFrameCommitCallback(this::launchMain);
+        } else {
+            // Frame N+1 starting means the pre-drawn frame N was submitted.
+            splash.getViewTreeObserver().addOnPreDrawListener(
+                    new ViewTreeObserver.OnPreDrawListener() {
+                        @Override
+                        public boolean onPreDraw() {
+                            splash.getViewTreeObserver().removeOnPreDrawListener(this);
+                            Choreographer.getInstance().postFrameCallback(t -> launchMain());
+                            return true;
+                        }
+                    });
+        }
+        handler.postDelayed(this::launchMain, LAUNCH_BACKSTOP_MS);
+        handler.postDelayed(this::finish, RETIRE_BACKSTOP_MS);
     }
 
     private void launchMain() {
+        if (launched || isFinishing()) {
+            return;
+        }
+        launched = true;
         Intent intent = new Intent(this, MainActivity.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         startActivity(intent);
+    }
+
+    @Override
+    protected void onDestroy() {
+        handler.removeCallbacksAndMessages(null);
+        if (current.get() == this) {
+            current = new WeakReference<>(null);
+        }
+        super.onDestroy();
     }
 
     // Back before the handoff completes retires the splash instead of leaving a

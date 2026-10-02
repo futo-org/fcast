@@ -65,6 +65,8 @@ pub fn android_overlay_state(granted: bool, can_open_settings: bool) {
 }
 #[cfg(target_os = "android")]
 mod android_overlay;
+#[cfg(target_os = "android")]
+mod android_ui;
 #[cfg(any(test, target_os = "android"))]
 mod android_insets;
 #[cfg(target_os = "android")]
@@ -491,19 +493,34 @@ pub fn run(settings: Settings) -> Result<()> {
     Ok(())
 }
 
-/// Run the app on android: the slint UI and the receiver application,
-/// without the desktop render loop. The player and the audio path are fully
-/// live; video decodes headless until the direct-surface integration lands.
-/// Platform events (mdns name, network changes, raop config) arrive from
-/// the activity's JNI bridges.
+/// What every UI attach needs from the running core.
 #[cfg(target_os = "android")]
-pub fn run(
-    android_app: slint::android::AndroidApp,
-    mut platform_event_rx: mpsc::UnboundedReceiver<Message>,
-    settings: Settings,
-) -> Result<()> {
-    let start = std::time::Instant::now();
+struct AndroidCore {
+    msg_tx: MessageSender,
+    gui_is_visible: gui::GuiIsVisible,
+    fin_rx: std::sync::Mutex<Option<tokio::sync::oneshot::Receiver<()>>>,
+}
 
+/// The core's media half, set once gst registration finished.
+#[cfg(target_os = "android")]
+struct AndroidMedia {
+    subtitles: android_subtitles::Subtitles,
+    surface_video: bool,
+}
+
+#[cfg(target_os = "android")]
+static ANDROID_CORE: std::sync::OnceLock<AndroidCore> = std::sync::OnceLock::new();
+#[cfg(target_os = "android")]
+static ANDROID_MEDIA: std::sync::OnceLock<AndroidMedia> = std::sync::OnceLock::new();
+
+/// Starts the receiver once per process: the application, gst and the
+/// player's sinks. It owns no window, UIs attach to it (ANDROID-BOOT-START-PLAN.md).
+#[cfg(target_os = "android")]
+fn start_core(
+    android_app: &slint::android::AndroidApp,
+    platform_event_rx: mpsc::UnboundedReceiver<Message>,
+    settings: Settings,
+) -> &'static AndroidCore {
     receiver_core::tune_allocator();
     receiver_core::allow_ptrace_attach();
     // Installs the panic hook and the gst log integration; no fmt
@@ -518,6 +535,7 @@ pub fn run(
 
     RUNTIME.spawn({
         let msg_tx = msg_tx.clone();
+        let mut platform_event_rx = platform_event_rx;
         async move {
             while let Some(event) = platform_event_rx.recv().await {
                 msg_tx.send(event);
@@ -526,6 +544,114 @@ pub fn run(
         }
     });
 
+    // Visible only while a UI is attached, GuiController::attach flips it.
+    let gui_is_visible = gui::GuiIsVisible::new();
+    let gui = GuiController::new(None, gui_is_visible.clone())
+        .with_replay()
+        // an item boundary drops the old item's cues, on screen and in the
+        // engine, with or without a UI
+        .with_app_state_hook(|state| {
+            use receiver_core::ui_types::AppState;
+            if matches!(state, AppState::LoadingMedia | AppState::Idle) {
+                android_subtitles::clear_current();
+            }
+        });
+
+    // GStreamer registration is ~800ms and the idle screen needs none of it,
+    // so it runs on a worker and the first frame never waits for it.
+    let use_sw_video = std::env::var("FCAST_ANDROID_SW_VIDEO").is_ok_and(|v| v == "1");
+    let android_app = android_app.clone();
+    let core_msg_tx = msg_tx.clone();
+    std::thread::Builder::new()
+        .name("gst-init".to_owned())
+        .spawn(move || {
+            // Registration unwraps throughout; on this detached worker a
+            // device-specific failure would die silently and leave the
+            // receiver undiscoverable with every cast failing. Catch it and
+            // quit so the failure is loud.
+            if std::panic::catch_unwind(gstreamer::init_and_load_plugins).is_err() {
+                error!("gstreamer registration failed, the receiver cannot start");
+                let _ = slint::quit_event_loop();
+                return;
+            }
+            // Zero-copy surface video by default (android_surface_video.rs),
+            // FCAST_ANDROID_SW_VIDEO=1 selects the software bridge.
+            let surface_sink = (!use_sw_video)
+                .then(android_surface_video::make_sink)
+                .flatten();
+            let surface_video = surface_sink.is_some();
+            let video_sink = surface_sink.unwrap_or_else(android_video::make_sink);
+
+            // Subtitles: the engine's cues render as slint overlays above the
+            // video hole, driven off the video sink.
+            let cue_engine = fcast_video::cue::CueEngine::new();
+            let subtitles = android_subtitles::install(cue_engine.clone(), &video_sink);
+            let _ = ANDROID_MEDIA.set(AndroidMedia {
+                subtitles,
+                surface_video,
+            });
+            // A UI already up gets its view and cue styling on its own thread.
+            let _ = slint::invoke_from_event_loop(attach_media);
+
+            RUNTIME.spawn(async move {
+                // awaited, so a panic quits too, see event_loop_ended
+                let run = RUNTIME.spawn(async move {
+                    let app = application::Application::new(
+                        gui,
+                        Some(video_sink),
+                        Some(cue_engine),
+                        core_msg_tx,
+                        settings,
+                        android_app,
+                    )
+                    .await?;
+                    app.run_event_loop(event_rx, fin_tx).await
+                });
+                event_loop_ended(run.await);
+            });
+        })
+        .expect("spawning the gst-init thread");
+
+    let _ = ANDROID_CORE.set(AndroidCore {
+        msg_tx,
+        gui_is_visible,
+        fin_rx: std::sync::Mutex::new(Some(fin_rx)),
+    });
+    ANDROID_CORE.get().expect("just set")
+}
+
+/// The attached UI's media half: its video view and the cue styling for its
+/// window. Runs on the UI thread, once per attach, whichever of the attach
+/// and the end of gst registration comes second.
+#[cfg(target_os = "android")]
+fn attach_media() {
+    thread_local! {
+        static DONE_FOR: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+    let (Some(media), Some(generation), Some(ui)) = (
+        ANDROID_MEDIA.get(),
+        android_ui::generation(),
+        android_ui::current().and_then(|ui| ui.upgrade()),
+    ) else {
+        return;
+    };
+    if DONE_FOR.get() == generation {
+        return;
+    }
+    DONE_FOR.set(generation);
+    if media.surface_video {
+        if let Some(app) = android_ui::app() {
+            if android_surface_video::SurfaceVideo::attach(&ui, &app).is_none() {
+                tracing::warn!("no video surface for this UI, video stays headless");
+            }
+        }
+    }
+    android_subtitles::attach(&media.subtitles, &ui);
+}
+
+/// Builds a UI for this activity and attaches it to the core.
+#[cfg(target_os = "android")]
+fn attach_ui(android_app: &slint::android::AndroidApp, core: &AndroidCore) -> Result<(MainWindow, u64)> {
     let ui = MainWindow::new()?;
     // TV means dpad-first: controls must not auto-hide away from a focused
     // remote, so touch mode stays off there.
@@ -536,128 +662,95 @@ pub fn run(
     // the hole punch is an android constant, whatever the input style
     ui.global::<Bridge>().set_behind_window_video(true);
     ui.global::<Bridge>().set_android(true);
-    android_immersive::init(&android_app);
+    android_immersive::init(android_app);
+    let generation = android_ui::attach(&ui, android_app);
     android_overlay::init(&ui);
+    // The splash retires on the first rendered frame (the opaque startup art)
+    // instead of a timer, see SplashActivity.retire.
+    {
+        let mut reported = false;
+        let notifier = ui.window().set_rendering_notifier(move |state, _| {
+            if reported || !matches!(state, slint::RenderingState::AfterRendering) {
+                return;
+            }
+            reported = true;
+            android_immersive::with_activity("onReceiverPainted", |env, activity| {
+                env.call_method(activity, "onReceiverPainted", "()V", &[])
+                    .map(drop)
+            });
+        });
+        if let Err(err) = notifier {
+            tracing::warn!(?err, "no rendering notifier, the splash retires on its backstop");
+        }
+    }
     // starts with system bars, the player's toggle enters immersive
     ui.global::<Bridge>().set_is_fullscreen(false);
-    let gui_is_visible = gui::GuiIsVisible::new();
-    // one window, no tray: visible for the app's whole life
-    gui_is_visible.set(true);
 
-    let (gui_tx, gui_rx) = mpsc::unbounded_channel();
-    {
-        // no renderer thread on android, the dropped receiver makes the
-        // handler's renderer sends no-ops
-        gui::spawn_command_handler(ui.as_weak(), gui_rx, gui_is_visible.clone(), Box::new(|| {}));
-    }
-    let gui = GuiController::new(Some(gui_tx), gui_is_visible);
-
-    // GStreamer registration is ~800ms and the idle screen needs none of it,
-    // only the video sink does and that waits for the first cast. Register on a
-    // worker so ui.run() paints the idle screen immediately, then finish the
-    // sink and receiver wiring back on the event-loop thread. The desktop lane
-    // already backgrounds this (see the non-android run); android was the last
-    // one doing it inline on the UI thread. The sink and Application still come
-    // up at the same wall-clock moment as before (~800ms in), so port binding
-    // and cast handling are unchanged, only the first frame moves earlier.
-    let use_sw_video = std::env::var("FCAST_ANDROID_SW_VIDEO").is_ok_and(|v| v == "1");
+    // A fullscreen toggle resizes the window; re-fit the video rect and the
+    // cue canvas together or they drift apart by the inset delta.
     {
         let ui_weak = ui.as_weak();
-        let msg_tx = msg_tx.clone();
-        std::thread::Builder::new()
-            .name("gst-init".to_owned())
-            .spawn(move || {
-                // Registration unwraps throughout; on this detached worker a
-                // device-specific failure would die silently and leave the
-                // receiver at the idle screen with no sink and no bound port,
-                // undiscoverable with every cast failing. Catch it and quit so
-                // the failure is loud, the way it was when this ran inline on
-                // the event-loop thread.
-                if std::panic::catch_unwind(gstreamer::init_and_load_plugins).is_err() {
-                    error!("gstreamer registration failed, the receiver cannot start");
-                    let _ = slint::quit_event_loop();
-                    return;
-                }
-                // The sink setup and callback registration touch the live ui,
-                // so finish on the event-loop thread. The sink itself only
-                // needs a weak ui and marshals its own ui work; the idle screen
-                // is opaque so the video SurfaceView going up behind it now is
-                // invisible until the first cast punches the hole.
-                let finish = move || {
-                    let Some(ui) = ui_weak.upgrade() else { return };
-
-                    // Zero-copy surface video by default (see
-                    // android_surface_video.rs); FCAST_ANDROID_SW_VIDEO=1
-                    // selects the software bridge instead.
-                    let mut surface_video = None;
-                    let video_sink = if use_sw_video {
-                        android_video::make_sink(&ui)
-                    } else {
-                        match android_surface_video::SurfaceVideo::setup(&ui, &android_app) {
-                            Some((sv, sink)) => {
-                                surface_video = Some(sv);
-                                sink
-                            }
-                            None => android_video::make_sink(&ui),
-                        }
-                    };
-
-                    // Subtitles: the engine's cues render as slint overlays
-                    // above the video hole, driven off the video sink.
-                    let cue_engine = fcast_video::cue::CueEngine::new();
-                    let subtitles =
-                        android_subtitles::attach(cue_engine.clone(), &video_sink, &ui);
-
-                    // A fullscreen toggle resizes the window; re-fit the video
-                    // rect and the cue canvas together or they drift apart by
-                    // the inset delta.
-                    {
-                        let ui_weak = ui.as_weak();
-                        ui.global::<Bridge>().on_window_geometry_changed(move || {
-                            if let Some(surface_video) = &surface_video {
-                                surface_video.relayout(&ui_weak);
-                            }
-                            if let Some(ui) = ui_weak.upgrade() {
-                                android_subtitles::resync(&subtitles, &ui);
-                            }
-                        });
-                    }
-
-                    RUNTIME.spawn(async move {
-                        // awaited, so a panic quits too, see event_loop_ended
-                        let run = RUNTIME.spawn(async move {
-                            let app = application::Application::new(
-                                gui,
-                                Some(video_sink),
-                                Some(cue_engine),
-                                msg_tx,
-                                settings,
-                                android_app,
-                            )
-                            .await?;
-                            app.run_event_loop(event_rx, fin_tx).await
-                        });
-                        event_loop_ended(run.await);
-                    });
-                };
-                if slint::invoke_from_event_loop(finish).is_err() {
-                    error!("event loop ended before gstreamer finished loading");
-                }
-            })
-            .expect("spawning the gst-init thread");
+        ui.global::<Bridge>().on_window_geometry_changed(move || {
+            android_surface_video::relayout_current();
+            if let (Some(media), Some(ui)) = (ANDROID_MEDIA.get(), ui_weak.upgrade()) {
+                android_subtitles::resync(&media.subtitles, &ui);
+            }
+        });
     }
 
-    gui::register_callbacks(&ui, msg_tx.clone());
+    let (gui_tx, gui_rx) = mpsc::unbounded_channel();
+    // no renderer thread on android, the dropped receiver makes the
+    // handler's renderer sends no-ops
+    gui::spawn_command_handler(ui.as_weak(), gui_rx, core.gui_is_visible.clone(), Box::new(|| {}));
+    core.msg_tx.send(Message::GuiAttached {
+        tx: gui_tx,
+        generation,
+    });
+    gui::register_callbacks(&ui, core.msg_tx.clone());
+    // the core may have finished its media half before this UI existed
+    attach_media();
+    Ok((ui, generation))
+}
+
+/// The activity's UI went away. The core keeps running without one.
+#[cfg(target_os = "android")]
+fn detach_ui(core: &AndroidCore, generation: u64) {
+    core.msg_tx.send(Message::GuiDetached { generation });
+    android_surface_video::detach_view();
+    android_ui::detach(generation);
+}
+
+/// Run the app on android: the core once per process, then this activity's
+/// UI attached to it. Platform events (mdns name, network changes, raop
+/// config) arrive from the activity's JNI bridges.
+#[cfg(target_os = "android")]
+pub fn run(
+    android_app: slint::android::AndroidApp,
+    platform_event_rx: mpsc::UnboundedReceiver<Message>,
+    settings: Settings,
+) -> Result<()> {
+    let start = std::time::Instant::now();
+    let core = match ANDROID_CORE.get() {
+        Some(core) => core,
+        None => start_core(&android_app, platform_event_rx, settings),
+    };
+    let (ui, generation) = attach_ui(&android_app, core)?;
     info!(initialized_in = ?start.elapsed());
     ui.run()?;
+    detach_ui(core, generation);
+    drop(ui);
 
     info!("Shutting down...");
+    let fin_rx = core.fin_rx.lock().unwrap().take();
+    let msg_tx = core.msg_tx.clone();
     RUNTIME.block_on(async move {
         msg_tx.send(Message::Quit);
         // Bounded: a quit inside the gst-init window means the Application task
-        // never started, so fin_tx is stranded in the abandoned android event
-        // queue and would never fire. Cap the wait rather than hang the thread.
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), fin_rx).await;
+        // never started, so fin_tx is stranded and would never fire. Cap the
+        // wait rather than hang the thread.
+        if let Some(fin_rx) = fin_rx {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), fin_rx).await;
+        }
     });
 
     Ok(())

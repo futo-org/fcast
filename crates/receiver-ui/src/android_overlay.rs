@@ -4,16 +4,11 @@
 //! The activity pushes it on every window focus gain, which is how the user
 //! comes back from that page.
 
-use std::sync::{
-    OnceLock,
-    atomic::{AtomicU8, Ordering},
-};
+use std::sync::atomic::{AtomicU8, Ordering};
 
 use slint::ComponentHandle;
 
 use crate::{Bridge, MainWindow, android_immersive::with_activity};
-
-static UI: OnceLock<slint::Weak<MainWindow>> = OnceLock::new();
 
 const GRANTED: u8 = 1;
 const CAN_OPEN_SETTINGS: u8 = 2;
@@ -21,7 +16,6 @@ const CAN_OPEN_SETTINGS: u8 = 2;
 static STATE: AtomicU8 = AtomicU8::new(0);
 
 pub(crate) fn init(ui: &MainWindow) {
-    let _ = UI.set(ui.as_weak());
     ui.global::<Bridge>().on_open_overlay_settings(|| {
         with_activity("openOverlaySettings", |env, activity| {
             env.call_method(activity, "openOverlaySettings", "()V", &[])
@@ -34,7 +28,7 @@ pub(crate) fn init(ui: &MainWindow) {
 pub(crate) fn set_state(granted: bool, can_open_settings: bool) {
     let state = granted as u8 * GRANTED | can_open_settings as u8 * CAN_OPEN_SETTINGS;
     STATE.store(state, Ordering::Release);
-    if let Some(ui) = UI.get() {
+    if let Some(ui) = crate::android_ui::current() {
         let _ = ui.upgrade_in_event_loop(move |ui| apply(&ui, state));
     }
 }

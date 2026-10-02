@@ -25,7 +25,9 @@ type Signature = Vec<(usize, i32, i32, u32, u32)>;
 
 struct State {
     engine: CueEngine,
-    ui: slint::Weak<crate::MainWindow>,
+    /// The house style before any window's scale or the system caption
+    /// preferences, re-derived per attach so they never compound.
+    base_style: fcast_video::cue_ir::CueStyle,
     /// Coded video size from the sink caps, for mapping SrcFrame overlays
     /// (bitmap subtitles) onto the letterboxed picture.
     video_size: Mutex<(u32, u32)>,
@@ -40,7 +42,7 @@ struct State {
 #[derive(Clone)]
 pub struct Subtitles(Arc<State>);
 
-/// The attach-time handle, for item-boundary cleanup from the gui thread.
+/// The installed handle, for item-boundary cleanup from the gui thread.
 static CURRENT: std::sync::OnceLock<Subtitles> = std::sync::OnceLock::new();
 
 /// Item boundary (a load is coming, or playback ended): the old item's cues
@@ -55,25 +57,16 @@ pub fn clear_current() {
     push(&subs.0, true);
 }
 
-pub fn attach(engine: CueEngine, sink: &gst::Element, ui: &crate::MainWindow) -> Subtitles {
+/// Feeds the engine from the video sink, once per process. Cues track time
+/// with or without a UI to show them.
+pub fn install(engine: CueEngine, sink: &gst::Element) -> Subtitles {
     let state = Arc::new(State {
+        base_style: engine.style(),
         engine: engine.clone(),
-        ui: ui.as_weak(),
         video_size: Mutex::new((0, 0)),
         geometry: CueGeometry::new(),
         last: Mutex::new(Vec::new()),
     });
-
-    // The cue engine lays out in the window's PHYSICAL pixels, so its dp floor
-    // needs the display's scale factor to mean anything. Without this the
-    // floor is read as physical pixels and never binds on a phone, which is
-    // what made portrait subtitles render at 9dp.
-    {
-        let mut style = engine.style();
-        style.px_per_dp = ui.window().scale_factor();
-        apply_system_captioning(&mut style);
-        engine.set_style(style);
-    }
 
     engine.warm();
     {
@@ -81,13 +74,11 @@ pub fn attach(engine: CueEngine, sink: &gst::Element, ui: &crate::MainWindow) ->
         engine.set_on_change(move || push(&state, false));
     }
 
-    let Some(pad) = sink.static_pad("sink") else {
-        let handle = Subtitles(state);
-        let _ = CURRENT.set(handle.clone());
-        return handle;
-    };
     let handle = Subtitles(state.clone());
     let _ = CURRENT.set(handle.clone());
+    let Some(pad) = sink.static_pad("sink") else {
+        return handle;
+    };
     pad.add_probe(
         gst::PadProbeType::BUFFER | gst::PadProbeType::EVENT_DOWNSTREAM,
         move |_, info| {
@@ -116,6 +107,23 @@ pub fn attach(engine: CueEngine, sink: &gst::Element, ui: &crate::MainWindow) ->
         },
     );
     handle
+}
+
+/// A UI came up (already in the android_ui slot): style the cues for its
+/// window and paint the current set.
+pub fn attach(subs: &Subtitles, ui: &crate::MainWindow) {
+    let state = &subs.0;
+    // The cue engine lays out in the window's PHYSICAL pixels, so its dp floor
+    // needs the display's scale factor to mean anything. Without this the
+    // floor is read as physical pixels and never binds on a phone, which is
+    // what made portrait subtitles render at 9dp.
+    let mut style = state.base_style.clone();
+    style.px_per_dp = ui.window().scale_factor();
+    apply_system_captioning(&mut style);
+    state.engine.set_style(style);
+    // a new scene shows nothing yet, whatever the old one had
+    state.last.lock().unwrap().clear();
+    push(state, true);
 }
 
 /// Re-key the layout after a window geometry change. A canvas change marks
@@ -198,8 +206,11 @@ fn root_height() -> i32 {
 /// boundary's included, then dedups against that lie and the cue never comes
 /// down (2026-09-23, a paused cue surviving into the next item forever).
 fn push(state: &Arc<State>, force: bool) {
+    let Some(ui) = crate::android_ui::current() else {
+        return;
+    };
     let state = state.clone();
-    let _ = state.ui.clone().upgrade_in_event_loop(move |ui| {
+    let _ = ui.upgrade_in_event_loop(move |ui| {
         // Same space as the SurfaceView's rect, or cues drift off the picture
         // (the raw slint window size includes surface insets).
         let size = crate::android_surface_video::effective_canvas(&ui);

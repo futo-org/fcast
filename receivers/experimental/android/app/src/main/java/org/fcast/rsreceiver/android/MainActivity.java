@@ -63,6 +63,9 @@ public class MainActivity extends NativeActivity {
     private NsdListener fcastReg = null;
     private NsdListener raopReg = null;
     private boolean destroyed = false;
+    /// This instance has presented a receiver frame. SplashActivity skips its
+    /// art while it holds.
+    static volatile boolean painted = false;
     /// Cancels stale registerFCastWhenReady poll chains: each
     /// registerServices() bumps it and in-flight lambdas holding an older
     /// value stop, so two overlapping chains cannot both register.
@@ -1203,11 +1206,23 @@ public class MainActivity extends NativeActivity {
         super.onStop();
     }
 
+    /// The receiver's first rendered frame, from the slint thread. The render
+    /// precedes its present, so the splash retires a vsync later.
+    public void onReceiverPainted() {
+        runOnUiThread(() -> android.view.Choreographer.getInstance().postFrameCallback(t -> {
+            if (!destroyed) {
+                painted = true;
+            }
+            SplashActivity.retire();
+        }));
+    }
+
     @Override
     protected void onDestroy() {
         // Before super: NativeActivity's onDestroy blocks on the native
         // thread, which exits the process, so anything after it never runs.
         destroyed = true;
+        painted = false;
         handler.removeCallbacksAndMessages(null);
         quietUnregister(fcastReg);
         fcastReg = null;
