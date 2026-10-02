@@ -235,11 +235,9 @@ public class ReceiverService extends Service {
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
-        if (ReceiverCore.startOnBoot()) {
-            // kept for good, the notification's Quit ends it
-            super.onTaskRemoved(rootIntent);
-            return;
-        }
+        // Swiping the app away ends the receiver, start on boot included: it
+        // is the gesture users have for killing an app, and the next boot
+        // brings it back.
         ReceiverCore.setServiceWanted(false);
         // Recents swipe: the process is going down with the task; take the
         // notification along instead of leaving an orphan.
