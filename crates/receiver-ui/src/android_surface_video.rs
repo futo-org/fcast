@@ -74,11 +74,17 @@ static CURRENT: OnceLock<(Arc<SurfaceVideo>, slint::Weak<crate::MainWindow>)> = 
 /// the dead surface. On return the relayout adopts the fresh surface (its
 /// zero-size retry covers a window that is not up yet).
 pub(crate) fn app_visibility(visible: bool) {
-    // The decode throttle keys on this globally, before any surface exists.
-    crate::set_app_visible(visible);
     let Some((this, ui)) = CURRENT.get() else {
+        crate::set_app_visible(visible);
         return;
     };
+    // Back with video loaded: the view's surface is on its way, so the
+    // decoder waits for it instead of building a headless codec first.
+    if visible && this.video_size.lock().unwrap().0 != 0 {
+        crate::set_video_window_pending(true);
+    }
+    // The decode throttle keys on this globally, before any surface exists.
+    crate::set_app_visible(visible);
     if visible {
         this.relayout(ui);
     } else {
@@ -299,8 +305,12 @@ impl SurfaceVideo {
         pad.add_probe(gst::PadProbeType::BUFFER, {
             let this = this.clone();
             let ui = ui.as_weak();
-            move |_pad, _info| {
-                if this.frame_pending.load(std::sync::atomic::Ordering::Relaxed) {
+            move |_pad, info| {
+                // the decoder's hidden throttle sends empty GAP buffers that
+                // only keep time, nothing lands on the surface for them
+                let gap = matches!(&info.data, Some(gst::PadProbeData::Buffer(b))
+                    if b.flags().contains(gst::BufferFlags::GAP));
+                if !gap && this.frame_pending.load(std::sync::atomic::Ordering::Relaxed) {
                     this.set_frame_pending(&ui, false);
                 }
                 gst::PadProbeReturn::Ok
