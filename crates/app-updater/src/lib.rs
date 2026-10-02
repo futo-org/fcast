@@ -150,15 +150,24 @@ mod imp {
             let did_fail = (run_on_main_thread)(Box::new(move || {
                 let mut script =
                     osakit::Script::new_from_source(osakit::Language::AppleScript, &apple_script);
-                script.compile().expect("invalid AppleScript");
-                let r = script.execute();
-                tx.send(r).unwrap();
+                // A quote in a path breaks the script, report it rather than panic
+                let r = match script.compile() {
+                    Ok(()) => script.execute().map(|_| ()).map_err(|err| err.to_string()),
+                    Err(err) => Err(err.to_string()),
+                };
+                let _ = tx.send(r);
             }));
-            let result = rx.recv().unwrap();
+            // A failed dispatch drops the closure and its sender, so recv errors then
+            let result = if did_fail {
+                Err("main thread dispatch failed".to_owned())
+            } else {
+                rx.recv()
+                    .unwrap_or_else(|_| Err("main thread closure never reported".to_owned()))
+            };
 
-            if did_fail || result.is_err() {
+            if let Err(err) = result {
                 std::fs::remove_dir_all(tmp_extract_dir.path()).ok();
-                anyhow::bail!("Failed to move the new app into place");
+                anyhow::bail!("Failed to move the new app into place: {err}");
             }
         } else {
             // Remove existing directory if it exists
