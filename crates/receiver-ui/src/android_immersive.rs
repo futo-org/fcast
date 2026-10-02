@@ -12,6 +12,11 @@ pub(crate) fn init(app: &slint::android::AndroidApp) {
     ACTIVITY.store(app.activity_as_ptr() as usize, Ordering::Release);
 }
 
+/// The UI's activity went away, calls into it are dropped until the next.
+pub(crate) fn clear() {
+    ACTIVITY.store(0, Ordering::Release);
+}
+
 pub(crate) fn with_activity(
     what: &str,
     f: impl FnOnce(&mut jni::JNIEnv, &jni::objects::JObject) -> jni::errors::Result<()>,

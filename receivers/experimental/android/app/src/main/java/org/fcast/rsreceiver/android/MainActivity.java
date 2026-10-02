@@ -1,303 +1,25 @@
 package org.fcast.rsreceiver.android;
 
-import android.annotation.SuppressLint;
-import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
 import android.media.AudioManager;
-import android.media.session.MediaSession;
-import android.net.ConnectivityManager;
-import android.net.LinkProperties;
-import android.net.Network;
-import android.net.NetworkCapabilities;
-import android.net.NetworkRequest;
-import android.net.nsd.NsdManager;
-import android.net.nsd.NsdServiceInfo;
-import android.net.wifi.WifiManager;
 import android.os.Bundle;
 import android.app.NativeActivity;
-import android.os.HandlerThread;
-import android.os.PowerManager;
 import android.util.Log;
 import androidx.annotation.NonNull;
-import java.net.InetAddress;
-import java.net.NetworkInterface;
-import java.nio.ByteBuffer;
-import java.nio.charset.StandardCharsets;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Enumeration;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.regex.Pattern;
 
+/// The receiver's window: the slint UI, PiP, immersive mode and the
+/// permission prompts. Everything that must outlive the window lives in
+/// ReceiverCore; this activity only attaches to it.
 public class MainActivity extends NativeActivity {
     private static final String TAG = "FCastMainActivity";
 
-    NsdManager nsdManager = null;
-    WifiManager wifiManager = null;
-    WifiManager.WifiLock wifiLock = null;
-    PowerManager powerManager = null;
-    PowerManager.WakeLock cpuWakeLock = null;
-    ConnectivityManager connectivityManager = null;
-    ConnectivityManager.NetworkCallback networkCallback = null;
-
-    private final android.os.Handler handler =
-            new android.os.Handler(android.os.Looper.getMainLooper());
-    // Interface sweeps walk /proc/net and issue an ioctl per interface,
-    // tens of ms on some devices: off the main looper.
-    private HandlerThread netThread = null;
-    private android.os.Handler netHandler = null;
     // Last soft keyboard state reported below API 30.
     private boolean keyboardShown = false;
-
-    /// The names registrations always use, from the settings, null for a
-    /// disabled service. Never reassigned: adopting a collision-renamed value
-    /// as the new base compounds " (2)" suffixes on every re-registration cycle.
-    private String fcastServiceName;
-    private String raopServiceName;
-    // The listener instance IS the registration handle: one fresh instance per
-    // register call, never reused, so re-registration cycles cannot trip
-    // NsdManager's listener-in-use checks.
-    private NsdListener fcastReg = null;
-    private NsdListener raopReg = null;
     private boolean destroyed = false;
     /// This instance has presented a receiver frame. SplashActivity skips its
     /// art while it holds.
     static volatile boolean painted = false;
-    /// Cancels stale registerFCastWhenReady poll chains: each
-    /// registerServices() bumps it and in-flight lambdas holding an older
-    /// value stop, so two overlapping chains cannot both register.
-    private int fcastPollGen = 0;
-    /// Per-service backoff and single-retry-pending flags: a failure retries
-    /// only ITS OWN service (re-registering the healthy one would flap it),
-    /// and only one retry is ever queued per service, or two both-fail
-    /// rounds would fan out exponentially.
-    private int fcastRetries = 0;
-    private int raopRetries = 0;
-    private boolean fcastRetryPending = false;
-    private boolean raopRetryPending = false;
-
-    // Re-sweep even without a callback: tethering/hotspot interfaces never
-    // surface as Networks, so their addresses are only found by polling.
-    private static final long SWEEP_INTERVAL_MS = 30_000;
-    private static final long NETWORK_SETTLE_MS = 500;
-
-    /// NsdManager removes a listener BEFORE delivering onRegistrationFailed,
-    /// so unregistering it afterwards throws; every outcome is handled on
-    /// the main handler because the callbacks arrive on the connectivity
-    /// thread.
-    class NsdListener implements NsdManager.RegistrationListener {
-        final String label;
-        final boolean isFcast;
-
-        NsdListener(String label, boolean isFcast) {
-            this.label = label;
-            this.isFcast = isFcast;
-        }
-
-        @Override
-        public void onRegistrationFailed(NsdServiceInfo info, int errorCode) {
-            handler.post(() -> {
-                // the platform already dropped this listener
-                if (isFcast) {
-                    if (fcastReg == this) {
-                        fcastReg = null;
-                    }
-                    if (fcastRetryPending) {
-                        return;
-                    }
-                    fcastRetryPending = true;
-                    fcastRetries += 1;
-                    long delay = 3_000L << Math.min(fcastRetries - 1, 4);
-                    Log.e(TAG, label + " registration failed: " + errorCode
-                            + ", retry " + fcastRetries + " in " + delay + "ms");
-                    handler.postDelayed(() -> {
-                        fcastRetryPending = false;
-                        if (!destroyed && fcastReg == null) {
-                            fcastPollGen += 1;
-                            registerFCastWhenReady(fcastPollGen);
-                        }
-                    }, delay);
-                } else {
-                    if (raopReg == this) {
-                        raopReg = null;
-                    }
-                    if (raopRetryPending) {
-                        return;
-                    }
-                    raopRetryPending = true;
-                    raopRetries += 1;
-                    long delay = 3_000L << Math.min(raopRetries - 1, 4);
-                    Log.e(TAG, label + " registration failed: " + errorCode
-                            + ", retry " + raopRetries + " in " + delay + "ms");
-                    handler.postDelayed(() -> {
-                        raopRetryPending = false;
-                        if (!destroyed && raopReg == null) {
-                            registerRaop();
-                        }
-                    }, delay);
-                }
-            });
-        }
-
-        @Override
-        public void onUnregistrationFailed(NsdServiceInfo info, int errorCode) {
-            Log.e(TAG, label + " unregistration failed: " + errorCode);
-        }
-
-        @Override
-        public void onServiceRegistered(NsdServiceInfo info) {
-            Log.i(TAG, label + " registered as " + info.getServiceName());
-            handler.post(() -> {
-                // per service: raop succeeding must not defeat fcast's
-                // backoff or vice versa
-                if (isFcast) {
-                    fcastRetries = 0;
-                    // The daemon renames on collision. The DISPLAYED name
-                    // follows the network's truth; the registration base
-                    // never moves, or renames would compound.
-                    setMdnsDeviceName(info.getServiceName());
-                } else {
-                    raopRetries = 0;
-                }
-            });
-        }
-
-        @Override
-        public void onServiceUnregistered(NsdServiceInfo info) { }
-    }
-
-    private void quietUnregister(NsdListener listener) {
-        if (listener == null) {
-            return;
-        }
-        try {
-            nsdManager.unregisterService(listener);
-        } catch (IllegalArgumentException e) {
-            // already removed by a failure callback
-        }
-    }
-
-    native void nativeSetAddresses(List<ByteBuffer> addrs);
-    native void setMdnsDeviceName(String name);
-    native String getDeviceNameRaopHash(String name);
-    static native String[] nativeServiceNames(String filesDir, String hostname);
-    native void getRaopTxtAttribs(Map<String, String> attrs);
-    native boolean getFCastTxtAttribs(Map<String, String> attrs);
-    native int getFCastPort();
-
-    /// The previous sweep's raw addresses, net thread only. An unchanged
-    /// sweep is not forwarded: the receiver rebuilds its connection QR on
-    /// every address push, and the 30 s timer would otherwise do that for
-    /// the app's whole life.
-    private ArrayList<byte[]> lastSweep = null;
-
-    private static boolean sameAddresses(ArrayList<byte[]> a, ArrayList<byte[]> b) {
-        if (a.size() != b.size()) {
-            return false;
-        }
-        for (int i = 0; i < a.size(); i++) {
-            if (!Arrays.equals(a.get(i), b.get(i))) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    /// One authoritative sweep instead of per-Network bookkeeping: every
-    /// interface's current addresses, as the full replacement set. Covers
-    /// hotspot/tethering interfaces the ConnectivityManager never reports.
-    /// Runs on the net thread.
-    void sweepAddresses() {
-        ArrayList<ByteBuffer> addrs = new ArrayList<>();
-        ArrayList<byte[]> raw = new ArrayList<>();
-        try {
-            Enumeration<NetworkInterface> ifaces = NetworkInterface.getNetworkInterfaces();
-            while (ifaces != null && ifaces.hasMoreElements()) {
-                NetworkInterface iface = ifaces.nextElement();
-                if (!iface.isUp() || iface.isLoopback()) {
-                    continue;
-                }
-                Enumeration<InetAddress> ifaceAddrs = iface.getInetAddresses();
-                while (ifaceAddrs.hasMoreElements()) {
-                    InetAddress addr = ifaceAddrs.nextElement();
-                    if (addr.isLoopbackAddress()) {
-                        continue;
-                    }
-                    byte[] addressBytes = addr.getAddress();
-                    raw.add(addressBytes);
-                    ByteBuffer buf = ByteBuffer.allocateDirect(addressBytes.length);
-                    buf.put(addressBytes);
-                    addrs.add(buf);
-                }
-            }
-        } catch (java.net.SocketException e) {
-            Log.e(TAG, "interface sweep failed", e);
-            return;
-        }
-        if (lastSweep != null && sameAddresses(lastSweep, raw)) {
-            return;
-        }
-        lastSweep = raw;
-        Log.d(TAG, "address sweep: " + addrs.size() + " addresses");
-        nativeSetAddresses(addrs);
-    }
-
-    /// Debounced reaction to any connectivity signal: re-sweep addresses and
-    /// re-register NSD, since the platform responder's registrations go
-    /// stale across interface changes.
-    private final Runnable networkSettled = () -> {
-        if (destroyed) {
-            return;
-        }
-        netHandler.post(this::sweepAddresses);
-        registerServices();
-    };
-
-    void onNetworkChanged() {
-        handler.removeCallbacks(networkSettled);
-        handler.postDelayed(networkSettled, NETWORK_SETTLE_MS);
-    }
-
-    private final Runnable periodicSweep = new Runnable() {
-        @Override
-        public void run() {
-            if (destroyed) {
-                return;
-            }
-            netHandler.post(MainActivity.this::sweepAddresses);
-            handler.postDelayed(this, SWEEP_INTERVAL_MS);
-        }
-    };
-
-    class NetworkCallbackHandler extends ConnectivityManager.NetworkCallback {
-        @Override
-        public void onAvailable(@NonNull Network network) {
-            handler.post(MainActivity.this::onNetworkChanged);
-        }
-
-        @Override
-        public void onLost(@NonNull Network network) {
-            handler.post(MainActivity.this::onNetworkChanged);
-        }
-
-        @Override
-        public void onLinkPropertiesChanged(@NonNull Network network,
-                @NonNull LinkProperties props) {
-            // AP roams, DHCP renews and IPv6 prefix changes keep the same
-            // Network and only fire this.
-            handler.post(MainActivity.this::onNetworkChanged);
-        }
-    }
-
-    static {
-        // One self-contained library: GStreamer is statically linked inside
-        // and initialized by the native side, no java glue involved.
-        System.loadLibrary("fcastreceiver");
-        Updater.nativeLoaded = true;
-    }
 
     private boolean isTelevision() {
         android.app.UiModeManager ui =
@@ -306,9 +28,11 @@ public class MainActivity extends NativeActivity {
                 == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION;
     }
 
-    @SuppressLint("WakelockTimeout")
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        // Before super: NativeActivity starts the native thread there, and the
+        // core it attaches to must exist (it outlives this activity).
+        ReceiverCore.ensureStarted(this);
         super.onCreate(savedInstanceState);
 
         // Translucent from the first frame. The video hole punch is real
@@ -331,8 +55,7 @@ public class MainActivity extends NativeActivity {
         // the ring stream whenever nothing is actively playing.
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
 
-        createMediaSession();
-        ReceiverService.ensureChannel(this);
+        ReceiverCore.attachActivity(this);
         Updater.onActivityCreated(this);
         // No prompt on TV: no notification shade worth the dialog there.
         if (android.os.Build.VERSION.SDK_INT >= 33 && !isTelevision()
@@ -409,288 +132,20 @@ public class MainActivity extends NativeActivity {
                 }
             });
         }
-
-        netThread = new HandlerThread("fcast-net");
-        netThread.start();
-        netHandler = new android.os.Handler(netThread.getLooper());
-
-        nsdManager = (NsdManager) this.getSystemService(Context.NSD_SERVICE);
-
-        String modelName;
-        if (android.os.Build.MODEL.contains(android.os.Build.MANUFACTURER)) {
-            // quoted: a manufacturer string with regex metacharacters would
-            // throw out of onCreate on that device
-            modelName = android.os.Build.MODEL
-                    .replaceFirst("^" + Pattern.quote(android.os.Build.MANUFACTURER), "")
-                    .trim();
-        } else {
-            modelName = android.os.Build.MODEL;
-        }
-        // Fills {hostname} and the default names. Settings apply on restart,
-        // so reading them once here is enough.
-        String hostname = android.os.Build.MANUFACTURER + "-" + modelName;
-        String[] names = nativeServiceNames(getFilesDir().getPath(), hostname);
-        if (names == null || names.length < 2) {
-            // An unreadable config is an unset one: nothing disabled, the
-            // default names, as rcore's advertised_names resolves it.
-            Log.w(TAG, "service names unavailable from native, advertising defaults");
-            names = new String[] { "FCast-" + hostname, "FCast-" + hostname };
-        }
-        fcastServiceName = names[0] == null ? null : truncateUtf8(names[0], 63);
-        raopServiceName = names[1] == null ? null : truncateUtf8(names[1], 63);
-
-        setMdnsDeviceName(fcastServiceName != null ? fcastServiceName
-                : raopServiceName != null ? raopServiceName
-                : truncateUtf8("FCast-" + hostname, 63));
-        registerServices();
-
-        connectivityManager = (ConnectivityManager) this.getSystemService(Context.CONNECTIVITY_SERVICE);
-        NetworkRequest networkRequest = new NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
-                .build();
-        networkCallback = new NetworkCallbackHandler();
-        connectivityManager.registerNetworkCallback(networkRequest, networkCallback);
-
-        netHandler.post(this::sweepAddresses);
-        handler.postDelayed(periodicSweep, SWEEP_INTERVAL_MS);
-
-        // Created here; updateWifiLockMode owns hold and mode from now on.
-        // Non ref-counted so repeated acquires are idempotent and one
-        // release always drops the lock.
-        wifiManager = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        updateWifiLockMode(true);
-        // Discovery has to survive the screen going off (see MulticastLease).
-        MulticastLease.acquire(this);
-
-        powerManager = (PowerManager) this.getSystemService(Context.POWER_SERVICE);
-        cpuWakeLock = powerManager.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "FCastRsReceiver:WakeLock");
-        cpuWakeLock.setReferenceCounted(false);
     }
 
-    /// DNS-SD instance names cap at 63 bytes of utf8.
-    private static String truncateUtf8(String s, int maxBytes) {
-        byte[] bytes = s.getBytes(StandardCharsets.UTF_8);
-        if (bytes.length <= maxBytes) {
-            return s;
-        }
-        while (maxBytes > 0 && (bytes[maxBytes] & 0xC0) == 0x80) {
-            maxBytes--;
-        }
-        return new String(bytes, 0, maxBytes, StandardCharsets.UTF_8);
-    }
-
-    /// (Re-)register both services, dropping any prior registrations first.
-    /// The fcast one waits for the TXT records (TLS fingerprint + protocol
-    /// version) AND the committed listen port: v4 senders key their secure
-    /// connect on the records, and an advertisement pointing at an unbound
-    /// port hands early senders a connection refuse.
-    private void registerServices() {
-        fcastPollGen += 1;
-        quietUnregister(fcastReg);
-        fcastReg = null;
-        quietUnregister(raopReg);
-        raopReg = null;
-
-        if (raopServiceName != null) {
-            registerRaop();
-        }
-        if (fcastServiceName != null) {
-            registerFCastWhenReady(fcastPollGen);
-        }
-    }
-
-    private void registerRaop() {
-        String raopHash = getDeviceNameRaopHash(raopServiceName);
-        if (raopHash == null) {
-            Log.e(TAG, "raop hash unavailable, skipping raop registration");
-            return;
-        }
-        NsdServiceInfo raopServiceInfo = new NsdServiceInfo();
-        // the combined instance name also lives under DNS-SD's 63 bytes
-        raopServiceInfo.setServiceName(truncateUtf8(raopHash + "@" + raopServiceName, 63));
-        raopServiceInfo.setServiceType("_raop._tcp");
-        raopServiceInfo.setPort(33505);
-        Map<String, String> raopAttrs = new HashMap<>();
-        getRaopTxtAttribs(raopAttrs);
-        for (Map.Entry<String, String> a : raopAttrs.entrySet()) {
-            raopServiceInfo.setAttribute(a.getKey(), a.getValue());
-        }
-        raopReg = new NsdListener("_raop", false);
-        nsdManager.registerService(raopServiceInfo, NsdManager.PROTOCOL_DNS_SD, raopReg);
-    }
-
-    private void registerFCastWhenReady(int gen) {
-        if (gen != fcastPollGen || destroyed) {
-            // a newer registration cycle owns the field now
-            return;
-        }
-        Map<String, String> attrs = new HashMap<>();
-        int port = getFCastPort();
-        if (port == 0 || !getFCastTxtAttribs(attrs)) {
-            handler.postDelayed(() -> registerFCastWhenReady(gen), 200);
-            return;
-        }
-        NsdServiceInfo info = new NsdServiceInfo();
-        info.setServiceName(fcastServiceName);
-        info.setServiceType("_fcast._tcp");
-        info.setPort(port);
-        for (Map.Entry<String, String> a : attrs.entrySet()) {
-            info.setAttribute(a.getKey(), a.getValue());
-        }
-        fcastReg = new NsdListener("_fcast", true);
-        nsdManager.registerService(info, NsdManager.PROTOCOL_DNS_SD, fcastReg);
-    }
-
-    private android.media.AudioFocusRequest focusRequest = null;
-    private android.content.BroadcastReceiver noisyReceiver = null;
-
-    private final AudioManager.OnAudioFocusChangeListener focusListener = change -> {
-        switch (change) {
-            case AudioManager.AUDIOFOCUS_LOSS:
-                // The system already removed this app from the focus stack;
-                // dropping the request here is what makes the next resume
-                // re-request instead of playing focusless over another app.
-                runOnUiThread(() -> {
-                    if (focusRequest != null) {
-                        AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                        am.abandonAudioFocusRequest(focusRequest);
-                        focusRequest = null;
-                    }
-                });
-                nativeAudioEvent(0);
-                break;
-            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
-                nativeAudioEvent(1);
-                break;
-            case AudioManager.AUDIOFOCUS_GAIN:
-                nativeAudioEvent(2);
-                break;
-        }
-    };
-
-    /// Request focus if none is held. Called from native code on every
-    /// play/load edge: a cast arriving during a phone call must not play
-    /// over it, and after a permanent loss the request is gone and needs
-    /// remaking. A refusal comes back as a transient-loss event, which
-    /// pauses and resumes on the eventual gain.
-    public void ensureAudioFocus() {
-        runOnUiThread(() -> {
-            if (focusRequest != null) {
-                return;
-            }
-            AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-            android.media.AudioFocusRequest req =
-                    new android.media.AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
-                            .setAudioAttributes(new android.media.AudioAttributes.Builder()
-                                    .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                                    .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
-                                    .build())
-                            .setOnAudioFocusChangeListener(focusListener)
-                            .setWillPauseWhenDucked(true)
-                            .build();
-            int result = am.requestAudioFocus(req);
-            if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
-                focusRequest = req;
-            } else {
-                Log.i(TAG, "audio focus refused (" + result + ")");
-                nativeAudioEvent(1);
-            }
-        });
-    }
-
-    /// Codes: 0 loss, 1 transient loss, 2 gain, 3 becoming noisy. The pause
-    /// and resume policy lives in native code, which knows the player state.
-    native void nativeAudioEvent(int code);
-
-    /// Transport commands from the MediaSession and the notification:
-    /// 0 stop, 1 pause, 2 resume. Static so ReceiverService can send too.
-    static native void nativeMediaCommand(int code);
     /// The soft keyboard came up (true) or went away (false).
     static native void nativeSoftKeyboardVisible(boolean visible);
 
-    /// Absolute seek from the session (lock screen, BT remote), seconds.
-    static native void nativeMediaSeek(double seconds);
-
-    private MediaSession mediaSession = null;
-    // From 33 the media notification builds its buttons from the session's
-    // PlaybackState and ignores the notification's own actions. ACTION_STOP
-    // gets no button there, a custom action does.
-    private static final String CUSTOM_ACTION_STOP = "stop";
-    private volatile android.media.session.PlaybackState.CustomAction stopAction = null;
-
-    /// The session: what routes media buttons, drives the lock-screen and
-    /// BT transport surfaces, and feeds the notification's MediaStyle.
-    private void createMediaSession() {
-        mediaSession = new MediaSession(this, "FCastReceiver");
-        mediaSession.setCallback(new MediaSession.Callback() {
-            @Override
-            public void onPlay() {
-                nativeMediaCommand(2);
-            }
-
-            @Override
-            public void onPause() {
-                nativeMediaCommand(1);
-            }
-
-            @Override
-            public void onStop() {
-                nativeMediaCommand(0);
-            }
-
-            @Override
-            public void onSeekTo(long posMs) {
-                nativeMediaSeek(posMs / 1000.0);
-            }
-
-            @Override
-            public void onCustomAction(@NonNull String action, Bundle extras) {
-                if (CUSTOM_ACTION_STOP.equals(action)) {
-                    nativeMediaCommand(0);
-                }
-            }
-        });
-        mediaSession.setPlaybackToLocal(new android.media.AudioAttributes.Builder()
-                .setUsage(android.media.AudioAttributes.USAGE_MEDIA)
-                .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
-                .build());
-        // lock-screen/QS media card tap opens the app
-        Intent open = new Intent(this, MainActivity.class);
-        open.setFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        mediaSession.setSessionActivity(android.app.PendingIntent.getActivity(
-                this, 0, open, android.app.PendingIntent.FLAG_IMMUTABLE));
-        ReceiverService.sessionToken = mediaSession.getSessionToken();
-    }
-
-    private boolean castPlaying = false;
-
-    /// The CPU wake lock follows actually-playing, not merely
-    /// session-active: a cast paused overnight with the screen off would
-    /// otherwise hold a partial wake lock for hours, which is exactly what
-    /// Play's excessive-wake-lock quality threshold flags. Playing audio
-    /// under the mediaPlayback FGS is the policy's exempt case.
-    @SuppressLint("WakelockTimeout")
-    private void syncWakeLock() {
-        boolean want = castActiveLocal && castPlaying;
-        if (want && !cpuWakeLock.isHeld()) {
-            cpuWakeLock.acquire();
-        } else if (!want && cpuWakeLock.isHeld()) {
-            cpuWakeLock.release();
+    /// The screen only pins for content someone is looking at. From
+    /// ReceiverCore on the main thread.
+    void applyKeepScreenOn(boolean on) {
+        if (on) {
+            getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         }
     }
-
-    private boolean castActiveLocal = false;
-    private boolean visible = false;
-
-    // Long enough for a permitted bring-to-front to land first.
-    private static final long CAST_WAITING_DELAY_MS = 1500;
-    private final Runnable castWaitingCheck = () -> {
-        if (!visible && castActiveLocal && !destroyed) {
-            ReceiverService.notifyCastWaiting(this);
-        }
-    };
 
     private static final String PREFS = "receiver";
     private static final String KEY_OVERLAY_PROMPTED = "overlay_prompted";
@@ -756,260 +211,38 @@ public class MainActivity extends NativeActivity {
         }
     }
 
-    /// A cast arriving while the activity is backgrounded should put the
-    /// receiver on screen, the whole point of a TV cast target. Background
-    /// activity starts need the overlay permission (the Kotlin receiver
-    /// ships the same way, verified on Android 14); without it the start is
-    /// refused silently and castWaitingCheck posts a tap-to-play instead.
-    ///
-    /// From 34 a PendingIntent carries neither side's start privilege unless
-    /// opted in, and from targetSdk 35 that includes the creator, so both
-    /// sides opt in explicitly. ALLOWED is deprecated at 36, split into
-    /// ALLOW_IF_VISIBLE and ALLOW_ALWAYS, and a backgrounded receiver is
-    /// never the visible one.
-    private void bringToFront() {
-        Intent i = new Intent(this, MainActivity.class);
-        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
-        try {
-            if (android.provider.Settings.canDrawOverlays(this)) {
-                if (android.os.Build.VERSION.SDK_INT >= 34) {
-                    int mode = android.os.Build.VERSION.SDK_INT >= 36
-                            ? android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS
-                            : android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED;
-                    android.os.Bundle creator = android.app.ActivityOptions.makeBasic()
-                            .setPendingIntentCreatorBackgroundActivityStartMode(mode)
-                            .toBundle();
-                    android.os.Bundle sender = android.app.ActivityOptions.makeBasic()
-                            .setPendingIntentBackgroundActivityStartMode(mode)
-                            .toBundle();
-                    // CANCEL_CURRENT, not UPDATE_CURRENT: a matching record
-                    // keeps the options it was first made with, so one made
-                    // without them would never opt in.
-                    PendingIntent.getActivity(this, 2, i,
-                            PendingIntent.FLAG_CANCEL_CURRENT | PendingIntent.FLAG_IMMUTABLE,
-                            creator)
-                            .send(sender);
-                } else {
-                    PendingIntent.getActivity(this, 2, i,
-                            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE)
-                            .send();
-                }
-            } else {
-                // blocked from the background on 10+, works when the app is
-                // merely covered rather than stopped
-                startActivity(i);
-            }
-        } catch (Exception e) {
-            Log.w(TAG, "bring-to-front refused", e);
-        }
-    }
-
-    /// Self-update (Updater), called from native code on any thread.
-    public int updaterMode() {
-        return Updater.mode(this);
-    }
-
-    public long installedVersionCode() {
-        return Updater.installedVersionCode(this);
-    }
-
-    public String prepareUpdateDownload() {
-        return Updater.prepareDownload(this);
-    }
-
-    public void installUpdate(String path, long versionCode) {
-        Updater.install(this, path, versionCode);
-    }
-
-    /// Called from native code on state edges and a 1 Hz keepalive.
-    /// Any thread; MediaSession is thread-safe.
-    @SuppressLint("WakelockTimeout")
-    public void updateMediaSession(boolean playing, long positionMs, float speed) {
-        runOnUiThread(() -> {
-            castPlaying = playing;
-            syncWakeLock();
-        });
-        MediaSession session = mediaSession;
-        if (session == null) {
-            return;
-        }
-        android.media.session.PlaybackState.Builder b =
-                new android.media.session.PlaybackState.Builder()
-                        .setActions(android.media.session.PlaybackState.ACTION_PLAY
-                                | android.media.session.PlaybackState.ACTION_PAUSE
-                                | android.media.session.PlaybackState.ACTION_PLAY_PAUSE
-                                | android.media.session.PlaybackState.ACTION_STOP
-                                | android.media.session.PlaybackState.ACTION_SEEK_TO)
-                        // paused state must not extrapolate: the platform
-                        // advances position at the given speed
-                        .setState(playing
-                                        ? android.media.session.PlaybackState.STATE_PLAYING
-                                        : android.media.session.PlaybackState.STATE_PAUSED,
-                                positionMs, playing ? speed : 0f);
-        if (android.os.Build.VERSION.SDK_INT >= 33) {
-            android.media.session.PlaybackState.CustomAction stop = stopAction;
-            if (stop == null) {
-                // built once, this runs at 1 Hz on any thread and a racing
-                // double build is harmless
-                stop = new android.media.session.PlaybackState.CustomAction.Builder(
-                        CUSTOM_ACTION_STOP, getString(R.string.notification_stop),
-                        R.drawable.ic_stat_stop).build();
-                stopAction = stop;
-            }
-            b.addCustomAction(stop);
-        }
-        session.setPlaybackState(b.build());
-    }
-
     /// Refresh-rate matching: prefer the lowest display mode at the current
     /// resolution whose rate is a near-integer multiple of the content fps
-    /// (23.976 picks 24 or 120, never 60). 0 restores no-preference. Called
-    /// from native code when a video stream starts and at idle.
-    public void setContentFrameRate(float fps) {
-        runOnUiThread(() -> {
-            android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
-            int modeId = 0;
-            if (fps > 0) {
-                android.view.Display display = getWindowManager().getDefaultDisplay();
-                android.view.Display.Mode current = display.getMode();
-                float best = Float.MAX_VALUE;
-                for (android.view.Display.Mode mode : display.getSupportedModes()) {
-                    if (mode.getPhysicalWidth() != current.getPhysicalWidth()
-                            || mode.getPhysicalHeight() != current.getPhysicalHeight()) {
-                        continue;
-                    }
-                    float rate = mode.getRefreshRate();
-                    int multiple = Math.round(rate / fps);
-                    if (multiple < 1) {
-                        continue;
-                    }
-                    if (Math.abs(rate / fps - multiple) <= 0.02f * multiple && rate < best) {
-                        best = rate;
-                        modeId = mode.getModeId();
-                    }
+    /// (23.976 picks 24 or 120, never 60). 0 restores no-preference. From
+    /// ReceiverCore on the main thread.
+    void applyContentFrameRate(float fps) {
+        android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
+        int modeId = 0;
+        if (fps > 0) {
+            android.view.Display display = getWindowManager().getDefaultDisplay();
+            android.view.Display.Mode current = display.getMode();
+            float best = Float.MAX_VALUE;
+            for (android.view.Display.Mode mode : display.getSupportedModes()) {
+                if (mode.getPhysicalWidth() != current.getPhysicalWidth()
+                        || mode.getPhysicalHeight() != current.getPhysicalHeight()) {
+                    continue;
+                }
+                float rate = mode.getRefreshRate();
+                int multiple = Math.round(rate / fps);
+                if (multiple < 1) {
+                    continue;
+                }
+                if (Math.abs(rate / fps - multiple) <= 0.02f * multiple && rate < best) {
+                    best = rate;
+                    modeId = mode.getModeId();
                 }
             }
-            if (lp.preferredDisplayModeId != modeId) {
-                Log.i(TAG, "preferred display mode " + modeId + " for " + fps + " fps");
-                lp.preferredDisplayModeId = modeId;
-                getWindow().setAttributes(lp);
-            }
-        });
-    }
-
-    /// Called from native code when the item's title or duration changes.
-    public void updateMediaMetadata(String title, long durationMs) {
-        MediaSession session = mediaSession;
-        if (session != null) {
-            session.setMetadata(new android.media.MediaMetadata.Builder()
-                    .putString(android.media.MediaMetadata.METADATA_KEY_TITLE, title)
-                    .putLong(android.media.MediaMetadata.METADATA_KEY_DURATION, durationMs)
-                    .build());
         }
-        ReceiverService.castTitle = title;
-        ReceiverService.refreshIfRunning();
-    }
-
-    /// Come forward, or post tap-to-play if the start is refused.
-    private void castArrived() {
-        bringToFront();
-        handler.removeCallbacks(castWaitingCheck);
-        handler.postDelayed(castWaitingCheck, CAST_WAITING_DELAY_MS);
-    }
-
-    /// A legacy still image cast over an active cast, which raises no rising
-    /// edge in setPlaybackActive (every other load passes through Idle and
-    /// comes forward there). Native calls it only when the load sent no rising
-    /// edge, so one load brings the receiver forward once. Any thread, posted
-    /// behind the setPlaybackActive it follows.
-    public void castLoaded() {
-        runOnUiThread(() -> {
-            if (castActiveLocal && !visible && !destroyed) {
-                castArrived();
-            }
-        });
-    }
-
-    /// The single owner of every playback-scoped device resource, called
-    /// from native code on the playback active/idle edge. Any thread.
-    /// Ordering is preserved by posting to the main looper.
-    ///
-    /// `audible` is false for images and for items with no audio track:
-    /// those take no audio focus (a photo must not pause whatever else is
-    /// playing), no media session and no CPU wake lock. The screen pin and
-    /// the wifi lock follow `active` and `visual` as before.
-    ///
-    /// Direct window-flag manipulation rather than android-activity's
-    /// set_window_flags, whose process-wide RwLock deadlocks against the
-    /// slint event loop's long-held read guard.
-    @SuppressLint("WakelockTimeout")
-    public void setPlaybackActive(boolean active, boolean visual, boolean audible) {
-        runOnUiThread(() -> {
-            // Rising edge only: native calls again when visual or audible
-            // settle (the video stream shows up ~60ms into a load), and each
-            // call used to send a second start request.
-            if (active && !castActiveLocal && !visible) {
-                castArrived();
-            } else if (!active) {
-                handler.removeCallbacks(castWaitingCheck);
-                ReceiverService.cancelCastWaiting(this);
-            }
-            // The screen only pins for content someone is looking at; an
-            // audio cast relies on the wake lock instead.
-            if (active && visual) {
-                getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-            } else {
-                getWindow().clearFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
-            }
-
-            boolean audio = active && audible;
-            if (mediaSession != null) {
-                mediaSession.setActive(audio);
-            }
-            ReceiverService.castActive = active;
-            ReceiverService.refreshIfRunning();
-            castVisual = active && visual;
-
-            castActiveLocal = active;
-            // For an audible item playing usually follows within a tick;
-            // acquiring here too covers the load window, syncWakeLock drops
-            // it on pause. A silent item never needs the CPU awake.
-            castPlaying = audio;
-            syncWakeLock();
-            // Not a plain release on the idle edge: a visible idle receiver
-            // keeps the lock so the next sender's handshake still lands fast.
-            updateWifiLockMode(visible);
-
-            if (audio) {
-                ensureAudioFocus();
-                if (noisyReceiver == null) {
-                    noisyReceiver = new android.content.BroadcastReceiver() {
-                        @Override
-                        public void onReceive(Context context, android.content.Intent intent) {
-                            nativeAudioEvent(3);
-                        }
-                    };
-                    if (android.os.Build.VERSION.SDK_INT >= 33) {
-                        registerReceiver(noisyReceiver,
-                                new android.content.IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY),
-                                Context.RECEIVER_NOT_EXPORTED);
-                    } else {
-                        registerReceiver(noisyReceiver,
-                                new android.content.IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY));
-                    }
-                }
-            } else {
-                if (focusRequest != null) {
-                    AudioManager am = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
-                    am.abandonAudioFocusRequest(focusRequest);
-                    focusRequest = null;
-                }
-                if (noisyReceiver != null) {
-                    unregisterReceiver(noisyReceiver);
-                    noisyReceiver = null;
-                }
-            }
-        });
+        if (lp.preferredDisplayModeId != modeId) {
+            Log.i(TAG, "preferred display mode " + modeId + " for " + fps + " fps");
+            lp.preferredDisplayModeId = modeId;
+            getWindow().setAttributes(lp);
+        }
     }
 
     private volatile boolean immersiveWanted = false;
@@ -1079,18 +312,15 @@ public class MainActivity extends NativeActivity {
 
     static native void nativeOverlayState(boolean granted, boolean canOpenSettings);
 
-    private boolean castVisual = false;
-
-    /// The cast ended for real (native skips a load clearing the previous
-    /// item). In PiP that leaves it, the idle UI does not belong in a video
-    /// window. To the back rather than finish, which ends the process.
-    public void castEnded() {
-        runOnUiThread(() -> {
-            if (!destroyed && isInPictureInPictureMode()) {
-                moveTaskToBack(true);
-            }
-        });
+    /// A cast that ended for real while in PiP: the idle UI does not belong
+    /// in a video window. To the back rather than finish, so the window
+    /// survives for the next cast. From ReceiverCore on the main thread.
+    void leavePipForEndedCast() {
+        if (!destroyed && isInPictureInPictureMode()) {
+            moveTaskToBack(true);
+        }
     }
+
     private volatile android.util.Rational videoAspect = new android.util.Rational(16, 9);
 
     /// The current video's aspect, from native code at relayout. Clamped to
@@ -1115,7 +345,7 @@ public class MainActivity extends NativeActivity {
     @Override
     protected void onUserLeaveHint() {
         super.onUserLeaveHint();
-        if (castVisual && !isInPictureInPictureMode()) {
+        if (ReceiverCore.castVisual() && !isInPictureInPictureMode()) {
             try {
                 enterPictureInPictureMode(
                         new android.app.PictureInPictureParams.Builder()
@@ -1132,19 +362,17 @@ public class MainActivity extends NativeActivity {
     public void onPictureInPictureModeChanged(boolean inPip,
             android.content.res.Configuration newConfig) {
         super.onPictureInPictureModeChanged(inPip, newConfig);
-        // Swiping the PiP window away finishes the activity, which takes
-        // the whole process with it (exit-on-destroy); at least end the
-        // cast cleanly so senders learn instead of timing out.
+        // Swiping the PiP window away finishes the activity: the user
+        // dismissed the video, so end the cast cleanly for the senders.
         if (!inPip && isFinishing()) {
-            nativeMediaCommand(0);
+            ReceiverCore.nativeMediaCommand(0);
         }
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
         // singleTask: notification and session taps land here instead of
-        // spawning a second activity, which the singleton native main
-        // could not serve.
+        // spawning a second activity.
         super.onNewIntent(intent);
     }
 
@@ -1153,54 +381,21 @@ public class MainActivity extends NativeActivity {
     /// one on return, otherwise a running codec errors out mid-video.
     native void nativeAppVisibility(boolean visible);
 
-    /// LOW_LATENCY only bites while foreground with the screen on and
-    /// silently degrades in the background, exactly where a backgrounded
-    /// cast needs wifi kept awake: swap modes on the visibility edge.
-    private void updateWifiLockMode(boolean foreground) {
-        int mode = (foreground && android.os.Build.VERSION.SDK_INT >= 29)
-                ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
-                : WifiManager.WIFI_MODE_FULL_HIGH_PERF;
-        // An idle receiver must answer the moment a sender connects, so the
-        // lock is held whenever the activity is up, not only while casting.
-        // Without it the radio power saves and LAN round trips balloon to
-        // ~500ms, blowing sender handshake deadlines (seen on the LEAP-S1).
-        // Backgrounded, only a running cast justifies keeping it.
-        boolean want = foreground || castActiveLocal;
-        if (wifiLock == null || mode != wifiLockMode) {
-            if (wifiLock != null && wifiLock.isHeld()) {
-                wifiLock.release();
-            }
-            wifiLock = wifiManager.createWifiLock(mode, "FCastRsReceiver:WifiLock");
-            wifiLock.setReferenceCounted(false);
-            wifiLockMode = mode;
-        }
-        if (want && !wifiLock.isHeld()) {
-            wifiLock.acquire();
-        } else if (!want && wifiLock.isHeld()) {
-            wifiLock.release();
-        }
-    }
-
-    private int wifiLockMode = -1;
-
     @Override
     protected void onStart() {
         super.onStart();
-        visible = true;
-        handler.removeCallbacks(castWaitingCheck);
-        ReceiverService.cancelCastWaiting(this);
+        ReceiverCore.setUiVisible(true);
         Updater.onActivityStarted(this);
         // The activity is back; its own lifecycle keeps the process warm.
+        ReceiverCore.setServiceWanted(false);
         stopService(new Intent(this, ReceiverService.class));
-        updateWifiLockMode(true);
         nativeAppVisibility(true);
     }
 
     @Override
     protected void onStop() {
-        visible = false;
+        ReceiverCore.setUiVisible(false);
         Updater.onActivityStopped();
-        updateWifiLockMode(false);
         nativeAppVisibility(false);
         // Backgrounded: without foreground priority the process is a cached
         // kill candidate and the NSD registration dies with it. Started
@@ -1210,6 +405,7 @@ public class MainActivity extends NativeActivity {
         if (!destroyed && !isFinishing()) {
             try {
                 startForegroundService(new Intent(this, ReceiverService.class));
+                ReceiverCore.setServiceWanted(true);
             } catch (Exception e) {
                 Log.w(TAG, "foreground service refused", e);
             }
@@ -1230,30 +426,11 @@ public class MainActivity extends NativeActivity {
 
     @Override
     protected void onDestroy() {
-        // Before super: NativeActivity's onDestroy blocks on the native
-        // thread, which exits the process, so anything after it never runs.
+        // Only the window goes. The core, its discovery and the service stay
+        // up, the native side decides whether the process ends with it.
         destroyed = true;
         painted = false;
-        handler.removeCallbacksAndMessages(null);
-        quietUnregister(fcastReg);
-        fcastReg = null;
-        quietUnregister(raopReg);
-        raopReg = null;
-        if (networkCallback != null) {
-            connectivityManager.unregisterNetworkCallback(networkCallback);
-            networkCallback = null;
-        }
-        if (netThread != null) {
-            netThread.quitSafely();
-        }
-        setPlaybackActive(false, false, false);
-        stopService(new Intent(this, ReceiverService.class));
-        MulticastLease.release();
-        if (mediaSession != null) {
-            mediaSession.release();
-            mediaSession = null;
-            ReceiverService.sessionToken = null;
-        }
+        ReceiverCore.detachActivity(this);
         super.onDestroy();
     }
 }

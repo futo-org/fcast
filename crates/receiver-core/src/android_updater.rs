@@ -133,14 +133,12 @@ pub use android::*;
 mod android {
     use std::path::{Path, PathBuf};
 
-    use jni::objects::{JObject, JString, JValue};
+    use jni::objects::{JString, JValue};
     use tracing::{debug, info, warn};
 
     use super::{CHANNEL_URL, fetch_release};
+    use crate::android_jni::with_core;
     use crate::message::{AppUpdate, MessageSender};
-
-    /// The (vm, activity) pair the Application keeps.
-    pub type Jni = (usize, usize);
 
     const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
     const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
@@ -152,33 +150,12 @@ mod android {
     const MODE_RELEASE: i32 = 1;
     const MODE_DEBUG: i32 = 2;
 
-    /// Runs `f` against the activity in a local frame. The callers sit on
-    /// permanently attached threads, where local refs are never freed
-    /// otherwise.
-    fn with_activity<R>(
-        jni: Jni,
-        what: &str,
-        f: impl FnOnce(&mut jni::JNIEnv, &JObject) -> jni::errors::Result<R>,
-    ) -> Option<R> {
-        let vm = unsafe { jni::JavaVM::from_raw(jni.0 as *mut _) }.ok()?;
-        let mut env = vm.attach_current_thread_permanently().ok()?;
-        let activity = unsafe { JObject::from_raw(jni.1 as jni::sys::jobject) };
-        match env.with_local_frame(8, |env| f(env, &activity)) {
-            Ok(v) => Some(v),
-            Err(err) => {
-                let _ = env.exception_clear();
-                warn!(?err, what, "updater call into the activity failed");
-                None
-            }
-        }
-    }
-
     /// The channel this build updates from with its installed versionCode,
     /// None when it must not self-update.
-    fn channel(jni: Jni) -> Option<(String, i64)> {
-        let (mode, code) = with_activity(jni, "updaterMode", |env, a| {
-            let mode = env.call_method(a, "updaterMode", "()I", &[])?.i()?;
-            let code = env.call_method(a, "installedVersionCode", "()J", &[])?.j()?;
+    fn channel() -> Option<(String, i64)> {
+        let (mode, code) = with_core("updaterMode", |env, core| {
+            let mode = env.call_static_method(core, "updaterMode", "()I", &[])?.i()?;
+            let code = env.call_static_method(core, "installedVersionCode", "()J", &[])?.j()?;
             Ok((mode, code))
         })?;
         match mode {
@@ -195,8 +172,8 @@ mod android {
     }
 
     /// Checks at startup and then daily, an hour after a failed check.
-    pub async fn run_checker(jni: Jni, client: reqwest::Client, msg_tx: MessageSender) {
-        let Some((channel, installed)) = channel(jni) else {
+    pub async fn run_checker(client: reqwest::Client, msg_tx: MessageSender) {
+        let Some((channel, installed)) = channel() else {
             info!("self-update is off for this build");
             return;
         };
@@ -220,10 +197,10 @@ mod android {
     }
 
     /// Where the apk downloads to, cleared of any earlier attempt.
-    pub fn prepare_download(jni: Jni) -> Option<PathBuf> {
-        with_activity(jni, "prepareUpdateDownload", |env, a| {
+    pub fn prepare_download() -> Option<PathBuf> {
+        with_core("prepareUpdateDownload", |env, core| {
             let path = env
-                .call_method(a, "prepareUpdateDownload", "()Ljava/lang/String;", &[])?
+                .call_static_method(core, "prepareUpdateDownload", "()Ljava/lang/String;", &[])?
                 .l()?;
             let path: String = env.get_string(&JString::from(path))?.into();
             Ok(PathBuf::from(path))
@@ -232,11 +209,11 @@ mod android {
 
     /// Hands the downloaded apk to the installer. Asynchronous, a failure
     /// comes back as `AppUpdate::InstallFailed`.
-    pub fn install(jni: Jni, apk: &Path, version_code: i64) -> bool {
-        with_activity(jni, "installUpdate", |env, a| {
+    pub fn install(apk: &Path, version_code: i64) -> bool {
+        with_core("installUpdate", |env, core| {
             let path = env.new_string(apk.to_string_lossy())?;
-            env.call_method(
-                a,
+            env.call_static_method(
+                core,
                 "installUpdate",
                 "(Ljava/lang/String;J)V",
                 &[JValue::Object(&path), JValue::Long(version_code)],

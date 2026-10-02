@@ -39,6 +39,10 @@ public class ReceiverService extends Service {
     static volatile boolean castActive = false;
 
     private static volatile ReceiverService running = null;
+
+    static boolean isRunning() {
+        return running != null;
+    }
     // Rebuilds are posted: callers include rust worker threads, and a post
     // serializes against onDestroy on the same looper, so a refresh can
     // never notify past a dead service and orphan the ongoing notification.
@@ -148,7 +152,7 @@ public class ReceiverService extends Service {
     @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
         if (intent != null && ACTION_STOP_CAST.equals(intent.getAction())) {
-            MainActivity.nativeMediaCommand(0);
+            ReceiverCore.nativeMediaCommand(0);
             if (running == null) {
                 // started only to carry the action; do not linger
                 stopSelf(startId);
@@ -208,6 +212,7 @@ public class ReceiverService extends Service {
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
+        ReceiverCore.setServiceWanted(false);
         // Recents swipe: the process is going down with the task; take the
         // notification along instead of leaving an orphan.
         stopSelf();
@@ -222,6 +227,8 @@ public class ReceiverService extends Service {
             MulticastLease.release();
         }
         super.onDestroy();
+        // the last owner may have been this service
+        ReceiverCore.onServiceStopped();
     }
 
     @Override

@@ -121,6 +121,15 @@ pub mod scaling;
 /// handles protocol traffic any more, so the window quits instead of staying
 /// up with nothing behind it. A clean return is the quit path itself.
 fn event_loop_ended(result: std::result::Result<Result<()>, tokio::task::JoinError>) {
+    #[cfg(target_os = "android")]
+    {
+        ANDROID_CORE_ENDED.store(true, std::sync::atomic::Ordering::Release);
+        // no window to quit, nothing else would end the process
+        if !matches!(result, Ok(Ok(()))) && android_ui::current().is_none() {
+            error!(?result, "Receiver event loop ended with no UI up, exiting");
+            std::process::exit(1);
+        }
+    }
     match result {
         Ok(Ok(())) => return,
         Ok(Err(err)) => error!(?err, "Receiver event loop failed"),
@@ -512,12 +521,14 @@ struct AndroidMedia {
 static ANDROID_CORE: std::sync::OnceLock<AndroidCore> = std::sync::OnceLock::new();
 #[cfg(target_os = "android")]
 static ANDROID_MEDIA: std::sync::OnceLock<AndroidMedia> = std::sync::OnceLock::new();
+/// The Application task returned or died, a kept-alive process has no core.
+#[cfg(target_os = "android")]
+static ANDROID_CORE_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Starts the receiver once per process: the application, gst and the
 /// player's sinks. It owns no window, UIs attach to it (ANDROID-BOOT-START-PLAN.md).
 #[cfg(target_os = "android")]
 fn start_core(
-    android_app: &slint::android::AndroidApp,
     platform_event_rx: mpsc::UnboundedReceiver<Message>,
     settings: Settings,
 ) -> &'static AndroidCore {
@@ -560,7 +571,6 @@ fn start_core(
     // GStreamer registration is ~800ms and the idle screen needs none of it,
     // so it runs on a worker and the first frame never waits for it.
     let use_sw_video = std::env::var("FCAST_ANDROID_SW_VIDEO").is_ok_and(|v| v == "1");
-    let android_app = android_app.clone();
     let core_msg_tx = msg_tx.clone();
     std::thread::Builder::new()
         .name("gst-init".to_owned())
@@ -602,7 +612,6 @@ fn start_core(
                         Some(cue_engine),
                         core_msg_tx,
                         settings,
-                        android_app,
                     )
                     .await?;
                     app.run_event_loop(event_rx, fin_tx).await
@@ -718,21 +727,39 @@ fn detach_ui(core: &AndroidCore, generation: u64) {
     core.msg_tx.send(Message::GuiDetached { generation });
     android_surface_video::detach_view();
     android_ui::detach(generation);
+    // the activity jobject dies with this UI
+    android_immersive::clear();
+}
+
+/// Quits the receiver and waits for it, bounded: a quit inside the gst-init
+/// window has no Application task to answer.
+#[cfg(target_os = "android")]
+fn quit_core(core: &AndroidCore) {
+    info!("Shutting down...");
+    let fin_rx = core.fin_rx.lock().unwrap().take();
+    let msg_tx = core.msg_tx.clone();
+    RUNTIME.block_on(async move {
+        msg_tx.send(Message::Quit);
+        if let Some(fin_rx) = fin_rx {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), fin_rx).await;
+        }
+    });
 }
 
 /// Run the app on android: the core once per process, then this activity's
-/// UI attached to it. Platform events (mdns name, network changes, raop
-/// config) arrive from the activity's JNI bridges.
+/// UI attached to it. `platform_event_rx` is only taken by the first run.
+/// Returns whether the core outlives this UI (the service keeps it).
 #[cfg(target_os = "android")]
 pub fn run(
     android_app: slint::android::AndroidApp,
-    platform_event_rx: mpsc::UnboundedReceiver<Message>,
+    platform_event_rx: Option<mpsc::UnboundedReceiver<Message>>,
     settings: Settings,
-) -> Result<()> {
+) -> Result<bool> {
     let start = std::time::Instant::now();
-    let core = match ANDROID_CORE.get() {
-        Some(core) => core,
-        None => start_core(&android_app, platform_event_rx, settings),
+    let core = match (ANDROID_CORE.get(), platform_event_rx) {
+        (Some(core), _) => core,
+        (None, Some(rx)) => start_core(rx, settings),
+        (None, None) => anyhow::bail!("no receiver core and no event channel to start one"),
     };
     let (ui, generation) = attach_ui(&android_app, core)?;
     info!(initialized_in = ?start.elapsed());
@@ -740,20 +767,22 @@ pub fn run(
     detach_ui(core, generation);
     drop(ui);
 
-    info!("Shutting down...");
-    let fin_rx = core.fin_rx.lock().unwrap().take();
-    let msg_tx = core.msg_tx.clone();
-    RUNTIME.block_on(async move {
-        msg_tx.send(Message::Quit);
-        // Bounded: a quit inside the gst-init window means the Application task
-        // never started, so fin_tx is stranded and would never fire. Cap the
-        // wait rather than hang the thread.
-        if let Some(fin_rx) = fin_rx {
-            let _ = tokio::time::timeout(std::time::Duration::from_secs(2), fin_rx).await;
-        }
-    });
+    if !ANDROID_CORE_ENDED.load(std::sync::atomic::Ordering::Acquire)
+        && receiver_core::android_jni::keep_alive()
+    {
+        info!("UI gone, the receiver stays up for its service");
+        return Ok(true);
+    }
+    quit_core(core);
+    Ok(false)
+}
 
-    Ok(())
+/// The last owner left with no UI up: quit the receiver. The caller exits.
+#[cfg(target_os = "android")]
+pub fn android_shutdown() {
+    if let Some(core) = ANDROID_CORE.get() {
+        quit_core(core);
+    }
 }
 
 #[cfg(test)]

@@ -56,18 +56,48 @@ fn android_main(app: slint::android::AndroidApp) {
     // API"), so requiring GLES here panicked the receiver on the first frame.
     rcore::slint::BackendSelector::new().select().unwrap();
 
-    let event_rx = EVENT_CHANNEL.1.lock().take().expect("android_main ran twice");
+    // Only the first activity in a process starts the core, later ones
+    // attach a new UI to it (each android_main gets a fresh thread, so slint's
+    // thread-local platform is fresh too).
+    let event_rx = EVENT_CHANNEL.1.lock().take();
 
-    rcore::run(app, event_rx, settings).unwrap();
+    let keep_core = match rcore::run(app, event_rx, settings) {
+        Ok(keep) => keep,
+        Err(err) => {
+            error!(?err, "receiver UI failed");
+            false
+        }
+    };
+    // With no service to keep it, the process ends with its activity, as
+    // before: the next launch gets an honest cold start under the splash.
+    if !keep_core {
+        std::process::exit(0);
+    }
+}
 
-    // The activity is gone (Destroy broke the event loop), but android keeps
-    // the process around and serves the NEXT activity from it, which runs
-    // android_main again. The receiver is a per-process singleton: the slint
-    // platform is set once, gst is initialized once, and the event channel's
-    // receiver was taken above, so a second run can only hit that expect and
-    // die on a background thread with the new activity left blank. Exit
-    // instead. The next launch gets a fresh process and an honest cold start,
-    // which the splash window already covers.
+/// ReceiverCore's VM and class for the core's calls into Java, from a Java
+/// thread whose class loader sees the app's classes.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeCoreInit<'local>(
+    mut env: jni::JNIEnv<'local>,
+    class: jni::objects::JClass<'local>,
+    _app: jni::objects::JObject<'local>,
+) {
+    if let Err(err) = rcore::android_jni::init(&mut env, &class) {
+        let _ = env.exception_clear();
+        error!(?err, "ReceiverCore init failed, the core cannot call into Java");
+    }
+}
+
+/// The last owner (the service) left with no activity: end the receiver.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeShutdown<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+) {
+    rcore::android_shutdown();
     std::process::exit(0);
 }
 
@@ -87,7 +117,7 @@ fn log_filter(level: rcore::tracing::level_filters::LevelFilter) -> log::LevelFi
 /// disabled service. Read from the config before the receiver is up.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeServiceNames<'local>(
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeServiceNames<'local>(
     mut env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     files_dir: jni::objects::JString,
@@ -132,7 +162,7 @@ fn null_names(env: &jni::JNIEnv) -> jni::sys::jobjectArray {
 /// receiver has not minted its TLS identity yet, the activity retries.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getFCastTxtAttribs<'local>(
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_getFCastTxtAttribs<'local>(
     mut env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     attrs: jni::objects::JObject,
@@ -156,7 +186,7 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getFCastTxtAttr
 
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_setMdnsDeviceName<'local>(
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_setMdnsDeviceName<'local>(
     mut env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     name: jni::objects::JString,
@@ -171,7 +201,7 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_setMdnsDeviceNa
 
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getDeviceNameRaopHash<'local>(
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_getDeviceNameRaopHash<'local>(
     mut env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     name: jni::objects::JString,
@@ -195,7 +225,7 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getDeviceNameRa
 
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getRaopTxtAttribs<'local>(
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_getRaopTxtAttribs<'local>(
     mut env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     attrs: jni::objects::JObject,
@@ -217,7 +247,7 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getRaopTxtAttri
 /// action: 0 stop, 1 pause, 2 resume.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeMediaCommand<'local>(
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeMediaCommand<'local>(
     _env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     code: jni::sys::jint,
@@ -255,7 +285,7 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeSoftKeybo
 /// Absolute seek from the session (lock screen scrubber, BT remote).
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeMediaSeek<'local>(
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeMediaSeek<'local>(
     _env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     seconds: jni::sys::jdouble,
@@ -275,7 +305,7 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeMediaSeek
 /// loss, 1 transient loss (ducking folded in), 2 gain, 3 becoming noisy.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeAudioEvent<'local>(
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeAudioEvent<'local>(
     _env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     code: jni::sys::jint,
@@ -312,7 +342,7 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeAppVisibi
 /// The activity polls this alongside the TXT records before advertising.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getFCastPort<'local>(
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_getFCastPort<'local>(
     _env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
 ) -> jni::sys::jint {
@@ -324,7 +354,7 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_getFCastPort<'l
 /// bookkeeping on either side.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeSetAddresses<'local>(
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeSetAddresses<'local>(
     mut env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     addrs: jni::objects::JObject,

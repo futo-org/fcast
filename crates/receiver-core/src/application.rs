@@ -731,10 +731,6 @@ enum AndroidUpdate {
 }
 
 pub struct Application {
-    // (vm, activity) jobject ptrs captured once at startup so playback code
-    // never touches android-activity's RwLock, see set_playback_active
-    #[cfg(target_os = "android")]
-    android_jni: (usize, usize),
     /// The (active, visual, audible) triple last sent to the activity, so
     /// state transitions that resolve to the same answer cost no JNI round
     /// trip.
@@ -951,7 +947,6 @@ impl Application {
         cue_engine: Option<fcast_video::cue::CueEngine>,
         msg_tx: MessageSender,
         settings: Settings,
-        #[cfg(target_os = "android")] android_app: android_activity::AndroidApp,
     ) -> Result<Self> {
         let registry = gst::Registry::get();
         for nv_feature in registry.features_by_plugin("nvcodec") {
@@ -1087,10 +1082,6 @@ impl Application {
         let http_client = reqwest::Client::new();
         #[cfg(target_os = "android")]
         tokio::spawn(crate::android_updater::run_checker(
-            (
-                android_app.vm_as_ptr() as usize,
-                android_app.activity_as_ptr() as usize,
-            ),
             http_client.clone(),
             msg_tx.clone(),
         ));
@@ -1117,11 +1108,6 @@ impl Application {
         debug!("Receiver information: {receiver_info:?}");
 
         Ok(Self {
-            #[cfg(target_os = "android")]
-            android_jni: (
-                android_app.vm_as_ptr() as usize,
-                android_app.activity_as_ptr() as usize,
-            ),
             #[cfg(target_os = "android")]
             android_playback: (false, false, false),
             #[cfg(target_os = "android")]
@@ -1956,16 +1942,10 @@ impl Application {
         if self.android_playback == state {
             return;
         }
-        let (vm, activity) = self.android_jni;
-        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(vm as *mut _) }) else {
-            return;
-        };
-        let Ok(mut env) = vm.attach_current_thread_permanently() else {
-            return;
-        };
-        let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
-        match env.call_method(
-            &activity,
+        // cached only on success: a failed release cached as released would
+        // suppress every retry and leak the locks and focus for the life of
+        // the process
+        if crate::android_jni::call(
             "setPlaybackActive",
             "(ZZZ)V",
             &[
@@ -1974,19 +1954,10 @@ impl Application {
                 jni::objects::JValue::Bool(state.2 as u8),
             ],
         ) {
-            // cached only on success: a failed release cached as released
-            // would suppress every retry and leak the locks and focus for
-            // the life of the process
-            Ok(_) => {
-                if state.0 && !self.android_playback.0 {
-                    self.android_rise_gen = self.android_rise_gen.wrapping_add(1);
-                }
-                self.android_playback = state;
+            if state.0 && !self.android_playback.0 {
+                self.android_rise_gen = self.android_rise_gen.wrapping_add(1);
             }
-            Err(err) => {
-                let _ = env.exception_clear();
-                warn!(?err, "setPlaybackActive call into the activity failed");
-            }
+            self.android_playback = state;
         }
     }
 
@@ -2011,10 +1982,8 @@ impl Application {
         }
     }
 
-    /// One JNI call into the activity, reporting success. Permanently
-    /// attached: these run on tokio workers several times a second during
-    /// playback, and a fresh attach/detach pair per call allocates a Java
-    /// thread peer each time.
+    /// One static call into ReceiverCore, reporting success. It outlives
+    /// any activity, so this works with or without a UI.
     #[cfg(target_os = "android")]
     fn call_activity(
         &self,
@@ -2022,22 +1991,7 @@ impl Application {
         sig: &str,
         args: &[jni::objects::JValue<'_, '_>],
     ) -> bool {
-        let (vm, activity) = self.android_jni;
-        let Ok(vm) = (unsafe { jni::JavaVM::from_raw(vm as *mut _) }) else {
-            return false;
-        };
-        let Ok(mut env) = vm.attach_current_thread_permanently() else {
-            return false;
-        };
-        let activity = unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
-        match env.call_method(&activity, what, sig, args) {
-            Ok(_) => true,
-            Err(err) => {
-                let _ = env.exception_clear();
-                warn!(?err, what, "activity call failed");
-                false
-            }
-        }
+        crate::android_jni::call(what, sig, args)
     }
 
     /// MediaSession state and metadata, from the progress tick. Metadata
@@ -2057,36 +2011,22 @@ impl Application {
             .as_ref()
             .is_none_or(|(title, dur)| *title != self.android_media_title || *dur != dur_ms);
         if meta_stale {
-            let (vm, activity) = self.android_jni;
-            if let Ok(vm) = unsafe { jni::JavaVM::from_raw(vm as *mut _) } {
-                if let Ok(mut env) = vm.attach_current_thread_permanently() {
-                    let activity =
-                        unsafe { jni::objects::JObject::from_raw(activity as jni::sys::jobject) };
-                    // a local frame so the string ref cannot pile up on a
-                    // permanently attached thread
-                    let pushed = env
-                        .with_local_frame(4, |env| -> jni::errors::Result<bool> {
-                            let title = env.new_string(&self.android_media_title)?;
-                            env.call_method(
-                                &activity,
-                                "updateMediaMetadata",
-                                "(Ljava/lang/String;J)V",
-                                &[
-                                    jni::objects::JValue::Object(&title),
-                                    jni::objects::JValue::Long(dur_ms),
-                                ],
-                            )?;
-                            Ok(true)
-                        })
-                        .unwrap_or_else(|err| {
-                            let _ = env.exception_clear();
-                            warn!(?err, "updateMediaMetadata call failed");
-                            false
-                        });
-                    if pushed {
-                        self.android_meta_pushed = Some((self.android_media_title.clone(), dur_ms));
-                    }
-                }
+            let pushed = crate::android_jni::with_core("updateMediaMetadata", |env, core| {
+                let title = env.new_string(&self.android_media_title)?;
+                env.call_static_method(
+                    core,
+                    "updateMediaMetadata",
+                    "(Ljava/lang/String;J)V",
+                    &[
+                        jni::objects::JValue::Object(&title),
+                        jni::objects::JValue::Long(dur_ms),
+                    ],
+                )?;
+                Ok(())
+            })
+            .is_some();
+            if pushed {
+                self.android_meta_pushed = Some((self.android_media_title.clone(), dur_ms));
             }
         }
 
@@ -5448,7 +5388,7 @@ impl Application {
                 AndroidUpdate::Offered { channel, release }
             }
             (message::AppUpdate::UpdateApplication, AndroidUpdate::Offered { channel, release }) => {
-                match upd::prepare_download(self.android_jni) {
+                match upd::prepare_download() {
                     Some(dest) => {
                         self.gui.set_update_download_progress(0);
                         self.gui.set_updater_state(UiUpdaterState::Downloading);
@@ -5486,7 +5426,7 @@ impl Application {
                 }
             }
             (message::AppUpdate::Downloaded(Ok(apk)), AndroidUpdate::Downloading { channel, release }) => {
-                if upd::install(self.android_jni, &apk, release.version_code) {
+                if upd::install(&apk, release.version_code) {
                     self.gui.set_updater_state(UiUpdaterState::Installing);
                     AndroidUpdate::Installing { channel, release }
                 } else {
