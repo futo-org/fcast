@@ -436,9 +436,10 @@ component PlaybackControls inherits Rectangle {
         selected-row-start = 1;
         settings-cursor = 1;
         // On TV the cursor is drawn from the start, or the first Down lands one
-        // row below a highlight that was never seen. Desktop keeps its ring
-        // for the first key press, a pointer user never sees one.
-        settings-kb-nav = Bridge.tv-mode || Bridge.android;
+        // row below a highlight that was never seen. Desktop and phones keep
+        // the ring for the first key press, a pointer or touch user never
+        // sees one.
+        settings-kb-nav = Bridge.tv-mode;
         show-settings = true;
         settings-focus.focus();
     }

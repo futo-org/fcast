@@ -252,10 +252,17 @@ component TextRow inherits Rectangle {
         }
     }
 
-    // Losing focus saves and folds, see the field's has-focus.
+    // A tap elsewhere ends the edit. With a keyboard or remote focus goes to
+    // the row: focus on nothing lets Escape and Tab out of the drawer's trap.
+    // On touch it just clears, a focused row would stay tinted after the tap.
     changed folds => {
         if root.editing {
-            field.clear-focus();
+            if Bridge.touch-mode {
+                // losing focus saves and folds, see the field's has-focus
+                field.clear-focus();
+            } else {
+                root.end-edit();
+            }
         }
     }
 
@@ -545,11 +552,12 @@ export component SettingsDrawer inherits Rectangle {
     // Opening hands the keyboard to the panel: from there the guards below keep
     // tab traversal inside it, and main.slint takes focus back on close. On TV
     // the close button takes it, so the remote has something to act on. On
-    // desktop the head guard holds it instead: invisible, no ring for a pointer
-    // user, and the first Tab lands on the close button all the same.
+    // desktop and phones the head guard holds it instead: invisible, no ring
+    // for a pointer or touch user, and the first Tab lands on the close button
+    // all the same.
     changed open => {
         if root.open {
-            if (Bridge.tv-mode || Bridge.android) {
+            if Bridge.tv-mode {
                 close-btn.focus();
             } else {
                 head-guard.focus();
