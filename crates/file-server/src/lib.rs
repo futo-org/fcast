@@ -267,6 +267,8 @@ async fn handle_request(
     }
 }
 
+const ACCEPT_ERROR_BACKOFF: std::time::Duration = std::time::Duration::from_millis(100);
+
 #[derive(Debug)]
 struct BoundPortPair {
     ipv6: u16,
@@ -315,6 +317,8 @@ async fn run_server(
             Ok(stream) => stream,
             Err(err) => {
                 error!(?err, "Accept error");
+                // EMFILE and friends fail again at once, back off instead of spinning
+                tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                 return;
             }
         };
