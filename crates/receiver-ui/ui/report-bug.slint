@@ -70,7 +70,13 @@ export component ReportBugPopup inherits Rectangle {
 
     // false: what happened. true: the report page.
     property <bool> reporting: false;
-    property <bool> on-tv: Bridge.tv-mode || Bridge.android;
+    // Remote-driven: focus starts on a control and the arrows walk the page.
+    property <bool> on-tv: Bridge.tv-mode;
+    // A phone is touch-driven but can copy (slint's android backend has a
+    // clipboard). It cannot open a URL (that backend has no open_url) and
+    // scanning its own screen is no route, so it gets copy and its own step.
+    property <bool> can-copy: !Bridge.tv-mode;
+    property <bool> can-open-url: !Bridge.android;
     property <string> report-text: Bridge.bug-report-text(
         Bridge.bug-report-include-source,
         Bridge.bug-report-include-source-path,
@@ -426,9 +432,11 @@ export component ReportBugPopup inherits Rectangle {
                                 color: FCastPalette.opacity-light-500;
                             }
                             FText {
-                                text: root.on-tv
+                                text: !root.can-copy
                                     ? @tr("2. Scan the code with your phone. It opens a new issue with the report attached in compressed form.")
-                                    : @tr("2. Copy the report, or open a new issue with it attached in compressed form.");
+                                    : root.can-open-url
+                                    ? @tr("2. Copy the report, or open a new issue with it attached in compressed form.")
+                                    : @tr("2. Copy the report, or scan the code with another device. It opens a new issue with the report attached in compressed form.");
                                 wrap: word-wrap;
                                 color: FCastPalette.opacity-light-500;
                             }
@@ -473,16 +481,16 @@ export component ReportBugPopup inherits Rectangle {
                             vertical-stretch: 1;
                         }
 
-                        if !root.on-tv: HorizontalLayout {
+                        if root.can-copy: HorizontalLayout {
                             spacing: 10px;
                             alignment: start;
                             vertical-stretch: 0;
 
                             // The clipboard route: the platform copies a
                             // TextInput's selection, so the block sits in one
-                            // that is never shown. Desktop only, with the
-                            // button that uses it: on a TV a focused text input
-                            // raises the on-screen keyboard.
+                            // that is never shown. Not on TV, with the button
+                            // that uses it: there a focused text input raises
+                            // the on-screen keyboard.
                             clipboard := TextInput {
                                 visible: false;
                                 width: 0;
@@ -500,7 +508,7 @@ export component ReportBugPopup inherits Rectangle {
                                 }
                             }
 
-                            Button {
+                            if root.can-open-url: Button {
                                 text: @tr("Open a new issue");
                                 clicked => {
                                     Platform.open-url(root.issue-url);
