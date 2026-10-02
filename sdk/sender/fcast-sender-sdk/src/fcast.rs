@@ -1808,18 +1808,30 @@ impl InnerDevice {
                     return Err(utils::WorkError::Disconnected);
                 };
 
-                let provider = rustls::crypto::CryptoProvider::get_default()
-                    .expect("a default crypto provider should be installed")
-                    .clone();
-                let config = rustls::ClientConfig::builder_with_protocol_versions(&[
-                    &rustls::version::TLS13,
-                ])
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(CertVerifier::new(
-                    fingerprint,
-                    provider,
-                )))
-                .with_no_client_auth();
+                // A device built without CastContext has no process provider yet
+                let provider = match rustls::crypto::CryptoProvider::get_default() {
+                    Some(provider) => provider.clone(),
+                    None => {
+                        let _ = rustls::crypto::aws_lc_rs::default_provider().install_default();
+                        rustls::crypto::CryptoProvider::get_default()
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                Arc::new(rustls::crypto::aws_lc_rs::default_provider())
+                            })
+                    }
+                };
+                let config = rustls::ClientConfig::builder_with_provider(provider.clone())
+                    .with_protocol_versions(&[&rustls::version::TLS13])
+                    .map_err(|err| {
+                        error!("TLS client config rejected: {err}");
+                        utils::WorkError::Disconnected
+                    })?
+                    .dangerous()
+                    .with_custom_certificate_verifier(Arc::new(CertVerifier::new(
+                        fingerprint,
+                        provider,
+                    )))
+                    .with_no_client_auth();
                 let connector = TlsConnector::from(Arc::new(config));
                 let NetworkStream::Tcp { peer_addr, .. } = &self.stream else {
                     error!("TLS upgrade requested on a non-TCP stream");
