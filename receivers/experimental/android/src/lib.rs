@@ -93,28 +93,39 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeServiceNa
     files_dir: jni::objects::JString,
     hostname: jni::objects::JString,
 ) -> jni::sys::jobjectArray {
-    // no unwraps in extern "C": a panic here aborts the process
-    let (Ok(files_dir), Ok(hostname)) = (env.get_string(&files_dir), env.get_string(&hostname))
-    else {
-        return std::ptr::null_mut();
+    // no unwraps in extern "C": a panic here aborts the process. One at a
+    // time, a JNI call made with the first's exception pending is undefined.
+    let Ok(files_dir) = env.get_string(&files_dir) else {
+        return null_names(&env);
+    };
+    let Ok(hostname) = env.get_string(&hostname) else {
+        return null_names(&env);
     };
     let files_dir = std::path::PathBuf::from(files_dir.to_string_lossy().into_owned());
     let (fcast, raop) = rcore::android_service_names(&files_dir, &hostname.to_string_lossy());
 
     let Ok(names) = env.new_object_array(2, "java/lang/String", jni::objects::JObject::null())
     else {
-        return std::ptr::null_mut();
+        return null_names(&env);
     };
     for (idx, name) in [fcast, raop].into_iter().enumerate() {
         let Some(name) = name else { continue };
         let Ok(name) = env.new_string(name) else {
-            return std::ptr::null_mut();
+            return null_names(&env);
         };
         if env.set_object_array_element(&names, idx as i32, name).is_err() {
-            return std::ptr::null_mut();
+            return null_names(&env);
         }
     }
     names.into_raw()
+}
+
+/// The failure return of `nativeServiceNames`. A failed JNI call leaves its
+/// exception pending, which would throw out of onCreate instead of reaching
+/// the activity's null fallback.
+fn null_names(env: &jni::JNIEnv) -> jni::sys::jobjectArray {
+    let _ = env.exception_clear();
+    std::ptr::null_mut()
 }
 
 /// The fcast TXT records for the NSD registration. Returns false while the

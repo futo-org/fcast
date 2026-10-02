@@ -427,7 +427,10 @@ public class MainActivity extends NativeActivity {
         // so reading them once here is enough.
         String hostname = android.os.Build.MANUFACTURER + "-" + modelName;
         String[] names = nativeServiceNames(getFilesDir().getPath(), hostname);
-        if (names == null) {
+        if (names == null || names.length < 2) {
+            // An unreadable config is an unset one: nothing disabled, the
+            // default names, as rcore's advertised_names resolves it.
+            Log.w(TAG, "service names unavailable from native, advertising defaults");
             names = new String[] { "FCast-" + hostname, "FCast-" + hostname };
         }
         fcastServiceName = names[0] == null ? null : truncateUtf8(names[0], 63);
