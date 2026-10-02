@@ -602,6 +602,11 @@ public class MainActivity extends NativeActivity {
     static native void nativeMediaSeek(double seconds);
 
     private MediaSession mediaSession = null;
+    // From 33 the media notification builds its buttons from the session's
+    // PlaybackState and ignores the notification's own actions. ACTION_STOP
+    // gets no button there, a custom action does.
+    private static final String CUSTOM_ACTION_STOP = "stop";
+    private volatile android.media.session.PlaybackState.CustomAction stopAction = null;
 
     /// The session: what routes media buttons, drives the lock-screen and
     /// BT transport surfaces, and feeds the notification's MediaStyle.
@@ -626,6 +631,13 @@ public class MainActivity extends NativeActivity {
             @Override
             public void onSeekTo(long posMs) {
                 nativeMediaSeek(posMs / 1000.0);
+            }
+
+            @Override
+            public void onCustomAction(@NonNull String action, Bundle extras) {
+                if (CUSTOM_ACTION_STOP.equals(action)) {
+                    nativeMediaCommand(0);
+                }
             }
         });
         mediaSession.setPlaybackToLocal(new android.media.AudioAttributes.Builder()
@@ -822,6 +834,18 @@ public class MainActivity extends NativeActivity {
                                         ? android.media.session.PlaybackState.STATE_PLAYING
                                         : android.media.session.PlaybackState.STATE_PAUSED,
                                 positionMs, playing ? speed : 0f);
+        if (android.os.Build.VERSION.SDK_INT >= 33) {
+            android.media.session.PlaybackState.CustomAction stop = stopAction;
+            if (stop == null) {
+                // built once, this runs at 1 Hz on any thread and a racing
+                // double build is harmless
+                stop = new android.media.session.PlaybackState.CustomAction.Builder(
+                        CUSTOM_ACTION_STOP, getString(R.string.notification_stop),
+                        R.drawable.ic_stat_stop).build();
+                stopAction = stop;
+            }
+            b.addCustomAction(stop);
+        }
         session.setPlaybackState(b.build());
     }
 

@@ -120,6 +120,9 @@ public class ReceiverService extends Service {
                     ? getString(R.string.notification_casting)
                     : title);
             b.setContentText(getString(R.string.notification_casting));
+            // Shown below 33 only: from 33 the media notification draws its
+            // buttons from the session, where MainActivity adds a custom
+            // Stop. Kept on 33+ anyway for surfaces that read the actions.
             Intent stop = new Intent(this, ReceiverService.class);
             stop.setAction(ACTION_STOP_CAST);
             PendingIntent stopPi = PendingIntent.getService(
