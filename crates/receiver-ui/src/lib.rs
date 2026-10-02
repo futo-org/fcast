@@ -65,6 +65,8 @@ pub fn android_overlay_state(granted: bool, can_open_settings: bool) {
 }
 #[cfg(target_os = "android")]
 mod android_overlay;
+#[cfg(any(test, target_os = "android"))]
+mod android_insets;
 #[cfg(target_os = "android")]
 mod android_subtitles;
 #[cfg(target_os = "android")]

@@ -132,19 +132,59 @@ pub fn resync(subs: &Subtitles, ui: &crate::MainWindow) {
     push(&subs.0, true);
 }
 
-/// Push canvas and picture rect. The canvas stops above a persistent
-/// navigation bar so bottom-anchored cues stay readable, but positioned
-/// cues must still anchor to the REAL picture, which is letterboxed into
-/// the full content frame, so the rect the sync derived from the shrunk
-/// canvas is overridden with the real one.
+/// Push canvas and picture rect. The canvas stops above whatever system
+/// inset covers the content frame so bottom-anchored cues stay readable,
+/// but positioned cues must still anchor to the REAL picture, which is
+/// letterboxed into the full content frame, so the rect the sync derived
+/// from the shrunk canvas is overridden with the real one.
 fn sync_geometry(state: &State, size: (u32, u32), picture: (u32, u32)) {
-    let safe_bottom = crate::android_surface_video::safe_bottom_inset();
-    let canvas = (size.0, size.1.saturating_sub(safe_bottom));
-    if state.geometry.sync(&state.engine, canvas, picture).is_some() && safe_bottom > 0 {
+    let covered = covered_bottom(size.1);
+    let canvas = (size.0, size.1.saturating_sub(covered));
+    if state.geometry.sync(&state.engine, canvas, picture).is_some() && covered > 0 {
         if let Some(rect) = crate::video_math::video_rect(picture, size) {
             state.engine.set_video_rect(Some(rect));
         }
     }
+}
+
+/// Physical px of the content frame's bottom under the root's bottom inset.
+/// The raw inset is the root's: on 28/29 the fitted frame already ends above
+/// the nav bar, and subtracting it again put cues one bar too high.
+fn covered_bottom(content_h: u32) -> u32 {
+    let inset = crate::android_surface_video::safe_bottom_inset();
+    if inset == 0 {
+        // immersive, skip the JNI round trip
+        return 0;
+    }
+    let (_, content_y) = crate::android_surface_video::content_offset_in_window();
+    crate::android_insets::bottom_overlap(root_height(), content_y, content_h, inset)
+}
+
+/// The decor view's height, the space the root insets and the content
+/// frame's window location share. Not the slint window size, that one
+/// carries surface insets. 0 when unreadable.
+fn root_height() -> i32 {
+    let mut height = 0;
+    crate::android_immersive::with_activity("root height", |env, activity| {
+        // the slint thread never returns to java, locals must not pile up
+        env.with_local_frame(4, |env| -> jni::errors::Result<()> {
+            let window = env
+                .call_method(activity, "getWindow", "()Landroid/view/Window;", &[])?
+                .l()?;
+            if window.is_null() {
+                return Ok(());
+            }
+            let decor = env
+                .call_method(&window, "peekDecorView", "()Landroid/view/View;", &[])?
+                .l()?;
+            if decor.is_null() {
+                return Ok(());
+            }
+            height = env.call_method(&decor, "getHeight", "()I", &[])?.i()?;
+            Ok(())
+        })
+    });
+    height
 }
 
 /// `force` skips the dedup for the two callers that must reach the scene
