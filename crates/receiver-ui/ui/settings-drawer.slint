@@ -759,6 +759,13 @@ export component SettingsDrawer inherits Rectangle {
                     if Bridge.android: OverlayPermissionRow {
                         label: @tr("Open casts automatically");
                     }
+                    // applies at once: the receiver keeps running in the
+                    // background and starts with the device
+                    if Bridge.android: ToggleRow {
+                        label: @tr("Start on boot");
+                        setting-key: "interface.start_on_boot";
+                        value <=> Bridge.cfg-interface-start-on-boot;
+                    }
                     // Window management is a desktop concept: no tray, no
                     // start-fullscreen, no headless on android, and its
                     // fullscreen player is hardwired on rather than a

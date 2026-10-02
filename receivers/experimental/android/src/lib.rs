@@ -21,13 +21,9 @@ static EVENT_CHANNEL: LazyLock<(
     (tx, Mutex::new(Some(rx)))
 });
 
-#[unsafe(no_mangle)]
-fn android_main(app: slint::android::AndroidApp) {
+/// Once per process, whichever comes first of the core start and a UI.
+fn init_logging(settings: &rcore::Settings) {
     log_panics::init();
-
-    // The activity's files dir, where the drawer's settings persist.
-    let settings = rcore::Settings::load(app.internal_data_path().as_deref());
-
     // Debug only in debug builds: every tracing debug! line is a logcat
     // write, and a release apk has no reader for them. A configured level wins.
     let level = match settings.log_level() {
@@ -45,6 +41,13 @@ fn android_main(app: slint::android::AndroidApp) {
                     .build(),
             ),
     );
+}
+
+#[unsafe(no_mangle)]
+fn android_main(app: slint::android::AndroidApp) {
+    // The activity's files dir, where the drawer's settings persist.
+    let settings = rcore::Settings::load(app.internal_data_path().as_deref());
+    init_logging(&settings);
 
     slint::android::init(app.clone()).unwrap();
 
@@ -82,12 +85,80 @@ fn android_main(app: slint::android::AndroidApp) {
 pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeCoreInit<'local>(
     mut env: jni::JNIEnv<'local>,
     class: jni::objects::JClass<'local>,
-    _app: jni::objects::JObject<'local>,
+    app: jni::objects::JObject<'local>,
 ) {
     if let Err(err) = rcore::android_jni::init(&mut env, &class) {
         let _ = env.exception_clear();
         error!(?err, "ReceiverCore init failed, the core cannot call into Java");
     }
+    // The core (gst's androidmedia, among others) needs the JavaVM and a
+    // context before any activity exists. android-activity sets the same
+    // pair again later, which the forked ndk-context accepts.
+    let (Ok(vm), Ok(app)) = (env.get_java_vm(), env.new_global_ref(&app)) else {
+        let _ = env.exception_clear();
+        error!("no JavaVM or app context for ndk-context");
+        return;
+    };
+    let raw = app.as_obj().as_raw();
+    // the global ref stays for the life of the process, as android-activity's
+    std::mem::forget(app);
+    unsafe { ndk_context::initialize_android_context(vm.get_java_vm_pointer().cast(), raw.cast()) };
+}
+
+/// Starts the receiver core without a UI, from ReceiverCore on the Java main
+/// thread: before the first activity's native thread, or from the service
+/// alone after a boot.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeCoreStart<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    files_dir: jni::objects::JString<'local>,
+) {
+    let Ok(files_dir) = env.get_string(&files_dir) else {
+        let _ = env.exception_clear();
+        return;
+    };
+    let files_dir = std::path::PathBuf::from(files_dir.to_string_lossy().into_owned());
+    let settings = rcore::Settings::load(Some(files_dir.as_path()));
+    init_logging(&settings);
+    if let Some(event_rx) = EVENT_CHANNEL.1.lock().take() {
+        rcore::android_start_core(event_rx, settings);
+    }
+}
+
+/// The start-on-boot answer: 1 on, 0 off, -1 never asked.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeStartOnBoot<'local>(
+    mut env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    files_dir: jni::objects::JString<'local>,
+) -> jni::sys::jint {
+    let Ok(files_dir) = env.get_string(&files_dir) else {
+        let _ = env.exception_clear();
+        return -1;
+    };
+    let files_dir = std::path::PathBuf::from(files_dir.to_string_lossy().into_owned());
+    match rcore::android_start_on_boot(&files_dir) {
+        Some(true) => 1,
+        Some(false) => 0,
+        None => -1,
+    }
+}
+
+/// The first-launch answer. Saved and applied by the core, as a drawer edit.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeSetStartOnBoot<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    on: jni::sys::jboolean,
+) {
+    let _ = EVENT_CHANNEL.0.send(rcore::message::Message::SetConfigBool {
+        key: "interface.start_on_boot".to_owned(),
+        value: on != 0,
+    });
 }
 
 /// The last owner (the service) left with no activity: end the receiver.

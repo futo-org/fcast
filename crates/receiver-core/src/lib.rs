@@ -446,6 +446,15 @@ impl Settings {
     }
 }
 
+/// The start-on-boot answer, `None` while the user was never asked.
+#[cfg(target_os = "android")]
+pub fn android_start_on_boot(files_dir: &std::path::Path) -> Option<bool> {
+    config::ConfigStore::open(files_dir.join(ANDROID_CONFIG_FILE))
+        .get()
+        .interface
+        .start_on_boot
+}
+
 /// The FCast and RAOP names the activity registers, read from the config in
 /// `files_dir`, `None` for a disabled service. `hostname` fills `{hostname}`
 /// and the `FCast-<hostname>` default. The activity asks before the receiver

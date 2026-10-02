@@ -65,7 +65,7 @@ public class MainActivity extends NativeActivity {
             requestPermissions(
                     new String[] { android.Manifest.permission.POST_NOTIFICATIONS }, 1);
         } else {
-            maybePromptOverlayPermission();
+            runPrompts();
         }
 
         // A cast receiver is a full-bleed surface: immersive sticky, video
@@ -150,19 +150,27 @@ public class MainActivity extends NativeActivity {
     private static final String PREFS = "receiver";
     private static final String KEY_OVERLAY_PROMPTED = "overlay_prompted";
 
+    /// The first-launch questions, one after the other.
+    private void runPrompts() {
+        if (!maybePromptOverlayPermission(this::maybePromptStartOnBoot)) {
+            maybePromptStartOnBoot();
+        }
+    }
+
     /// Asks once for the overlay grant, the only way a cast arriving in the
     /// background can open the receiver by itself. Not every TV build has a
-    /// settings page for it, then there is nothing to ask.
-    private void maybePromptOverlayPermission() {
+    /// settings page for it, then there is nothing to ask. True when asked,
+    /// `then` runs once the dialog is gone.
+    private boolean maybePromptOverlayPermission(Runnable then) {
         if (hasOverlayPermission()) {
-            return;
+            return false;
         }
         android.content.SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
         if (prefs.getBoolean(KEY_OVERLAY_PROMPTED, false)) {
-            return;
+            return false;
         }
         if (!canOpenOverlaySettings()) {
-            return;
+            return false;
         }
         prefs.edit().putBoolean(KEY_OVERLAY_PROMPTED, true).apply();
         new android.app.AlertDialog.Builder(this,
@@ -171,6 +179,24 @@ public class MainActivity extends NativeActivity {
                 .setMessage(R.string.overlay_prompt_message)
                 .setPositiveButton(R.string.overlay_prompt_allow, (d, w) -> openOverlaySettings())
                 .setNegativeButton(R.string.overlay_prompt_later, null)
+                .setOnDismissListener(d -> then.run())
+                .show();
+        return true;
+    }
+
+    /// Start on boot is asked on first launch, every device: off until the
+    /// user answers, so no dismissing it.
+    private void maybePromptStartOnBoot() {
+        if (destroyed || !ReceiverCore.startOnBootUnasked()) {
+            return;
+        }
+        new android.app.AlertDialog.Builder(this,
+                android.R.style.Theme_DeviceDefault_Dialog_Alert)
+                .setTitle(R.string.boot_prompt_title)
+                .setMessage(R.string.boot_prompt_message)
+                .setPositiveButton(R.string.boot_prompt_yes, (d, w) -> ReceiverCore.answerStartOnBoot(true))
+                .setNegativeButton(R.string.boot_prompt_no, (d, w) -> ReceiverCore.answerStartOnBoot(false))
+                .setCancelable(false)
                 .show();
     }
 
@@ -207,7 +233,7 @@ public class MainActivity extends NativeActivity {
             @NonNull int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode == 1) {
-            maybePromptOverlayPermission();
+            runPrompts();
         }
     }
 
@@ -386,9 +412,12 @@ public class MainActivity extends NativeActivity {
         super.onStart();
         ReceiverCore.setUiVisible(true);
         Updater.onActivityStarted(this);
-        // The activity is back; its own lifecycle keeps the process warm.
-        ReceiverCore.setServiceWanted(false);
-        stopService(new Intent(this, ReceiverService.class));
+        // The activity is back; its own lifecycle keeps the process warm,
+        // unless start on boot keeps the service up for good.
+        if (!ReceiverCore.startOnBoot()) {
+            ReceiverCore.setServiceWanted(false);
+            stopService(new Intent(this, ReceiverService.class));
+        }
         nativeAppVisibility(true);
     }
 

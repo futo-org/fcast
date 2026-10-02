@@ -777,6 +777,15 @@ pub fn run(
     Ok(false)
 }
 
+/// Starts the receiver core once per process, without a UI: ReceiverCore
+/// calls this from Java whichever of the activity and the service comes first.
+#[cfg(target_os = "android")]
+pub fn android_start_core(platform_event_rx: mpsc::UnboundedReceiver<Message>, settings: Settings) {
+    if ANDROID_CORE.get().is_none() {
+        start_core(platform_event_rx, settings);
+    }
+}
+
 /// The last owner left with no UI up: quit the receiver. The caller exits.
 #[cfg(target_os = "android")]
 pub fn android_shutdown() {

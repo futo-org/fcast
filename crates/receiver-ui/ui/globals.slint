@@ -347,6 +347,7 @@ export global Bridge {
     in-out property <bool> cfg-interface-start-fullscreen: false;
     in-out property <bool> cfg-interface-fullscreen-player: true;
     in-out property <bool> cfg-interface-headless: false;
+    in-out property <bool> cfg-interface-start-on-boot: false;
     // Seeded with what an unset config means, so the startup push is a no-op
     // and the `changed` hook in main.slint only fires on a real difference.
     in-out property <string> cfg-interface-ui-scale: "tv";

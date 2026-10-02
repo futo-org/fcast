@@ -261,6 +261,10 @@ reqwest = { git = "https://gitlab.futo.org/fcast/reqwest.git", rev = "cd3a562866
 # Disable encoders
 image = { git = "https://gitlab.futo.org/fcast/image-rs.git", rev = "9ee78f3f" }
 rustls = { git = "https://gitlab.futo.org/fcast/rustls.git", rev = "72ec207b" }
+# ndk-context fork: a second initialize_android_context replaces the first. The
+# receiver's core starts from its service before any activity (boot start), and
+# android-activity's glue setting the context again then aborted the process.
+ndk-context = { git = "https://gitlab.futo.org/fcast/ndk-context.git", rev = "7035f4d79092481a1187c2ee521c4b9549eb56e4" }
 libheif-sys = { git = "https://gitlab.futo.org/fcast/libheif-sys.git", rev = "f8dc2979346be29c85facf307d42a72745d5d038" }
 # Bundled-linking forks: the -sys crates probe the static GStreamer through
 # their gstreamer-src dependency, no stub .pc files or env setup. The glib

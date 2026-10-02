@@ -134,6 +134,10 @@ pub struct InterfaceConfig {
     /// warns instead of discarding the file. See [`crate::ui_scaling`].
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ui_scale: Option<String>,
+    /// android: keep the receiver running from boot. Unset until the user
+    /// answered the first-launch question, off until then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub start_on_boot: Option<bool>,
 }
 
 impl Default for InterfaceConfig {
@@ -145,6 +149,7 @@ impl Default for InterfaceConfig {
             fullscreen_player: true,
             headless: false,
             ui_scale: None,
+            start_on_boot: None,
         }
     }
 }
@@ -195,6 +200,7 @@ impl Config {
             "interface.start_fullscreen" => self.interface.start_fullscreen = value,
             "interface.fullscreen_player" => self.interface.fullscreen_player = value,
             "interface.headless" => self.interface.headless = value,
+            "interface.start_on_boot" => self.interface.start_on_boot = Some(value),
             "video.hdr_output" => self.video.hdr_output = value,
             _ => return false,
         }
@@ -641,6 +647,9 @@ mod tests {
         assert!(!config.interface.tray);
         assert!(config.set_bool("video.hdr_output", false));
         assert!(!config.video.hdr_output);
+        assert_eq!(config.interface.start_on_boot, None, "unset until answered");
+        assert!(config.set_bool("interface.start_on_boot", false));
+        assert_eq!(config.interface.start_on_boot, Some(false));
         assert!(
             !config.set_bool("bogus.key", true),
             "unknown key returns false"

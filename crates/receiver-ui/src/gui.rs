@@ -8,7 +8,7 @@ use std::rc::Rc;
 
 use slint::{ComponentHandle, SharedString, ToSharedString, VecModel};
 use tokio::sync::mpsc::UnboundedReceiver;
-use tracing::{debug, error};
+use tracing::debug;
 
 use fcast_protocol::v3;
 use receiver_core::{
@@ -864,7 +864,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
                 window.hide()
             };
             if let Err(err) = res {
-                error!(?err, visible, "Failed to set window visibility");
+                tracing::error!(?err, visible, "Failed to set window visibility");
             }
         }
         UpdateGuiCommand::SetGraphDump(dump) => set_graph_dump(&ui, dump.0),
@@ -906,6 +906,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
             bridge.set_cfg_interface_start_fullscreen(config.interface.start_fullscreen);
             bridge.set_cfg_interface_fullscreen_player(config.interface.fullscreen_player);
             bridge.set_cfg_interface_headless(config.interface.headless);
+            bridge.set_cfg_interface_start_on_boot(config.interface.start_on_boot.unwrap_or(false));
             // Formatted the way the drawer's dropdown labels it, so the active
             // option is the highlighted one: unset means the default mode,
             // shown under its own name rather than as "Default".

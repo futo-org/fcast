@@ -28,6 +28,7 @@ public class ReceiverService extends Service {
     // 2 is Updater's
     private static final int WAITING_NOTIFICATION_ID = 3;
     static final String ACTION_STOP_CAST = "org.fcast.rsreceiver.android.STOP_CAST";
+    static final String ACTION_QUIT = "org.fcast.rsreceiver.android.QUIT";
     private static final int NOTIFICATION_ID = 1;
 
     /// The session token and current title, published by MainActivity for
@@ -146,11 +147,33 @@ public class ReceiverService extends Service {
         } else {
             b.setContentTitle(getString(R.string.notification_ready));
         }
+        // the only way out while start on boot keeps the service up; after
+        // Stop, so a cast keeps Stop in the compact view
+        if (ReceiverCore.startOnBoot()) {
+            Intent quit = new Intent(this, ReceiverService.class);
+            quit.setAction(ACTION_QUIT);
+            PendingIntent quitPi = PendingIntent.getService(
+                    this, 6, quit, PendingIntent.FLAG_IMMUTABLE);
+            b.addAction(new Notification.Action.Builder(
+                    Icon.createWithResource(this, R.drawable.ic_stat_stop),
+                    getString(R.string.notification_quit), quitPi).build());
+        }
         return b.build();
     }
 
     @Override
+    public void onCreate() {
+        super.onCreate();
+        // a boot start has no activity: the service brings the core up
+        ReceiverCore.ensureStarted(this);
+    }
+
+    @Override
     public int onStartCommand(Intent intent, int flags, int startId) {
+        if (intent != null && ACTION_QUIT.equals(intent.getAction())) {
+            ReceiverCore.quit();
+            return START_NOT_STICKY;
+        }
         if (intent != null && ACTION_STOP_CAST.equals(intent.getAction())) {
             ReceiverCore.nativeMediaCommand(0);
             if (running == null) {
@@ -212,6 +235,11 @@ public class ReceiverService extends Service {
 
     @Override
     public void onTaskRemoved(Intent rootIntent) {
+        if (ReceiverCore.startOnBoot()) {
+            // kept for good, the notification's Quit ends it
+            super.onTaskRemoved(rootIntent);
+            return;
+        }
         ReceiverCore.setServiceWanted(false);
         // Recents swipe: the process is going down with the task; take the
         // notification along instead of leaving an orphan.

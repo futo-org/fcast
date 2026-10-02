@@ -10,4 +10,10 @@
     <string name="overlay_prompt_message">To start playing when a cast arrives while another app is on screen, FCast Receiver needs permission to display over other apps.</string>
     <string name="overlay_prompt_allow">Allow</string>
     <string name="overlay_prompt_later">Not now</string>
+    <string name="boot_prompt_title">Start on boot</string>
+    <string name="boot_prompt_message">Keep FCast Receiver running in the background so it can be cast to at any time, also after the device restarts? A notification shows while it runs. You can change this later in the settings.</string>
+    <string name="boot_prompt_yes">Keep running</string>
+    <string name="boot_prompt_no">No</string>
+    <string name="notification_quit">Quit</string>
+    <string name="notification_tap_to_start">Tap to start the receiver.</string>
 </resources>

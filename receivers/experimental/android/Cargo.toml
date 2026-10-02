@@ -10,6 +10,7 @@ android_logger = "0.15.1"
 log-panics = { version = "2.1.0", features = ["with-backtrace"]}
 log.workspace = true
 jni = "0.21.1"
+ndk-context = "0.1.1"
 tokio.workspace = true
 parking_lot.workspace = true
 

@@ -6143,6 +6143,17 @@ impl Application {
                     .config
                     .update(|config| known = config.set_bool(&key, value));
                 self.report_config_change(&key, known, res);
+                // Applies at once, unlike the rest: the service and the boot
+                // receiver follow it, and the first-launch prompt sets it from Java.
+                #[cfg(target_os = "android")]
+                if known && key == "interface.start_on_boot" {
+                    crate::android_jni::call(
+                        "applyStartOnBoot",
+                        "(Z)V",
+                        &[jni::objects::JValue::Bool(value as u8)],
+                    );
+                    self.push_settings_to_ui();
+                }
             }
             Message::SetConfigString { key, value } => {
                 let mut known = false;

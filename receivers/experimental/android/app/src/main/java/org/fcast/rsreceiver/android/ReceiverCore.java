@@ -122,6 +122,14 @@ public final class ReceiverCore {
         started = true;
         app = ctx.getApplicationContext();
         nativeCoreInit(app);
+        // the Rust core too: a boot start has no activity to start it
+        String filesDir = app.getFilesDir().getPath();
+        nativeCoreStart(filesDir);
+        startOnBoot = nativeStartOnBoot(filesDir);
+        syncBootComponent(startOnBoot == 1);
+        if (startOnBoot == 1 && !(ctx instanceof ReceiverService)) {
+            requestService();
+        }
 
         createMediaSession();
         ReceiverService.ensureChannel(app);
@@ -214,6 +222,68 @@ public final class ReceiverCore {
     // Set when the activity asked for the service: its onStartCommand comes
     // later on this thread, after an onDestroy that may follow onStop at once.
     private static volatile boolean serviceWanted = false;
+
+    // 1 on, 0 off, -1 never asked (first launch prompts, off until answered)
+    private static volatile int startOnBoot = -1;
+
+    /// The service runs for the life of the process, not only backgrounded.
+    static boolean startOnBoot() {
+        return startOnBoot == 1;
+    }
+
+    static boolean startOnBootUnasked() {
+        return startOnBoot == -1;
+    }
+
+    /// The first-launch answer. The core saves it and applies it back
+    /// through applyStartOnBoot, as for a drawer edit.
+    static void answerStartOnBoot(boolean on) {
+        startOnBoot = on ? 1 : 0;
+        nativeSetStartOnBoot(on);
+    }
+
+    /// The setting changed (drawer or prompt), from native code on any
+    /// thread. Takes effect at once: no reboot needed to be reachable.
+    static void applyStartOnBoot(boolean on) {
+        onMain(() -> {
+            startOnBoot = on ? 1 : 0;
+            syncBootComponent(on);
+            if (on) {
+                requestService();
+            } else if (uiVisible) {
+                // back to the service only while backgrounded
+                serviceWanted = false;
+                app.stopService(new Intent(app, ReceiverService.class));
+            }
+            ReceiverService.refreshIfRunning();
+        });
+    }
+
+    private static void syncBootComponent(boolean on) {
+        android.content.pm.PackageManager pm = app.getPackageManager();
+        android.content.ComponentName boot = new android.content.ComponentName(app, BootReceiver.class);
+        int want = on
+                ? android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED
+                : android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DISABLED;
+        if (pm.getComponentEnabledSetting(boot) != want) {
+            pm.setComponentEnabledSetting(boot, want, android.content.pm.PackageManager.DONT_KILL_APP);
+        }
+    }
+
+    private static void requestService() {
+        try {
+            app.startForegroundService(new Intent(app, ReceiverService.class));
+            serviceWanted = true;
+        } catch (Exception e) {
+            Log.w(TAG, "foreground service refused", e);
+        }
+    }
+
+    /// The notification's Quit: the receiver ends, whatever owns it.
+    static void quit() {
+        Log.i(TAG, "quit from the notification");
+        nativeShutdown();
+    }
 
     static void setServiceWanted(boolean wanted) {
         serviceWanted = wanted;
@@ -913,6 +983,11 @@ public final class ReceiverCore {
     private static native void nativeCoreInit(Context app);
     /// Quits the receiver and ends the process.
     private static native void nativeShutdown();
+    /// Starts the Rust core once per process, with the config in `filesDir`.
+    private static native void nativeCoreStart(String filesDir);
+    /// The start-on-boot setting: 1 on, 0 off, -1 never asked.
+    private static native int nativeStartOnBoot(String filesDir);
+    private static native void nativeSetStartOnBoot(boolean on);
     private static native void nativeSetAddresses(List<ByteBuffer> addrs);
     private static native void setMdnsDeviceName(String name);
     private static native String getDeviceNameRaopHash(String name);

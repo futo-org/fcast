@@ -12,6 +12,9 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <!-- Start on boot, opt-in: the receiver below is disabled until the
+         user turns the setting on. -->
+    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED"/>
     <!-- Launch the player when a cast arrives while backgrounded, the
          Kotlin receiver precedent. User-granted, checked at runtime. -->
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW"/>
@@ -87,6 +90,19 @@
              while casting: a mediaPlayback FGS with nothing playing is a
              Play policy flag, and the honest split is what the platform
              asks for. -->
+        <!-- Enabled only while start on boot is on (ReceiverCore.syncBootComponent),
+             so with the setting off nothing runs at boot. An update ends the
+             process too, hence MY_PACKAGE_REPLACED. -->
+        <receiver
+            android:name=".BootReceiver"
+            android:enabled="false"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <service
             android:name=".ReceiverService"
             android:exported="false"
