@@ -251,6 +251,16 @@ pub enum Message {
     InspectorBitrateTick,
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     AppUpdate(AppUpdate),
+    /// android: a UI came up and wants the current state, see
+    /// [`crate::gui::GuiController::attach`].
+    GuiAttached {
+        tx: tokio::sync::mpsc::UnboundedSender<crate::gui::UpdateGuiCommand>,
+        generation: u64,
+    },
+    /// android: that UI went away.
+    GuiDetached {
+        generation: u64,
+    },
     /// The renderer is going away. `shows` is the count of window shows the
     /// GUI thread had carried out when it started, a newer request means the
     /// window is already being brought back.

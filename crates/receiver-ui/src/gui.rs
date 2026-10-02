@@ -591,7 +591,7 @@ fn clear_audio_covers(bridge: &Bridge) {
 /// cover costs real cpu time to shrink) and cpu-blurs the 96px result,
 /// android does both on the cpu. The worker lands its result only if still
 /// current.
-fn spawn_cover_blur(ui: &MainWindow, img: DecodedImage) {
+fn spawn_cover_blur(ui: &MainWindow, img: std::sync::Arc<DecodedImage>) {
     use std::sync::atomic::Ordering;
     let generation = COVER_BLUR_GEN.fetch_add(1, Ordering::Relaxed) + 1;
     let ui_weak = ui.as_weak();
@@ -770,9 +770,11 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
         UpdateGuiCommand::SetLocalDeviceName(name) => {
             bridge.set_device_name(name.to_shared_string())
         }
-        UpdateGuiCommand::SetVolume(volume) => {
+        UpdateGuiCommand::SetVolume { volume, show } => {
             bridge.set_volume(volume);
-            bridge.set_volume_set_at(1.0);
+            if show {
+                bridge.set_volume_set_at(1.0);
+            }
         }
         UpdateGuiCommand::SetPlaylistIndex(idx) => bridge.set_playlist_idx(idx),
         UpdateGuiCommand::ShowToastMessage { kind, detail, code } => {

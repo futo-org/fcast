@@ -124,7 +124,7 @@ pub enum UpdateGuiCommand {
     },
     SetImage {
         typ: ImageType,
-        img: IgnoredDebug<DecodedImage>,
+        img: IgnoredDebug<Arc<DecodedImage>>,
     },
     UpdatePlaybackProgress {
         progress_s: Seconds,
@@ -152,7 +152,11 @@ pub enum UpdateGuiCommand {
         addrs: String,
     },
     SetLocalDeviceName(String),
-    SetVolume(f32),
+    /// `show` pops the volume overlay, false for a restore (attach replay).
+    SetVolume {
+        volume: f32,
+        show: bool,
+    },
     SetPlaylistIndex(i32),
     ShowToastMessage {
         kind: UiToastKind,
@@ -339,6 +343,12 @@ pub struct GuiController {
     is_live: bool,
     backoff_active: bool,
     is_visible: GuiIsVisible,
+    /// Recorded state for a UI that attaches later, `None` where none can.
+    replay: Option<Mutex<crate::gui_replay::GuiSnapshot>>,
+    /// The attached UI's generation, 0 before the first attach.
+    ui_generation: u64,
+    /// Runs on every app state set, attached UI or not.
+    app_state_hook: Option<Box<dyn Fn(AppState) + Send + Sync>>,
 }
 
 impl GuiController {
@@ -350,10 +360,56 @@ impl GuiController {
             is_live: false,
             backoff_active: false,
             is_visible,
+            replay: None,
+            ui_generation: 0,
+            app_state_hook: None,
         }
     }
 
+    /// For state that must follow item boundaries without a UI (android's
+    /// cue engine).
+    pub fn with_app_state_hook(mut self, hook: impl Fn(AppState) + Send + Sync + 'static) -> Self {
+        self.app_state_hook = Some(Box::new(hook));
+        self
+    }
+
+    /// Records every command so [`Self::attach`] can catch a new UI up.
+    pub fn with_replay(mut self) -> Self {
+        self.replay = Some(Mutex::new(Default::default()));
+        self
+    }
+
+    /// A UI came up: replays the recorded state into it. Returns false for a
+    /// stale attach (an older generation than the current UI).
+    pub fn attach(&mut self, tx: UnboundedSender<UpdateGuiCommand>, generation: u64) -> bool {
+        if generation < self.ui_generation {
+            return false;
+        }
+        if let Some(replay) = &self.replay {
+            replay.lock().replay(|cmd| {
+                let _ = tx.send(cmd);
+            });
+        }
+        self.tx = Some(tx);
+        self.ui_generation = generation;
+        self.is_visible.set(true);
+        true
+    }
+
+    /// The UI went away. A detach from a UI already replaced is ignored.
+    pub fn detach(&mut self, generation: u64) -> bool {
+        if generation != self.ui_generation || self.tx.is_none() {
+            return false;
+        }
+        self.tx = None;
+        self.is_visible.set(false);
+        true
+    }
+
     fn send(&self, cmd: UpdateGuiCommand) {
+        if let Some(replay) = &self.replay {
+            replay.lock().record(&cmd);
+        }
         if let Some(tx) = &self.tx
             && let Err(err) = tx.send(cmd)
         {
@@ -384,6 +440,10 @@ impl GuiController {
 
     /// Returns the the previous window fulscreen state.
     pub fn set_fullscreen(&self, fullscreen: bool) -> bool {
+        // no UI to answer (android, detached)
+        if self.tx.is_none() {
+            return false;
+        }
         let (prev_tx, prev_rx) = oneshot::channel();
         self.send(UpdateGuiCommand::SetFullscreen {
             fullscreen,
@@ -399,6 +459,9 @@ impl GuiController {
     }
 
     pub fn set_app_state(&self, state: AppState) {
+        if let Some(hook) = &self.app_state_hook {
+            hook(state);
+        }
         self.send(UpdateGuiCommand::SetAppState(state));
     }
 
@@ -413,7 +476,7 @@ impl GuiController {
     fn set_image(&self, img: DecodedImage, typ: ImageType) {
         self.send(UpdateGuiCommand::SetImage {
             typ,
-            img: img.into(),
+            img: Arc::new(img).into(),
         });
     }
 
@@ -503,7 +566,7 @@ impl GuiController {
     }
 
     pub fn set_volume(&self, volume: f32) {
-        self.send(UpdateGuiCommand::SetVolume(volume));
+        self.send(UpdateGuiCommand::SetVolume { volume, show: true });
     }
 
     pub fn set_playlist_index(&self, index: i32) {
@@ -610,6 +673,9 @@ impl GuiController {
     pub fn set_window_visibility(&self, visible: bool) -> bool {
         if visible {
             self.is_visible.note_show();
+        }
+        if self.tx.is_none() {
+            return false;
         }
         let (prev_tx, prev_rx) = oneshot::channel();
         self.send(UpdateGuiCommand::SetWindowVisibility { visible, prev_tx });
@@ -727,6 +793,61 @@ mod tests {
         let (_tx, rx) = oneshot::channel::<()>();
         let wait = await_player_release(&rx, &visible, visible.shows_processed(), Duration::from_millis(50));
         assert_eq!(wait, TeardownWait::TimedOut);
+    }
+
+    fn drain(rx: &mut tokio::sync::mpsc::UnboundedReceiver<UpdateGuiCommand>) -> Vec<UpdateGuiCommand> {
+        std::iter::from_fn(|| rx.try_recv().ok()).collect()
+    }
+
+    #[test]
+    fn an_attach_catches_the_ui_up_on_what_it_missed() {
+        let visible = GuiIsVisible::new();
+        let mut gui = GuiController::new(None, visible.clone()).with_replay();
+        gui.set_media_title("headless".into());
+        gui.set_app_state(AppState::Playing);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(gui.attach(tx, 1));
+        assert!(visible.get());
+        let cmds = drain(&mut rx);
+        assert!(matches!(&cmds[..], [UpdateGuiCommand::SetMediaTitle(t), UpdateGuiCommand::SetAppState(AppState::Playing)] if t == "headless"));
+        gui.set_media_title("live".into());
+        assert!(matches!(&drain(&mut rx)[..], [UpdateGuiCommand::SetMediaTitle(t)] if t == "live"));
+    }
+
+    #[test]
+    fn a_detach_from_a_replaced_ui_is_ignored() {
+        // The new activity attached before the old one's detach arrived.
+        let visible = GuiIsVisible::new();
+        let mut gui = GuiController::new(None, visible.clone()).with_replay();
+        let (old_tx, _old_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (new_tx, mut new_rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(gui.attach(old_tx, 1));
+        assert!(gui.attach(new_tx, 2));
+        assert!(!gui.detach(1));
+        assert!(visible.get());
+        gui.set_media_title("still here".into());
+        assert_eq!(drain(&mut new_rx).len(), 1);
+        assert!(gui.detach(2));
+        assert!(!visible.get());
+        assert!(!gui.detach(2), "a second detach is a no-op");
+    }
+
+    #[test]
+    fn a_stale_attach_is_refused() {
+        let mut gui = GuiController::new(None, GuiIsVisible::new()).with_replay();
+        let (new_tx, _new_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (old_tx, _old_rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(gui.attach(new_tx, 2));
+        assert!(!gui.attach(old_tx, 1));
+    }
+
+    #[test]
+    fn a_volume_restore_shows_no_overlay() {
+        let mut gui = GuiController::new(None, GuiIsVisible::new()).with_replay();
+        gui.set_volume(0.5);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        gui.attach(tx, 1);
+        assert!(matches!(&drain(&mut rx)[..], [UpdateGuiCommand::SetVolume { show: false, .. }]));
     }
 
     #[test]

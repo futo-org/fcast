@@ -23,6 +23,7 @@ pub mod fcast;
 mod gcast;
 pub mod gstreamer;
 pub mod gui;
+pub mod gui_replay;
 pub mod image;
 pub mod inspector_graph;
 pub mod logging;

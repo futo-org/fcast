@@ -6147,6 +6147,15 @@ impl Application {
             }
             Message::InspectorRefresh => self.refresh_inspector_graph(),
             Message::SoftKeyboardVisible(visible) => self.gui.set_soft_keyboard_visible(visible),
+            Message::GuiAttached { tx, generation } => {
+                // the replay carries no settings, the live config goes instead
+                if self.gui.attach(tx, generation) {
+                    self.push_settings_to_ui();
+                }
+            }
+            Message::GuiDetached { generation } => {
+                self.gui.detach(generation);
+            }
             Message::InspectorBitrateTick => self.inspector_tick(),
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
             Message::AppUpdate(event) => return self.handle_app_update_event(event),
