@@ -6319,9 +6319,8 @@ impl Application {
         self.push_settings_to_ui();
 
         // `None` means the user quit before anything was bound. When FCast is disabled
-        // we commit with no listeners so the loop still serves
-        // chromecast/airplay/raop; the empty listener stream stays pending and
-        // never fires.
+        // we commit with no listeners so the loop still serves chromecast,
+        // airplay and raop, with the accept branch below switched off.
         let listeners = if self.is_fcast_enabled() {
             self.resolve_listen_port(&mut event_rx).await?
         } else {
@@ -6347,6 +6346,9 @@ impl Application {
             self.gui.show_system_tray();
             self.gui.set_starting_up(false);
 
+            // An empty select_all ends on its first poll and asks to be polled
+            // again in the same select!, which asserts. Decided once, here.
+            let accepting = !listeners.is_empty();
             let accept_streams = listeners.into_iter().map(|listener| {
                 // `Box::pin` so the `Unfold` streams are `Unpin`, as `select_all` requires.
                 Box::pin(futures::stream::unfold(listener, |listener| async move {
@@ -6388,7 +6390,7 @@ impl Application {
                             self.maybe_prearm_gapless();
                         }
                     }
-                    session = listener_stream.select_next_some() => {
+                    session = listener_stream.select_next_some(), if accepting => {
                         match session {
                             Ok((stream, _)) => {
                                 self.handle_new_fcast_session(stream, session_id);
