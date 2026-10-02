@@ -312,6 +312,8 @@ fn add_bus_handler(
                             debug = ?err.debug(),
                             "Error",
                         );
+                        // Not ended here since webrtcbin per-consumer errors land on
+                        // this bus too. Fatal signaller failures send EndSession directly.
                         // if let Err(err) = event_tx.send(Event::EndSession { disconnect: true }) {
                         //     error!(?err, "Failed to send event");
                         // }
@@ -357,6 +359,23 @@ fn create_webrtcsink(
     event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
 ) -> anyhow::Result<gstrswebrtc::webrtcsink::BaseWebRTCSink> {
     let signaller = crate::whep_signaller::WhepServerSignaller::default();
+    // Binding is async so the sink was already built Ok. End the session so the
+    // sender leaves its casting state instead of waiting for SignallerStarted.
+    signaller.connect(
+        crate::whep_signaller::ON_SERVER_FAILED_SIGNAL_NAME,
+        false,
+        {
+            let event_tx = event_tx.clone();
+            move |vals| {
+                let msg = vals.get(1).and_then(|v| v.get::<String>().ok());
+                error!(?msg, "WHEP server failed, ending the session");
+                if let Err(err) = event_tx.send(Event::EndSession { disconnect: true }) {
+                    error!(?err, "Failed to send event");
+                }
+                None
+            }
+        },
+    );
     signaller.connect(
         crate::whep_signaller::ON_SERVER_STARTED_SIGNAL_NAME,
         false,

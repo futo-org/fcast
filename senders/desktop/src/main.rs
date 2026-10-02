@@ -1454,6 +1454,15 @@ impl Application {
                                 fcast_sender_sdk::IpAddr::V4 { .. } => bound_port_v4,
                                 fcast_sender_sdk::IpAddr::V6 { .. } => bound_port_v6,
                             };
+                            // 0 means no listener for this address family
+                            if bound_port == 0 {
+                                error!(
+                                    ?addr,
+                                    "WHEP server has no listener for the local address family"
+                                );
+                                self.end_session(true).await?;
+                                return Ok(ShouldQuit::No);
+                            }
 
                             let Some((content_type, url)) = tx_sink
                                 .as_ref()

@@ -5,6 +5,9 @@ use gst::glib::{self, object::ObjectExt};
 use gstrswebrtc::signaller::Signallable;
 
 pub const ON_SERVER_STARTED_SIGNAL_NAME: &str = "on-server-started";
+/// Emitted with an error string when the server cannot bind. The bus error
+/// from the "error" signal is only logged, so this is what ends the session.
+pub const ON_SERVER_FAILED_SIGNAL_NAME: &str = "on-server-failed";
 
 mod imp {
     use bytes::Bytes;
@@ -15,18 +18,18 @@ mod imp {
     use hyper::{Method, Response, StatusCode};
     use parking_lot::Mutex;
     use tokio::{net::TcpListener, sync::mpsc};
-    use tracing::{debug, error};
+    use tracing::{debug, error, warn};
 
     use gstrswebrtc::signaller::{Signallable, SignallableImpl};
 
     use std::{
         collections::HashMap,
-        net::{IpAddr, Ipv6Addr, SocketAddr},
+        net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
         sync::LazyLock,
         time::Duration,
     };
 
-    use crate::whep_signaller::ON_SERVER_STARTED_SIGNAL_NAME;
+    use crate::whep_signaller::{ON_SERVER_FAILED_SIGNAL_NAME, ON_SERVER_STARTED_SIGNAL_NAME};
 
     const DEFAULT_TIMEOUT_SECONDS: u32 = 30;
 
@@ -354,32 +357,22 @@ mod imp {
             let settings = self.settings.lock();
             let server_port = settings.server_port;
             let jh = settings.rt_handle.spawn(async move {
-                let listener = TcpListener::bind(SocketAddr::new(
-                    IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-                    server_port,
-                ))
-                .await
-                .expect("failed create TCP listener");
-                #[cfg(target_os = "windows")]
-                let listener_v4 = TcpListener::bind(SocketAddr::new(
-                    IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-                    server_port,
-                ))
-                .await
-                .expect("failed create TCP listener");
-
-                if let Some(obj) = obj_weak.upgrade() {
-                    let local_addr = listener.local_addr().unwrap();
-                    let bound_port = local_addr.port();
-
-                    #[cfg(not(target_os = "windows"))]
-                    let bound_port_v4 = bound_port;
-                    #[cfg(target_os = "windows")]
-                    let bound_port_v4 = {
-                        let local_addr = listener_v4.local_addr().unwrap();
-                        local_addr.port()
+                let (listener, listener_extra, bound_port_v4, bound_port) =
+                    match bind_listeners(server_port).await {
+                        Ok(bound) => bound,
+                        Err(err) => {
+                            error!(?err, server_port, "Failed to bind WHEP server");
+                            if let Some(obj) = obj_weak.upgrade() {
+                                let msg = format!("Unable to start WHEP server: {err}");
+                                obj.emit_by_name::<()>(ON_SERVER_FAILED_SIGNAL_NAME, &[&msg]);
+                                // webrtcsink turns this into an element error on the bus
+                                obj.emit_by_name::<()>("error", &[&msg]);
+                            }
+                            return;
+                        }
                     };
 
+                if let Some(obj) = obj_weak.upgrade() {
                     obj.emit_by_name::<()>(
                         ON_SERVER_STARTED_SIGNAL_NAME,
                         &[
@@ -391,15 +384,16 @@ mod imp {
                     error!("Failed to upgrade obj_weak ");
                 }
 
+                /// Returns false on an accept error.
                 fn accept_connection(
                     self_weak: &glib::subclass::ObjectImplWeakRef<Signaller>,
                     conn: std::io::Result<(tokio::net::TcpStream, std::net::SocketAddr)>,
-                ) {
+                ) -> bool {
                     let (stream, _) = match conn {
                         Ok(conn) => conn,
                         Err(err) => {
                             error!(?err, "Accept error");
-                            return;
+                            return false;
                         }
                     };
 
@@ -430,6 +424,7 @@ mod imp {
                             error!(?err, "Failed to handle connection");
                         }
                     });
+                    true
                 }
 
                 fn handle_sig(
@@ -442,16 +437,14 @@ mod imp {
                 }
 
                 loop {
-                    #[cfg(not(target_os = "windows"))]
-                    tokio::select! {
-                        conn = listener.accept() => accept_connection(&self_weak, conn),
+                    let conn = tokio::select! {
+                        conn = listener.accept() => conn,
+                        conn = accept_extra(listener_extra.as_ref()) => conn,
                         sig = &mut rx => break handle_sig(sig),
-                    }
-                    #[cfg(target_os = "windows")]
-                    tokio::select! {
-                        conn = listener.accept() => accept_connection(&self_weak, conn),
-                        conn = listener_v4.accept() => accept_connection(&self_weak, conn),
-                        sig = &mut rx => break handle_sig(sig),
+                    };
+                    if !accept_connection(&self_weak, conn) {
+                        // EMFILE and friends fail again at once, back off instead of spinning
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                     }
                 }
             });
@@ -459,6 +452,81 @@ mod imp {
             debug!("Started the server...");
 
             Some(jh)
+        }
+    }
+
+    const ACCEPT_ERROR_BACKOFF: Duration = Duration::from_millis(100);
+
+    type Accepted = std::io::Result<(tokio::net::TcpStream, SocketAddr)>;
+
+    /// Accepts on the optional second listener, pends forever without one.
+    async fn accept_extra(listener: Option<&TcpListener>) -> Accepted {
+        match listener {
+            Some(listener) => listener.accept().await,
+            None => std::future::pending().await,
+        }
+    }
+
+    /// EAFNOSUPPORT, hardcoded since mcore has no libc dependency.
+    /// std maps it to no stable ErrorKind.
+    #[cfg(not(any(target_os = "windows", target_vendor = "apple", target_os = "freebsd")))]
+    const EAFNOSUPPORT: i32 = 97;
+    #[cfg(any(target_vendor = "apple", target_os = "freebsd"))]
+    const EAFNOSUPPORT: i32 = 47;
+
+    /// True when the host has no usable IPv6, the only case worth an IPv4
+    /// retry.
+    #[cfg(not(target_os = "windows"))]
+    fn is_ipv6_unavailable(err: &std::io::Error) -> bool {
+        err.kind() == std::io::ErrorKind::AddrNotAvailable
+            || err.raw_os_error() == Some(EAFNOSUPPORT)
+    }
+
+    /// Binds the WHEP listeners as (primary, extra, port v4, port v6).
+    /// `[::]` is dual-stack here, IPv4 only when IPv6 is unavailable.
+    /// Port v6 is 0 when there is no IPv6 listener.
+    #[cfg(not(target_os = "windows"))]
+    async fn bind_listeners(
+        port: u16,
+    ) -> std::io::Result<(TcpListener, Option<TcpListener>, u16, u16)> {
+        let v6 = TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)).await;
+        match v6 {
+            Ok(listener) => {
+                let bound = listener.local_addr()?.port();
+                Ok((listener, None, bound, bound))
+            }
+            Err(err) if is_ipv6_unavailable(&err) => {
+                warn!(?err, "IPv6 unavailable, falling back to IPv4");
+                let v4 =
+                    TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port))
+                        .await?;
+                let bound_v4 = v4.local_addr()?.port();
+                Ok((v4, None, bound_v4, 0))
+            }
+            // EADDRINUSE and friends would fail on IPv4 too or hide a real conflict
+            Err(err) => Err(err),
+        }
+    }
+
+    /// Binds the WHEP listeners as (primary, extra, port v4, port v6).
+    /// Windows `[::]` is v6 only, so IPv4 gets its own required listener.
+    /// Port v6 is 0 when IPv6 could not be bound.
+    #[cfg(target_os = "windows")]
+    async fn bind_listeners(
+        port: u16,
+    ) -> std::io::Result<(TcpListener, Option<TcpListener>, u16, u16)> {
+        let v4 =
+            TcpListener::bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port)).await?;
+        let bound_v4 = v4.local_addr()?.port();
+        match TcpListener::bind(SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), port)).await {
+            Ok(v6) => {
+                let bound_v6 = v6.local_addr()?.port();
+                Ok((v4, Some(v6), bound_v4, bound_v6))
+            }
+            Err(err) => {
+                warn!(?err, "IPv6 bind failed, serving IPv4 only");
+                Ok((v4, None, bound_v4, 0))
+            }
         }
     }
 
@@ -554,8 +622,12 @@ mod imp {
             static SIGNALS: LazyLock<Vec<glib::subclass::Signal>> = LazyLock::new(|| {
                 vec![
                     glib::subclass::Signal::builder(ON_SERVER_STARTED_SIGNAL_NAME)
-                        // [Ipv4 listener port, Ipv6 listener port]
+                        // [Ipv4 listener port, Ipv6 listener port], 0 means no listener
                         .param_types([u32::static_type(), u32::static_type()])
+                        .build(),
+                    glib::subclass::Signal::builder(ON_SERVER_FAILED_SIGNAL_NAME)
+                        // [Error message]
+                        .param_types([String::static_type()])
                         .build(),
                 ]
             });

@@ -243,6 +243,35 @@ impl Application {
         Ok(())
     }
 
+    /// Builds the mirroring sink and, for FWRTC receivers, opens the session.
+    fn start_tx_sink(&mut self, source_config: SourceConfig) -> Result<()> {
+        let supports_fwrtc = self
+            .active_device
+            .as_ref()
+            .is_some_and(|d| d.supports_feature(device::DeviceFeature::FWRTCSignalling));
+
+        if supports_fwrtc {
+            let sink = FSink::new(
+                source_config,
+                self.event_tx.clone(),
+                tokio::runtime::Handle::current(),
+            )?;
+            let signaller = sink.signaller.clone();
+            self.tx_sink = Some(TxSink::FCast(sink));
+            if let Some(device) = self.active_device.as_ref() {
+                device.start_mirroring_session(Arc::new(signaller))?;
+            }
+        } else {
+            self.tx_sink = Some(TxSink::Whep(WhepSink::new(
+                source_config,
+                self.event_tx.clone(),
+                tokio::runtime::Handle::current(),
+            )?));
+        }
+
+        Ok(())
+    }
+
     /// Returns `true` if the event loop should quit
     async fn handle_event(&mut self, event: Event) -> Result<ShouldQuit> {
         debug!("Handling event: {event:?}");
@@ -275,6 +304,19 @@ impl Application {
                     fcast_sender_sdk::IpAddr::V4 { .. } => bound_port_v4,
                     fcast_sender_sdk::IpAddr::V6 { .. } => bound_port_v6,
                 };
+                // 0 means no listener for this address family
+                if bound_port == 0 {
+                    error!(
+                        ?addr,
+                        "WHEP server has no listener for the local address family"
+                    );
+                    self.ui_weak.upgrade_in_event_loop(|ui| {
+                        ui.global::<Bridge>()
+                            .invoke_change_state(AppState::Disconnected);
+                    })?;
+                    self.stop_cast(false).await?;
+                    return Ok(ShouldQuit::No);
+                }
 
                 let Some((content_type, url)) = self
                     .tx_sink
@@ -432,28 +474,15 @@ impl Application {
 
                 let source_config = SourceConfig::Video(mcore::VideoSource::Source(appsrc));
 
-                let supports_fwrtc = self
-                    .active_device
-                    .as_ref()
-                    .is_some_and(|d| d.supports_feature(device::DeviceFeature::FWRTCSignalling));
-
-                if supports_fwrtc {
-                    let sink = FSink::new(
-                        source_config,
-                        self.event_tx.clone(),
-                        tokio::runtime::Handle::current(),
-                    )?;
-                    let signaller = sink.signaller.clone();
-                    self.tx_sink = Some(TxSink::FCast(sink));
-                    if let Some(device) = self.active_device.as_ref() {
-                        device.start_mirroring_session(Arc::new(signaller)).unwrap();
-                    }
-                } else {
-                    self.tx_sink = Some(TxSink::Whep(WhepSink::new(
-                        source_config,
-                        self.event_tx.clone(),
-                        tokio::runtime::Handle::current(),
-                    )?));
+                // A sink or session failure ends this cast only, not the whole event loop
+                if let Err(err) = self.start_tx_sink(source_config) {
+                    error!("Failed to start mirroring: {err:?}");
+                    self.ui_weak.upgrade_in_event_loop(|ui| {
+                        ui.global::<Bridge>()
+                            .invoke_change_state(AppState::Disconnected);
+                    })?;
+                    self.stop_cast(false).await?;
+                    return Ok(ShouldQuit::No);
                 }
 
                 self.ui_weak.upgrade_in_event_loop(|ui| {
@@ -578,31 +607,33 @@ fn android_main(app: slint::android::AndroidApp) {
     bridge.on_connect_receiver({
         let event_tx = event_tx.clone();
         move |device_name| {
-            event_tx
-                .send(Event::ConnectToDevice(device_name.to_string()))
-                .unwrap();
+            // Fails only once the event loop is gone
+            if let Err(err) = event_tx.send(Event::ConnectToDevice(device_name.to_string())) {
+                error!("Failed to send connect event: {err}");
+            }
         }
     });
 
     bridge.on_start_casting({
         let event_tx = event_tx.clone();
         move |scale_width: i32, scale_height: i32, max_framerate: i32| {
-            event_tx
-                .send(Event::StartCast {
-                    scale_width: scale_width as u32,
-                    scale_height: scale_height as u32,
-                    max_framerate: max_framerate as u32,
-                })
-                .unwrap();
+            let event = Event::StartCast {
+                scale_width: scale_width as u32,
+                scale_height: scale_height as u32,
+                max_framerate: max_framerate as u32,
+            };
+            if let Err(err) = event_tx.send(event) {
+                error!("Failed to send start cast event: {err}");
+            }
         }
     });
 
     bridge.on_stop_casting({
         let event_tx = event_tx.clone();
         move || {
-            event_tx
-                .send(Event::EndSession { disconnect: true })
-                .unwrap();
+            if let Err(err) = event_tx.send(Event::EndSession { disconnect: true }) {
+                error!("Failed to send stop cast event: {err}");
+            }
         }
     });
 
@@ -619,20 +650,45 @@ fn android_main(app: slint::android::AndroidApp) {
 
     let event_tx_clone = event_tx.clone();
     let app_jh = runtime.spawn(async move {
-        Application::new(ui_weak, event_tx_clone, app_clone)
-            .await
-            .unwrap()
-            .run_event_loop(event_rx)
-            .await
-            .unwrap();
+        // Inner task so a panic lands here too. A failure quits the UI, which
+        // finishes the activity instead of leaving it alive with no logic. A
+        // normal finish follows Quit, sent after the UI already stopped.
+        let res = tokio::task::spawn(async move {
+            Application::new(ui_weak, event_tx_clone, app_clone)
+                .await?
+                .run_event_loop(event_rx)
+                .await
+        })
+        .await;
+        match res {
+            Ok(Ok(())) => {
+                debug!("Application event loop finished");
+                return;
+            }
+            Ok(Err(err)) => error!("Application failed: {err:?}"),
+            Err(err) => error!("Application task panicked: {err}"),
+        }
+        if let Err(err) = slint::quit_event_loop() {
+            error!("Failed to quit the UI event loop: {err}");
+        }
     });
 
-    ui.run().unwrap();
+    if let Err(err) = ui.run() {
+        error!("UI event loop failed: {err}");
+    }
 
-    runtime.spawn(async move {
-        event_tx.send(Event::Quit).unwrap();
-        app_jh.await.unwrap();
-    });
+    // A failed send means the event loop is already gone. Bounded wait since
+    // activity teardown blocks on android_main returning.
+    let _ = event_tx.send(Event::Quit);
+    match runtime
+        .block_on(async { tokio::time::timeout(std::time::Duration::from_secs(2), app_jh).await })
+    {
+        Ok(Ok(())) => (),
+        Ok(Err(err)) => error!("Failed to join the application task: {err}"),
+        Err(_) => error!("Application task did not stop in time"),
+    }
+    // Dropping would block on stuck blocking tasks, teardown waits on this return
+    runtime.shutdown_timeout(std::time::Duration::from_secs(1));
 
     debug!("Finished");
 }
