@@ -634,6 +634,12 @@ impl PacketOrigin {
     }
 }
 
+/// A load a sender asked for, as opposed to the receiver's own GUI or advance.
+#[cfg(target_os = "android")]
+fn is_sender_origin(origin: PacketOrigin) -> bool {
+    matches!(origin, PacketOrigin::FCast { .. } | PacketOrigin::GCast { .. })
+}
+
 /// An `AddSubtitleSource` that arrived before the receiver could act on it.
 struct PendingSubtitleAdd {
     url: String,
@@ -734,6 +740,10 @@ pub struct Application {
     /// trip.
     #[cfg(target_os = "android")]
     android_playback: (bool, bool, bool),
+    /// Bumped per active rising edge the activity accepted, so a sender load
+    /// can tell whether that edge already brought the receiver forward.
+    #[cfg(target_os = "android")]
+    android_rise_gen: u32,
     /// Whether the current item has something to show. Defaults to true per
     /// load (video and images want the screen awake from the start); flapjack
     /// flips it false when the item turns out to be audio only.
@@ -1111,6 +1121,8 @@ impl Application {
             ),
             #[cfg(target_os = "android")]
             android_playback: (false, false, false),
+            #[cfg(target_os = "android")]
+            android_rise_gen: 0,
             #[cfg(target_os = "android")]
             android_visual: true,
             #[cfg(target_os = "android")]
@@ -1960,11 +1972,37 @@ impl Application {
             // cached only on success: a failed release cached as released
             // would suppress every retry and leak the locks and focus for
             // the life of the process
-            Ok(_) => self.android_playback = state,
+            Ok(_) => {
+                if state.0 && !self.android_playback.0 {
+                    self.android_rise_gen = self.android_rise_gen.wrapping_add(1);
+                }
+                self.android_playback = state;
+            }
             Err(err) => {
                 let _ = env.exception_clear();
                 warn!(?err, "setPlaybackActive call into the activity failed");
             }
+        }
+    }
+
+    /// Taken before a sender-initiated load, read by `android_cast_loaded`.
+    #[cfg(target_os = "android")]
+    fn android_load_mark(&self) -> (MediaItemId, u32) {
+        (self.current_media_item_id, self.android_rise_gen)
+    }
+
+    /// A legacy still image over an active cast keeps the previous item up and
+    /// raises no active edge, so the activity hears of it here to come forward
+    /// or post tap-to-play. Every other load passes through Idle and its rising
+    /// edge already did it. Skipped too when no item load started (an async
+    /// playlist fetch, a rejected select).
+    #[cfg(target_os = "android")]
+    fn android_cast_loaded(&self, mark: (MediaItemId, u32)) {
+        if self.current_media_item_id != mark.0
+            && self.android_rise_gen == mark.1
+            && self.android_playback.0
+        {
+            self.call_activity("castLoaded", "()V", &[]);
         }
     }
 
@@ -3587,7 +3625,14 @@ impl Application {
                     media.clear_external_subtitles();
                 }
 
+                #[cfg(target_os = "android")]
+                let mark = self.android_load_mark();
                 self.load_media();
+                // the playlist's own advance comes in as AutoPlay, excluded here
+                #[cfg(target_os = "android")]
+                if is_sender_origin(origin) {
+                    self.android_cast_loaded(mark);
+                }
                 self.gui.set_playlist_index(new_index as i32);
             }
             Operation::SetVolume(volume) => {
@@ -3634,7 +3679,13 @@ impl Application {
                 _ => (),
             },
             Operation::PlayNew(msg) => {
+                #[cfg(target_os = "android")]
+                let mark = self.android_load_mark();
                 self.handle_play_message(msg, origin);
+                #[cfg(target_os = "android")]
+                if is_sender_origin(origin) {
+                    self.android_cast_loaded(mark);
+                }
             }
             Operation::ChangeTrack { id, typ } => {
                 debug!(id, ?typ, "changing track");
@@ -3690,7 +3741,13 @@ impl Application {
                 return self.add_subtitle_source(origin, url, select, name);
             }
             Operation::SelectQueueItem(position) => {
+                #[cfg(target_os = "android")]
+                let mark = self.android_load_mark();
                 self.play_queue_item(origin, position, true);
+                #[cfg(target_os = "android")]
+                if is_sender_origin(origin) {
+                    self.android_cast_loaded(mark);
+                }
             }
             Operation::RemoveQueueItem(position) => {
                 self.remove_queue_item(origin, position);
@@ -5948,7 +6005,13 @@ impl Application {
                 );
                 media.legacy_play = Some(play_message);
                 self.current_media = Some(media);
+                // the tail of a sender's JSON playlist PlayNew, whose fetch
+                // started no load of its own
+                #[cfg(target_os = "android")]
+                let mark = self.android_load_mark();
                 self.load_media();
+                #[cfg(target_os = "android")]
+                self.android_cast_loaded(mark);
 
                 self.gui.update_playlist(start_idx as i32, length as i32);
             }

@@ -675,7 +675,7 @@ public class MainActivity extends NativeActivity {
     /// background can open the receiver by itself. Not every TV build has a
     /// settings page for it, then there is nothing to ask.
     private void maybePromptOverlayPermission() {
-        if (android.provider.Settings.canDrawOverlays(this)) {
+        if (hasOverlayPermission()) {
             return;
         }
         android.content.SharedPreferences prefs = getSharedPreferences(PREFS, MODE_PRIVATE);
@@ -700,8 +700,12 @@ public class MainActivity extends NativeActivity {
                 android.net.Uri.parse("package:" + getPackageName()));
     }
 
+    /// Whether a background cast can bring the receiver up. Background
+    /// activity starts are only restricted from 29, before that nothing
+    /// needs granting, so neither the prompt nor the drawer row asks.
     private boolean hasOverlayPermission() {
-        return android.provider.Settings.canDrawOverlays(this);
+        return android.os.Build.VERSION.SDK_INT < 29
+                || android.provider.Settings.canDrawOverlays(this);
     }
 
     private boolean canOpenOverlaySettings() {
@@ -733,14 +737,39 @@ public class MainActivity extends NativeActivity {
     /// activity starts need the overlay permission (the Kotlin receiver
     /// ships the same way, verified on Android 14); without it the start is
     /// refused silently and castWaitingCheck posts a tap-to-play instead.
+    ///
+    /// From 34 a PendingIntent carries neither side's start privilege unless
+    /// opted in, and from targetSdk 35 that includes the creator, so both
+    /// sides opt in explicitly. ALLOWED is deprecated at 36, split into
+    /// ALLOW_IF_VISIBLE and ALLOW_ALWAYS, and a backgrounded receiver is
+    /// never the visible one.
     private void bringToFront() {
         Intent i = new Intent(this, MainActivity.class);
         i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK | Intent.FLAG_ACTIVITY_SINGLE_TOP);
         try {
             if (android.provider.Settings.canDrawOverlays(this)) {
-                PendingIntent.getActivity(this, 2, i,
-                        PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE)
-                        .send();
+                if (android.os.Build.VERSION.SDK_INT >= 34) {
+                    int mode = android.os.Build.VERSION.SDK_INT >= 36
+                            ? android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOW_ALWAYS
+                            : android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED;
+                    android.os.Bundle creator = android.app.ActivityOptions.makeBasic()
+                            .setPendingIntentCreatorBackgroundActivityStartMode(mode)
+                            .toBundle();
+                    android.os.Bundle sender = android.app.ActivityOptions.makeBasic()
+                            .setPendingIntentBackgroundActivityStartMode(mode)
+                            .toBundle();
+                    // CANCEL_CURRENT, not UPDATE_CURRENT: a matching record
+                    // keeps the options it was first made with, so one made
+                    // without them would never opt in.
+                    PendingIntent.getActivity(this, 2, i,
+                            PendingIntent.FLAG_CANCEL_CURRENT | PendingIntent.FLAG_IMMUTABLE,
+                            creator)
+                            .send(sender);
+                } else {
+                    PendingIntent.getActivity(this, 2, i,
+                            PendingIntent.FLAG_UPDATE_CURRENT | PendingIntent.FLAG_IMMUTABLE)
+                            .send();
+                }
             } else {
                 // blocked from the background on 10+, works when the app is
                 // merely covered rather than stopped
@@ -845,6 +874,26 @@ public class MainActivity extends NativeActivity {
         ReceiverService.refreshIfRunning();
     }
 
+    /// Come forward, or post tap-to-play if the start is refused.
+    private void castArrived() {
+        bringToFront();
+        handler.removeCallbacks(castWaitingCheck);
+        handler.postDelayed(castWaitingCheck, CAST_WAITING_DELAY_MS);
+    }
+
+    /// A legacy still image cast over an active cast, which raises no rising
+    /// edge in setPlaybackActive (every other load passes through Idle and
+    /// comes forward there). Native calls it only when the load sent no rising
+    /// edge, so one load brings the receiver forward once. Any thread, posted
+    /// behind the setPlaybackActive it follows.
+    public void castLoaded() {
+        runOnUiThread(() -> {
+            if (castActiveLocal && !visible && !destroyed) {
+                castArrived();
+            }
+        });
+    }
+
     /// The single owner of every playback-scoped device resource, called
     /// from native code on the playback active/idle edge. Any thread.
     /// Ordering is preserved by posting to the main looper.
@@ -860,10 +909,11 @@ public class MainActivity extends NativeActivity {
     @SuppressLint("WakelockTimeout")
     public void setPlaybackActive(boolean active, boolean visual, boolean audible) {
         runOnUiThread(() -> {
-            if (active && !visible) {
-                bringToFront();
-                handler.removeCallbacks(castWaitingCheck);
-                handler.postDelayed(castWaitingCheck, CAST_WAITING_DELAY_MS);
+            // Rising edge only: native calls again when visual or audible
+            // settle (the video stream shows up ~60ms into a load), and each
+            // call used to send a second start request.
+            if (active && !castActiveLocal && !visible) {
+                castArrived();
             } else if (!active) {
                 handler.removeCallbacks(castWaitingCheck);
                 ReceiverService.cancelCastWaiting(this);
