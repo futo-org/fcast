@@ -1080,6 +1080,17 @@ public class MainActivity extends NativeActivity {
     static native void nativeOverlayState(boolean granted, boolean canOpenSettings);
 
     private boolean castVisual = false;
+
+    /// The cast ended for real (native skips a load clearing the previous
+    /// item). In PiP that leaves it, the idle UI does not belong in a video
+    /// window. To the back rather than finish, which ends the process.
+    public void castEnded() {
+        runOnUiThread(() -> {
+            if (!destroyed && isInPictureInPictureMode()) {
+                moveTaskToBack(true);
+            }
+        });
+    }
     private volatile android.util.Rational videoAspect = new android.util.Rational(16, 9);
 
     /// The current video's aspect, from native code at relayout. Clamped to

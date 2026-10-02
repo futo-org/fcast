@@ -744,6 +744,9 @@ pub struct Application {
     /// can tell whether that edge already brought the receiver forward.
     #[cfg(target_os = "android")]
     android_rise_gen: u32,
+    /// A load is clearing the previous item: its Idle is no end of the cast.
+    #[cfg(target_os = "android")]
+    android_replacing: bool,
     /// Whether the current item has something to show. Defaults to true per
     /// load (video and images want the screen awake from the start); flapjack
     /// flips it false when the item turns out to be audio only.
@@ -1123,6 +1126,8 @@ impl Application {
             android_playback: (false, false, false),
             #[cfg(target_os = "android")]
             android_rise_gen: 0,
+            #[cfg(target_os = "android")]
+            android_replacing: false,
             #[cfg(target_os = "android")]
             android_visual: true,
             #[cfg(target_os = "android")]
@@ -2139,6 +2144,10 @@ impl Application {
             }
             if !active {
                 self.android_transient_pause = false;
+                // a real end, not a load clearing the previous item (PiP leaves)
+                if self.android_playback.0 && !self.android_replacing {
+                    self.call_activity("castEnded", "()V", &[]);
+                }
                 if self.android_playback.0 {
                     // back to the display's default mode between items
                     self.call_activity(
@@ -2428,7 +2437,15 @@ impl Application {
             | UiPlayerVariant::Unknown
             | UiPlayerVariant::Audio
             | UiPlayerVariant::Video => {
-                self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes)
+                #[cfg(target_os = "android")]
+                {
+                    self.android_replacing = true;
+                }
+                self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes);
+                #[cfg(target_os = "android")]
+                {
+                    self.android_replacing = false;
+                }
             }
             UiPlayerVariant::Raop => (),
         }
