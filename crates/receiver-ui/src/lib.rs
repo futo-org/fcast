@@ -113,6 +113,19 @@ pub fn select_wgpu_video_backend() -> bool {
 pub mod gui;
 pub mod scaling;
 
+/// The receiver's event loop task returned or panicked. Either way nothing
+/// handles protocol traffic any more, so the window quits instead of staying
+/// up with nothing behind it. A clean return is the quit path itself.
+fn event_loop_ended(result: std::result::Result<Result<()>, tokio::task::JoinError>) {
+    match result {
+        Ok(Ok(())) => return,
+        Ok(Err(err)) => error!(?err, "Receiver event loop failed"),
+        Err(err) if err.is_panic() => error!(?err, "Receiver event loop panicked"),
+        Err(err) => error!(?err, "Receiver event loop was cancelled"),
+    }
+    let _ = slint::quit_event_loop();
+}
+
 type SlintRgba8Pixbuf = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
 /// Run the main app. Slint is assumed to be initialized by the platform
@@ -382,21 +395,20 @@ pub fn run(settings: Settings) -> Result<()> {
                 None => (None, None),
             };
 
-            let app =
-                application::Application::new(gui, video_sink_elem, cue_engine, msg_tx, settings)
-                    .await;
-
-            // This task is detached: fail visibly and quit rather than leave the Slint loop
-            // running a UI with no protocol handling behind it.
-            let result = match app {
-                Ok(app) => app.run_event_loop(event_rx, fin_tx).await,
-                Err(err) => Err(err),
-            };
-
-            if let Err(err) = result {
-                error!(?err, "Receiver event loop failed");
-                let _ = slint::quit_event_loop();
-            }
+            // Its own task, awaited: a panic in it must quit too, not leave the
+            // Slint loop running a UI with no protocol handling behind it.
+            let run = tokio::spawn(async move {
+                let app = application::Application::new(
+                    gui,
+                    video_sink_elem,
+                    cue_engine,
+                    msg_tx,
+                    settings,
+                )
+                .await?;
+                app.run_event_loop(event_rx, fin_tx).await
+            });
+            event_loop_ended(run.await);
         }
     });
 
@@ -610,26 +622,20 @@ pub fn run(
                     }
 
                     RUNTIME.spawn(async move {
-                        let app = application::Application::new(
-                            gui,
-                            Some(video_sink),
-                            Some(cue_engine),
-                            msg_tx,
-                            settings,
-                            android_app,
-                        )
-                        .await;
-
-                        // Detached: fail visibly and quit rather than leave the
-                        // slint loop running with no protocol handling behind it.
-                        let result = match app {
-                            Ok(app) => app.run_event_loop(event_rx, fin_tx).await,
-                            Err(err) => Err(err),
-                        };
-                        if let Err(err) = result {
-                            error!(?err, "Receiver event loop failed");
-                            let _ = slint::quit_event_loop();
-                        }
+                        // awaited, so a panic quits too, see event_loop_ended
+                        let run = RUNTIME.spawn(async move {
+                            let app = application::Application::new(
+                                gui,
+                                Some(video_sink),
+                                Some(cue_engine),
+                                msg_tx,
+                                settings,
+                                android_app,
+                            )
+                            .await?;
+                            app.run_event_loop(event_rx, fin_tx).await
+                        });
+                        event_loop_ended(run.await);
                     });
                 };
                 if slint::invoke_from_event_loop(finish).is_err() {

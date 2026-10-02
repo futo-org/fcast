@@ -981,7 +981,10 @@ impl Application {
             airplay_context.clone(),
         )?;
 
-        let (updates_tx, _) = broadcast::channel(10);
+        // Events, not just state (item start/end, play relays, queue
+        // selects): a session that falls behind this is dropped and resyncs on
+        // reconnect. Deep enough for a TLS upgrade or a volume drag.
+        let (updates_tx, _) = broadcast::channel(64);
 
         let (acceptor, fingerprint) = {
             use rcgen::{CertificateParams, DistinguishedName, KeyPair, date_time_ymd};
@@ -5024,9 +5027,11 @@ impl Application {
                         loop {
                             match listener.accept().await {
                                 Ok((stream, _)) => msg_tx.raop(Raop::SenderConnected(stream)),
+                                // per connection (EMFILE, an aborted peer), the
+                                // listener stays up and advertised, as fcast's does
                                 Err(err) => {
-                                    warn!(?err, "RAOP listener accept failed; stopping");
-                                    return;
+                                    warn!(?err, "RAOP listener accept failed");
+                                    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                                 }
                             }
                         }
@@ -5048,8 +5053,16 @@ impl Application {
                 let config = server.config.clone();
                 let msg_tx = self.msg_tx.clone();
                 tokio::spawn(async move {
-                    raop::handle_sender(stream, config, msg_tx.clone()).await;
-                    msg_tx.raop(Raop::SenderDisconnected);
+                    // posted on drop, so a session that panics still frees the
+                    // slot for the next RAOP sender
+                    struct Disconnect(MessageSender);
+                    impl Drop for Disconnect {
+                        fn drop(&mut self) {
+                            self.0.raop(Raop::SenderDisconnected);
+                        }
+                    }
+                    let _disconnect = Disconnect(msg_tx.clone());
+                    raop::handle_sender(stream, config, msg_tx).await;
                 });
 
                 debug!("Session started");
@@ -5060,6 +5073,14 @@ impl Application {
                 self.gui.set_player_type(UiPlayerVariant::Raop);
             }
             Raop::SenderDisconnected => {
+                // a late disconnect must not wipe an item that replaced it
+                if !matches!(
+                    self.current_media.as_ref().map(|m| &m.source),
+                    Some(MediaSource::Raop)
+                ) {
+                    debug!("RAOP session ended under another item, ignoring");
+                    return Ok(false);
+                }
                 debug!("Session ended");
                 self.current_media = None;
                 self.transition_app_state(AppState::Idle);
@@ -5149,8 +5170,8 @@ impl Application {
                             match listener.accept().await {
                                 Ok((stream, _)) => msg_tx.airplay(AirPlay::SenderConnected(stream)),
                                 Err(err) => {
-                                    warn!(?err, "AirPlay listener accept failed; stopping");
-                                    return;
+                                    warn!(?err, "AirPlay listener accept failed");
+                                    tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                                 }
                             }
                         }
@@ -5492,6 +5513,24 @@ impl Application {
                 {
                     self.gui.set_audio_track_cover(img);
                 }
+            }
+            image::Event::DecodeFailed { id, typ, reason } => {
+                // a thumbnail failing only costs the artwork
+                if !matches!(typ, image::ImageDecodeJobType::Regular) || id != self.current_image_id {
+                    debug!(id, reason, "Ignoring an image decode failure");
+                    return Ok(false);
+                }
+                if let Some(origin) = self.current_media.as_ref().map(|m| m.origin) {
+                    self.send_error(
+                        origin,
+                        media_error_kind_to_error(player::MediaErrorKind::DecodeFailed),
+                    );
+                }
+                self.media_error(
+                    player::MediaErrorKind::DecodeFailed,
+                    None,
+                    format!("Image decode failed: {reason}"),
+                )?;
             }
             image::Event::Decoded(img) => {
                 if img.id != self.current_image_id {

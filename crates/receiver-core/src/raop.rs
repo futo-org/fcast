@@ -1140,19 +1140,24 @@ impl Player {
                     let _ = resp.send(Ok(()));
                 }
                 Command::SetProgress { start, curr, end } => {
-                    send_progress_update(&self.msg_tx, curr - start, end - start);
+                    send_progress_update(
+                        &self.msg_tx,
+                        rtp_elapsed(start, curr),
+                        rtp_elapsed(start, end),
+                    );
                     time_start = start;
                     position = curr;
                     duration = end;
                 }
                 Command::PutPacket { timestamp } => {
-                    let diff = (timestamp as u64).saturating_sub(position);
-                    if duration > 0 && diff >= SAMPLING_RATE {
-                        position += diff;
+                    let diff = rtp_elapsed(position, timestamp as u64);
+                    // past half the range it is an older packet, not a jump
+                    if duration > 0 && diff >= SAMPLING_RATE && diff < RTP_HALF_RANGE {
+                        position = (position as u32).wrapping_add(diff as u32) as u64;
                         send_progress_update(
                             &self.msg_tx,
-                            position - time_start,
-                            duration - time_start,
+                            rtp_elapsed(time_start, position),
+                            rtp_elapsed(time_start, duration),
                         );
                     }
                 }
@@ -1739,12 +1744,25 @@ pub async fn handle_sender(
     };
 
     tokio::spawn(async move {
-        player.run().await.unwrap();
+        if let Err(err) = player.run().await {
+            tracing::error!(?err, "RAOP player failed");
+        }
     });
+
+    // The peer can reset between accept and here (no peer address). Return,
+    // the caller then posts the disconnect: a panic skipped it and kept every
+    // later RAOP sender out.
+    let connection = match Connection::new(stream) {
+        Ok(connection) => connection,
+        Err(err) => {
+            tracing::warn!(?err, "RAOP sender went away before the session started");
+            return;
+        }
+    };
 
     let mut handler = Handler {
         config: std::sync::Arc::new(config),
-        connection: Connection::new(stream).unwrap(),
+        connection,
         player_tx: player_tx.clone(),
         shutdown: Shutdown::new(notify_shutdown.subscribe()),
         _shutdown_complete: shutdown_complete_tx.clone(),
@@ -1853,6 +1871,17 @@ impl RaopMetadata {
 
         Ok(metadata)
     }
+}
+
+/// Half the 32-bit RTP timestamp range: a forward distance beyond it is
+/// really a step backwards.
+const RTP_HALF_RANGE: u64 = 1 << 31;
+
+/// Ticks from `from` to `to` on the 32-bit RTP clock, which wraps (every
+/// ~27h at 44.1kHz, or sooner from a random start). Plain subtraction
+/// underflowed on the wrap.
+fn rtp_elapsed(from: u64, to: u64) -> u64 {
+    (to as u32).wrapping_sub(from as u32) as u64
 }
 
 #[cfg(test)]
@@ -2097,5 +2126,15 @@ mod tests {
             !harness.join.is_finished(),
             "handler exited instead of ignoring the stray response"
         );
+    }
+
+    #[test]
+    fn rtp_elapsed_crosses_the_wrap() {
+        assert_eq!(rtp_elapsed(100, 44_200), 44_100);
+        let start = u32::MAX as u64 - 1000;
+        assert_eq!(rtp_elapsed(start, 43_099), 44_100);
+        // a packet a little behind reads as almost the full range, which the
+        // caller rejects as a step backwards
+        assert!(rtp_elapsed(5000, 4000) >= RTP_HALF_RANGE);
     }
 }

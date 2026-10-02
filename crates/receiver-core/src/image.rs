@@ -88,7 +88,7 @@ pub struct DecodedImage {
     pub format: &'static str,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub enum ImageDecodeJobType {
     AudioThumbnail,
     Regular,
@@ -158,6 +158,13 @@ pub enum Event {
     },
     AudioThumbnailAvailable(DecodedImage),
     Decoded(DecodedImage),
+    /// The job produced no image (unknown format, a decoder error or panic).
+    /// Posted so a cast picture fails loudly instead of staying blank.
+    DecodeFailed {
+        id: ImageId,
+        typ: ImageDecodeJobType,
+        reason: String,
+    },
 }
 
 struct DecoderContext<'a> {
@@ -219,10 +226,7 @@ impl<'a> DecoderContext<'a> {
         } else {
             match imagelib::guess_format(&job.image) {
                 Ok(format) => media_formats::Image::ImageLib(format),
-                Err(err) => {
-                    error!(?err, "Could not guess image format");
-                    return Ok(());
-                }
+                Err(err) => anyhow::bail!("could not guess the image format: {err}"),
             }
         };
 
@@ -233,10 +237,7 @@ impl<'a> DecoderContext<'a> {
             ($res:expr, $format:expr) => {
                 match $res {
                     Ok(d) => d,
-                    Err(err) => {
-                        error!(?err, format = $format, "Failed to create decoder");
-                        return Ok(());
-                    }
+                    Err(err) => anyhow::bail!("failed to create the {} decoder: {err}", $format),
                 }
             };
         }
@@ -327,7 +328,17 @@ impl Decoder {
 
         while let Ok((id, job)) = job_rx.recv() {
             debug!(?id, ?job.format, "Got job");
-            DecoderContext::new(&msg_tx, id, job.typ).decode(job)?;
+            // One bad image (a sender's cover art) must not end the worker:
+            // every later job would be dropped silently.
+            let typ = job.typ;
+            let ctx = DecoderContext::new(&msg_tx, id, typ);
+            let reason = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ctx.decode(job))) {
+                Ok(Ok(())) => continue,
+                Ok(Err(err)) => format!("{err:#}"),
+                Err(_) => String::from("the image decoder panicked"),
+            };
+            error!(?id, reason, "Image decode failed");
+            msg_tx.image(Event::DecodeFailed { id, typ, reason });
         }
 
         info!("Image decoding worker finished");

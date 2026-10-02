@@ -126,16 +126,23 @@ pub fn start_daemon(
     }
 
     if settings.raop_enabled() {
-        let (raop_service, raop_config) = raop::service_info(raop_name).unwrap();
-        daemon.register(raop_service).unwrap();
-        msg_tx.raop(Raop::ConfigAvailable(raop_config));
+        // one protocol failing to advertise must not take the others down
+        match raop::service_info(raop_name)
+            .and_then(|(service, config)| Ok((daemon.register(service)?, config)))
+        {
+            Ok((_, raop_config)) => msg_tx.raop(Raop::ConfigAvailable(raop_config)),
+            Err(err) => tracing::error!(?err, "RAOP not advertised"),
+        }
     }
 
     #[cfg(feature = "airplay")]
     if settings.airplay_enabled() {
-        let (airplay_service, airplay_config) = airplay::service_info(fcast_name).unwrap();
-        daemon.register(airplay_service).unwrap();
-        msg_tx.airplay(AirPlay::ConfigAvailable(airplay_config));
+        match airplay::service_info(fcast_name)
+            .and_then(|(service, config)| Ok((daemon.register(service)?, config)))
+        {
+            Ok((_, airplay_config)) => msg_tx.airplay(AirPlay::ConfigAvailable(airplay_config)),
+            Err(err) => tracing::error!(?err, "AirPlay not advertised"),
+        }
     }
 
     let msg_tx = msg_tx.clone();

@@ -1756,8 +1756,16 @@ impl SessionDriver {
                     }
                 }
                 res = updates_rx.recv() => {
-                    let Ok(to_sender) = res else {
-                        break;
+                    let to_sender = match res {
+                        Ok(to_sender) => to_sender,
+                        // Missed events cannot be replayed, the sender resyncs
+                        // on reconnect. Logged, a silent drop looked like a
+                        // network fault.
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(missed)) => {
+                            warn!(missed, "Sender fell behind on updates, dropping it");
+                            break;
+                        }
+                        Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
                     };
 
                     let res = self.state.advance(DriverEvent::ToSender(to_sender));

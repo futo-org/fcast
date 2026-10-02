@@ -386,7 +386,11 @@ async fn run_session(
                     break;
                 }
             }
-            _ = state_change_rx.recv() => {
+            res = state_change_rx.recv() => {
+                // the server is gone, without this the loop spins on Closed
+                if let Err(broadcast::error::RecvError::Closed) = res {
+                    break;
+                }
                 let new_state = state.media_status.read().player_state;
                 if new_state != state.player_state {
                     let status = state.media_status.read().clone();
