@@ -389,11 +389,17 @@ public class MainActivity extends NativeActivity {
             // No ime insets before 30: a keyboard is the visible frame
             // losing more than the nav bar's share of the window.
             final android.view.View decor = getWindow().getDecorView();
+            final android.graphics.Rect visible = new android.graphics.Rect();
+            final int[] origin = new int[2];
             decor.getViewTreeObserver().addOnGlobalLayoutListener(() -> {
-                android.graphics.Rect visible = new android.graphics.Rect();
+                // The frame is in screen coordinates: in split screen or a
+                // freeform window the decor's top is not 0, so measure the
+                // frame's bottom from it or the window never reads covered.
                 decor.getWindowVisibleDisplayFrame(visible);
+                decor.getLocationOnScreen(origin);
                 int height = decor.getRootView().getHeight();
-                boolean shown = height > 0 && height - visible.bottom > height * 15 / 100;
+                int covered = height - (visible.bottom - origin[1]);
+                boolean shown = height > 0 && covered > height * 15 / 100;
                 if (shown != keyboardShown) {
                     keyboardShown = shown;
                     nativeSoftKeyboardVisible(shown);
