@@ -34,7 +34,37 @@ pub enum AndroidReceiverCommand {
     },
     /// Build the native libraries and package them with gradle.
     Package(PackageArgs),
+    /// Build, package and install the sideload apk on an attached device.
+    Install(InstallArgs),
 }
+
+#[derive(Args)]
+pub struct InstallArgs {
+    #[clap(short, long)]
+    pub release: bool,
+    /// ABIs to build, repeatable. Defaults to the device's own, one build.
+    #[clap(short, long)]
+    pub target: Vec<AndroidAbiTarget>,
+    /// Package the jniLibs already in the tree instead of rebuilding them.
+    #[clap(long)]
+    pub skip_native: bool,
+    /// Defaults to one above the installed build: android refuses to replace
+    /// an app with a lower versionCode without wiping its data.
+    #[clap(long)]
+    pub version_code: Option<u32>,
+    /// adb serial, when more than one device is attached.
+    #[clap(short, long)]
+    pub serial: Option<String>,
+    /// Start the receiver once installed.
+    #[clap(long)]
+    pub launch: bool,
+    /// Follow the receiver's log, implies --launch.
+    #[clap(long)]
+    pub logcat: bool,
+}
+
+/// The receiver's applicationId (receivers/experimental/android/app/build.gradle).
+const RECEIVER_APP_ID: &str = "com.futo.fcast.receiver";
 
 #[derive(Args)]
 pub struct PackageArgs {
@@ -293,6 +323,159 @@ fn javac_on_path() -> Option<Utf8PathBuf> {
     Some(home.parent()?.parent()?.to_owned())
 }
 
+
+/// Builds the native libraries unless told not to and packages them with
+/// gradle. Returns the variant's output directory.
+fn package_receiver(
+    sh: &xshell::Shell,
+    root_path: &Utf8PathBuf,
+    p: PackageArgs,
+) -> Result<Utf8PathBuf> {
+    // The two ABIs the apk ships, the only two the native build accepts.
+    let targets = if p.target.is_empty() {
+        vec![AndroidAbiTarget::Arm64, AndroidAbiTarget::Arm32]
+    } else {
+        p.target.clone()
+    };
+    reject_emulator_abis(&targets)?;
+    if !p.skip_native {
+        build_android_native(sh, root_path, p.release, &targets)?;
+    }
+
+    let project = concat_path(root_path, "receivers/experimental/android");
+    // Gradle reads local.properties before ANDROID_HOME, and that file is a
+    // Studio artifact naming whatever SDK the machine happens to have. Written
+    // from the provisioned one, so the package is built against the same
+    // platform the native lane compiled its java glue against.
+    let sdk = sh.var("ANDROID_HOME")?;
+    let props = concat_path(&project, "local.properties");
+    sh.write_file(&props, format!("sdk.dir={sdk}\n"))?;
+    println!(">> {props} points at {sdk}");
+
+    // The gradle task and the directory AGP writes it to, which is named after
+    // the same variant.
+    let (task, outputs) = match (p.bundle, p.release) {
+        (true, true) => ("bundlePlaystoreRelease", "bundle/playstoreRelease"),
+        (true, false) => ("bundlePlaystoreDebug", "bundle/playstoreDebug"),
+        (false, true) => ("assembleDefaultFlavorRelease", "apk/defaultFlavor/release"),
+        (false, false) => ("assembleDefaultFlavorDebug", "apk/defaultFlavor/debug"),
+    };
+    let version_code = p.version_code.to_string();
+    let version_name = p.version_name;
+    let signing: &[&str] = if p.require_signing {
+        &["-PrequireSigning=true"]
+    } else {
+        &[]
+    };
+
+    {
+        let _dir = sh.push_dir(&project);
+        cmd!(
+            sh,
+            "./gradlew --stacktrace {task} {signing...}
+             -PversionCode={version_code} -PversionName={version_name}"
+        )
+        .run()?;
+    }
+
+    let outputs = concat_path(&project, &format!("app/build/outputs/{outputs}"));
+    report_packages(&outputs)?;
+    Ok(outputs)
+}
+
+/// The SDK's adb, aimed at one device when a serial is given.
+struct Adb {
+    exe: Utf8PathBuf,
+    serial: Vec<String>,
+}
+
+impl Adb {
+    fn new(sh: &xshell::Shell, serial: Option<String>) -> Result<Self> {
+        let exe = concat_path(&Utf8PathBuf::from(sh.var("ANDROID_HOME")?), "platform-tools/adb");
+        if !exe.is_file() {
+            anyhow::bail!("no {exe}: install it with `cargo xtask android download-sdk`");
+        }
+        let serial = serial.map(|s| vec!["-s".to_owned(), s]).unwrap_or_default();
+        Ok(Self { exe, serial })
+    }
+
+    /// `adb shell <args>`, its stdout trimmed.
+    fn shell(&self, sh: &xshell::Shell, args: &[&str]) -> Result<String> {
+        let (exe, serial) = (&self.exe, &self.serial);
+        Ok(cmd!(sh, "{exe} {serial...} shell {args...}").read()?.trim().to_owned())
+    }
+}
+
+/// The installed build's versionCode, `None` when the app is not installed.
+fn installed_version_code(sh: &xshell::Shell, adb: &Adb) -> Result<Option<u32>> {
+    let dump = adb.shell(sh, &["dumpsys", "package", RECEIVER_APP_ID])?;
+    Ok(dump
+        .split_whitespace()
+        .find_map(|w| w.strip_prefix("versionCode="))
+        .and_then(|v| v.parse().ok()))
+}
+
+/// The device's primary ABI as a build target.
+fn device_abi(sh: &xshell::Shell, adb: &Adb) -> Result<AndroidAbiTarget> {
+    match adb.shell(sh, &["getprop", "ro.product.cpu.abi"])?.as_str() {
+        "arm64-v8a" => Ok(AndroidAbiTarget::Arm64),
+        "armeabi-v7a" => Ok(AndroidAbiTarget::Arm32),
+        other => anyhow::bail!("device ABI {other:?} is not a receiver ABI (arm64-v8a, armeabi-v7a)"),
+    }
+}
+
+/// Builds for the attached device, packages the sideload apk one versionCode
+/// above the installed one, installs it, and optionally starts and follows it.
+fn install_receiver(sh: &xshell::Shell, root_path: &Utf8PathBuf, i: InstallArgs) -> Result<()> {
+    let adb = Adb::new(sh, i.serial)?;
+    let targets = if i.target.is_empty() {
+        vec![device_abi(sh, &adb)?]
+    } else {
+        i.target
+    };
+    let version_code = match i.version_code {
+        Some(code) => code,
+        None => installed_version_code(sh, &adb)?.map_or(1, |code| code + 1),
+    };
+    let outputs = package_receiver(
+        sh,
+        root_path,
+        PackageArgs {
+            release: i.release,
+            target: targets,
+            bundle: false,
+            version_code,
+            version_name: format!("{version_code}-local"),
+            skip_native: i.skip_native,
+            require_signing: false,
+        },
+    )?;
+    let variant = if i.release { "release" } else { "debug" };
+    let apk = concat_path(&outputs, &format!("app-defaultFlavor-{variant}.apk"));
+    if !apk.is_file() {
+        anyhow::bail!("gradle wrote no {apk}");
+    }
+
+    let (exe, serial) = (&adb.exe, &adb.serial);
+    cmd!(sh, "{exe} {serial...} install -r {apk}").run()?;
+    println!(">> installed {RECEIVER_APP_ID} versionCode {version_code}");
+
+    if !(i.launch || i.logcat) {
+        return Ok(());
+    }
+    let activity = format!("{RECEIVER_APP_ID}/.MainActivity");
+    adb.shell(sh, &["am", "start", "-W", "-n", &activity])?;
+    if i.logcat {
+        let pid = adb.shell(sh, &["pidof", RECEIVER_APP_ID])?;
+        if pid.is_empty() {
+            anyhow::bail!("{RECEIVER_APP_ID} is not running after the launch");
+        }
+        let pid = format!("--pid={pid}");
+        cmd!(sh, "{exe} {serial...} logcat {pid}").run()?;
+    }
+    Ok(())
+}
+
 fn concat_path(a: &Utf8PathBuf, b: &str) -> Utf8PathBuf {
     let mut res = a.clone();
     res.push(b);
@@ -384,6 +567,7 @@ impl ReceiverArgs {
                         | AndroidReceiverCommand::Clippy
                         | AndroidReceiverCommand::Build { .. }
                         | AndroidReceiverCommand::Package(_)
+                        | AndroidReceiverCommand::Install(_)
                 ) {
                     Some((
                         sh.push_env("JAVA_HOME", resolve_java_home()?),
@@ -415,63 +599,10 @@ impl ReceiverArgs {
                         build_android_native(&sh, &root_path, release, &targets)?;
                     }
                     AndroidReceiverCommand::Package(p) => {
-                        // The two ABIs the apk ships, the only two the native
-                        // build accepts.
-                        let targets = if p.target.is_empty() {
-                            vec![AndroidAbiTarget::Arm64, AndroidAbiTarget::Arm32]
-                        } else {
-                            p.target.clone()
-                        };
-                        reject_emulator_abis(&targets)?;
-                        if !p.skip_native {
-                            build_android_native(&sh, &root_path, p.release, &targets)?;
-                        }
-
-                        let project = concat_path(&root_path, "receivers/experimental/android");
-                        // Gradle reads local.properties before ANDROID_HOME, and that
-                        // file is a Studio artifact naming whatever SDK the machine
-                        // happens to have. Written from the provisioned one, so the
-                        // package is built against the same platform the native lane
-                        // compiled its java glue against.
-                        let sdk = sh.var("ANDROID_HOME")?;
-                        let props = concat_path(&project, "local.properties");
-                        sh.write_file(&props, format!("sdk.dir={sdk}\n"))?;
-                        println!(">> {props} points at {sdk}");
-
-                        // The gradle task and the directory AGP writes it to, which
-                        // is named after the same variant.
-                        let (task, outputs) = match (p.bundle, p.release) {
-                            (true, true) => ("bundlePlaystoreRelease", "bundle/playstoreRelease"),
-                            (true, false) => ("bundlePlaystoreDebug", "bundle/playstoreDebug"),
-                            (false, true) => {
-                                ("assembleDefaultFlavorRelease", "apk/defaultFlavor/release")
-                            }
-                            (false, false) => {
-                                ("assembleDefaultFlavorDebug", "apk/defaultFlavor/debug")
-                            }
-                        };
-                        let version_code = p.version_code.to_string();
-                        let version_name = p.version_name;
-                        let signing: &[&str] = if p.require_signing {
-                            &["-PrequireSigning=true"]
-                        } else {
-                            &[]
-                        };
-
-                        {
-                            let _dir = sh.push_dir(&project);
-                            cmd!(
-                                sh,
-                                "./gradlew --stacktrace {task} {signing...}
-                                 -PversionCode={version_code} -PversionName={version_name}"
-                            )
-                            .run()?;
-                        }
-
-                        report_packages(&concat_path(
-                            &project,
-                            &format!("app/build/outputs/{outputs}"),
-                        ))?;
+                        package_receiver(&sh, &root_path, p)?;
+                    }
+                    AndroidReceiverCommand::Install(i) => {
+                        install_receiver(&sh, &root_path, i)?;
                     }
                 }
             }

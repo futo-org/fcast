@@ -38,3 +38,15 @@ cargo xtask receiver android package -r --bundle       # playstore aab
 
 `--version-code` and `--version-name` are passed through to gradle, and
 `--skip-native` packages the libraries already in the tree.
+
+Build and install on an attached device in one go:
+
+```
+cargo xtask receiver android install -r            # release, the device's ABI only
+cargo xtask receiver android install -r --logcat   # and start it, following its log
+```
+
+The versionCode defaults to one above the installed build, since android
+refuses to replace an app with a lower one without wiping its data.
+`--skip-native` repackages the libraries already built (java-only changes),
+`-s <serial>` picks a device when several are attached.
