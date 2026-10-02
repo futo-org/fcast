@@ -848,6 +848,13 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
         UpdateGuiCommand::SetUpdaterError(err) => bridge.set_updater_error_msg(err.into()),
         #[cfg(any(target_os = "macos", target_os = "windows"))]
         UpdateGuiCommand::RunOnMainThread(f) => (f.0)(),
+        // The activity owns visibility on android. A hide would end the only
+        // window's event loop, and with it the receiver.
+        #[cfg(target_os = "android")]
+        UpdateGuiCommand::SetWindowVisibility { prev_tx, .. } => {
+            let _ = prev_tx.send(true);
+        }
+        #[cfg(not(target_os = "android"))]
         UpdateGuiCommand::SetWindowVisibility { visible, prev_tx } => {
             let window = ui.window();
             let _ = prev_tx.send(window.is_visible());

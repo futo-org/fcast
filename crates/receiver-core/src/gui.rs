@@ -674,8 +674,9 @@ impl GuiController {
         if visible {
             self.is_visible.note_show();
         }
+        // no window, so nothing for a later restore to hide
         if self.tx.is_none() {
-            return false;
+            return true;
         }
         let (prev_tx, prev_rx) = oneshot::channel();
         self.send(UpdateGuiCommand::SetWindowVisibility { visible, prev_tx });
