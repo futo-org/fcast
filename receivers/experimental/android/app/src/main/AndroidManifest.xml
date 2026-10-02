@@ -51,11 +51,12 @@
              cannot. Same task as MainActivity so it sits behind it during the
              draw gap. Declared under the Kotlin receiver's launcher component
              name so pinned icons, TV favorites and autostart apps survive the
-             update from it. -->
+             update from it. No excludeFromRecents: as the task's root it
+             marks the whole task, which recents then trims (finishing the
+             receiver) as soon as another task opens behind Home. -->
         <activity
             android:name="com.futo.fcast.receiver.MainActivity"
             android:exported="true"
-            android:excludeFromRecents="true"
             android:theme="@style/Theme.FCastReceiver">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
