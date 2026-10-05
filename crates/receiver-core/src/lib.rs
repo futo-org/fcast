@@ -46,8 +46,8 @@ pub mod utils;
 // These elements moved to fcast-gst-elements so testing them no longer builds
 // the receiver (and its UI). Re-exported under their old crate-root paths so
 // every existing `crate::fcompsrc::...` call site keeps resolving unchanged.
-#[cfg(target_os = "linux")]
-pub use fcast_gst_elements::vajpegdec;
+// #[cfg(target_os = "linux")]
+// pub use fcast_gst_elements::vajpegdec;
 pub use fcast_gst_elements::{fcompsrc, imagedec, imagetypefind};
 pub use fcast_webrtc::fwebrtcsrc;
 
