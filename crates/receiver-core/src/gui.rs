@@ -735,6 +735,20 @@ impl GuiController {
         }
     }
 
+    /// [`Self::set_window_visibility`] without waiting for the answer. The
+    /// app thread must not block on a GUI thread that may be stuck in a
+    /// present or already gone at quit.
+    pub fn set_window_visibility_detached(&self, visible: bool) {
+        if visible {
+            self.is_visible.note_show();
+        }
+        if self.tx.is_none() {
+            return;
+        }
+        let (prev_tx, _) = oneshot::channel();
+        self.send(UpdateGuiCommand::SetWindowVisibility { visible, prev_tx });
+    }
+
     pub fn show_port_conflict(&self, port: u16) {
         self.send(UpdateGuiCommand::ShowPortConflict { port });
     }

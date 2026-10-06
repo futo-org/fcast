@@ -1994,7 +1994,7 @@ impl Application {
             self.gui.set_fullscreen(fullscreen);
         }
         if let Some(visible) = visible {
-            self.gui.set_window_visibility(visible);
+            self.gui.set_window_visibility_detached(visible);
         }
     }
 
