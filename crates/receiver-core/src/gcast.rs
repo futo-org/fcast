@@ -197,13 +197,25 @@ async fn handle_message(
     message: protos::CastMessage,
 ) -> Result<EndSession> {
     if message.payload_type() != protos::cast_message::PayloadType::String {
-        bail!("Received message with unsupported payload type");
+        warn!(namespace = message.namespace, "Ignoring a binary cast message");
+        return Ok(EndSession::No);
     }
 
     let origin = PacketOrigin::gcast(0);
     let json_payload = message.payload_utf8();
     match message.namespace.as_str() {
-        HEARTBEAT_NAMESPACE => {}
+        HEARTBEAT_NAMESPACE => {
+            // a sender that hears no PONG drops the connection
+            if let namespaces::Heartbeat::Ping = json::from_str::<namespaces::Heartbeat>(json_payload)? {
+                write_channel_message(
+                    writer,
+                    &message.destination_id,
+                    &message.source_id,
+                    namespaces::Heartbeat::Pong,
+                )
+                .await?;
+            }
+        }
         RECEIVER_NAMESPACE => match json::from_str::<namespaces::Receiver>(json_payload)? {
             namespaces::Receiver::SetVolume { volume, .. } => {
                 state.msg_tx.operation(
@@ -382,8 +394,15 @@ async fn run_session(
 
                 debug!(?message, "Received message");
 
-                if handle_message(&mut state, &mut writer, message).await? == EndSession::Yes {
-                    break;
+                match handle_message(&mut state, &mut writer, message).await {
+                    Ok(EndSession::Yes) => break,
+                    Ok(EndSession::No) => {}
+                    // a message type this receiver does not know is skipped,
+                    // ending the session would drop the sender
+                    Err(err) if err.downcast_ref::<json::Error>().is_some() => {
+                        warn!(%err, "Ignoring a cast message that does not parse");
+                    }
+                    Err(err) => return Err(err),
                 }
             }
             res = state_change_rx.recv() => {
@@ -528,4 +547,28 @@ pub async fn run_server(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn heartbeat_wire_format() {
+        assert!(matches!(
+            json::from_str::<namespaces::Heartbeat>(r#"{"type":"PING"}"#),
+            Ok(namespaces::Heartbeat::Ping)
+        ));
+        assert_eq!(json::to_string(&namespaces::Heartbeat::Pong).unwrap(), r#"{"type":"PONG"}"#);
+    }
+
+    /// The session loop skips exactly the errors that are a message it
+    /// cannot parse, an unknown type among them.
+    #[test]
+    fn an_unknown_message_type_is_a_parse_error() {
+        let err: anyhow::Error = json::from_str::<namespaces::Media>(r#"{"type":"QUEUE_LOAD","requestId":1}"#)
+            .unwrap_err()
+            .into();
+        assert!(err.downcast_ref::<json::Error>().is_some());
+    }
 }
