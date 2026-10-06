@@ -263,6 +263,8 @@ public final class ReceiverCore {
         if (visible) {
             handler.removeCallbacks(castWaitingCheck);
             ReceiverService.cancelCastWaiting(app);
+            // in the foreground a refused type switch goes through
+            ReceiverService.retrySwitchIfNeeded();
         }
         updateWifiLockMode();
     }
@@ -833,6 +835,9 @@ public final class ReceiverCore {
         ReceiverService.castTitle = title;
         if (titleChanged) {
             ReceiverService.refreshIfRunning();
+        } else {
+            // a type switch refused from the background is retried here
+            ReceiverService.retrySwitchIfNeeded();
         }
     }
 

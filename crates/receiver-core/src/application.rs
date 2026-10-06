@@ -2421,7 +2421,11 @@ impl Application {
             .android_meta_pushed
             .as_ref()
             // a live window's duration creeps every tick, a second is news
-            .is_none_or(|(title, dur)| *title != self.android_media_title || (*dur - dur_ms).abs() >= 1000);
+            // there, a short clip's every change is
+            .is_none_or(|(title, dur)| {
+                let threshold = if dur_ms.max(*dur) < 10_000 { 1 } else { 1000 };
+                *title != self.android_media_title || (*dur - dur_ms).abs() >= threshold
+            });
         if meta_stale {
             let pushed = crate::android_jni::with_core("updateMediaMetadata", |env, core| {
                 let title = env.new_string(&self.android_media_title)?;

@@ -66,6 +66,17 @@ public class ReceiverService extends Service {
         });
     }
 
+    /// Retries a refused foreground type switch without rebuilding the
+    /// notification when the type already matches.
+    static void retrySwitchIfNeeded() {
+        mainHandler.post(() -> {
+            ReceiverService service = running;
+            if (service != null && service.foregroundType != service.wantedType()) {
+                service.goForeground();
+            }
+        });
+    }
+
     static void ensureChannel(Context ctx) {
         NotificationManager nm = ctx.getSystemService(NotificationManager.class);
         NotificationChannel channel = new NotificationChannel(
