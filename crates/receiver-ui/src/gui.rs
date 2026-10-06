@@ -675,12 +675,11 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
             // A load is coming: get the video surface up before the codec
             // builds, a window handed late costs a rebuild and a keyframe
             // wait (frozen first seconds)
+            // (the item boundary itself ran on the core thread, see
+            // android_surface_video::item_boundary)
             #[cfg(target_os = "android")]
             if matches!(state, ui_types::AppState::LoadingMedia) {
-                // Entering it is a new item. A repeat (the delayed loading
-                // status) is the same item and must keep its surface.
-                let new_item = bridge.get_app_state() != AppState::LoadingMedia;
-                crate::android_surface_video::preopen_current(new_item);
+                crate::android_surface_video::preopen_current();
             }
             // Idle means no load in flight: a pre-open left pending (a stop
             // or failed load that beat the caps) would re-open a fullscreen

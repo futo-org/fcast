@@ -2508,6 +2508,8 @@ impl Application {
                 rate: playback_rate,
             });
             let source = self.build_media_source(&container, url, headers.clone());
+            // before the load, which can reach caps before anything below runs
+            self.gui.item_boundary();
             self.player.load(source, start);
             if let Some(volume) = volume {
                 // Stamp the echo window so stale read-back notifies aren't relayed as

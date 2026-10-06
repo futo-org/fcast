@@ -30,6 +30,13 @@
 //!   at LoadingMedia for that; `preopen_pending` re-fires it once the old
 //!   item's surface is destroyed, and the decoder is promised a window
 //!   meanwhile.
+//! * The item boundary (`item_boundary`) runs on the core thread from the
+//!   core's item hook, right before every pipeline load, never from the UI
+//!   thread's LoadingMedia command. The UI thread can lag the pipeline: a
+//!   small still reaches its caps and its only buffer first, and a boundary
+//!   landing after them wiped the new item's size and left the hole filled
+//!   for good (black screen). Not inferred from app states either: a load
+//!   over a still-loading item passes no state edge.
 //! * Clear the player's window BEFORE the surface dies, never after. Both the
 //!   caps-drop path and `app_visibility(false)` do set_video_window null first;
 //!   the generation bump it causes is also what lets a codec that already
@@ -168,31 +175,40 @@ fn resume_after_retire() {
     if sink().video_size.lock().unwrap().0 != 0 {
         this.relayout();
     } else if this.handoff.lock().unwrap().preopen_pending {
-        preopen_current(false);
+        preopen_current();
     }
+}
+
+/// A new item: retire whatever the surface still shows. The previous item's
+/// caps do not always drop at the boundary (a branch kept for the next
+/// source, which can take a while to start, a UMP backoff for one), and its
+/// last frame would sit under the loading screen the whole time. The core's
+/// item hook, on the core thread right before the pipeline load, so ahead of
+/// the new item's caps (see the lifecycle notes).
+pub(crate) fn item_boundary() {
+    set_frame_pending(true);
+    *sink().video_size.lock().unwrap() = (0, 0);
+    sink().rotation.store(0, Ordering::Relaxed);
+    let Some(this) = view() else {
+        return;
+    };
+    this.handoff.lock().unwrap().retired_at_boundary = true;
+    this.retire_surface();
+    // the load's surface comes after the destroy, its decoder waits
+    crate::set_video_window_pending(true);
 }
 
 /// Shows the surface full-window and hands its window to the player ahead
 /// of a load, so the first codec already builds in direct mode.
-///
-/// `new_item` retires whatever the surface still shows: the previous item's
-/// caps do not always drop at the boundary (a branch kept for the next
-/// source, which can take a while to start, a UMP backoff for one), and its
-/// last frame would sit under the loading screen the whole time.
-pub(crate) fn preopen_current(new_item: bool) {
+pub(crate) fn preopen_current() {
     let Some(this) = view() else {
         return;
     };
-    this.handoff.lock().unwrap().preopen_pending = true;
-    if new_item {
-        set_frame_pending(true);
-        *sink().video_size.lock().unwrap() = (0, 0);
-        sink().rotation.store(0, Ordering::Relaxed);
-        this.handoff.lock().unwrap().retired_at_boundary = true;
-        this.retire_surface();
-        // the load's surface comes after the destroy, its decoder waits
-        crate::set_video_window_pending(true);
+    if sink().video_size.lock().unwrap().0 != 0 {
+        // the item's caps beat the UI here and drove a real layout
+        return;
     }
+    this.handoff.lock().unwrap().preopen_pending = true;
     let ui = this.ui.clone();
     let _ = ui.upgrade_in_event_loop(move |ui| {
         // same space note as in relayout
@@ -212,14 +228,18 @@ pub(crate) fn preopen_current(new_item: bool) {
             // caps already drove a real layout, nothing to pre-open
             return;
         }
-        if this.handoff.lock().unwrap().destroying_seq != 0 {
-            // the old surface's destruction re-fires this
-            return;
+        {
+            // check and show under the lock, see `retire_surface`
+            let mut st = this.handoff.lock().unwrap();
+            if st.destroying_seq != 0 {
+                // the old surface's destruction re-fires this
+                return;
+            }
+            let _ = this
+                .surface
+                .set_rect(0, 0, win.width as i32, win.height as i32);
+            let _ = this.surface.set_visible(true);
         }
-        let _ = this
-            .surface
-            .set_rect(0, 0, win.width as i32, win.height as i32);
-        let _ = this.surface.set_visible(true);
         this.ensure_window_handoff();
     });
 }
@@ -275,6 +295,8 @@ struct Handoff {
     relayout_queued: bool,
     // a load wants the surface up before its codec builds
     preopen_pending: bool,
+    // bumped per window promise, so a give-up timer only drops its own
+    promise_gen: u32,
 }
 
 impl Handoff {
@@ -492,15 +514,19 @@ impl SurfaceVideo {
                 }
                 return;
             }
-            if this.handoff.lock().unwrap().destroying_seq != 0 {
-                // the old surface's destruction re-runs this
-                return;
-            }
             let (x, y, w, h) = letterbox(vw, vh, win.width, win.height);
-            info!(vw, vh, x, y, w, h, "surface video: rect");
-            crate::android_immersive::set_video_aspect(vw, vh);
-            let _ = this.surface.set_rect(x, y, w, h);
-            let _ = this.surface.set_visible(true);
+            {
+                // check and show under the lock, see `retire_surface`
+                let mut st = this.handoff.lock().unwrap();
+                if st.destroying_seq != 0 {
+                    // the old surface's destruction re-runs this
+                    return;
+                }
+                info!(vw, vh, x, y, w, h, "surface video: rect");
+                crate::android_immersive::set_video_aspect(vw, vh);
+                let _ = this.surface.set_rect(x, y, w, h);
+                let _ = this.surface.set_visible(true);
+            }
             // The hole only exists in a frame slint actually painted after
             // the player view took over; nothing else changes here, so ask
             // for one instead of waiting for the next input
@@ -510,18 +536,22 @@ impl SurfaceVideo {
     }
 
     /// Hides the view, which destroys its surface (see the lifecycle notes).
+    /// Callers span threads (core, streaming, slint), so the state change
+    /// and the hide are posted under the lock that relayout and pre-open
+    /// check `destroying_seq` and post their show under: a show checked
+    /// before this hide can never be posted after it, which would share its
+    /// layout pass and keep the old surface. The posts only queue on the
+    /// android UI thread, none of these run on it.
     fn retire_surface(&self) {
-        {
-            let mut st = self.handoff.lock().unwrap();
-            if st.handed_seq != 0 {
-                crate::set_video_window(std::ptr::null_mut());
-                st.handed_seq = 0;
-            }
-            // Its frames belong to the leaving item: forgotten now, not when
-            // the async hide lands. A destroy only follows for a live surface.
-            if let Some((_, seq)) = st.live.take() {
-                st.destroying_seq = seq;
-            }
+        let mut st = self.handoff.lock().unwrap();
+        if st.handed_seq != 0 {
+            crate::set_video_window(std::ptr::null_mut());
+            st.handed_seq = 0;
+        }
+        // Its frames belong to the leaving item: forgotten now, not when
+        // the async hide lands. A destroy only follows for a live surface.
+        if let Some((_, seq)) = st.live.take() {
+            st.destroying_seq = seq;
         }
         let _ = self.surface.set_visible(false);
     }
@@ -571,9 +601,16 @@ impl SurfaceVideo {
             }
         }
         crate::set_video_window_pending(true);
+        let promise = {
+            let mut st = self.handoff.lock().unwrap();
+            st.promise_gen = st.promise_gen.wrapping_add(1);
+            st.promise_gen
+        };
         let this = self.clone();
         slint::Timer::single_shot(SURFACE_GIVE_UP, move || {
-            if this.handoff.lock().unwrap().live.is_none() {
+            let st = this.handoff.lock().unwrap();
+            // a later item's promise is not this timer's to drop
+            if st.live.is_none() && st.promise_gen == promise {
                 warn!("video surface never materialized, video stays headless");
                 crate::set_video_window_pending(false);
             }

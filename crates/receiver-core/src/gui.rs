@@ -365,6 +365,8 @@ pub struct GuiController {
     ui_generation: u64,
     /// Runs on every app state set, attached UI or not.
     app_state_hook: Option<Box<dyn Fn(AppState) + Send + Sync>>,
+    /// Runs when a pipeline load starts a new item, ahead of its first event.
+    item_hook: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 impl GuiController {
@@ -379,6 +381,7 @@ impl GuiController {
             replay: None,
             ui_generation: 0,
             app_state_hook: None,
+            item_hook: None,
         }
     }
 
@@ -387,6 +390,20 @@ impl GuiController {
     pub fn with_app_state_hook(mut self, hook: impl Fn(AppState) + Send + Sync + 'static) -> Self {
         self.app_state_hook = Some(Box::new(hook));
         self
+    }
+
+    /// For state that must reset per item before the pipeline can reach it
+    /// (android's video surface).
+    pub fn with_item_hook(mut self, hook: impl Fn() + Send + Sync + 'static) -> Self {
+        self.item_hook = Some(Box::new(hook));
+        self
+    }
+
+    /// A pipeline load is about to start a new item.
+    pub fn item_boundary(&self) {
+        if let Some(hook) = &self.item_hook {
+            hook();
+        }
     }
 
     /// Records every command so [`Self::attach`] can catch a new UI up.

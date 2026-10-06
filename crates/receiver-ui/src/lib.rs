@@ -567,7 +567,8 @@ fn start_core(
             if matches!(state, AppState::LoadingMedia | AppState::Idle) {
                 android_subtitles::clear_current();
             }
-        });
+        })
+        .with_item_hook(android_surface_video::item_boundary);
 
     // GStreamer registration is ~800ms and the idle screen needs none of it,
     // so it runs on a worker and the first frame never waits for it.
