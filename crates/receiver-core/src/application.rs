@@ -882,11 +882,6 @@ pub struct Application {
     /// The hold resumes when the activity shows, unless paused meanwhile.
     #[cfg(target_os = "android")]
     android_hold_resumes: bool,
-    /// Set by every load, taken by the next LoadingMedia edge. The delayed
-    /// loading status re-enters LoadingMedia for the same item, which must
-    /// neither reset the item's focus state nor re-arm a paused hold.
-    #[cfg(target_os = "android")]
-    android_fresh_load: bool,
     /// When a cast last ended while playing in the background, not held. A
     /// cast following it closely is the sender's next item (a playlist it
     /// advances itself) and plays on in the background like the one before.
@@ -1308,8 +1303,6 @@ impl Application {
             android_hidden_hold: false,
             #[cfg(target_os = "android")]
             android_hold_resumes: false,
-            #[cfg(target_os = "android")]
-            android_fresh_load: false,
             #[cfg(target_os = "android")]
             android_last_end: None,
             #[cfg(target_os = "android")]
@@ -2495,7 +2488,7 @@ impl Application {
     fn android_cast_edge(&mut self, state: AppState) {
         {
             let active = !matches!(state, AppState::Idle);
-            if matches!(state, AppState::LoadingMedia) && std::mem::take(&mut self.android_fresh_load) {
+            if matches!(state, AppState::LoadingMedia) {
                 // A new item is visual until flapjack says otherwise, and it
                 // must not inherit the previous item's focus-loss hold. A
                 // photo takes no focus, it would stop the user's music.
@@ -2725,10 +2718,6 @@ impl Application {
         // Taken unconditionally: surviving one of the early exits would relocate a
         // LATER load.
         let start_override = self.load_start_override.take();
-        #[cfg(target_os = "android")]
-        {
-            self.android_fresh_load = true;
-        }
         if let Some(media) = self.current_media.as_mut()
             && let PacketOrigin::FCast { sender_id, .. } = media.origin
         {
@@ -3054,7 +3043,7 @@ impl Application {
 
     fn handle_playlist_play_request(&mut self, play_message: &v3::PlayMessage, origin: PacketOrigin) {
         let generation = self.playlist_gen;
-        if let Some(url) = play_message.url.as_ref() {
+        if let Some(url) = play_message.url.as_ref().filter(|u| !u.is_empty()) {
             let url = url.clone();
             let mut play_message = play_message.clone();
             let msg_tx = self.msg_tx.clone();
@@ -4179,6 +4168,7 @@ impl Application {
                 };
                 // A live object, so it cannot travel through a URI.
                 self.pending_fwebrtc_channel = Some(chan);
+                self.supersede_playlist_fetch();
                 self.end_raop_session();
                 let play_message = v3::PlayMessage {
                     container: "application/x-fwebrtc".to_owned(),
@@ -4206,6 +4196,8 @@ impl Application {
                 }
                 fcast_protocol::v4::PlaybackState::Idle
                 | fcast_protocol::v4::PlaybackState::Ended => {
+                    self.supersede_playlist_fetch();
+                    self.end_raop_session();
                     self.stop_playback();
                 }
                 _ => (),
@@ -5713,6 +5705,7 @@ impl Application {
                 self.raop_session = Some(session.abort_handle());
 
                 debug!("Session started");
+                self.supersede_playlist_fetch();
                 self.current_media =
                     Some(MediaSourceState::new(PacketOrigin::Raop, MediaSource::Raop));
 
@@ -5729,6 +5722,7 @@ impl Application {
                     return Ok(false);
                 }
                 debug!("Session ended");
+                self.raop_session = None;
                 self.current_media = None;
                 self.transition_app_state(AppState::Idle);
                 self.set_player_type(UiPlayerVariant::Unknown);
@@ -5855,6 +5849,7 @@ impl Application {
                     return Ok(false);
                 }
 
+                self.supersede_playlist_fetch();
                 let uri = airplay::source::mirror_uri(stream_connection_id);
                 debug!(%uri, "Starting AirPlay mirror playback");
                 let source = match media_source::build_airplay_mirror_source(&uri) {
@@ -6569,6 +6564,10 @@ impl Application {
                 // where pause() records the desired transport and the item
                 // prerolls paused instead of playing over the call.
                 match event {
+                    // a silent item holds no focus, a late loss for it is stale
+                    AndroidAudio::Loss | AndroidAudio::TransientLoss if !self.android_audible => {
+                        debug!("Ignoring a focus loss for a silent item");
+                    }
                     AndroidAudio::Loss | AndroidAudio::BecomingNoisy => {
                         self.pause();
                         self.android_transient_pause = false;
