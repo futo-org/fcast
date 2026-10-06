@@ -558,12 +558,118 @@ enum LoadMediaError {
     NoItem,
     #[error("playlist/queue index out of bounds")]
     IndexOutOfBounds,
+    #[error("the url's scheme is not one a sender may load")]
+    RefusedScheme,
+}
+
+/// Concurrent FCast connections. A household has a handful of senders.
+const MAX_FCAST_SESSIONS: usize = 32;
+
+/// Per-item external subtitle cap, far past any real use, so a sender cannot
+/// grow TracksAvailable or the attached inputs without bound.
+const MAX_EXTERNAL_SUBTITLES: usize = 32;
+/// Track title bytes advertised, a media file's or a sender's.
+const MAX_TRACK_TITLE: usize = 256;
+const MAX_LANGUAGE_TAG: usize = 35;
+
+/// `s` cut to at most `max` bytes on a char boundary.
+fn clip(s: &str, max: usize) -> SmolStr {
+    let mut end = s.len().min(max);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    SmolStr::new(&s[..end])
+}
+
+fn clip_title(s: &str) -> SmolStr {
+    clip(s, MAX_TRACK_TITLE)
+}
+
+/// URI schemes a load may use. Any LAN device can send a Play, so sources
+/// reading the receiver's own machine (file, fd, v4l2 and the like) are out.
+const REMOTE_SCHEMES: &[&str] = &[
+    "http", "https", "data", "fcomp", "fcastwhep", "fwebrtc", "sabrump", "srt", "rtsp", "rtsps",
+    "rtspt", "rtspu", "rtsph", "rtmp", "rtmps", "rtmpt", "rtmpe", "rtmpte", "rtmpts",
+];
+
+fn scheme_allowed(url: &str) -> bool {
+    url.split_once(':')
+        .is_some_and(|(scheme, _)| REMOTE_SCHEMES.iter().any(|s| s.eq_ignore_ascii_case(scheme)))
+}
+
+/// Why a Play cannot be loaded, checked before it replaces the current item,
+/// so a malformed one leaves what is playing alone.
+fn play_rejection(play: &WrappedPlayMessage) -> Option<ErrorKind> {
+    const CONTENT_CONTAINERS: &[&str] = &[
+        "application/dash+xml",
+        "application/vnd.apple.mpegurl",
+        "audio/mpegurl",
+    ];
+    match play {
+        WrappedPlayMessage::Legacy(msg) => {
+            let url = msg.url.as_deref().filter(|u| !u.is_empty());
+            if url.is_some_and(|u| !scheme_allowed(u)) {
+                Some(ErrorKind::UnsupportedFormat)
+            } else if url.is_some() || msg.container == "application/json" && msg.content.is_some() {
+                None
+            } else if msg.content.is_some() {
+                (!CONTENT_CONTAINERS.contains(&msg.container.as_str()))
+                    .then_some(ErrorKind::UnsupportedFormat)
+            } else {
+                Some(ErrorKind::MalformedBody)
+            }
+        }
+        WrappedPlayMessage::V4(inner) => {
+            let play = inner.borrow_dependent();
+            match play.source_type() {
+                v4::flat::MediaSource::Single => match play.source_as_single() {
+                    Some(single) if single.source_url().is_empty() => Some(ErrorKind::MalformedBody),
+                    Some(single) if !scheme_allowed(single.source_url()) => {
+                        Some(ErrorKind::UnsupportedFormat)
+                    }
+                    Some(_) => None,
+                    None => Some(ErrorKind::MalformedBody),
+                },
+                v4::flat::MediaSource::Queue => {
+                    let Some(queue) = play.source_as_queue() else {
+                        return Some(ErrorKind::MalformedBody);
+                    };
+                    let len = queue.items().len();
+                    // the spec caps a queue at 256, positions are ubytes
+                    if len == 0 || len > u8::MAX as usize + 1 {
+                        Some(ErrorKind::MalformedBody)
+                    } else if queue.start_index().unwrap_or(0) as usize >= len {
+                        Some(ErrorKind::QueuePositionOutOfRange)
+                    } else if queue
+                        .items()
+                        .iter()
+                        .any(|item| !scheme_allowed(item.media_item().source_url()))
+                    {
+                        Some(ErrorKind::UnsupportedFormat)
+                    } else {
+                        None
+                    }
+                }
+                _ => Some(ErrorKind::MalformedBody),
+            }
+        }
+        #[cfg(feature = "google-cast")]
+        WrappedPlayMessage::Chromecast(cast) => {
+            if cast.url.is_empty() {
+                Some(ErrorKind::MalformedBody)
+            } else {
+                (!scheme_allowed(&cast.url)).then_some(ErrorKind::UnsupportedFormat)
+            }
+        }
+    }
 }
 
 fn load_media_error_kind(err: &LoadMediaError) -> ErrorKind {
     match err {
         LoadMediaError::NoUrlOrContent => ErrorKind::MalformedBody,
-        LoadMediaError::InvalidContentContainer(_) => ErrorKind::UnsupportedFormat,
+        LoadMediaError::InvalidContentContainer(_) | LoadMediaError::RefusedScheme => {
+            ErrorKind::UnsupportedFormat
+        }
         LoadMediaError::IndexOutOfBounds | LoadMediaError::NoItem => ErrorKind::Internal,
     }
 }
@@ -2655,6 +2761,8 @@ impl Application {
 
         let container = item.container;
         let url = match item.url {
+            // playlist items too, which carry no sender origin
+            Some(url) if !scheme_allowed(&url) => return Err(LoadMediaError::RefusedScheme),
             Some(url) => url,
             None => {
                 let Some(content) = item.content else {
@@ -3803,6 +3911,11 @@ impl Application {
     }
 
     fn handle_play_message(&mut self, msg: WrappedPlayMessage, origin: PacketOrigin) {
+        if let Some(kind) = play_rejection(&msg) {
+            error!(?kind, "Refusing a play message that cannot load");
+            self.send_error(origin, kind);
+            return;
+        }
         let play_data = Arc::new(msg);
         match play_data.as_ref() {
             fcast::WrappedPlayMessage::Legacy(msg) => {
@@ -3839,14 +3952,8 @@ impl Application {
                             self.send_error(origin, ErrorKind::MalformedBody);
                             return;
                         };
+                        // play_rejection held it to the spec's 256 item cap
                         let items = queue.items();
-                        // The spec caps a queue at 256 items: wire positions are ubytes,
-                        // and the u8 bookkeeping would wrap back to item 0.
-                        if items.len() > u8::MAX as usize + 1 {
-                            error!(len = items.len(), "Queue exceeds the spec's 256 item cap");
-                            self.send_error(origin, ErrorKind::MalformedBody);
-                            return;
-                        }
                         let mut queue_items = Vec::new();
                         for item in items {
                             queue_items.push(QueueItem::from_flat(&item));
@@ -4286,6 +4393,19 @@ impl Application {
         name: Option<SmolStr>,
     ) -> Result<bool> {
         debug!(url, select, ?name, "adding external subtitle source");
+        if !scheme_allowed(&url) {
+            error!(url, "Refusing a subtitle source with a local scheme");
+            self.send_error(origin, ErrorKind::UnsupportedFormat);
+            return Ok(false);
+        }
+        let held = self.pending_subtitle_adds.len()
+            + self.current_media.as_ref().map_or(0, |m| m.externals.iter().count());
+        if held >= MAX_EXTERNAL_SUBTITLES {
+            error!(held, "Refusing a subtitle source past the per-item cap");
+            self.send_error(origin, ErrorKind::InvalidState);
+            return Ok(false);
+        }
+        let name = name.map(|n| clip_title(&n));
 
         // Requires an active, non-live, seekable, fully loaded item. Only an
         // incompatible source is a genuine rejection; the rest is parked until
@@ -4643,8 +4763,8 @@ impl Application {
                         flapjack::TrackSlot::Subtitle => Some(v4::MediaTrackMetadata::Subtitle),
                     };
 
-                    let title = s.info.title.as_deref().map(smol_str::SmolStr::new);
-                    let iso_639 = s.info.language.as_deref().map(SmolStr::new);
+                    let title = s.info.title.as_deref().map(clip_title);
+                    let iso_639 = s.info.language.as_deref().map(|l| clip(l, MAX_LANGUAGE_TAG));
 
                     Some(v4::MediaTrack {
                         id: idx as u32,
@@ -4665,9 +4785,14 @@ impl Application {
             }
 
             let serialized_msg = v4::MessageBuilder::new().tracks_available(tracks.into_iter());
-            self.broadcast_update(ReceiverToSenderMessage::V4(
-                fcast::V4Message::TracksAvailable { serialized_msg },
-            ));
+            // senders drop the connection on an oversized packet
+            if serialized_msg.len() + 64 > v4::MAX_PACKET_SIZE {
+                error!(len = serialized_msg.len(), "TracksAvailable too large to send");
+            } else {
+                self.broadcast_update(ReceiverToSenderMessage::V4(
+                    fcast::V4Message::TracksAvailable { serialized_msg },
+                ));
+            }
         }
 
         let mut videos = Vec::new();
@@ -6755,6 +6880,11 @@ impl Application {
 
     fn handle_new_fcast_session(&mut self, stream: tokio::net::TcpStream, session_id: SenderId) {
         debug!("New connection id={session_id}");
+        // a silent session times out on the ping, so a full table drains
+        if self.fcast_senders.len() >= MAX_FCAST_SESSIONS {
+            warn!(sessions = self.fcast_senders.len(), "Refusing an FCast connection past the cap");
+            return;
+        }
 
         let (recv_to_f_tx, recv_to_f_rx) = mpsc::unbounded_channel();
         let _ = self
@@ -7123,6 +7253,125 @@ fn displayed_addresses(reachable: &[IpAddr]) -> impl Iterator<Item = &IpAddr> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn legacy(json: &str) -> WrappedPlayMessage {
+        WrappedPlayMessage::Legacy(serde_json::from_str(json).unwrap())
+    }
+
+    fn v4_item(url: &str) -> fcast_protocol::v4::MediaItem {
+        fcast_protocol::v4::MediaItem {
+            container: "video/mp4".into(),
+            source_url: url.into(),
+            start_time: None,
+            volume: None,
+            speed: None,
+            headers: None,
+            title: None,
+            thumbnail_url: None,
+            metadata: None,
+            extra_metadata: None,
+        }
+    }
+
+    fn v4(bytes: &[u8]) -> WrappedPlayMessage {
+        WrappedPlayMessage::V4(
+            fcast::FlatLoadMessage::try_new(bytes.to_vec(), |buf| {
+                v4::flat::root_as_packet(buf)
+                    .ok()
+                    .and_then(|p| p.payload_as_load())
+                    .ok_or(())
+            })
+            .unwrap(),
+        )
+    }
+
+    fn v4_queue(n: usize, start: Option<u8>) -> WrappedPlayMessage {
+        let items = (0..n).map(|i| (v4_item(&format!("http://h/{i}.mp4")), None));
+        v4(&fcast_protocol::v4::MessageBuilder::new().load_queue(items, start, true))
+    }
+
+    #[test]
+    fn titles_are_clipped_on_a_char_boundary() {
+        assert_eq!(clip("abc", 5), "abc");
+        assert_eq!(clip("abcdef", 3), "abc");
+        // "ø" is two bytes, a cut through it backs off
+        assert_eq!(clip("aøb", 2), "a");
+        assert_eq!(clip_title(&"x".repeat(10_000)).len(), MAX_TRACK_TITLE);
+    }
+
+    #[test]
+    fn a_full_track_list_fits_one_packet() {
+        let tracks = (0..MAX_EXTERNAL_SUBTITLES + 200).map(|i| v4::MediaTrack {
+            id: i as u32,
+            title: Some(clip_title(&"ø".repeat(10_000))),
+            iso_639: clip(&"x".repeat(100), MAX_LANGUAGE_TAG),
+            metadata: Some(v4::MediaTrackMetadata::Subtitle),
+        });
+        let msg = v4::MessageBuilder::new().tracks_available(tracks);
+        assert!(msg.len() + 64 < v4::MAX_PACKET_SIZE, "{}", msg.len());
+    }
+
+    #[test]
+    fn only_remote_schemes_load() {
+        for ok in [
+            "http://h/a.mp4",
+            "HTTPS://h/a.mp4",
+            "data:application/dash+xml;base64,AA==",
+            "fcomp://1/2",
+            "rtsp://cam/stream",
+            "sabrump://x",
+        ] {
+            assert!(scheme_allowed(ok), "{ok}");
+        }
+        for bad in [
+            "file:///etc/passwd",
+            "FILE:///home/u/.ssh/id_rsa",
+            "fd://0",
+            "v4l2:///dev/video0",
+            "/etc/passwd",
+            "C:\\Windows\\win.ini",
+            "",
+        ] {
+            assert!(!scheme_allowed(bad), "{bad}");
+        }
+        let r = |p: WrappedPlayMessage| play_rejection(&p);
+        assert_eq!(
+            r(legacy(r#"{"container":"video/mp4","url":"file:///etc/passwd"}"#)),
+            Some(ErrorKind::UnsupportedFormat)
+        );
+        let single = v4(&fcast_protocol::v4::MessageBuilder::new().load_single(v4_item("file:///x.mp4")));
+        assert_eq!(r(single), Some(ErrorKind::UnsupportedFormat));
+        let items = [v4_item("http://h/a.mp4"), v4_item("file:///b.mp4")].into_iter().map(|i| (i, None));
+        let queue = v4(&fcast_protocol::v4::MessageBuilder::new().load_queue(items, None, true));
+        assert_eq!(r(queue), Some(ErrorKind::UnsupportedFormat));
+    }
+
+    #[test]
+    fn plays_that_cannot_load_are_refused_up_front() {
+        use ErrorKind as E;
+        let r = |p: WrappedPlayMessage| play_rejection(&p);
+        assert_eq!(r(legacy(r#"{"container":"video/mp4","url":"http://h/a.mp4"}"#)), None);
+        assert_eq!(r(legacy(r#"{"container":"application/dash+xml","content":"<MPD/>"}"#)), None);
+        assert_eq!(r(legacy(r#"{"container":"application/json","content":"{}"}"#)), None);
+        assert_eq!(r(legacy(r#"{"container":"video/mp4"}"#)), Some(E::MalformedBody));
+        assert_eq!(r(legacy(r#"{"container":"video/mp4","url":""}"#)), Some(E::MalformedBody));
+        assert_eq!(r(legacy(r#"{"container":"application/json"}"#)), Some(E::MalformedBody));
+        assert_eq!(
+            r(legacy(r#"{"container":"video/mp4","content":"x"}"#)),
+            Some(E::UnsupportedFormat)
+        );
+
+        let single = |url: &str| v4(&fcast_protocol::v4::MessageBuilder::new().load_single(v4_item(url)));
+        assert_eq!(r(single("http://h/a.mp4")), None);
+        assert_eq!(r(single("")), Some(E::MalformedBody));
+
+        assert_eq!(r(v4_queue(3, Some(2))), None);
+        assert_eq!(r(v4_queue(3, None)), None);
+        assert_eq!(r(v4_queue(3, Some(3))), Some(E::QueuePositionOutOfRange));
+        assert_eq!(r(v4_queue(0, None)), Some(E::MalformedBody));
+        assert_eq!(r(v4_queue(256, Some(255))), None);
+        assert_eq!(r(v4_queue(257, None)), Some(E::MalformedBody));
+    }
 
     fn addr_set(addrs: &[&str]) -> HashSet<IpAddr> {
         addrs.iter().map(|a| a.parse().unwrap()).collect()
