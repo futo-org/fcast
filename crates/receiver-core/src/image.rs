@@ -104,6 +104,22 @@ fn check_decode_size(width: u32, height: u32, total_bytes: u64) -> Result<(), St
     Ok(())
 }
 
+/// The power of two `inSampleSize` that brings a platform-decoded picture's
+/// longest side to [`MAX_STILL_SIDE`], `None` past the pixel cap or for a
+/// size the header cannot have.
+#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+pub(crate) fn platform_sample_size(width: i32, height: i32) -> Option<i32> {
+    if width <= 0 || height <= 0 || width as u64 * height as u64 > MAX_DECODE_PIXELS {
+        return None;
+    }
+    let long = width.max(height) as u32;
+    let mut sample = 1;
+    while long / sample > MAX_STILL_SIDE {
+        sample *= 2;
+    }
+    Some(sample as i32)
+}
+
 /// RGBA, scaled down to [`MAX_STILL_SIDE`] without a full size RGBA copy.
 fn fit_still(img: DynamicImage) -> RgbaImage {
     let (w, h) = (img.width(), img.height());
@@ -588,6 +604,18 @@ pub fn find_formats() -> HashSet<media_formats::Image> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn platform_decodes_are_subsampled_to_the_still_side() {
+        assert_eq!(platform_sample_size(4032, 3024), Some(1));
+        assert_eq!(platform_sample_size(4096, 10), Some(1));
+        assert_eq!(platform_sample_size(4097, 10), Some(2));
+        assert_eq!(platform_sample_size(12_000, 9_000), Some(4));
+        assert_eq!(platform_sample_size(0, 10), None);
+        assert_eq!(platform_sample_size(-1, 10), None);
+        // past the 128 MP cap
+        assert_eq!(platform_sample_size(20_000, 20_000), None);
+    }
 
     /// libheif applies irot/imir in its decode and reports no orientation of
     /// its own, so a HEIC comes out upright once and never turned twice.

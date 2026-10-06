@@ -204,6 +204,37 @@ fn decode_with(env: &mut jni::JNIEnv, bytes: &[u8]) -> Result<PlatformHeif, Stri
         let encoded = env
             .byte_array_from_slice(bytes)
             .map_err(|err| Failed(format!("byte[] for the encoded image: {err}")))?;
+
+        // The header first, so a huge picture is refused or subsampled
+        // before its pixels exist. A full decode past the cap is an
+        // allocation the process does not survive.
+        let decode_args = [
+            JValue::Object(&encoded),
+            JValue::Int(0),
+            JValue::Int(bytes.len() as i32),
+            JValue::Object(&options),
+        ];
+        env.set_field(&options, "inJustDecodeBounds", "Z", JValue::Bool(1))
+            .and_then(|()| {
+                env.call_static_method(
+                    "android/graphics/BitmapFactory",
+                    "decodeByteArray",
+                    "([BIILandroid/graphics/BitmapFactory$Options;)Landroid/graphics/Bitmap;",
+                    &decode_args,
+                )
+            })
+            .map_err(|err| Failed(format!("BitmapFactory bounds: {err}")))?;
+        let out_w = env.get_field(&options, "outWidth", "I").and_then(|v| v.i());
+        let out_h = env.get_field(&options, "outHeight", "I").and_then(|v| v.i());
+        let (out_w, out_h) = out_w
+            .and_then(|w| out_h.map(|h| (w, h)))
+            .map_err(|err| Failed(format!("BitmapFactory bounds: {err}")))?;
+        let sample = crate::image::platform_sample_size(out_w, out_h)
+            .ok_or_else(|| Failed(format!("image too large to decode ({out_w}x{out_h})")))?;
+        env.set_field(&options, "inJustDecodeBounds", "Z", JValue::Bool(0))
+            .and_then(|()| env.set_field(&options, "inSampleSize", "I", JValue::Int(sample)))
+            .map_err(|err| Failed(format!("BitmapFactory.Options fields: {err}")))?;
+
         let bitmap = env
             .call_static_method(
                 "android/graphics/BitmapFactory",
