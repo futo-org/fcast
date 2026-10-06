@@ -140,7 +140,7 @@ public final class ReceiverCore {
         if (startOnBoot == -1 && upgradedFromKotlin(app)) {
             // the Kotlin receiver came up at boot (a tap-to-start notice from
             // 12 on), an upgrade starts on boot without asking
-            Log.i(TAG, "upgraded from the Kotlin receiver, start on boot on");
+            Log.i(TAG, "a Kotlin upgrade or a lost earlier yes, start on boot on");
             startOnBoot = 1;
             nativeSetStartOnBoot(true);
             NotificationManager nm = app.getSystemService(NotificationManager.class);
