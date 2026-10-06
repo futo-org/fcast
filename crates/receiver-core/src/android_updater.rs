@@ -195,7 +195,26 @@ pub async fn download(
         return Err(Error::Status(resp.status()));
     }
     let total = resp.content_length().unwrap_or(0);
-    let mut file = tokio::fs::File::create(dest).await?;
+    // Written beside the target and renamed when whole: the activity clears
+    // the target when it is recreated, which mid-download cut the file.
+    let part = dest.with_extension("apk.part");
+    let res = download_to(&mut resp, &part, total, &mut progress).await;
+    match res {
+        Ok(()) => Ok(tokio::fs::rename(&part, dest).await?),
+        Err(err) => {
+            let _ = tokio::fs::remove_file(&part).await;
+            Err(err)
+        }
+    }
+}
+
+async fn download_to(
+    resp: &mut reqwest::Response,
+    path: &Path,
+    total: u64,
+    progress: &mut impl FnMut(u64, u64),
+) -> Result<(), Error> {
+    let mut file = tokio::fs::File::create(path).await?;
     let mut unz = Unzstd::new()?;
     let mut got = 0u64;
     while let Some(chunk) = tokio::time::timeout(STALL_TIMEOUT, resp.chunk())
@@ -572,6 +591,28 @@ mod tests {
     async fn a_cut_stream_is_incomplete() {
         let (res, _) = fetch("half.apk.zst").await;
         assert!(matches!(res, Err(Error::Incomplete)), "{res:?}");
+    }
+
+    /// The target only ever appears whole, a failure leaves nothing behind.
+    #[tokio::test]
+    async fn the_target_appears_only_when_whole() {
+        let base = serve(channel_server).await;
+        let dir = tempfile::tempdir().unwrap();
+        let dest = dir.path().join("update.apk");
+        let res = download(&client(), &base, &release("half.apk.zst"), &dest, |_, _| {}).await;
+        assert!(res.is_err());
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "a partial file was left");
+
+        let mut saw_target_early = false;
+        let dest2 = dest.clone();
+        download(&client(), &base, &release("r-60.apk.zst"), &dest, |_, _| {
+            saw_target_early |= dest2.exists();
+        })
+        .await
+        .unwrap();
+        assert!(!saw_target_early, "the target existed mid-download");
+        assert!(std::fs::read(&dest).unwrap() == apk());
+        assert!(!dest.with_extension("apk.part").exists());
     }
 
     #[tokio::test]
