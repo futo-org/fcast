@@ -79,6 +79,34 @@ pub fn blur_cover(img: &RgbaImage) -> RgbaImage {
     imagelib::imageops::fast_blur(&thumb, SIGMA_FRAC * tw.max(th) as f32)
 }
 
+/// A header can claim any size, and an allocation failure aborts the process
+/// past `catch_unwind`. 128 MP keeps a 108 MP phone photo.
+const MAX_DECODE_PIXELS: u64 = 128_000_000;
+const MAX_DECODE_BYTES: u64 = 512 << 20;
+/// Longest side a still is kept at: above a 4K screen and within every GPU's
+/// texture limit, past which the upload panics the GUI thread.
+const MAX_STILL_SIDE: u32 = 4096;
+
+fn check_decode_size(width: u32, height: u32, total_bytes: u64) -> Result<(), String> {
+    let pixels = width as u64 * height as u64;
+    if pixels == 0 || pixels > MAX_DECODE_PIXELS || total_bytes > MAX_DECODE_BYTES {
+        return Err(format!("image too large to decode ({width}x{height})"));
+    }
+    Ok(())
+}
+
+/// RGBA, scaled down to [`MAX_STILL_SIDE`] without a full size RGBA copy.
+fn fit_still(img: DynamicImage) -> RgbaImage {
+    let (w, h) = (img.width(), img.height());
+    let long = w.max(h);
+    if long <= MAX_STILL_SIDE {
+        return img.to_rgba8();
+    }
+    let tw = (w as u64 * MAX_STILL_SIDE as u64 / long as u64).max(1) as u32;
+    let th = (h as u64 * MAX_STILL_SIDE as u64 / long as u64).max(1) as u32;
+    imagelib::imageops::thumbnail(&img, tw, th)
+}
+
 #[derive(Debug)]
 pub struct DecodedImage {
     pub id: ImageId,
@@ -187,13 +215,17 @@ impl<'a> DecoderContext<'a> {
         mut decoder: impl imagelib::ImageDecoder,
         format: &'static str,
     ) -> anyhow::Result<()> {
+        let (width, height) = decoder.dimensions();
+        if let Err(reason) = check_decode_size(width, height, decoder.total_bytes()) {
+            anyhow::bail!(reason);
+        }
         let orientation = decoder
             .orientation()
             .unwrap_or(metadata::Orientation::NoTransforms);
         let image = DynamicImage::from_decoder(decoder);
 
         let decoded = match image {
-            Ok(img) => img.to_rgba8(),
+            Ok(img) => fit_still(img),
             Err(err) => {
                 // TODO: should notify about failure
                 error!(?err, "Failed to decode image");
@@ -571,6 +603,23 @@ mod tests {
                 assert!(near, "o{n} at {x},{y}: {px:?}, expected {rgb:?}");
             }
         }
+    }
+
+    #[test]
+    fn oversized_headers_are_refused_before_decoding() {
+        assert!(check_decode_size(100_000, 100_000, 30_000_000_000).is_err());
+        assert!(check_decode_size(0, 10, 0).is_err());
+        assert!(check_decode_size(12_000, 9_000, 324_000_000).is_ok());
+        assert!(check_decode_size(16_000, 16_000, 768_000_000).is_err());
+    }
+
+    #[test]
+    fn large_stills_fit_the_texture_limit() {
+        let wide = DynamicImage::new_rgb8(20_000, 200);
+        let fitted = fit_still(wide);
+        assert_eq!(fitted.dimensions(), (MAX_STILL_SIDE, 40));
+        let small = DynamicImage::new_rgb8(640, 480);
+        assert_eq!(fit_still(small).dimensions(), (640, 480));
     }
 
     #[test]
