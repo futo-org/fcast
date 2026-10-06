@@ -338,12 +338,17 @@ public class MainActivity extends NativeActivity {
 
     static native void nativeOverlayState(boolean granted, boolean canOpenSettings);
 
-    /// A cast that ended for real while in PiP: the idle UI does not belong
-    /// in a video window. To the back rather than finish, so the window
-    /// survives for the next cast. From ReceiverCore on the main thread.
-    void leavePipForEndedCast() {
-        if (!destroyed && isInPictureInPictureMode()) {
-            moveTaskToBack(true);
+    /// A cast that ended for real: the idle UI does not belong in a video
+    /// window (PiP), nor on screen when the cast is what brought the
+    /// receiver up (`fromBackground`). To the back rather than finish, so
+    /// the window survives for the next cast. From ReceiverCore on the main
+    /// thread.
+    void leaveForEndedCast(boolean fromBackground) {
+        // Hidden from here, not from onStop: a cast landing before onStop
+        // must still bring the receiver back up.
+        if (!destroyed && (fromBackground || isInPictureInPictureMode())
+                && moveTaskToBack(true)) {
+            ReceiverCore.setUiVisible(false);
         }
     }
 

@@ -96,6 +96,9 @@ public final class ReceiverCore {
 
     private static boolean castActive = false;
     private static boolean castVisual = false;
+    /// The cast came in while the UI was in the background, so its end puts
+    /// the receiver back there instead of on the idle screen. Main thread.
+    private static boolean castFromBackground = false;
     private static boolean castPlaying = false;
 
     /// Runs `r` on the main thread, inline when already there.
@@ -735,6 +738,10 @@ public final class ReceiverCore {
             // Rising edge only: native calls again when visual or audible
             // settle (the video stream shows up ~60ms into a load), and each
             // call used to send a second start request.
+            if (active) {
+                // the next item arrived, the ended one keeps the window
+                handler.removeCallbacks(endedCastLeave);
+            }
             if (active && !castActive && !uiVisible) {
                 castArrived();
             } else if (!active) {
@@ -810,6 +817,7 @@ public final class ReceiverCore {
 
     /// Come forward, or post tap-to-play if the start is refused.
     private static void castArrived() {
+        castFromBackground = true;
         bringToFront();
         handler.removeCallbacks(castWaitingCheck);
         handler.postDelayed(castWaitingCheck, CAST_WAITING_DELAY_MS);
@@ -828,15 +836,40 @@ public final class ReceiverCore {
         });
     }
 
-    /// The cast ended for real (native skips a load clearing the previous
-    /// item). A UI in PiP leaves it. Any thread.
-    static void castEnded() {
+    /// How long an item's end waits before leaving, for a sender that loads
+    /// the next item when it hears of the end (desktop sender playlists).
+    private static final long ENDED_LEAVE_DELAY_MS = 3000;
+    private static final Runnable endedCastLeave = () -> {
+        // a new cast took over, it keeps the window and the flag
+        if (!castActive) {
+            leaveEndedCast();
+        }
+    };
+
+    /// The cast ended for real, a stop or the last item's end (native skips
+    /// a load clearing the previous item). A UI in PiP leaves it, and so does
+    /// one the cast brought forward from the background. A stop leaves at
+    /// once, an end (`finished`) after a grace a new item cancels. Any thread.
+    static void castEnded(boolean finished) {
         onMain(() -> {
-            MainActivity a = activity.get();
-            if (a != null) {
-                a.leavePipForEndedCast();
+            handler.removeCallbacks(endedCastLeave);
+            if (finished) {
+                handler.postDelayed(endedCastLeave, ENDED_LEAVE_DELAY_MS);
+            } else {
+                leaveEndedCast();
             }
         });
+    }
+
+    /// Unguarded: native sends a stop's castEnded ahead of the inactive
+    /// edge, so castActive still reads true here.
+    private static void leaveEndedCast() {
+        boolean toBack = castFromBackground;
+        castFromBackground = false;
+        MainActivity a = activity.get();
+        if (a != null) {
+            a.leaveForEndedCast(toBack);
+        }
     }
 
     /// Refresh-rate matching for the window showing the cast. Any thread.

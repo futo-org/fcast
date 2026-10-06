@@ -2122,7 +2122,7 @@ impl Application {
                 self.android_transient_pause = false;
                 // a real end, not a load clearing the previous item (PiP leaves)
                 if self.android_playback.0 && !self.android_replacing {
-                    self.call_activity("castEnded", "()V", &[]);
+                    self.call_activity("castEnded", "(Z)V", &[jni::objects::JValue::Bool(0)]);
                 }
                 if self.android_playback.0 {
                     // back to the display's default mode between items
@@ -2146,6 +2146,17 @@ impl Application {
         // notification blinking Casting-Ready-Casting at every EOS boundary.
         #[cfg(target_os = "android")]
         if self.autoplay_next_index().is_none() {
+            // The cast is over like a stop, the activity decides whether it
+            // goes back to the background. Delayed there while a sender is
+            // connected, it may load the next item on hearing of this end.
+            if self.android_playback.0 {
+                let next_may_come = self.updates_tx.receiver_count() > 0;
+                self.call_activity(
+                    "castEnded",
+                    "(Z)V",
+                    &[jni::objects::JValue::Bool(next_may_come as u8)],
+                );
+            }
             self.set_playback_active(false);
         }
 
@@ -4643,6 +4654,17 @@ impl Application {
                 pending,
             } => {
                 if self.player.state_changed(old, current, pending).is_some() {
+                    // The item ended with a sender still on, which released
+                    // playback and set the activity's leave going, and is
+                    // now played again (a scrub back and play). Active again
+                    // cancels the leave, or brings a window that left back.
+                    #[cfg(target_os = "android")]
+                    if self.player.player_state() == PlayerState::Playing
+                        && self.current_media.is_some()
+                        && !self.android_playback.0
+                    {
+                        self.set_playback_active(true);
+                    }
                     self.notify_updates(true)?;
                     let v4_state = match self.player.player_state() {
                         PlayerState::Paused => fcast_protocol::v4::PlaybackState::Paused,
