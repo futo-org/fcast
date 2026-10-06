@@ -468,7 +468,11 @@ cases!(
     multi_sender_stop_broadcast_v4,
     multi_sender_external_subs_v4,
     seek_v3,
-    unsubscribe_event_v3
+    unsubscribe_event_v3,
+    stop_reports_idle_v2,
+    stop_reports_idle_v3,
+    end_reports_paused_v3,
+    photo_reports_playing_v3
 );
 
 macro_rules! define_test_case {
@@ -3611,5 +3615,64 @@ define_test_case!(
         send!(Send::PlayV3 { file_id: 0 }),
         Step::SleepMillis(750),
         send!(Send::Stop),
+    ]
+);
+
+// v1-v3 senders learn a stop and an end from PlaybackUpdate alone, as the
+// Kotlin receiver sent them: Idle on stop, Paused at the end.
+define_test_case!(
+    stop_reports_idle_v2,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(2)),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV2 { file_id: 0 }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::Stop),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Idle),
+    ]
+);
+
+define_test_case!(
+    stop_reports_idle_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV3 { file_id: 0 }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::Stop),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Idle),
+    ]
+);
+
+define_test_case!(
+    end_reports_paused_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        serve!("video/video_with_subs.mkv", 0, "video/x-matroska"),
+        send!(Send::PlayV3 { file_id: 0 }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::Seek(175.0)),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Paused),
+    ]
+);
+
+// An image never ticks, the sender still hears it is up.
+define_test_case!(
+    photo_reports_playing_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        serve!("image/flowers.jpg", 0, "image/jpeg"),
+        send!(Send::PlayV3 { file_id: 0 }),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
     ]
 );

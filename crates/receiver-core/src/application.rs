@@ -1316,6 +1316,38 @@ impl Application {
         let _ = self.updates_tx.send(Arc::new(msg)).is_err();
     }
 
+    /// A v1-v3 update the progress tick cannot send: a stopped player has no
+    /// media info left and an image never ticks. v4 senders get the state
+    /// from their own messages.
+    fn broadcast_legacy_update(&self, state: PlaybackState, time: f64, duration: f64, speed: f64) {
+        if !self.should_broadcast() {
+            return;
+        }
+        self.broadcast_update(ReceiverToSenderMessage::LegacyTranslatable {
+            op: Opcode::PlaybackUpdate,
+            msg: TranslatableMessage::PlaybackUpdate(v3::PlaybackUpdateMessage {
+                generation_time: current_time_millis(),
+                time: Some(time),
+                duration: Some(duration),
+                state,
+                speed: Some(speed),
+                item_index: None,
+            }),
+        });
+    }
+
+    /// Stop and error as the old receiver sent them, all zero.
+    fn broadcast_legacy_idle(&self) {
+        self.broadcast_legacy_update(PlaybackState::Idle, 0.0, 0.0, 0.0);
+    }
+
+    /// The image lane skips LoadingMedia, so a decode in flight is not up yet.
+    fn image_shown(&self) -> bool {
+        self.shown_app_state == AppState::Playing
+            && self.shown_variant == UiPlayerVariant::Image
+            && !self.is_loading_media
+    }
+
     fn relay_to_other_senders(
         &self,
         origin: PacketOrigin,
@@ -1924,18 +1956,8 @@ impl Application {
         self.queue_cache.clear();
 
         if self.should_broadcast() {
-            let update = v3::PlaybackUpdateMessage {
-                generation_time: current_time_millis(),
-                time: None,
-                duration: None,
-                state: PlaybackState::Idle,
-                speed: None,
-                item_index: None,
-            };
-            self.broadcast_update(ReceiverToSenderMessage::LegacyTranslatable {
-                op: Opcode::PlaybackUpdate,
-                msg: TranslatableMessage::PlaybackUpdate(update),
-            });
+            // with times, a v1 or v2 update cannot leave them out
+            self.broadcast_legacy_idle();
             self.broadcast_update(ReceiverToSenderMessage::Error(PlaybackErrorMessage {
                 message: diagnostic.clone(),
             }))
@@ -2332,6 +2354,19 @@ impl Application {
             }
             self.set_playback_active(active);
         }
+    }
+
+    /// The old receiver's end state for v1-v3: paused at the end. None when
+    /// the receiver advances by itself, the next item follows at once.
+    fn legacy_ended_update(&self) -> Option<(f64, f64, f64)> {
+        if self.autoplay_next_index().is_some() {
+            return None;
+        }
+        let duration = self
+            .current_duration
+            .or_else(|| self.player.get_duration())
+            .map_or(self.last_position_updated.max(0.0), |d| d.seconds_f64());
+        Some((duration, duration, self.player.rate()))
     }
 
     fn media_ended(&mut self) {
@@ -2894,6 +2929,7 @@ impl Application {
             self.end_presentation(true, true);
             self.current_media = None;
             self.queue_cache.clear();
+            self.broadcast_legacy_idle();
             #[cfg(not(target_os = "android"))]
             self.screensaver_inhibitor.un_inhibit();
         }
@@ -4659,6 +4695,8 @@ impl Application {
                 self.resolve_parked_gapless_op(GaplessOutcome::ItemEnded);
                 self.cancel_gapless_prearm(player::AfterCancel::Nothing);
 
+                // read before the stop drops the media info
+                let ended = self.legacy_ended_update();
                 self.player.end_of_stream_reached();
 
                 debug!("Player reached EOS");
@@ -4667,6 +4705,9 @@ impl Application {
                 self.seek_quiet = false;
 
                 self.media_ended();
+                if let Some((time, duration, speed)) = ended {
+                    self.broadcast_legacy_update(PlaybackState::Paused, time, duration, speed);
+                }
 
                 if self.should_broadcast()
                     && let Some(current_media) = self.current_media.as_ref()
@@ -4792,6 +4833,10 @@ impl Application {
                 }
 
                 self.transition_app_state(AppState::Playing);
+                if self.image_via_player {
+                    // it never ticks, v1-v3 senders hear of it once
+                    self.broadcast_legacy_update(PlaybackState::Playing, 0.0, 0.0, 1.0);
+                }
 
                 // NO transport driving here: `Player::uri_loaded` is the one post-load
                 // transport driver, or a mid-load pause gets stomped and a live subtitle
@@ -5200,8 +5245,12 @@ impl Application {
                         // The item is being treated as ended, not adopted for
                         // playback, so its held events describe nothing.
                         self.held_prearm_events.clear();
+                        let ended = self.legacy_ended_update();
                         self.player.end_of_stream_reached();
                         self.media_ended();
+                        if let Some((time, duration, speed)) = ended {
+                            self.broadcast_legacy_update(PlaybackState::Paused, time, duration, speed);
+                        }
                         // Senders see the same shape as an ordinary end-of-stream advance.
                         if self.should_broadcast() {
                             self.broadcast_update(ReceiverToSenderMessage::V4(
@@ -5881,6 +5930,7 @@ impl Application {
                     self.android_audible = false;
                 }
                 self.transition_app_state(AppState::Playing);
+                self.broadcast_legacy_update(PlaybackState::Playing, 0.0, 0.0, 1.0);
 
                 self.media_loaded_successfully();
             }
@@ -6569,10 +6619,11 @@ impl Application {
     /// it: the cast play message with the live time, volume and speed.
     fn initial_legacy_state(&self) -> Option<fcast::InitialLegacyState> {
         let msg = self.current_media.as_ref()?.legacy_play.as_ref()?;
+        // the -1 sentinel before the first tick, a legacy image never ticks
         let time = self
             .player
             .get_position()
-            .map_or(self.last_position_updated, |p| p.seconds_f64());
+            .map_or(self.last_position_updated.max(0.0), |p| p.seconds_f64());
         let speed = self.player.rate();
         Some(fcast::InitialLegacyState {
             play_data: v3::PlayMessage {
@@ -6585,7 +6636,12 @@ impl Application {
                 generation_time: current_time_millis(),
                 time: Some(time),
                 duration: self.current_duration.map(|d| d.seconds_f64()),
-                state: self.player.wire_playback_state(),
+                // a legacy image has no player behind it
+                state: if self.image_shown() {
+                    PlaybackState::Playing
+                } else {
+                    self.player.wire_playback_state()
+                },
                 speed: Some(speed),
                 item_index: None,
             },
