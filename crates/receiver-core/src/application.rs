@@ -6878,12 +6878,19 @@ impl Application {
         Ok(outcome)
     }
 
+    /// No dialog here, the usual holder is the other flavor (sideload and
+    /// Play) and failing left a boot start in a restart loop. Senders find the
+    /// receiver by mDNS, which advertises the port actually bound.
     #[cfg(target_os = "android")]
     async fn handle_port_conflict(
         &mut self,
         _event_rx: &mut UnboundedReceiver<Message>,
     ) -> Result<Option<Vec<TcpListener>>> {
-        anyhow::bail!("FCast port {FCAST_TCP_PORT} is already in use");
+        let listeners = Self::bind_fcast_listeners(0).await?;
+        let port = listeners[0].local_addr()?.port();
+        warn!(port, "FCast port {FCAST_TCP_PORT} is in use, serving on another port");
+        self.fcast_port = port;
+        Ok(Some(listeners))
     }
 
     pub async fn run_event_loop(
