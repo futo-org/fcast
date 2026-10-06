@@ -602,6 +602,10 @@ public final class ReceiverCore {
     /// silently degrades in the background, exactly where a backgrounded
     /// cast needs wifi kept awake: swap modes on the visibility edge.
     private static void updateWifiLockMode() {
+        // null on a device without wifi, an ethernet-only box
+        if (wifiManager == null) {
+            return;
+        }
         boolean foreground = uiVisible;
         int mode = (foreground && android.os.Build.VERSION.SDK_INT >= 29)
                 ? WifiManager.WIFI_MODE_FULL_LOW_LATENCY
