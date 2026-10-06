@@ -17,7 +17,7 @@ ENV ANDROID_HOME=/opt/android/sdk \
 # anything android-shaped is reached.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential clang cmake meson ninja-build nasm flex bison gettext \
-        pkg-config python3 git patch wget unzip xz-utils ccache \
+        pkg-config python3 git patch wget unzip xz-utils zstd ccache \
         openjdk-21-jdk-headless ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

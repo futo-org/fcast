@@ -61,32 +61,29 @@ build_receiver_android_native:
       --version-code "$ANDROID_VERSION_CODE"
       --version-name "$ANDROID_VERSION_NAME"
     # The self-update channel (crates/receiver-core/src/android_updater.rs):
-    # a versioned apk and the latest.json naming it, both uploaded to
-    # dl.fcast.org/receiver/android/, the apk first.
+    # one zstd-compressed apk per ABI and the latest.json naming them, all
+    # uploaded to dl.fcast.org/receiver/android/, latest.json last. zstd -19
+    # keeps the 8 MB window the updater accepts, --ultra levels would not.
     - |
       OUT=receivers/experimental/android/channel
-      APK="fcast-receiver-android-$ANDROID_VERSION_CODE.apk"
+      APKS=receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release
       mkdir -p "$OUT"
-      cp receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk "$OUT/$APK"
-      printf '{\n    "version": "%s",\n    "version_code": %s,\n    "file": "%s"\n}\n' \
-        "$ANDROID_VERSION_NAME" "$ANDROID_VERSION_CODE" "$APK" > "$OUT/latest.json"
-    # The Kotlin receiver's update path, so its sideload installs move over:
-    # uploaded to dl.fcast.org/android/ as that job's output was, the apk
-    # first. The code must exceed the last Kotlin release's, and the Kotlin
-    # job must stop uploading there.
-    - |
-      LEGACY=receivers/experimental/android/legacy-channel
-      mkdir -p "$LEGACY"
-      cp receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk "$LEGACY/fcast-release.apk"
-      echo "$ANDROID_VERSION_CODE" > "$LEGACY/fcast-version.txt"
+      FILES=""
+      for ABI in arm64-v8a armeabi-v7a; do
+        APK="fcast-receiver-android-$ANDROID_VERSION_CODE-$ABI.apk.zst"
+        zstd -19 -T0 -q -f "$APKS/app-defaultFlavor-$ABI-release.apk" -o "$OUT/$APK"
+        FILES="$FILES${FILES:+,}\n        \"$ABI\": \"$APK\""
+      done
+      printf '{\n    "version": "%s",\n    "version_code": %s,\n    "files": {%b\n    }\n}\n' \
+        "$ANDROID_VERSION_NAME" "$ANDROID_VERSION_CODE" "$FILES" > "$OUT/latest.json"
+      cat "$OUT/latest.json"
   artifacts:
     untracked: false
     when: on_success
     access: all
     expire_in: "30 days"
     paths:
-      - receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk
+      - receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release/
       - receivers/experimental/android/app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab
       - receivers/experimental/android/channel/
-      - receivers/experimental/android/legacy-channel/
   when: manual

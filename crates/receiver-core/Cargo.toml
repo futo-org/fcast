@@ -136,6 +136,8 @@ jni = "0.21.1"
 ndk-context = "0.1"
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "aws-lc-rs", "tls12" ] }
+# the self-update channel serves zstd-compressed apks
+zstd = { version = "0.13", default-features = false }
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 reqwest = { version = "0.13", default-features = false, features = [ "native-tls", "charset", "http2", "system-proxy", "gzip", "cookies" ] }
@@ -148,6 +150,7 @@ libheif-rs = { version = "2.6", default-features = false, features = [ "v1_20", 
 # their own image fixtures.
 image = { workspace = true, features = ["encode"] }
 tempfile = "3.24"
+zstd = { version = "0.13", default-features = false }
 # The driver's transport fixtures. This crate is the only one that can see both
 # them and the decoders they are fed to (flapjack cannot depend on
 # fcast-video), which is what `the_drivers_bitmap_fixtures_decode` needs.

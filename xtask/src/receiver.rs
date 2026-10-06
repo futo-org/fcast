@@ -42,7 +42,8 @@ pub enum AndroidReceiverCommand {
 pub struct InstallArgs {
     #[clap(short, long)]
     pub release: bool,
-    /// ABIs to build, repeatable. Defaults to the device's own, one build.
+    /// ABIs to build, repeatable, the first one is installed. Defaults to
+    /// the device's own.
     #[clap(short, long)]
     pub target: Vec<AndroidAbiTarget>,
     /// Package the jniLibs already in the tree instead of rebuilding them.
@@ -424,6 +425,16 @@ fn device_abi(sh: &xshell::Shell, adb: &Adb) -> Result<AndroidAbiTarget> {
     }
 }
 
+/// The android ABI name, as the apk splits are named.
+fn abi_name(t: AndroidAbiTarget) -> &'static str {
+    match t {
+        AndroidAbiTarget::Arm64 => "arm64-v8a",
+        AndroidAbiTarget::Arm32 => "armeabi-v7a",
+        AndroidAbiTarget::X64 => "x86_64",
+        AndroidAbiTarget::X86 => "x86",
+    }
+}
+
 /// Builds for the attached device, packages the sideload apk one versionCode
 /// above the installed one, installs it, and optionally starts and follows it.
 fn install_receiver(sh: &xshell::Shell, root_path: &Utf8PathBuf, i: InstallArgs) -> Result<()> {
@@ -433,6 +444,8 @@ fn install_receiver(sh: &xshell::Shell, root_path: &Utf8PathBuf, i: InstallArgs)
     } else {
         i.target
     };
+    // gradle writes one apk per ABI, the first target's is installed
+    let abi = abi_name(targets[0]);
     let version_code = match i.version_code {
         Some(code) => code,
         None => installed_version_code(sh, &adb)?.map_or(1, |code| code + 1),
@@ -451,7 +464,7 @@ fn install_receiver(sh: &xshell::Shell, root_path: &Utf8PathBuf, i: InstallArgs)
         },
     )?;
     let variant = if i.release { "release" } else { "debug" };
-    let apk = concat_path(&outputs, &format!("app-defaultFlavor-{variant}.apk"));
+    let apk = concat_path(&outputs, &format!("app-defaultFlavor-{abi}-{variant}.apk"));
     if !apk.is_file() {
         anyhow::bail!("gradle wrote no {apk}");
     }

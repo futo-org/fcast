@@ -87,6 +87,17 @@ android {
         }
     }
 
+    // One sideload apk per ABI, the libraries are most of the size. Play
+    // splits the bundle itself. Every split carries the same versionCode.
+    splits {
+        abi {
+            enable true
+            reset()
+            include 'arm64-v8a', 'armeabi-v7a'
+            universalApk false
+        }
+    }
+
     signingConfigs {
         release {
             if (haveSigningKey) {
