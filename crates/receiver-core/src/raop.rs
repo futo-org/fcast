@@ -559,10 +559,25 @@ struct Connection {
     peer_addr: SocketAddr,
 }
 
+/// An RTSP message past this is refused, a header can claim any
+/// Content-Length and the buffer would grow to it. Cover art is the largest
+/// real body.
+const MAX_RTSP_MESSAGE: usize = 8 << 20;
+
 impl Connection {
     pub fn new(socket: TcpStream) -> Result<Connection> {
         let local_addr = socket.local_addr()?;
         let peer_addr = socket.peer_addr()?;
+        // A sender that drops off the network sends no TEARDOWN and no FIN,
+        // keepalive ends the session instead of leaving it playing forever.
+        let keepalive = socket2::TcpKeepalive::new()
+            .with_time(std::time::Duration::from_secs(20))
+            .with_interval(std::time::Duration::from_secs(5));
+        #[cfg(not(windows))]
+        let keepalive = keepalive.with_retries(4);
+        if let Err(err) = socket2::SockRef::from(&socket).set_tcp_keepalive(&keepalive) {
+            warn!(?err, "Failed to enable keepalive on the RAOP connection");
+        }
 
         Ok(Connection {
             stream: BufWriter::new(socket),
@@ -580,6 +595,9 @@ impl Connection {
                 return Ok(Some(message));
             }
 
+            if self.buffer.len() > MAX_RTSP_MESSAGE {
+                anyhow::bail!("RTSP message past {MAX_RTSP_MESSAGE} bytes");
+            }
             if 0 == self.stream.read_buf(&mut self.buffer).await? {
                 if self.buffer.is_empty() {
                     return Ok(None);
@@ -968,6 +986,15 @@ impl Player {
         let mut position = 0;
         let mut duration = 0;
         let pipeline = gst::Pipeline::new();
+        // Every way out of here, a shutdown or an aborted session included,
+        // stops the pipeline: dropped while playing its threads keep going.
+        struct NullOnDrop(gst::Pipeline);
+        impl Drop for NullOnDrop {
+            fn drop(&mut self) {
+                let _ = self.0.set_state(gst::State::Null);
+            }
+        }
+        let _null_on_drop = NullOnDrop(pipeline.clone());
 
         let appsrc = gst_app::AppSrc::builder()
             .stream_type(gst_app::AppStreamType::Stream)
@@ -1480,10 +1507,13 @@ impl Handler {
                     .and_then(|x| x.parse().ok())
                     .unwrap_or(0);
 
+                // AES-128 wants 16 bytes of each, anything else would panic
+                // the player's key setup
                 let aesiv = media
                     .get_first_attribute_value("aesiv")
                     .unwrap_or(None)
-                    .and_then(|x| decode_base64(x).ok());
+                    .and_then(|x| decode_base64(x).ok())
+                    .filter(|iv| iv.len() == 16);
 
                 let aeskey = media
                     .get_first_attribute_value("rsaaeskey")
@@ -1492,7 +1522,8 @@ impl Handler {
                     .and_then(|x| {
                         let padding = rsa::Oaep::new::<Sha1>();
                         PRIVATE_KEY.decrypt(padding, &x).ok()
-                    });
+                    })
+                    .filter(|key| key.len() == 16);
 
                 let encryption = if let (Some(aesiv), Some(aeskey)) = (aesiv, aeskey) {
                     Some(Encryption { aesiv, aeskey })
@@ -1837,24 +1868,23 @@ impl RaopMetadata {
             artist: None,
         };
 
+        // the outer mlit container's tag and length, then tag/length/value
         let mut i = 8;
-        while i < dmap.len().saturating_sub(8) {
+        while i + 8 <= dmap.len() {
             let tag = &dmap[i..i + 4];
-            i += 4;
-            let l = &dmap[i..i + 4];
+            let l = &dmap[i + 4..i + 8];
             let len = u32::from_be_bytes([l[0], l[1], l[2], l[3]]) as usize;
-            i += 4;
+            i += 8;
+            if len > dmap.len() - i {
+                anyhow::bail!("Out of bounds");
+            }
+            let val = &dmap[i..i + len];
+            // an unknown tag is skipped whole, the next one starts after it
+            i += len;
 
             let Some(tag) = DmapTag::parse(tag) else {
                 continue;
             };
-
-            if i + len >= dmap.len() {
-                anyhow::bail!("Out of bounds");
-            }
-
-            let val = &dmap[i..i + len];
-            i += len;
 
             match tag {
                 DmapTag::Title | DmapTag::Artist => (),
@@ -1897,6 +1927,30 @@ mod tests {
                 artist: None,
             }
         );
+    }
+
+    fn dmap_item(tag: &[u8; 4], val: &[u8]) -> Vec<u8> {
+        let mut out = tag.to_vec();
+        out.extend_from_slice(&(val.len() as u32).to_be_bytes());
+        out.extend_from_slice(val);
+        out
+    }
+
+    #[test]
+    fn dmap_skips_unknown_tags_whole() {
+        let mut items = dmap_item(b"zzzz", b"artist=fake asar");
+        items.extend(dmap_item(b"minm", b"Title"));
+        items.extend(dmap_item(b"asar", b"Artist"));
+        let mut dmap = dmap_item(b"mlit", &items);
+        // the last value ends exactly at the end of the buffer
+        let parsed = RaopMetadata::parse_from_dmap(&dmap).unwrap();
+        assert_eq!(parsed.title.as_deref(), Some("Title"));
+        assert_eq!(parsed.artist.as_deref(), Some("Artist"));
+
+        // a length past the end is an error, not a panic
+        dmap.extend(b"minm\xff\xff\xff\xff");
+        assert!(RaopMetadata::parse_from_dmap(&dmap).is_err());
+        assert!(RaopMetadata::parse_from_dmap(b"mlit\0\0\0\x04minm").is_ok());
     }
 
     fn encrypt_audio_packet(key: &[u8], iv: &[u8], plaintext: &[u8]) -> Vec<u8> {
