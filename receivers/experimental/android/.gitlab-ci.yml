@@ -36,6 +36,15 @@ build_receiver_android_native:
       - .gradle/
       - target/gst-static/
   script:
+    # A release must carry a real code: installs only move to a higher one,
+    # and 1 is the default no release should ship as.
+    - |
+      case "$ANDROID_VERSION_CODE" in
+        ''|*[!0-9]*) echo "ANDROID_VERSION_CODE must be a number"; exit 1 ;;
+      esac
+      if [ "$ANDROID_VERSION_CODE" -le 1 ] || [ -z "$ANDROID_VERSION_NAME" ] || [ "$ANDROID_VERSION_NAME" = "1" ]; then
+        echo "set ANDROID_VERSION_CODE and ANDROID_VERSION_NAME for the release"; exit 1
+      fi
     # --require-signing: the runner mounts /certs/key.properties, the same file
     # the stable receiver and the sender sign with. If it ever goes missing the
     # job fails here rather than shipping a debug-signed release.
@@ -60,6 +69,17 @@ build_receiver_android_native:
       package --release --bundle --skip-native --require-signing
       --version-code "$ANDROID_VERSION_CODE"
       --version-name "$ANDROID_VERSION_NAME"
+    # The installed app only self-updates when its certificate matches the
+    # digest Updater.java holds, a key mismatch would silently turn updates
+    # off for everyone.
+    - |
+      WANT=$(grep -o '"[0-9a-f]\{64\}"' receivers/experimental/android/app/src/main/java/org/fcast/rsreceiver/android/Updater.java | tr -d '"')
+      for APK in receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release/*.apk; do
+        GOT=$("$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$APK" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p')
+        if [ -z "$WANT" ] || [ "$GOT" != "$WANT" ]; then
+          echo "$APK is signed by $GOT, Updater.java expects $WANT"; exit 1
+        fi
+      done
     # The self-update channel (crates/receiver-core/src/android_updater.rs):
     # one zstd-compressed apk per ABI and the latest.json naming them, all
     # uploaded to dl.fcast.org/receiver/android/, latest.json last. zstd -19
