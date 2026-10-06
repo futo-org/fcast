@@ -3807,24 +3807,19 @@ impl Application {
             return Ok(());
         }
 
-        let addrs = self
-            .current_addresses
+        let reachable = reachable_addresses(&self.current_addresses);
+        let addrs = reachable
             .iter()
-            .filter(|addr| {
-                !addr.is_loopback() && {
-                    match *addr {
-                        IpAddr::V4(_) => true,
-                        IpAddr::V6(v6) => !v6.is_unicast_link_local(),
-                    }
-                }
-            })
             .map(|addr| addr.to_string())
             .collect::<SmallVec<[String; 5]>>();
 
         if addrs.is_empty() {
             // TODO: Reset QR
         } else if let Some(device_name) = self.device_name.clone() {
-            let ips_string = addrs.join(", ");
+            let ips_string = displayed_addresses(&reachable)
+                .map(|addr| addr.to_string())
+                .collect::<SmallVec<[String; 5]>>()
+                .join(", ");
             let net_config = fcast_protocol::FCastNetworkConfig {
                 name: device_name,
                 addresses: addrs.to_vec(),
@@ -6569,9 +6564,66 @@ impl Application {
     }
 }
 
+fn reachable_addresses(addrs: &HashSet<IpAddr>) -> SmallVec<[IpAddr; 5]> {
+    let mut out: SmallVec<[IpAddr; 5]> = addrs
+        .iter()
+        .copied()
+        .filter(|addr| match addr {
+            IpAddr::V4(v4) => !v4.is_loopback() && !v4.is_link_local(),
+            IpAddr::V6(v6) => !v6.is_loopback() && !v6.is_unicast_link_local(),
+        })
+        .collect();
+    out.sort_unstable();
+    out
+}
+
+fn displayed_addresses(reachable: &[IpAddr]) -> impl Iterator<Item = &IpAddr> {
+    let has_v4 = reachable.first().is_some_and(IpAddr::is_ipv4);
+    reachable.iter().filter(move |addr| !has_v4 || addr.is_ipv4())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn addr_set(addrs: &[&str]) -> HashSet<IpAddr> {
+        addrs.iter().map(|a| a.parse().unwrap()).collect()
+    }
+
+    fn shown(addrs: &[&str]) -> Vec<String> {
+        let reachable = reachable_addresses(&addr_set(addrs));
+        displayed_addresses(&reachable).map(|a| a.to_string()).collect()
+    }
+
+    #[test]
+    fn loopback_and_link_local_are_never_reachable() {
+        let reachable = reachable_addresses(&addr_set(&[
+            "127.0.0.1",
+            "::1",
+            "169.254.12.34",
+            "fe80::1",
+            "192.168.1.20",
+            "2001:db8::20",
+        ]));
+        assert_eq!(
+            reachable.as_slice(),
+            &["192.168.1.20".parse::<IpAddr>().unwrap(), "2001:db8::20".parse().unwrap()]
+        );
+    }
+
+    #[test]
+    fn ipv6_is_shown_only_without_ipv4() {
+        assert_eq!(
+            shown(&["2001:db8::20", "10.0.0.5", "fd00::5", "192.168.1.20"]),
+            ["10.0.0.5", "192.168.1.20"]
+        );
+        // A link-local IPv4 alone does not hide the routable IPv6 ones.
+        assert_eq!(
+            shown(&["169.254.12.34", "fe80::1", "fd00::5", "2001:db8::20"]),
+            ["2001:db8::20", "fd00::5"]
+        );
+        assert!(shown(&["127.0.0.1", "fe80::1"]).is_empty());
+    }
 
     /// A cast replacing the current item must not hand the window back in
     /// between: the second item's record sees the first one's fullscreen
