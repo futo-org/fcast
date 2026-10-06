@@ -550,13 +550,15 @@ export global Bridge {
             }
             return accept;
         }
-        if event.text == "q" {
+        // Letter shortcuts are desktop keyboard ones. A TV remote or a phone
+        // keyboard typing "q" must not quit the receiver.
+        if !android && event.text == "q" {
             force-quit();
             return accept;
-        } else if event.text == "d" {
+        } else if !android && event.text == "d" {
             toggle-debug-mode();
             return accept;
-        } else if event.text == "f" {
+        } else if !android && event.text == "f" {
             toggle-fullscreen();
             return accept;
         } else if Bridge.is-playing() && event.text == Key.Space {
