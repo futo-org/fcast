@@ -1,6 +1,7 @@
 package org.fcast.rsreceiver.android;
 
 import android.annotation.SuppressLint;
+import android.app.NotificationManager;
 import android.app.PendingIntent;
 import android.content.Context;
 import android.content.Intent;
@@ -136,6 +137,16 @@ public final class ReceiverCore {
         String filesDir = app.getFilesDir().getPath();
         nativeCoreStart(filesDir);
         startOnBoot = nativeStartOnBoot(filesDir);
+        if (startOnBoot == -1 && upgradedFromKotlin(app)) {
+            // the Kotlin receiver came up at boot (a tap-to-start notice from
+            // 12 on), an upgrade starts on boot without asking
+            Log.i(TAG, "upgraded from the Kotlin receiver, start on boot on");
+            startOnBoot = 1;
+            nativeSetStartOnBoot(true);
+            NotificationManager nm = app.getSystemService(NotificationManager.class);
+            nm.deleteNotificationChannel(KOTLIN_SERVICE_CHANNEL);
+            nm.deleteNotificationChannel("BootReceiverServiceChannel");
+        }
         syncBootComponent(startOnBoot == 1);
         if (startOnBoot == 1 && !(ctx instanceof ReceiverService)) {
             requestService();
@@ -298,6 +309,20 @@ public final class ReceiverCore {
             }
             ReceiverService.refreshIfRunning();
         });
+    }
+
+    // Created by every run of the Kotlin receiver's service.
+    private static final String KOTLIN_SERVICE_CHANNEL = "NetworkListenerServiceChannel";
+
+    /// An install this app never started (every start sets the boot
+    /// component explicitly) that the Kotlin receiver ran in.
+    private static boolean upgradedFromKotlin(Context ctx) {
+        android.content.pm.PackageManager pm = ctx.getPackageManager();
+        android.content.ComponentName boot = new android.content.ComponentName(ctx, BootReceiver.class);
+        return pm.getComponentEnabledSetting(boot)
+                        == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+                && ctx.getSystemService(NotificationManager.class)
+                        .getNotificationChannel(KOTLIN_SERVICE_CHANNEL) != null;
     }
 
     private static void syncBootComponent(boolean on) {

@@ -92,10 +92,13 @@
              asks for. -->
         <!-- Enabled only while start on boot is on (ReceiverCore.syncBootComponent),
              so with the setting off nothing runs at boot. An update ends the
-             process too, hence MY_PACKAGE_REPLACED. -->
+             process too, hence MY_PACKAGE_REPLACED. Enabled until the first
+             start sets it: an upgrade from the Kotlin receiver, which came up
+             at boot, has to start before anyone opens the app. A fresh install
+             gets no broadcasts until its first launch. -->
         <receiver
             android:name=".BootReceiver"
-            android:enabled="false"
+            android:enabled="true"
             android:exported="false">
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />

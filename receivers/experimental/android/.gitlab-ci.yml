@@ -70,6 +70,15 @@ build_receiver_android_native:
       cp receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk "$OUT/$APK"
       printf '{\n    "version": "%s",\n    "version_code": %s,\n    "file": "%s"\n}\n' \
         "$ANDROID_VERSION_NAME" "$ANDROID_VERSION_CODE" "$APK" > "$OUT/latest.json"
+    # The Kotlin receiver's update path, so its sideload installs move over:
+    # uploaded to dl.fcast.org/android/ as that job's output was, the apk
+    # first. The code must exceed the last Kotlin release's, and the Kotlin
+    # job must stop uploading there.
+    - |
+      LEGACY=receivers/experimental/android/legacy-channel
+      mkdir -p "$LEGACY"
+      cp receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk "$LEGACY/fcast-release.apk"
+      echo "$ANDROID_VERSION_CODE" > "$LEGACY/fcast-version.txt"
   artifacts:
     untracked: false
     when: on_success
@@ -79,4 +88,5 @@ build_receiver_android_native:
       - receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release/app-defaultFlavor-release.apk
       - receivers/experimental/android/app/build/outputs/bundle/playstoreRelease/app-playstore-release.aab
       - receivers/experimental/android/channel/
+      - receivers/experimental/android/legacy-channel/
   when: manual

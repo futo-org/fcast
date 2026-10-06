@@ -9,7 +9,8 @@ import android.content.Intent;
 import android.util.Log;
 
 /// Starts the receiver after a boot or an update, while start on boot is on
-/// (the component is disabled otherwise). Boot is exempt from the background
+/// (the component is disabled otherwise), and after the upgrade from the
+/// Kotlin receiver, see the manifest. Boot is exempt from the background
 /// service start ban, and specialUse may start from it on 15+.
 public class BootReceiver extends BroadcastReceiver {
     // 1 service, 2 updater, 3 cast waiting
