@@ -253,7 +253,30 @@ async fn handle_message(
             _ => (),
         },
         MEDIA_NAMESPACE => {
-            match json::from_str::<namespaces::Media>(json_payload)? {
+            let media = match json::from_str::<namespaces::Media>(json_payload) {
+                Ok(media) => media,
+                Err(err) => {
+                    // answered, so the sender fails now instead of on its
+                    // own timeout, then skipped by the session loop
+                    let request_id = json::from_str::<json::Value>(json_payload)
+                        .ok()
+                        .and_then(|v| v.get("requestId")?.as_u64());
+                    if let Some(request_id) = request_id {
+                        write_channel_message(
+                            writer,
+                            MEDIA_ID,
+                            &message.source_id,
+                            namespaces::Media::InvalidRequest {
+                                request_id,
+                                reason: google_cast_protocol::InvalidRequestReason::InvalidCommand,
+                            },
+                        )
+                        .await?;
+                    }
+                    return Err(err.into());
+                }
+            };
+            match media {
                 namespaces::Media::Load {
                     media,
                     current_time,
@@ -560,6 +583,18 @@ mod tests {
             Ok(namespaces::Heartbeat::Ping)
         ));
         assert_eq!(json::to_string(&namespaces::Heartbeat::Pong).unwrap(), r#"{"type":"PONG"}"#);
+    }
+
+    #[test]
+    fn invalid_request_wire_format() {
+        let reply = namespaces::Media::InvalidRequest {
+            request_id: 7,
+            reason: google_cast_protocol::InvalidRequestReason::InvalidCommand,
+        };
+        assert_eq!(
+            json::to_string(&reply).unwrap(),
+            r#"{"type":"INVALID_REQUEST","requestId":7,"reason":"INVALID_COMMAND"}"#
+        );
     }
 
     /// The session loop skips exactly the errors that are a message it
