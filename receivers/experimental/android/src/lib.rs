@@ -5,7 +5,11 @@ use std::{
     sync::LazyLock,
 };
 
-use rcore::{message::Mdns, slint, tracing::error};
+use rcore::{
+    message::Mdns,
+    slint,
+    tracing::{error, warn},
+};
 
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
@@ -41,6 +45,39 @@ fn init_logging(settings: &rcore::Settings) {
     );
 }
 
+/// dodvg renders on wgpu, Vulkan unless the GL backend is asked for by name.
+/// A box without a Vulkan driver (many GLES 3 ones) gets GL, or the first
+/// frame fails and the app closes on launch. Requiring GLES itself is refused
+/// by the android backend, only the wgpu API may be named.
+fn select_renderer() {
+    let selector = rcore::slint::BackendSelector::new();
+    let selector = if has_vulkan_adapter() {
+        selector
+    } else {
+        warn!("no Vulkan adapter, rendering with GLES");
+        let mut settings = slint::wgpu_30::WGPUSettings::default();
+        settings.backends = wgpu::Backends::GL;
+        selector.require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Automatic(settings))
+    };
+    selector.select().unwrap();
+}
+
+fn has_vulkan_adapter() -> bool {
+    let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+        backends: wgpu::Backends::VULKAN,
+        ..wgpu::InstanceDescriptor::new_without_display_handle()
+    });
+    let mut enumerate = std::pin::pin!(instance.enumerate_adapters(wgpu::Backends::VULKAN));
+    let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+    match enumerate.as_mut().poll(&mut cx) {
+        std::task::Poll::Ready(adapters) => adapters
+            .iter()
+            .any(|a| a.get_info().device_type != wgpu::DeviceType::Cpu),
+        // native enumeration is synchronous, keep the default if that changes
+        std::task::Poll::Pending => true,
+    }
+}
+
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
     // The activity's files dir, where the drawer's settings persist.
@@ -49,13 +86,7 @@ fn android_main(app: slint::android::AndroidApp) {
 
     slint::android::init(app.clone()).unwrap();
 
-    // No graphics API requirement. This asked for OpenGL ES, which was right
-    // while the android backend rendered with skia, but it now renders with
-    // dodvg on wgpu 30 and that lane is Vulkan. The request is carried all the
-    // way to surface creation, where anything other than the wgpu API is
-    // refused outright ("does not implement renderer selection by graphics
-    // API"), so requiring GLES here panicked the receiver on the first frame.
-    rcore::slint::BackendSelector::new().select().unwrap();
+    select_renderer();
 
     // Only the first activity in a process starts the core, later ones
     // attach a new UI to it (each android_main gets a fresh thread, so slint's

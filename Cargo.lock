@@ -8589,6 +8589,7 @@ dependencies = [
  "parking_lot",
  "receiver-ui",
  "tokio",
+ "wgpu",
 ]
 
 [[package]]
