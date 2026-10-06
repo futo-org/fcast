@@ -634,6 +634,8 @@ public final class ReceiverCore {
     // --- playback resources --------------------------------------------------
 
     private static android.media.AudioFocusRequest focusRequest = null;
+    /// The request is on the stack but not granted yet (a call is on).
+    private static boolean focusDelayed = false;
     private static android.content.BroadcastReceiver noisyReceiver = null;
 
     private static final AudioManager.OnAudioFocusChangeListener focusListener = change -> {
@@ -648,6 +650,7 @@ public final class ReceiverCore {
                         am.abandonAudioFocusRequest(focusRequest);
                         focusRequest = null;
                     }
+                    focusDelayed = false;
                 });
                 nativeAudioEvent(0);
                 break;
@@ -658,6 +661,7 @@ public final class ReceiverCore {
                 // the system ducks us (API 26+), a chime must not pause the cast
                 break;
             case AudioManager.AUDIOFOCUS_GAIN:
+                onMain(() -> focusDelayed = false);
                 nativeAudioEvent(2);
                 break;
         }
@@ -671,6 +675,10 @@ public final class ReceiverCore {
     static void ensureAudioFocus() {
         onMain(() -> {
             if (focusRequest != null) {
+                // still waiting on the call, a resume or a new item pauses again
+                if (focusDelayed) {
+                    nativeAudioEvent(1);
+                }
                 return;
             }
             AudioManager am = (AudioManager) app.getSystemService(Context.AUDIO_SERVICE);
@@ -689,6 +697,7 @@ public final class ReceiverCore {
             } else if (result == AudioManager.AUDIOFOCUS_REQUEST_DELAYED) {
                 // on the stack, the gain arrives through the listener
                 focusRequest = req;
+                focusDelayed = true;
                 Log.i(TAG, "audio focus delayed");
                 nativeAudioEvent(1);
             } else {
@@ -888,6 +897,7 @@ public final class ReceiverCore {
                     am.abandonAudioFocusRequest(focusRequest);
                     focusRequest = null;
                 }
+                focusDelayed = false;
                 if (noisyReceiver != null) {
                     app.unregisterReceiver(noisyReceiver);
                     noisyReceiver = null;

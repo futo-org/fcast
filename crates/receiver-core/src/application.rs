@@ -769,6 +769,14 @@ pub struct Application {
     /// watching keeps playing in the meantime.
     #[cfg(target_os = "android")]
     android_hidden_hold: bool,
+    /// The hold resumes when the activity shows, unless paused meanwhile.
+    #[cfg(target_os = "android")]
+    android_hold_resumes: bool,
+    /// When a cast that was not held last ended. A cast following it closely
+    /// is the sender's next item (a playlist it advances itself) and plays on
+    /// in the background like the one before.
+    #[cfg(target_os = "android")]
+    android_last_end: Option<Instant>,
     /// Current item title for the MediaSession metadata, pushed with the
     /// duration on the progress tick whenever either changes.
     #[cfg(target_os = "android")]
@@ -1175,6 +1183,10 @@ impl Application {
             android_transient_pause: false,
             #[cfg(target_os = "android")]
             android_hidden_hold: false,
+            #[cfg(target_os = "android")]
+            android_hold_resumes: false,
+            #[cfg(target_os = "android")]
+            android_last_end: None,
             #[cfg(target_os = "android")]
             android_media_title: String::new(),
             #[cfg(target_os = "android")]
@@ -2336,6 +2348,11 @@ impl Application {
         self.show_app_state(state);
     }
 
+    /// How soon after a cast's end the sender's next item counts as its
+    /// continuation, see `android_last_end`.
+    #[cfg(target_os = "android")]
+    const ANDROID_NEXT_ITEM_WINDOW: Duration = Duration::from_secs(15);
+
     #[cfg(target_os = "android")]
     fn android_cast_edge(&mut self, state: AppState) {
         {
@@ -2354,11 +2371,19 @@ impl Application {
                     self.current_media.as_ref().map(|m| &m.source),
                     Some(MediaSource::Single(_) | MediaSource::Playlist { .. } | MediaSource::Queue(_))
                 );
-                if rising && !self.android_ui_visible && fcast_item && !image {
+                let follows_a_cast = self
+                    .android_last_end
+                    .is_some_and(|end| end.elapsed() < Self::ANDROID_NEXT_ITEM_WINDOW);
+                if rising && !self.android_ui_visible && fcast_item && !image && !follows_a_cast {
                     debug!("Cast arrived in the background, held until the activity shows");
                     self.pause();
                     self.android_hidden_hold = true;
-                } else if self.android_audible && !self.android_hidden_hold {
+                    self.android_hold_resumes = true;
+                } else if self.android_hidden_hold {
+                    // a load resets the player to playing, the hold stands
+                    self.pause();
+                    self.android_hold_resumes = true;
+                } else if self.android_audible {
                     // The dedup below can absorb this transition entirely
                     // (stop then immediate re-cast), but focus still needs a
                     // re-check: a cast during a phone call must not play over it.
@@ -2366,6 +2391,9 @@ impl Application {
                 }
             }
             if !active {
+                if self.android_playback.0 && !self.android_hidden_hold {
+                    self.android_last_end = Some(Instant::now());
+                }
                 self.android_transient_pause = false;
                 self.android_hidden_hold = false;
                 self.android_set_paused(false);
@@ -3726,6 +3754,7 @@ impl Application {
         #[cfg(target_os = "android")]
         {
             self.android_transient_pause = false;
+            self.android_hold_resumes = false;
         }
         // A pause landing mid-load is recorded as desired transport and committed at
         // preroll.
@@ -6458,8 +6487,12 @@ impl Application {
                 match event {
                     AndroidWindow::Shown => {
                         self.android_ui_visible = true;
-                        if self.android_hidden_hold {
+                        if self.android_hidden_hold && self.android_hold_resumes {
                             self.resume();
+                        } else if std::mem::take(&mut self.android_hidden_hold) {
+                            // paused meanwhile, it stays paused but is no
+                            // longer hidden from focus and the media session
+                            self.set_playback_active(self.android_playback.0);
                         }
                     }
                     AndroidWindow::Hidden => {
