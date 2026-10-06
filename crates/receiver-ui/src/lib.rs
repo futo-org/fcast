@@ -280,6 +280,7 @@ pub fn run(settings: Settings) -> Result<()> {
             }
         })?;
 
+        #[cfg(not(target_os = "android"))]
         ui.global::<Bridge>().on_inspector_toggled({
             let ui_weak = ui.as_weak();
             let msg_tx = msg_tx.clone();

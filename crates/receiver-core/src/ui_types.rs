@@ -86,6 +86,7 @@ pub struct QrCode {
 
 /// An 8-bit RGBA colour, mirroring `slint::Color`, for the inspector's scene
 /// description (see [`crate::inspector_graph`]).
+#[cfg(not(target_os = "android"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Color {
     pub alpha: u8,
@@ -94,6 +95,7 @@ pub struct Color {
     pub blue: u8,
 }
 
+#[cfg(not(target_os = "android"))]
 impl Color {
     pub const fn from_rgb_u8(red: u8, green: u8, blue: u8) -> Self {
         Self {

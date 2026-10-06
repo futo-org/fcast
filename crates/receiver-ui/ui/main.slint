@@ -237,7 +237,7 @@ export component MainWindow inherits Window {
 
         if Bridge.bug-report-visible: ReportBugPopup { }
 
-        if Bridge.show-inspector: Inspector { }
+        if Bridge.show-inspector && Platform.os != OperatingSystemType.android: Inspector { }
 
         SettingsDrawer { }
 

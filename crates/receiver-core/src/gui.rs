@@ -48,6 +48,7 @@ impl<T> std::ops::Deref for IgnoredDebug<T> {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 pub struct GraphDumpData {
     pub trigger: String,
     pub timestamp: String,
@@ -55,6 +56,7 @@ pub struct GraphDumpData {
 }
 
 /// One row of the inspector's track table.
+#[cfg(not(target_os = "android"))]
 pub struct InspectorTrackRow {
     pub kind: String,
     pub codec: String,
@@ -65,6 +67,7 @@ pub struct InspectorTrackRow {
 
 /// The inspector's buffering card; `None` when the source can't answer a
 /// buffering query.
+#[cfg(not(target_os = "android"))]
 pub struct InspectorBuffering {
     /// Buffer fill (`0.0..=1.0`) for the meter, relative to the watermarks.
     pub fill_fraction: f32,
@@ -78,6 +81,7 @@ pub struct InspectorBuffering {
 
 /// One inspector tick's display data. Bitrate histories are kbit/s, oldest
 /// first.
+#[cfg(not(target_os = "android"))]
 pub struct InspectorSample {
     pub video_kbps: Vec<f32>,
     pub audio_kbps: Vec<f32>,
@@ -215,8 +219,11 @@ pub enum UpdateGuiCommand {
         visible: bool,
         prev_tx: oneshot::Sender<bool>,
     },
+    #[cfg(not(target_os = "android"))]
     SetGraphDump(IgnoredDebug<GraphDumpData>),
+    #[cfg(not(target_os = "android"))]
     SetInspectorDumping(bool),
+    #[cfg(not(target_os = "android"))]
     SetInspectorSample(IgnoredDebug<InspectorSample>),
     /// Show the "port already in use" modal and force the window visible so the
     /// dialog is seen.
@@ -474,6 +481,7 @@ impl GuiController {
         self.send(UpdateGuiCommand::SetAppState(state));
     }
 
+    #[cfg(not(target_os = "android"))]
     pub fn set_inspector_sample(&self, sample: InspectorSample) {
         self.send(UpdateGuiCommand::SetInspectorSample(sample.into()));
     }

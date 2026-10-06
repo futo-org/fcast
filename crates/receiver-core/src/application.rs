@@ -905,16 +905,34 @@ pub struct Application {
     fcast_senders: HashMap<SenderId, FCastSenderHandle>,
     /// What each introduced sender said about itself, for the UI.
     senders: HashMap<SenderId, crate::gui::SenderInfo>,
-    inspector_bitrates: InspectorBitrates,
+    #[cfg(not(target_os = "android"))]
+    inspector: Inspector,
+}
+
+/// The inspector's state. Not on android, which has no inspector.
+#[cfg(not(target_os = "android"))]
+#[derive(Default)]
+struct Inspector {
+    bitrates: InspectorBitrates,
     /// Gates all inspector work so nothing is computed or sent while it is
     /// closed.
-    inspector_active: bool,
-    inspector_container: Option<String>,
-    inspector_image: String,
+    active: bool,
+    container: Option<String>,
+    image: String,
+}
+
+#[cfg(not(target_os = "android"))]
+impl Inspector {
+    /// A new item starts with no container or image line.
+    fn clear_item(&mut self) {
+        self.container = None;
+        self.image.clear();
+    }
 }
 
 /// Inspector bitrate sampling: previous cumulative parsed-byte totals plus rate
 /// histories in kbit/s, oldest first.
+#[cfg(not(target_os = "android"))]
 #[derive(Default)]
 struct InspectorBitrates {
     last_at: Option<Instant>,
@@ -924,6 +942,7 @@ struct InspectorBitrates {
     audio_kbps: VecDeque<f32>,
 }
 
+#[cfg(not(target_os = "android"))]
 impl InspectorBitrates {
     /// 500 ms ticks, so a minute of history.
     const WINDOW: usize = 120;
@@ -1171,10 +1190,8 @@ impl Application {
             have_media_info: false,
             current_thumbnail_id: 0,
             current_image_download_id: 0,
-            inspector_bitrates: InspectorBitrates::default(),
-            inspector_active: false,
-            inspector_container: None,
-            inspector_image: String::new(),
+            #[cfg(not(target_os = "android"))]
+            inspector: Inspector::default(),
             current_addresses: HashSet::new(),
             fcast_port: FCAST_TCP_PORT,
             port_committed: false,
@@ -2185,8 +2202,8 @@ impl Application {
     fn load_media(&mut self) {
         // The popup belongs to the failed item, a new cast replaces it.
         self.gui.hide_bug_report();
-        self.inspector_container = None;
-        self.inspector_image = String::new();
+        #[cfg(not(target_os = "android"))]
+        self.inspector.clear_item();
         if let Err(err) = self.load_current_media_item() {
             error!(?err, "Failed to load media");
             if let Some(origin) = self.current_media.as_ref().map(|m| m.origin) {
@@ -3202,8 +3219,8 @@ impl Application {
         self.recent_warnings.clear();
         self.have_media_info = false;
         self.current_duration = None;
-        self.inspector_container = None;
-        self.inspector_image = String::new();
+        #[cfg(not(target_os = "android"))]
+        self.inspector.clear_item();
         self.have_media_title = title.is_some();
         // The gapless path skips cleanup_playback_data, so the labels roll
         // here too: a titleless item must not keep the retired item's title,
@@ -4463,8 +4480,9 @@ impl Application {
                 self.maybe_autoplay_advance();
             }
             player::PlayerEvent::Tags(tags) => {
+                #[cfg(not(target_os = "android"))]
                 if let Some(container) = tags.get::<gst::tags::ContainerFormat>() {
-                    self.inspector_container = Some(container.get().to_string());
+                    self.inspector.container = Some(container.get().to_string());
                 }
 
                 let Some(has_pending_thumbnail) = self
@@ -4858,13 +4876,16 @@ impl Application {
             }
             player::PlayerEvent::ImageStream(info) => {
                 debug!(?info, "Image stream announced by fimagedec");
-                self.inspector_image = format!(
-                    "{} {}x{}{}",
-                    info.format,
-                    info.width,
-                    info.height,
-                    if info.animated { ", animated" } else { "" }
-                );
+                #[cfg(not(target_os = "android"))]
+                {
+                    self.inspector.image = format!(
+                        "{} {}x{}{}",
+                        info.format,
+                        info.width,
+                        info.height,
+                        if info.animated { ", animated" } else { "" }
+                    );
+                }
             }
             player::PlayerEvent::GaplessActivated => {
                 // Stamped with the PREPARED generation (excluded from the
@@ -5571,13 +5592,16 @@ impl Application {
                     return Ok(false);
                 }
 
-                self.inspector_image = format!(
-                    "{} {}x{}, {:?}",
-                    img.format,
-                    img.image.width(),
-                    img.image.height(),
-                    img.orientation
-                );
+                #[cfg(not(target_os = "android"))]
+                {
+                    self.inspector.image = format!(
+                        "{} {}x{}, {:?}",
+                        img.format,
+                        img.image.width(),
+                        img.image.height(),
+                        img.orientation
+                    );
+                }
 
                 self.gui.set_image_preview(img);
                 // the image lane skips LoadingMedia, so the visual default
@@ -5602,8 +5626,12 @@ impl Application {
         Ok(false)
     }
 
+}
+
+#[cfg(not(target_os = "android"))]
+impl Application {
     fn refresh_inspector_graph(&self) {
-        if !self.inspector_active {
+        if !self.inspector.active {
             return;
         }
         let Some(gui_tx) = self.gui.tx.clone() else {
@@ -5644,7 +5672,7 @@ impl Application {
     /// One inspector sample: bitrates, tracks, container, sinks and internals,
     /// in one command.
     fn inspector_tick(&mut self) {
-        if !self.inspector_active {
+        if !self.inspector.active {
             return;
         }
         let stats = self.player.stream_io_stats();
@@ -5675,12 +5703,13 @@ impl Application {
 
         let now = Instant::now();
         let dt = self
-            .inspector_bitrates
+            .inspector
+            .bitrates
             .last_at
             .map_or(0.0, |t| now.duration_since(t).as_secs_f64());
-        self.inspector_bitrates.last_at = Some(now);
+        self.inspector.bitrates.last_at = Some(now);
 
-        let probe = &mut self.inspector_bitrates;
+        let probe = &mut self.inspector.bitrates;
         InspectorBitrates::push(&mut probe.video_kbps, &mut probe.last_video, video, dt);
         InspectorBitrates::push(&mut probe.audio_kbps, &mut probe.last_audio, audio, dt);
 
@@ -5693,11 +5722,11 @@ impl Application {
                 .iter()
                 .map(|(stream, selected)| Self::inspector_track_row(stream, *selected))
                 .collect(),
-            container: self.inspector_container.clone().unwrap_or_default(),
+            container: self.inspector.container.clone().unwrap_or_default(),
             sources: self.inspector_source_lines(),
             internals: self.inspector_internals(),
             sinks: self.inspector_sink_lines(),
-            image: self.inspector_image.clone(),
+            image: self.inspector.image.clone(),
             buffering: self.inspector_buffering(),
         });
     }
@@ -5879,7 +5908,9 @@ impl Application {
         }
         lines
     }
+}
 
+impl Application {
     /// Returns `true` if the event loop should exit
     async fn handle_event(&mut self, event: Message) -> Result<bool> {
         match event {
@@ -6116,12 +6147,14 @@ impl Application {
             Message::Raop(event) => return self.handle_raop_event(event),
             #[cfg(feature = "airplay")]
             Message::AirPlay(event) => return self.handle_airplay_event(event),
+            #[cfg(not(target_os = "android"))]
             Message::InspectorActive(active) => {
-                self.inspector_active = active;
+                self.inspector.active = active;
                 if !active {
-                    self.inspector_bitrates = InspectorBitrates::default();
+                    self.inspector.bitrates = InspectorBitrates::default();
                 }
             }
+            #[cfg(not(target_os = "android"))]
             Message::InspectorRefresh => self.refresh_inspector_graph(),
             Message::SoftKeyboardVisible(visible) => self.gui.set_soft_keyboard_visible(visible),
             Message::GuiAttached { tx, generation } => {
@@ -6133,6 +6166,7 @@ impl Application {
             Message::GuiDetached { generation } => {
                 self.gui.detach(generation);
             }
+            #[cfg(not(target_os = "android"))]
             Message::InspectorBitrateTick => self.inspector_tick(),
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
             Message::AppUpdate(event) => return self.handle_app_update_event(event),

@@ -247,12 +247,15 @@ pub enum Message {
     AirPlay(AirPlay),
     /// The inspector was opened or closed; closing resets its per-session
     /// sampling state.
+    #[cfg(not(target_os = "android"))]
     InspectorActive(bool),
+    #[cfg(not(target_os = "android"))]
     InspectorRefresh,
     /// android: the soft keyboard came up or went away, from the activity's
     /// window insets. A text field in edit mode folds when it goes.
     SoftKeyboardVisible(bool),
     /// One bitrate sample while the inspector is open (driven by its timer).
+    #[cfg(not(target_os = "android"))]
     InspectorBitrateTick,
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
     AppUpdate(AppUpdate),

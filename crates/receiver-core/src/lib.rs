@@ -26,6 +26,7 @@ pub mod gstreamer;
 pub mod gui;
 pub mod gui_replay;
 pub mod image;
+#[cfg(not(target_os = "android"))]
 pub mod inspector_graph;
 pub mod logging;
 #[cfg(not(target_os = "android"))]

@@ -153,11 +153,10 @@ impl GuiSnapshot {
             | C::HideBugReport
             | C::SetSoftKeyboardVisible(_)
             | C::TransportFromSender { .. }
-            | C::SetGraphDump(_)
-            | C::SetInspectorDumping(_)
-            | C::SetInspectorSample(_)
             | C::InitSettings { .. }
             | C::QuitLoop => {}
+            #[cfg(not(target_os = "android"))]
+            C::SetGraphDump(_) | C::SetInspectorDumping(_) | C::SetInspectorSample(_) => {}
             #[cfg(any(target_os = "macos", target_os = "windows"))]
             C::RunOnMainThread(_) => {}
         }

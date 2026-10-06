@@ -141,6 +141,7 @@ fn toast_kind_is_warning(kind: ui_types::UiToastKind) -> bool {
     )
 }
 
+#[cfg(not(target_os = "android"))]
 fn slint_color(c: ui_types::Color) -> slint::Color {
     slint::Color::from_argb_u8(c.alpha, c.red, c.green, c.blue)
 }
@@ -392,6 +393,7 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         }
     });
 
+    #[cfg(not(target_os = "android"))]
     bridge.on_refresh_pipeline_graph({
         let msg_tx = msg_tx.clone();
         move || {
@@ -441,6 +443,7 @@ pub fn register_callbacks(ui: &MainWindow, msg_tx: MessageSender) {
         None => slint::Image::default(),
     });
 
+    #[cfg(not(target_os = "android"))]
     bridge.on_inspector_tick({
         let msg_tx = msg_tx.clone();
         move || {
@@ -867,10 +870,13 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
                 tracing::error!(?err, visible, "Failed to set window visibility");
             }
         }
+        #[cfg(not(target_os = "android"))]
         UpdateGuiCommand::SetGraphDump(dump) => set_graph_dump(&ui, dump.0),
+        #[cfg(not(target_os = "android"))]
         UpdateGuiCommand::SetInspectorDumping(dumping) => {
             ui.global::<crate::InspectorState>().set_dumping(dumping);
         }
+        #[cfg(not(target_os = "android"))]
         UpdateGuiCommand::SetInspectorSample(sample) => set_inspector_sample(&ui, sample.0),
         UpdateGuiCommand::ShowPortConflict { port } => {
             let bridge = ui.global::<Bridge>();
@@ -956,6 +962,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
 /// Push one inspector sample into the UI. Sparklines are SVG polylines over a
 /// fixed 300x100 viewbox; each series is scaled to its own peak because video
 /// dwarfs audio by 10-20x.
+#[cfg(not(target_os = "android"))]
 fn set_inspector_sample(ui: &MainWindow, sample: InspectorSample) {
     use std::fmt::Write;
 
@@ -1043,6 +1050,7 @@ fn set_inspector_sample(ui: &MainWindow, sample: InspectorSample) {
     }
 }
 
+#[cfg(not(target_os = "android"))]
 fn set_graph_dump(ui: &MainWindow, dump: GraphDumpData) {
     let rects: Vec<crate::UiGraphRect> = dump
         .scene
