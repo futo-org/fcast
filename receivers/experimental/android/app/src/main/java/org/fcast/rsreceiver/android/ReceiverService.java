@@ -232,6 +232,12 @@ public class ReceiverService extends Service {
             goForegroundInner();
         } catch (Exception e) {
             android.util.Log.w("FCastReceiverService", "startForeground refused", e);
+            // A type switch refused from the background keeps the old type,
+            // the casting content and its Stop must still show.
+            if (foregroundType != -1) {
+                getSystemService(NotificationManager.class)
+                        .notify(NOTIFICATION_ID, buildNotification());
+            }
         }
     }
 
