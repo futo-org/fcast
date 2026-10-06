@@ -4115,6 +4115,8 @@ impl Application {
                 }
             }
             Operation::SetSpeed(rate) => {
+                // sessions sanitize with an error reply, Google Cast does not
+                let rate = fcast::sanitize_rate(rate).0;
                 // An idempotent set emits no RateChanged, but the sender still expects a
                 // confirmation, so confirm it directly here.
                 if (self.player.rate() - rate as f64).abs() < 1e-9 {

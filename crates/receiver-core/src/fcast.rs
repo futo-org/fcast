@@ -1211,6 +1211,22 @@ pub struct SessionSeed {
     pub legacy: Option<InitialLegacyState>,
 }
 
+/// Playback rates the pipeline is driven at. A negative rate would play
+/// backwards and a huge one overflows the tempo element.
+pub const MIN_RATE: f32 = 1.0 / 16.0;
+pub const MAX_RATE: f32 = 16.0;
+
+/// The rate to apply and whether the requested one was in range. Zero,
+/// negative and non-finite fall back to normal speed, the rest is clamped.
+pub fn sanitize_rate(speed: f32) -> (f32, bool) {
+    if !speed.is_finite() || speed <= 0.0 {
+        (1.0, false)
+    } else {
+        let rate = speed.clamp(MIN_RATE, MAX_RATE);
+        (rate, rate == speed)
+    }
+}
+
 /// Token bucket over a session's operations. Slider drags send tens a
 /// second, a flood sends them as fast as TCP delivers and would queue
 /// without bound on the way to the app.
@@ -1559,15 +1575,11 @@ impl SessionDriver {
                     msg_tx.operation(origin, Operation::SetVolume(clamped));
                 }
                 Action::Op(Operation::SetSpeed(speed)) => {
-                    let rate = if speed.is_finite() && speed != 0.0 {
-                        speed
-                    } else {
-                        if let PacketOrigin::FCast { packet_num, .. } = origin {
-                            self.send_v4_error(packet_num, v4::flat::ErrorKind::RateOutOfRange)
-                                .await?;
-                        }
-                        1.0
-                    };
+                    let (rate, in_range) = sanitize_rate(speed);
+                    if !in_range && let PacketOrigin::FCast { packet_num, .. } = origin {
+                        self.send_v4_error(packet_num, v4::flat::ErrorKind::RateOutOfRange)
+                            .await?;
+                    }
                     msg_tx.operation(origin, Operation::SetSpeed(rate));
                 }
                 Action::Op(operation) => {
@@ -2016,6 +2028,23 @@ mod companion_owner_tests {
         assert!(names_foreign_companion(&sub("fcomp://7.fcast/1"), Some(3)));
         assert!(!names_foreign_companion(&sub("fcomp://3.fcast/1"), Some(3)));
         assert!(!names_foreign_companion(&Operation::Pause, None));
+    }
+}
+
+#[cfg(test)]
+mod rate_tests {
+    use super::*;
+
+    #[test]
+    fn rates_are_kept_in_the_pipelines_range() {
+        assert_eq!(sanitize_rate(1.5), (1.5, true));
+        assert_eq!(sanitize_rate(MAX_RATE), (MAX_RATE, true));
+        assert_eq!(sanitize_rate(0.0), (1.0, false));
+        assert_eq!(sanitize_rate(-1.0), (1.0, false));
+        assert_eq!(sanitize_rate(f32::NAN), (1.0, false));
+        assert_eq!(sanitize_rate(f32::INFINITY), (1.0, false));
+        assert_eq!(sanitize_rate(1e30), (MAX_RATE, false));
+        assert_eq!(sanitize_rate(1e-9), (MIN_RATE, false));
     }
 }
 
