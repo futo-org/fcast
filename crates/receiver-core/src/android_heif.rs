@@ -229,6 +229,10 @@ fn decode_with(env: &mut jni::JNIEnv, bytes: &[u8]) -> Result<PlatformHeif, Stri
         let (out_w, out_h) = out_w
             .and_then(|w| out_h.map(|h| (w, h)))
             .map_err(|err| Failed(format!("BitmapFactory bounds: {err}")))?;
+        // -1 from a header the platform cannot parse
+        if out_w <= 0 || out_h <= 0 {
+            return Err(Failed("the platform decoder refused the image".to_string()));
+        }
         let sample = crate::image::platform_sample_size(out_w, out_h)
             .ok_or_else(|| Failed(format!("image too large to decode ({out_w}x{out_h})")))?;
         env.set_field(&options, "inJustDecodeBounds", "Z", JValue::Bool(0))

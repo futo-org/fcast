@@ -204,9 +204,6 @@ pub mod imp {
     }
 }
 
-/// Register `fvajpegdec` above `fimagedec` for baseline JPEG, only when VA JPEG
-/// decode is usable.
-#[cfg(target_os = "linux")]
 /// fimagedec's still cap, and the longest side every VA driver and the
 /// renderer's textures take.
 const MAX_PIXELS: u64 = 128_000_000;
@@ -216,6 +213,9 @@ fn too_large(width: i32, height: i32) -> bool {
     width <= 0 || height <= 0 || width > MAX_SIDE || height > MAX_SIDE || width as u64 * height as u64 > MAX_PIXELS
 }
 
+/// Register `fvajpegdec` above `fimagedec` for baseline JPEG, only when VA JPEG
+/// decode is usable.
+#[cfg(target_os = "linux")]
 pub fn plugin_init() -> Result<(), glib::BoolError> {
     // Escape hatch: when VA is force-disabled images stay on the software path.
     if std::env::var_os("FCAST_DISABLE_VA").is_some() {
