@@ -235,8 +235,12 @@ public class ReceiverService extends Service {
             // A type switch refused from the background keeps the old type,
             // the casting content and its Stop must still show.
             if (foregroundType != -1) {
-                getSystemService(NotificationManager.class)
-                        .notify(NOTIFICATION_ID, buildNotification());
+                try {
+                    getSystemService(NotificationManager.class)
+                            .notify(NOTIFICATION_ID, buildNotification());
+                } catch (Exception e2) {
+                    android.util.Log.w("FCastReceiverService", "notification refresh failed", e2);
+                }
             }
         }
     }
