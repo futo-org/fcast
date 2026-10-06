@@ -15,6 +15,7 @@ use std::io::Read;
 
 use image::error::{DecodingError, ImageFormatHint};
 use image::hooks::GenericReader;
+use image::metadata::Orientation;
 use image::{ColorType, ImageDecoder, ImageError, ImageResult};
 use tracing::debug;
 
@@ -103,6 +104,8 @@ struct PlatformHeif {
     width: u32,
     height: u32,
     rgba: Vec<u8>,
+    /// BitmapFactory hands back the coded image, irot/imir are ours to apply.
+    orientation: Orientation,
 }
 
 impl PlatformHeif {
@@ -111,7 +114,10 @@ impl PlatformHeif {
         reader
             .read_to_end(&mut bytes)
             .map_err(ImageError::IoError)?;
-        decode(&bytes).map_err(image_error)
+        let mut image = decode(&bytes).map_err(image_error)?;
+        image.orientation = crate::heif_transforms::primary_orientation(&bytes)
+            .unwrap_or(Orientation::NoTransforms);
+        Ok(image)
     }
 }
 
@@ -122,6 +128,10 @@ impl ImageDecoder for PlatformHeif {
 
     fn color_type(&self) -> ColorType {
         ColorType::Rgba8
+    }
+
+    fn orientation(&mut self) -> ImageResult<Orientation> {
+        Ok(self.orientation)
     }
 
     fn read_image(self, buf: &mut [u8]) -> ImageResult<()> {
@@ -299,5 +309,6 @@ fn decode_with(env: &mut jni::JNIEnv, bytes: &[u8]) -> Result<PlatformHeif, Stri
         width,
         height,
         rgba,
+        orientation: Orientation::NoTransforms,
     })
 }

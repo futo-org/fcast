@@ -535,6 +535,44 @@ pub fn find_formats() -> HashSet<media_formats::Image> {
 mod tests {
     use super::*;
 
+    /// libheif applies irot/imir in its decode and reports no orientation of
+    /// its own, so a HEIC comes out upright once and never turned twice.
+    #[cfg(not(target_os = "android"))]
+    #[test]
+    fn libheif_heic_comes_out_upright() {
+        init_extra_decoders();
+        // red, green, blue and white quadrants from the top left
+        let quadrants: [((u32, u32), [u8; 3]); 4] = [
+            ((16, 8), [255, 0, 0]),
+            ((48, 8), [0, 255, 0]),
+            ((16, 24), [0, 0, 255]),
+            ((48, 24), [255, 255, 255]),
+        ];
+        for n in 1..=8 {
+            let path = format!(
+                "{}/test-data/oriented-heic/o{n}.heic",
+                env!("CARGO_MANIFEST_DIR")
+            );
+            let bytes = std::fs::read(&path).unwrap();
+            let mut decoder = imagelib::ImageReader::new(std::io::Cursor::new(bytes))
+                .with_guessed_format()
+                .unwrap()
+                .into_decoder()
+                .unwrap();
+            let orientation = imagelib::ImageDecoder::orientation(&mut decoder).unwrap();
+            let mut img = DynamicImage::from_decoder(decoder).unwrap();
+            img.apply_orientation(orientation);
+            let img = img.to_rgba8();
+            assert_eq!(img.dimensions(), (64, 32), "o{n}");
+            for ((x, y), rgb) in quadrants {
+                let px = img.get_pixel(x, y).0;
+                // lossy: within a margin of the solid color
+                let near = px.iter().zip(rgb).all(|(a, b)| a.abs_diff(b) < 40);
+                assert!(near, "o{n} at {x},{y}: {px:?}, expected {rgb:?}");
+            }
+        }
+    }
+
     #[test]
     fn blur_cover_downscales_and_keeps_aspect() {
         let img = RgbaImage::from_pixel(960, 480, imagelib::Rgba([10, 200, 30, 255]));

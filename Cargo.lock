@@ -5555,7 +5555,7 @@ dependencies = [
 [[package]]
 name = "image"
 version = "0.25.10"
-source = "git+https://gitlab.futo.org/fcast/image-rs.git?rev=9ee78f3f#9ee78f3f3cc8110b7b22dcb87b793b7d1a91bc7f"
+source = "git+https://gitlab.futo.org/fcast/image-rs.git?rev=409df0b6#409df0b65ac7201e6bc6e8d55feee587801397b4"
 dependencies = [
  "bytemuck",
  "byteorder-lite",

@@ -1518,6 +1518,48 @@ mod tests {
         pipeline.set_state(gst::State::Null).unwrap();
     }
 
+    /// Lossless 16x8 AVIFs coded rotated or mirrored, each with the irot/imir
+    /// pair that undoes it (Exif orientations 1 to 8, made with avifenc).
+    const ORIENTED_AVIF: [(&str, &[u8]); 8] = [
+        ("o1", include_bytes!("../test-data/oriented/o1.avif")),
+        ("o2 imir 1", include_bytes!("../test-data/oriented/o2.avif")),
+        ("o3 irot 2", include_bytes!("../test-data/oriented/o3.avif")),
+        ("o4 imir 0", include_bytes!("../test-data/oriented/o4.avif")),
+        ("o5 irot 3 imir 1", include_bytes!("../test-data/oriented/o5.avif")),
+        ("o6 irot 3", include_bytes!("../test-data/oriented/o6.avif")),
+        ("o7 irot 3 imir 0", include_bytes!("../test-data/oriented/o7.avif")),
+        ("o8 irot 1", include_bytes!("../test-data/oriented/o8.avif")),
+    ];
+
+    /// The frame comes out upright: 16x8, red, green, blue and white
+    /// quadrants from the top left.
+    #[test]
+    fn avif_transforms_are_applied() {
+        init();
+        const QUADRANTS: [((usize, usize), [u8; 4]); 4] = [
+            ((4, 2), [255, 0, 0, 255]),
+            ((12, 2), [0, 255, 0, 255]),
+            ((4, 6), [0, 0, 255, 255]),
+            ((12, 6), [255, 255, 255, 255]),
+        ];
+        for (name, data) in ORIENTED_AVIF {
+            let (pipeline, appsrc, _dec, appsink) = direct_pipeline("image/avif");
+            pipeline.set_state(gst::State::Playing).unwrap();
+            appsrc.push_buffer(gst::Buffer::from_slice(data)).unwrap();
+            appsrc.end_of_stream().unwrap();
+
+            let sample = pull(&appsink, name);
+            assert_eq!(sample_dims(&sample), (16, 8), "{name}");
+            let map = sample.buffer().unwrap().map_readable().unwrap();
+            for ((x, y), rgba) in QUADRANTS {
+                let at = (y * 16 + x) * 4;
+                assert_eq!(&map[at..at + 4], &rgba, "{name} at {x},{y}");
+            }
+            drop(map);
+            pipeline.set_state(gst::State::Null).unwrap();
+        }
+    }
+
     /// A FlushStart while the decode task is blocked pushing into a prerolled
     /// sync=true sink must not deadlock. The handler has to forward the flush
     /// downstream before joining the task, because only the flush reaching the

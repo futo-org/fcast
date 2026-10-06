@@ -259,7 +259,7 @@ librice = { git = "https://gitlab.futo.org/fcast/librice.git", rev = "17ef3a67f9
 # tree resolves to it.
 reqwest = { git = "https://gitlab.futo.org/fcast/reqwest.git", rev = "cd3a562866982a624ab103f4919897d8ed3124d1" }
 # Disable encoders
-image = { git = "https://gitlab.futo.org/fcast/image-rs.git", rev = "9ee78f3f" }
+image = { git = "https://gitlab.futo.org/fcast/image-rs.git", rev = "409df0b6" }
 rustls = { git = "https://gitlab.futo.org/fcast/rustls.git", rev = "72ec207b" }
 # ndk-context fork: a second initialize_android_context replaces the first. The
 # receiver's core starts from its service before any activity (boot start), and
