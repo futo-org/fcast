@@ -1211,7 +1211,44 @@ pub struct SessionSeed {
     pub legacy: Option<InitialLegacyState>,
 }
 
+/// Token bucket over a session's operations. Slider drags send tens a
+/// second, a flood sends them as fast as TCP delivers and would queue
+/// without bound on the way to the app.
+#[derive(Debug, Clone, Copy)]
+struct OpBudget {
+    tokens: f32,
+    last: std::time::Instant,
+    /// Ops dropped since the last warning.
+    dropped: u32,
+}
+
+impl OpBudget {
+    const RATE: f32 = 100.0;
+    const BURST: f32 = 200.0;
+
+    fn new(now: std::time::Instant) -> Self {
+        Self {
+            tokens: Self::BURST,
+            last: now,
+            dropped: 0,
+        }
+    }
+
+    fn take(&mut self, now: std::time::Instant) -> bool {
+        let refill = now.saturating_duration_since(self.last).as_secs_f32() * Self::RATE;
+        self.tokens = (self.tokens + refill).min(Self::BURST);
+        self.last = now;
+        if self.tokens >= 1.0 {
+            self.tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+}
+
 pub struct SessionDriver {
+    op_budget: OpBudget,
     stream: NetworkStream,
     id: SenderId,
     state: State,
@@ -1237,6 +1274,7 @@ impl SessionDriver {
         seed: SessionSeed,
     ) -> Self {
         Self {
+            op_budget: OpBudget::new(std::time::Instant::now()),
             stream: NetworkStream::new(stream),
             id,
             state: State::new(),
@@ -1440,6 +1478,15 @@ impl SessionDriver {
         res: Result<Action, StateError>,
         internal_msg_tx: &tokio::sync::mpsc::UnboundedSender<InternalMessage>,
     ) -> anyhow::Result<bool> {
+        if let Ok(Action::Op(_)) = &res
+            && !self.op_budget.take(std::time::Instant::now())
+        {
+            self.op_budget.dropped += 1;
+            if self.op_budget.dropped.is_power_of_two() {
+                warn!(id = self.id, dropped = self.op_budget.dropped, "Sender over its operation rate, dropping");
+            }
+            return Ok(false);
+        }
         match res {
             Ok(action) => match action {
                 Action::None => (),
@@ -1862,6 +1909,31 @@ impl SessionDriver {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod op_budget_tests {
+    use super::OpBudget;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_flood_is_cut_to_the_rate_and_a_drag_is_not() {
+        let t0 = Instant::now();
+        let mut b = OpBudget::new(t0);
+        let burst = (0..10_000).filter(|_| b.take(t0)).count();
+        assert_eq!(burst, OpBudget::BURST as usize);
+        // a second later the bucket refilled by one second's worth
+        let t1 = t0 + Duration::from_secs(1);
+        let refilled = (0..10_000).filter(|_| b.take(t1)).count();
+        assert_eq!(refilled, OpBudget::RATE as usize);
+
+        // a 60 Hz slider drag for ten seconds never runs dry
+        let mut b = OpBudget::new(t0);
+        let ok = (0..600)
+            .map(|i| t0 + Duration::from_micros(i * 16_667))
+            .all(|t| b.take(t));
+        assert!(ok);
     }
 }
 
