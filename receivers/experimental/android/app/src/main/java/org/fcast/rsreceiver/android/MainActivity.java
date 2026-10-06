@@ -16,6 +16,9 @@ public class MainActivity extends NativeActivity {
     // Last soft keyboard state reported below API 30.
     private boolean keyboardShown = false;
     private boolean destroyed = false;
+    /// Between onStop and onStart. A PiP window closed on 9 to 12 stops the
+    /// activity before the mode change, where an expand starts it.
+    private boolean stopped = false;
     /// This instance has presented a receiver frame. SplashActivity skips its
     /// art while it holds.
     static volatile boolean painted = false;
@@ -390,10 +393,25 @@ public class MainActivity extends NativeActivity {
     public void onPictureInPictureModeChanged(boolean inPip,
             android.content.res.Configuration newConfig) {
         super.onPictureInPictureModeChanged(inPip, newConfig);
-        // Swiping the PiP window away finishes the activity: the user
-        // dismissed the video, so end the cast cleanly for the senders.
-        if (!inPip && isFinishing()) {
+        // Closing the PiP window either finishes the activity or, on 9 to 12,
+        // only stops it behind Home. Either way the user dismissed the video:
+        // end the cast for the senders, and keep the receiver reachable as
+        // Home would, a finishing onStop starts no service.
+        if (!inPip && (isFinishing() || stopped)) {
             ReceiverCore.nativeMediaCommand(0);
+            keepReceiverUp();
+        }
+    }
+
+    /// The service keeps the process and its discovery alive without a
+    /// visible activity. The system can refuse the start (doze, restricted
+    /// bucket), which must not crash.
+    private void keepReceiverUp() {
+        try {
+            startForegroundService(new Intent(this, ReceiverService.class));
+            ReceiverCore.setServiceWanted(true);
+        } catch (Exception e) {
+            Log.w(TAG, "foreground service refused", e);
         }
     }
 
@@ -412,6 +430,7 @@ public class MainActivity extends NativeActivity {
     @Override
     protected void onStart() {
         super.onStart();
+        stopped = false;
         ReceiverCore.setUiVisible(true);
         Updater.onActivityStarted(this);
         // The activity is back; its own lifecycle keeps the process warm,
@@ -433,6 +452,7 @@ public class MainActivity extends NativeActivity {
 
     @Override
     protected void onStop() {
+        stopped = true;
         ReceiverCore.setUiVisible(false);
         Updater.onActivityStopped();
         nativeAppVisibility(false);
@@ -442,12 +462,7 @@ public class MainActivity extends NativeActivity {
         // still refuse (doze, restricted bucket), which must not crash a
         // running cast.
         if (!destroyed && !isFinishing()) {
-            try {
-                startForegroundService(new Intent(this, ReceiverService.class));
-                ReceiverCore.setServiceWanted(true);
-            } catch (Exception e) {
-                Log.w(TAG, "foreground service refused", e);
-            }
+            keepReceiverUp();
         }
         super.onStop();
     }
