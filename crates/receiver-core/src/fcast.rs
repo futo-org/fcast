@@ -168,11 +168,37 @@ impl Packet {
             _ => Vec::new(),
         };
 
-        assert!(body.len() < 32 * 1000);
+        if body.len() >= LEGACY_MAX_BODY {
+            bail!("{} byte body over the v1-v3 packet limit", body.len());
+        }
         let header = Header::new(self.into(), body.len() as u32).encode();
         let mut pack = header.to_vec();
         pack.extend_from_slice(&body);
         Ok(pack)
+    }
+}
+
+/// Body limit of a v1-v3 packet. Senders refuse larger ones, as did the
+/// Kotlin receiver.
+const LEGACY_MAX_BODY: usize = 32 * 1000;
+
+/// Makes Initial fit the v3 limit. The play data is the first to give: a
+/// fetched playlist or a manifest sent as content keeps only its url, and
+/// without one the item is left out.
+fn fit_initial(initial: &mut v3::InitialReceiverMessage) {
+    let fits = |m: &v3::InitialReceiverMessage| {
+        serde_json::to_vec(m).is_ok_and(|b| b.len() < LEGACY_MAX_BODY)
+    };
+    if fits(initial) {
+        return;
+    }
+    initial.play_data = initial
+        .play_data
+        .take()
+        .filter(|p| p.url.is_some())
+        .map(|p| v3::PlayMessage { content: None, ..p });
+    if !fits(initial) {
+        initial.play_data = None;
     }
 }
 
@@ -1243,14 +1269,19 @@ impl SessionDriver {
         Ok(())
     }
 
-    #[instrument(skip_all)]
-    async fn send_msg(&mut self, opcode: Opcode, msg: impl Serialize) -> anyhow::Result<()> {
+    /// A v1-v3 message, skipped when over the packet limit: the sender would
+    /// drop the connection on it (a play message carrying a big manifest).
+    async fn send_legacy_msg(&mut self, opcode: Opcode, msg: impl Serialize) -> anyhow::Result<()> {
         let body = serde_json::to_vec(&msg)?;
-        let header = Header::new(opcode, body.len() as u32).encode();
-        self.stream.write_all(&header).await?;
-        self.stream.write_all(&body).await?;
-        self.stream.flush().await?;
-        Ok(())
+        self.send_legacy_body(opcode, &body).await
+    }
+
+    async fn send_legacy_body(&mut self, opcode: Opcode, body: &[u8]) -> anyhow::Result<()> {
+        if body.len() >= LEGACY_MAX_BODY {
+            warn!(?opcode, len = body.len(), "Not sending a message over the v1-v3 packet limit");
+            return Ok(());
+        }
+        self.send_bin_msg(opcode, body).await
     }
 
     #[instrument(skip_all)]
@@ -1451,7 +1482,7 @@ impl SessionDriver {
                 }
                 Action::SendInitial => {
                     let legacy = self.seed.legacy.take();
-                    self.write_packet(Packet::Initial(v3::InitialReceiverMessage {
+                    let mut initial = v3::InitialReceiverMessage {
                         display_name: self
                             .seed
                             .display_name
@@ -1465,8 +1496,9 @@ impl SessionDriver {
                                 livestream: Some(v3::LivestreamCapabilities { whep: Some(true) }),
                             }),
                         }),
-                    }))
-                    .await?;
+                    };
+                    fit_initial(&mut initial);
+                    self.write_packet(Packet::Initial(initial)).await?;
                     self.send_connect_volume().await?;
                     // the state now, not at the next progress tick
                     if let Some(legacy) = legacy {
@@ -1479,7 +1511,7 @@ impl SessionDriver {
                     msg,
                 } => match msg.as_ref() {
                     ReceiverToSenderMessage::Error(msg) => {
-                        self.send_msg(Opcode::PlaybackError, msg).await?;
+                        self.send_legacy_msg(Opcode::PlaybackError, msg).await?;
                     }
                     ReceiverToSenderMessage::LegacyTranslatable { op, msg } => {
                         let Some(session_version) = session_version else {
@@ -1488,16 +1520,16 @@ impl SessionDriver {
                             return Ok(false);
                         };
                         if let Some(body) = msg.translate_and_serialize(session_version) {
-                            self.send_bin_msg(*op, &body).await?;
+                            self.send_legacy_body(*op, &body).await?;
                         } else {
                             error!("Could not translate message");
                         }
                     }
                     ReceiverToSenderMessage::Event { msg } => {
-                        self.send_msg(Opcode::Event, msg).await?;
+                        self.send_legacy_msg(Opcode::Event, msg).await?;
                     }
                     ReceiverToSenderMessage::PlayUpdate { msg } => {
-                        self.send_msg(Opcode::PlayUpdate, msg).await?;
+                        self.send_legacy_msg(Opcode::PlayUpdate, msg).await?;
                     }
                     ReceiverToSenderMessage::V4(msg) => {
                         self.send_v4_message(msg).await?;
@@ -1810,6 +1842,56 @@ impl SessionDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn initial_with(url: Option<&str>, content_len: usize) -> v3::InitialReceiverMessage {
+        v3::InitialReceiverMessage {
+            display_name: Some("Receiver".into()),
+            play_data: Some(v3::PlayMessage {
+                container: "application/json".into(),
+                url: url.map(Into::into),
+                content: Some("x".repeat(content_len)),
+                time: Some(12.0),
+                volume: None,
+                speed: None,
+                headers: None,
+                metadata: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn small_initial_is_sent_whole() {
+        let mut initial = initial_with(Some("http://h/p.json"), 100);
+        let before = initial.clone();
+        fit_initial(&mut initial);
+        assert_eq!(initial, before);
+    }
+
+    #[test]
+    fn oversized_initial_keeps_the_url() {
+        let mut initial = initial_with(Some("http://h/p.json"), 100_000);
+        fit_initial(&mut initial);
+        let play = initial.play_data.as_ref().expect("the url still fits");
+        assert_eq!(play.url.as_deref(), Some("http://h/p.json"));
+        assert_eq!(play.content, None);
+        assert_eq!(play.time, Some(12.0));
+        assert!(Packet::Initial(initial).encode().is_ok());
+    }
+
+    #[test]
+    fn oversized_content_only_initial_drops_the_item() {
+        let mut initial = initial_with(None, 100_000);
+        fit_initial(&mut initial);
+        assert_eq!(initial.play_data, None);
+        assert_eq!(initial.display_name.as_deref(), Some("Receiver"));
+        assert!(Packet::Initial(initial).encode().is_ok());
+    }
+
+    #[test]
+    fn oversized_packet_is_an_error_not_a_panic() {
+        assert!(Packet::Initial(initial_with(None, 100_000)).encode().is_err());
+    }
 
     #[test]
     fn progress_interval_rounding() {
