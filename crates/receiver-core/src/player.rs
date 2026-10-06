@@ -524,6 +524,10 @@ pub struct Player {
     /// `shutdown` ran and its barrier fired, so the pipeline is down and no
     /// job may be queued behind it. See [`Drop`].
     shut_down: bool,
+    /// The video sink, when it keeps a picture it can be told to drop (the
+    /// `clear` action of `slintvideosink`). It only drops one by itself at
+    /// end of stream, and a stop is not one.
+    picture: Option<gst::Element>,
 }
 
 impl Player {
@@ -582,6 +586,9 @@ impl Player {
         // crate's own fallback. `RUNTIME` is a `LazyLock` static and so is
         // never dropped, which is the lifetime `new_with_runtime` requires: a
         // runtime dropped under a load cancels the elements' spawns silently.
+        let picture = video_sink
+            .clone()
+            .filter(|sink| gst::glib::subclass::SignalId::lookup("clear", sink.type_()).is_some());
         let fcast = flapjack::Player::new_with_runtime(
             flapjack::Sinks {
                 video: match video_sink {
@@ -770,6 +777,7 @@ impl Player {
         });
 
         Ok(Self {
+            picture,
             fcast,
             volume_confirm_in_flight: false,
             desired_transport: RunningState::Playing,
@@ -1412,6 +1420,15 @@ impl Player {
                 // Don't raise an already shut-down pipeline back to READY.
                 if self.state_machine.current_state != gst::State::Null {
                     self.fcast.stop();
+                    // The picture goes with the item, or it shows again when
+                    // the next load brings the video view up ahead of its
+                    // first frame. Behind the stop, so no frame of the
+                    // leaving item can follow the clear, and ahead of
+                    // whatever load is queued next.
+                    if let Some(sink) = self.picture.clone() {
+                        self.fcast
+                            .barrier(Box::new(move || sink.emit_by_name::<()>("clear", &[])));
+                    }
                 }
             }
         }
@@ -2124,6 +2141,120 @@ mod tests {
             .expect("fakesink")
             .downcast()
             .expect("fakesink is a base sink")
+    }
+
+    /// A video sink that keeps a picture and counts being told to drop it,
+    /// the `clear` action `slintvideosink` has.
+    mod picture_sink {
+        use gst::glib;
+        use gst::prelude::*;
+        use gst::subclass::prelude::*;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        #[derive(Default)]
+        pub struct Imp {
+            pub cleared: AtomicUsize,
+        }
+
+        #[glib::object_subclass]
+        impl ObjectSubclass for Imp {
+            const NAME: &'static str = "FCastTestPictureSink";
+            type Type = PictureSink;
+            type ParentType = gst::Bin;
+        }
+
+        impl ObjectImpl for Imp {
+            fn constructed(&self) {
+                self.parent_constructed();
+                let obj = self.obj();
+                let inner = gst::ElementFactory::make("fakesink")
+                    .build()
+                    .expect("fakesink");
+                obj.add(&inner).expect("adding the inner sink");
+                let target = inner.static_pad("sink").expect("fakesink has a sink pad");
+                let ghost = gst::GhostPad::builder_with_target(&target)
+                    .expect("a ghost for the inner sink")
+                    .name("sink")
+                    .build();
+                obj.add_pad(&ghost).expect("adding the ghost pad");
+            }
+
+            fn signals() -> &'static [glib::subclass::Signal] {
+                static SIGNALS: std::sync::OnceLock<Vec<glib::subclass::Signal>> =
+                    std::sync::OnceLock::new();
+                SIGNALS.get_or_init(|| {
+                    vec![
+                        glib::subclass::Signal::builder("clear")
+                            .action()
+                            .class_handler(|args| {
+                                let sink = args[0].get::<PictureSink>().expect("the sink");
+                                sink.imp().cleared.fetch_add(1, Ordering::SeqCst);
+                                None
+                            })
+                            .build(),
+                    ]
+                })
+            }
+        }
+
+        impl GstObjectImpl for Imp {}
+        impl ElementImpl for Imp {}
+        impl BinImpl for Imp {}
+
+        glib::wrapper! {
+            pub struct PictureSink(ObjectSubclass<Imp>)
+                @extends gst::Bin, gst::Element, gst::Object;
+        }
+
+        impl PictureSink {
+            pub fn new() -> Self {
+                glib::Object::new()
+            }
+
+            pub fn cleared(&self) -> usize {
+                self.imp().cleared.load(Ordering::SeqCst)
+            }
+        }
+    }
+
+    fn player_over(sink: gst::Element) -> Player {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        Player::new(
+            Some(sink),
+            None,
+            MessageSender::new(tx),
+            crate::fcompsrc::imp::CompContext(crate::fcast::CompanionContext::new()),
+        )
+        .expect("building the player")
+    }
+
+    /// A stop is not an end of stream, so the sink keeps the leaving item's
+    /// picture through it, and the next load's video view shows that picture
+    /// until its own first frame. The player tells the sink to drop it, once
+    /// per stop, on the worker behind the stop.
+    #[test]
+    fn a_stop_tells_the_sink_to_drop_its_picture() {
+        crate::gstreamer::init_for_tests();
+        let sink = picture_sink::PictureSink::new();
+        let mut player = player_over(sink.clone().upcast());
+        assert_eq!(sink.cleared(), 0, "nothing to drop before a stop");
+
+        player.stop();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while sink.cleared() == 0 {
+            assert!(Instant::now() < deadline, "the stop never reached the sink");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(sink.cleared(), 1);
+    }
+
+    /// A sink with no such action is left alone.
+    #[test]
+    fn a_stop_asks_nothing_of_a_sink_that_keeps_no_picture() {
+        crate::gstreamer::init_for_tests();
+        let mut player = player_over(headless_video_sink().upcast());
+        assert!(player.picture.is_none());
+        player.stop();
     }
 
     /// The driver's caps gate and the engine's decoder table each write down
