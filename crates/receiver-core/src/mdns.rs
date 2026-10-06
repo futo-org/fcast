@@ -30,6 +30,19 @@ pub fn chromecast_device_name() -> String {
     format!("Chromecast-{}", hostname())
 }
 
+/// `s` cut to at most `max` bytes on a char boundary. A DNS label is 63
+/// bytes and a TXT string 255 with its key, a longer name is refused by the
+/// responder.
+fn clip_utf8(s: &str, max: usize) -> &str {
+    let mut end = s.len().min(max);
+    while !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+const MAX_LABEL: usize = 63;
+
 /// Advertise `_fcast._tcp` under `name`. Call only once the listening port is
 /// committed, so a second instance that can't bind the default port never
 /// advertises a duplicate record.
@@ -39,6 +52,7 @@ pub fn register_fcast(
     port: u16,
     fcast_txt_records: &HashMap<String, String>,
 ) -> Result<()> {
+    let name = clip_utf8(name, MAX_LABEL);
     let service = mdns_sd::ServiceInfo::new(
         "_fcast._tcp.local.",
         name,
@@ -113,21 +127,25 @@ pub fn start_daemon(
     if settings.google_cast_enabled() {
         let chromecast_name = settings.chromecast_name();
         let gcast_props = HashMap::from([
-            ("fn".to_owned(), chromecast_name.clone()),
+            ("fn".to_owned(), clip_utf8(&chromecast_name, 250).to_owned()),
             ("ca".to_owned(), "1".to_owned()), // Has display
         ]);
 
-        let gcast_service = mdns_sd::ServiceInfo::new(
+        // one protocol failing to advertise must not take the others down
+        match mdns_sd::ServiceInfo::new(
             "_googlecast._tcp.local.",
             &gcast::get_host_name(&chromecast_name),
             &format!("{}.local.", uuid::Uuid::new_v4()),
             (), // Auto
             GCAST_TCP_PORT,
             gcast_props,
-        )?
-        .enable_addr_auto();
-
-        daemon.register(gcast_service)?;
+        )
+        .map_err(anyhow::Error::from)
+        .and_then(|service| Ok(daemon.register(service.enable_addr_auto())?))
+        {
+            Ok(()) => {}
+            Err(err) => error!(?err, "Google Cast not advertised"),
+        }
     }
 
     #[cfg(feature = "raop")]
@@ -164,4 +182,27 @@ pub fn start_daemon(
     });
 
     Ok(daemon)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_are_clipped_on_a_char_boundary() {
+        assert_eq!(clip_utf8("Living room", MAX_LABEL), "Living room");
+        let long = "ø".repeat(100);
+        let clipped = clip_utf8(&long, MAX_LABEL);
+        assert!(clipped.len() <= MAX_LABEL);
+        assert_eq!(clipped.len(), 62);
+    }
+
+    #[test]
+    fn a_long_name_still_builds_a_service() {
+        let name = clip_utf8(&"x".repeat(300), MAX_LABEL).to_owned();
+        assert!(
+            mdns_sd::ServiceInfo::new("_fcast._tcp.local.", &name, &format!("{name}.local."), (), 46899, HashMap::new())
+                .is_ok()
+        );
+    }
 }

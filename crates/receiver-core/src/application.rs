@@ -7212,12 +7212,15 @@ impl Application {
             // publishes a duplicate record.
             #[cfg(not(target_os = "android"))]
             if self.settings.fcast_enabled() {
-                mdns::register_fcast(
+                // still reachable by address and QR, so no reason to stop
+                if let Err(err) = mdns::register_fcast(
                     &self.mdns,
                     &self.settings.fcast_name(),
                     self.fcast_port,
                     &self.fcast_txt_records,
-                )?;
+                ) {
+                    error!(?err, "FCast not advertised");
+                }
             }
             self.update_connection_details()?;
             self.gui.show_system_tray();
