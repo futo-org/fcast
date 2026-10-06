@@ -490,6 +490,24 @@ fn strip_uri_query(uri: &str) -> &str {
     &uri[..end]
 }
 
+/// Every URL inside free text with its query and fragment stripped. A
+/// pipeline error quotes the URL it failed on, signatures included.
+fn scrub_urls(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(start) = rest.find("://") {
+        // the scheme in front, then the URL up to whitespace or a closing quote
+        let end = rest[start..]
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | '>' | ','))
+            .map_or(rest.len(), |e| start + e);
+        out.push_str(&rest[..start]);
+        out.push_str(strip_uri_query(&rest[start..end]));
+        rest = &rest[end..];
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Host of a URI, for toast detail. Userinfo and port dropped.
 fn uri_host(uri: &str) -> Option<&str> {
     let rest = uri.split_once("://")?.1;
@@ -543,7 +561,7 @@ fn report_warnings(ring: &RecentWarnings, now: Instant) -> Vec<fcast_bug_report:
             secs_ago: now.saturating_duration_since(*at).as_secs() as u32,
             code: fcast_bug_report::Code::parse(code).unwrap_or_default(),
             repeats: *repeats,
-            message: message.clone(),
+            message: scrub_urls(message),
         })
         .collect()
 }
@@ -2140,7 +2158,7 @@ impl Application {
             report: fcast_bug_report::Report {
                 code: fcast_bug_report::Code::parse(kind.code()).unwrap_or_default(),
                 detail: detail.unwrap_or_default().to_owned(),
-                message: diagnostic.to_owned(),
+                message: scrub_urls(diagnostic),
                 receiver_version: env!("CARGO_PKG_VERSION").to_owned(),
                 device: bug_report::device(),
                 source: context.source,
@@ -7865,6 +7883,17 @@ mod tests {
             "https://cdn.example.com/v/main.mpd"
         );
         assert_eq!(strip_uri_query("file:///a/b.mkv"), "file:///a/b.mkv");
+    }
+
+    #[test]
+    fn report_messages_lose_url_secrets() {
+        assert_eq!(
+            scrub_urls("Not Found (404), URL: https://cdn.x/v.mp4?sig=SECRET&e=1, Redirect to: http://y/a#t"),
+            "Not Found (404), URL: https://cdn.x/v.mp4, Redirect to: http://y/a"
+        );
+        assert_eq!(scrub_urls("could not open \"https://h/a?token=1\""), "could not open \"https://h/a\"");
+        assert_eq!(scrub_urls("no urls here"), "no urls here");
+        assert_eq!(scrub_urls("tail https://h/p?x"), "tail https://h/p");
     }
 
     #[test]
