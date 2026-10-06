@@ -63,6 +63,9 @@ const SENDER_UPDATE_INTERVAL: Duration = Duration::from_millis(500);
 const SEEK_QUIET_DEBOUNCE: Duration = Duration::from_millis(500);
 const DEFAULT_PROGRESS_INTERVAL: Duration = Duration::from_millis(500);
 const PROGRESS_TICK_INTERVAL: Duration = Duration::from_millis(100);
+/// Idle this long, free heap pages go back to the system. Long enough that a
+/// sender skipping between items never pays for it.
+const IDLE_RELEASE_AFTER: Duration = Duration::from_secs(8);
 /// Deliberately far above the progress tick: the stream-mode nub walks the
 /// pipeline.
 const BUFFERED_RANGES_INTERVAL: Duration = Duration::from_millis(1000);
@@ -832,6 +835,8 @@ pub struct Application {
     item_display_committed: bool,
     /// The current item put up its own cover.
     cover_shown: bool,
+    /// Bumped by every app state shown, so only the latest idle arm releases.
+    idle_release_gen: u64,
     // GStreamer re-emits the artist tag many times per item and gapless has no
     // queue-metadata artist to gate on, so dedup by value rather than a seen-flag.
     last_artist_name: Option<String>,
@@ -1202,6 +1207,7 @@ impl Application {
             load_behind: false,
             item_display_committed: true,
             cover_shown: false,
+            idle_release_gen: 0,
             last_artist_name: None,
             last_position_updated: -1.0,
             http_client,
@@ -1644,6 +1650,18 @@ impl Application {
         true
     }
 
+    /// Free heap pages go back to the system once the screen has been idle
+    /// for `IDLE_RELEASE_AFTER`, unless anything else is shown meanwhile.
+    fn arm_idle_release(&mut self) {
+        self.idle_release_gen = self.idle_release_gen.wrapping_add(1);
+        let generation = self.idle_release_gen;
+        let msg_tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(IDLE_RELEASE_AFTER).await;
+            msg_tx.send(Message::IdleRelease(generation));
+        });
+    }
+
     fn arm_presentation_timer(&self) {
         let Some(at) = self.presentation.deadline() else {
             return;
@@ -1754,6 +1772,11 @@ impl Application {
     fn show_app_state(&mut self, state: AppState) {
         if state != AppState::Idle {
             self.drop_held_reset();
+        }
+        if state == AppState::Idle {
+            self.arm_idle_release();
+        } else {
+            self.idle_release_gen = self.idle_release_gen.wrapping_add(1);
         }
         if state != AppState::LoadingMedia {
             self.set_load_behind(false);
@@ -6268,6 +6291,27 @@ impl Application {
             Message::NewPlayerEvent { event, generation } => {
                 self.handle_player_event(event, generation)?;
             }
+            Message::IdleRelease(generation) => {
+                if generation == self.idle_release_gen
+                    && self.shown_app_state == AppState::Idle
+                    && !self.is_playing()
+                {
+                    // the allocator's locks are held for the duration
+                    tokio::task::spawn_blocking(|| {
+                        let t0 = Instant::now();
+                        let released = crate::release_free_memory();
+                        info!(released, took = ?t0.elapsed(), "Idle, asked the allocator to release free pages");
+                    });
+                } else {
+                    debug!(
+                        generation,
+                        current = self.idle_release_gen,
+                        shown = ?self.shown_app_state,
+                        playing = self.is_playing(),
+                        "Idle release superseded"
+                    );
+                }
+            }
             Message::PresentationHoldTimer => {
                 if let Some(reset) = self.presentation.poll(Instant::now()) {
                     self.reset_to_idle(reset);
@@ -6699,6 +6743,8 @@ impl Application {
             self.update_connection_details()?;
             self.gui.show_system_tray();
             self.gui.set_starting_up(false);
+            // startup's garbage (plugin registration) goes back too
+            self.arm_idle_release();
 
             // An empty select_all ends on its first poll and asks to be polled
             // again in the same select!, which asserts. Decided once, here.

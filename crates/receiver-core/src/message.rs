@@ -231,6 +231,8 @@ pub enum Message {
     ShouldSetLoadingStatus(MediaItemId),
     /// The item-boundary hold may be due, see `presentation.rs`.
     PresentationHoldTimer,
+    /// The screen has been idle since this arm, see `arm_idle_release`.
+    IdleRelease(u64),
     /// Bounded wait for `AddSubtitleSource` parked on an in-flight load or
     /// unresolved seekability; on expiry the parked adds are rejected with
     /// `InvalidState`.

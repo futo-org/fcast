@@ -494,6 +494,45 @@ pub fn tune_allocator() {
 #[cfg(not(all(target_os = "linux", target_env = "gnu")))]
 pub fn tune_allocator() {}
 
+pub fn release_free_memory() -> bool {
+    #[cfg(all(target_os = "linux", target_env = "gnu"))]
+    {
+        // SAFETY: no preconditions. Trims every arena, not just the top of
+        // the main heap (glibc 2.8+).
+        unsafe { libc::malloc_trim(0) };
+        true
+    }
+    #[cfg(target_os = "android")]
+    {
+        unsafe extern "C" {
+            fn mallopt(param: libc::c_int, value: libc::c_int) -> libc::c_int;
+        }
+        // bionic malloc.h, API 28: release all memory not in use to the
+        // kernel, the value is ignored
+        // (a no-op returning 0 on the android 9 S8)
+        const M_PURGE: libc::c_int = -101;
+        // SAFETY: two ints, no memory-safety preconditions. 1 on success.
+        unsafe { mallopt(M_PURGE, 0) == 1 }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        unsafe extern "C" {
+            fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
+        }
+        // SAFETY: a null zone asks every zone, a goal of 0 means all it can.
+        unsafe { malloc_zone_pressure_relief(std::ptr::null_mut(), 0) };
+        true
+    }
+    #[cfg(not(any(
+        all(target_os = "linux", target_env = "gnu"),
+        target_os = "android",
+        target_os = "macos"
+    )))]
+    {
+        false
+    }
+}
+
 /// Debug builds only: let any process attach and snapshot thread stacks, which
 /// Yama's default `ptrace_scope=1` (ancestor tracers only) otherwise blocks.
 #[cfg(all(debug_assertions, target_os = "linux"))]
