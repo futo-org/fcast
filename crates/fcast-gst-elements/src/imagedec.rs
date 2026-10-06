@@ -40,6 +40,36 @@ pub mod imp {
     /// Browser convention: a GIF delay at or below 10ms renders at 100ms.
     const MIN_DELAY_MS: u64 = 10;
     const DEFAULT_DELAY_MS: u64 = 100;
+    /// A header can claim any size and an allocation failure aborts past
+    /// every guard. 128 MP keeps a 108 MP phone photo.
+    const MAX_STILL_PIXELS: u64 = 128_000_000;
+    /// Every frame of an animation decodes at full size, again on each loop.
+    const MAX_ANIMATION_PIXELS: u64 = 4096 * 4096;
+    /// Longest side a still goes out at: above a 4K screen and within every
+    /// GPU's texture limit.
+    pub(crate) const MAX_STILL_SIDE: u32 = 4096;
+
+    fn check_pixels(width: u32, height: u32, max: u64) -> Result<(), DecodeError> {
+        let pixels = width as u64 * height as u64;
+        if pixels == 0 || pixels > max {
+            return Err(DecodeError::Other(format!(
+                "image too large to decode ({width}x{height})"
+            )));
+        }
+        Ok(())
+    }
+
+    /// RGBA, scaled down to [`MAX_STILL_SIDE`] without a full size RGBA copy.
+    pub(crate) fn fit_still(img: image::DynamicImage) -> image::RgbaImage {
+        let (w, h) = (img.width(), img.height());
+        let long = w.max(h);
+        if long <= MAX_STILL_SIDE {
+            return img.into_rgba8();
+        }
+        let tw = (w as u64 * MAX_STILL_SIDE as u64 / long as u64).max(1) as u32;
+        let th = (h as u64 * MAX_STILL_SIDE as u64 / long as u64).max(1) as u32;
+        image::imageops::thumbnail(&img, tw, th)
+    }
 
     /// The bus message the application uses to classify an image load.
     pub const IMAGE_STREAM_MESSAGE: &str = "flapjack-image-stream";
@@ -430,6 +460,7 @@ pub mod imp {
                 let decoder = GifDecoder::new(reader)?;
                 if first_pass {
                     let (w, h) = decoder.dimensions();
+                    check_pixels(w, h, MAX_ANIMATION_PIXELS)?;
                     self.post_stream_info("gif", w, h, true);
                 }
                 match self.push_pass(decoder)? {
@@ -460,10 +491,11 @@ pub mod imp {
                 .orientation()
                 .unwrap_or(image::metadata::Orientation::NoTransforms);
             let (w, h) = decoder.dimensions();
+            check_pixels(w, h, MAX_STILL_PIXELS)?;
             self.post_stream_info(format, w, h, false);
             let mut img = image::DynamicImage::from_decoder(decoder)?;
             img.apply_orientation(orientation);
-            match self.push_frame(img.into_rgba8(), DEFAULT_DELAY_MS) {
+            match self.push_frame(fit_still(img), DEFAULT_DELAY_MS) {
                 Ok(()) | Err(gst::FlowError::Flushing | gst::FlowError::Eos) => {}
                 Err(err) => return Err(err.into()),
             }
@@ -485,6 +517,7 @@ pub mod imp {
                     return Ok(());
                 }
                 if first_pass {
+                    check_pixels(dimensions.0, dimensions.1, MAX_ANIMATION_PIXELS)?;
                     self.post_stream_info(format, dimensions.0, dimensions.1, true);
                 }
                 let decoder = make_decoder(self)?;
@@ -970,6 +1003,14 @@ pub fn plugin_init() -> Result<(), glib::BoolError> {
 #[cfg(test)]
 mod tests {
     use std::sync::Once;
+
+    #[test]
+    fn large_stills_go_out_within_the_texture_limit() {
+        let fitted = super::imp::fit_still(image::DynamicImage::new_rgb8(20_000, 200));
+        assert_eq!(fitted.dimensions(), (super::imp::MAX_STILL_SIDE, 40));
+        let small = super::imp::fit_still(image::DynamicImage::new_rgb8(640, 480));
+        assert_eq!(small.dimensions(), (640, 480));
+    }
 
     use gst::prelude::*;
 
