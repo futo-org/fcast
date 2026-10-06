@@ -298,13 +298,16 @@ impl Settings {
 
     /// Broadcast name for the FCast service. Defaults to `FCast-<hostname>`.
     pub fn fcast_name(&self) -> String {
-        self.config
+        let name = self
+            .config
             .get()
             .fcast
             .name
             .as_deref()
             .map(|name| expand_name_vars(name, &mdns::hostname()))
-            .unwrap_or_else(mdns::fcast_device_name)
+            .unwrap_or_else(mdns::fcast_device_name);
+        // what senders discover, so the UI and QR show the same
+        mdns::dns_label(&name).to_owned()
     }
 
     /// Broadcast name for RAOP. Defaults to `FCast-<hostname>`.
