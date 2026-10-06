@@ -496,9 +496,10 @@ fn scrub_urls(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(start) = rest.find("://") {
-        // the scheme in front, then the URL up to whitespace or a closing quote
+        // the scheme in front, then the URL up to whitespace or a double
+        // quote: commas, parentheses and apostrophes are legal in a path
         let end = rest[start..]
-            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ')' | '>' | ','))
+            .find(|c: char| c.is_whitespace() || c == '"')
             .map_or(rest.len(), |e| start + e);
         out.push_str(&rest[..start]);
         out.push_str(strip_uri_query(&rest[start..end]));
@@ -4321,8 +4322,12 @@ impl Application {
             }
             Operation::ResumeOrPause => match self.player.player_state() {
                 PlayerState::Paused => self.resume(),
-                // pausing a stall keeps it paused once the data is in
-                PlayerState::Playing | PlayerState::Buffering => self.pause(),
+                PlayerState::Playing => self.pause(),
+                // a stall toggles what it settles into once the data is in
+                PlayerState::Buffering => match self.player.wire_playback_state() {
+                    PlaybackState::Paused => self.resume(),
+                    _ => self.pause(),
+                },
                 _ => {
                     error!(
                         "Cannot resume or pause in player current state: {:?}",
@@ -7917,8 +7922,12 @@ mod tests {
     fn report_messages_lose_url_secrets() {
         assert_eq!(
             scrub_urls("Not Found (404), URL: https://cdn.x/v.mp4?sig=SECRET&e=1, Redirect to: http://y/a#t"),
-            "Not Found (404), URL: https://cdn.x/v.mp4, Redirect to: http://y/a"
+            "Not Found (404), URL: https://cdn.x/v.mp4 Redirect to: http://y/a"
         );
+        // a multi-bitrate path with commas keeps no part of its query
+        let akamai = "fetch https://x.akamaihd.net/i/v/a_,300,600,.mp4.csmil/master.m3u8?hdnea=e~hmac=SECRET failed";
+        assert!(!scrub_urls(akamai).contains("SECRET"), "{}", scrub_urls(akamai));
+        assert!(!scrub_urls("(uri https://h/Foo_(bar)/it's.mp4?k=SECRET)").contains("SECRET"));
         assert_eq!(scrub_urls("could not open \"https://h/a?token=1\""), "could not open \"https://h/a\"");
         assert_eq!(scrub_urls("no urls here"), "no urls here");
         assert_eq!(scrub_urls("tail https://h/p?x"), "tail https://h/p");
