@@ -1247,6 +1247,33 @@ impl OpBudget {
     }
 }
 
+/// Whether `op` names a companion resource of a provider other than `own`,
+/// the session's. Providers are per sender, one must not serve another's.
+fn names_foreign_companion(op: &Operation, own: Option<u16>) -> bool {
+    let foreign = |url: &str| {
+        url::Url::parse(url)
+            .ok()
+            .and_then(|u| crate::fcompsrc::FCompUrl::new(&u))
+            .is_some_and(|c| Some(c.provider_id) != own)
+    };
+    let item = |m: v4::flat::MediaItem| foreign(m.source_url()) || m.thumbnail_url().is_some_and(foreign);
+    match op {
+        Operation::PlayNew(WrappedPlayMessage::V4(load)) => {
+            let play = load.borrow_dependent();
+            match play.source_type() {
+                v4::flat::MediaSource::Single => play.source_as_single().is_some_and(item),
+                v4::flat::MediaSource::Queue => play
+                    .source_as_queue()
+                    .is_some_and(|q| q.items().iter().any(|i| item(i.media_item()))),
+                _ => false,
+            }
+        }
+        Operation::InsertQueueItem(insert) => item(insert.borrow_dependent().item().media_item()),
+        Operation::AddSubtitleSource { url, .. } => foreign(url),
+        _ => false,
+    }
+}
+
 pub struct SessionDriver {
     op_budget: OpBudget,
     stream: NetworkStream,
@@ -1478,12 +1505,31 @@ impl SessionDriver {
         res: Result<Action, StateError>,
         internal_msg_tx: &tokio::sync::mpsc::UnboundedSender<InternalMessage>,
     ) -> anyhow::Result<bool> {
-        if let Ok(Action::Op(_)) = &res
+        // transport commands always pass, a dropped Stop would leave the
+        // sender and the receiver disagreeing
+        if let Ok(Action::Op(op)) = &res
+            && !matches!(
+                op,
+                Operation::Stop
+                    | Operation::Pause
+                    | Operation::Resume
+                    | Operation::ResumeOrPause
+                    | Operation::SetPlaybackState(_)
+            )
             && !self.op_budget.take(std::time::Instant::now())
         {
             self.op_budget.dropped += 1;
             if self.op_budget.dropped.is_power_of_two() {
                 warn!(id = self.id, dropped = self.op_budget.dropped, "Sender over its operation rate, dropping");
+            }
+            return Ok(false);
+        }
+        if let Ok(Action::Op(op)) = &res
+            && names_foreign_companion(op, self.companion_provider_id())
+        {
+            warn!(id = self.id, "Refusing an operation naming another sender's companion resource");
+            if let PacketOrigin::FCast { packet_num, .. } = origin {
+                self.send_v4_error(packet_num, v4::flat::ErrorKind::ResourceNotFound).await?;
             }
             return Ok(false);
         }
@@ -1909,6 +1955,67 @@ impl SessionDriver {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod companion_owner_tests {
+    use super::*;
+
+    fn item(url: &str, thumb: Option<&str>) -> v4::MediaItem {
+        v4::MediaItem {
+            container: "video/mp4".into(),
+            source_url: url.into(),
+            start_time: None,
+            volume: None,
+            speed: None,
+            headers: None,
+            title: None,
+            thumbnail_url: thumb.map(Into::into),
+            metadata: None,
+            extra_metadata: None,
+        }
+    }
+
+    fn load(bytes: &[u8]) -> Operation {
+        Operation::PlayNew(WrappedPlayMessage::V4(
+            FlatLoadMessage::try_new(bytes.to_vec(), |buf| {
+                v4::flat::root_as_packet(buf)
+                    .ok()
+                    .and_then(|p| p.payload_as_load())
+                    .ok_or(())
+            })
+            .unwrap(),
+        ))
+    }
+
+    #[test]
+    fn only_the_owner_may_name_its_companion_resources() {
+        let single = |u: &str, t: Option<&str>| load(&v4::MessageBuilder::new().load_single(item(u, t)));
+        assert!(!names_foreign_companion(&single("fcomp://3.fcast/1", None), Some(3)));
+        assert!(names_foreign_companion(&single("fcomp://4.fcast/1", None), Some(3)));
+        assert!(names_foreign_companion(&single("fcomp://3.fcast/1", None), None));
+        assert!(!names_foreign_companion(&single("http://h/a.mp4", None), None));
+        assert!(names_foreign_companion(
+            &single("http://h/a.mp4", Some("fcomp://9.fcast/2")),
+            Some(3)
+        ));
+        let queue = load(&v4::MessageBuilder::new().load_queue(
+            [item("fcomp://3.fcast/1", None), item("fcomp://5.fcast/1", None)]
+                .into_iter()
+                .map(|i| (i, None)),
+            None,
+            true,
+        ));
+        assert!(names_foreign_companion(&queue, Some(3)));
+        let sub = |url: &str| Operation::AddSubtitleSource {
+            url: url.into(),
+            select: true,
+            name: None,
+        };
+        assert!(names_foreign_companion(&sub("fcomp://7.fcast/1"), Some(3)));
+        assert!(!names_foreign_companion(&sub("fcomp://3.fcast/1"), Some(3)));
+        assert!(!names_foreign_companion(&Operation::Pause, None));
     }
 }
 

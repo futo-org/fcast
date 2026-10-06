@@ -567,7 +567,7 @@ const MAX_FCAST_SESSIONS: usize = 32;
 
 /// Per-item external subtitle cap, far past any real use, so a sender cannot
 /// grow TracksAvailable or the attached inputs without bound.
-const MAX_EXTERNAL_SUBTITLES: usize = 32;
+const MAX_EXTERNAL_SUBTITLES: usize = 64;
 /// Track title bytes advertised, a media file's or a sender's.
 const MAX_TRACK_TITLE: usize = 256;
 const MAX_LANGUAGE_TAG: usize = 35;
@@ -589,7 +589,8 @@ fn clip_title(s: &str) -> SmolStr {
 /// reading the receiver's own machine (file, fd, v4l2 and the like) are out.
 const REMOTE_SCHEMES: &[&str] = &[
     "http", "https", "data", "fcomp", "fcastwhep", "fwebrtc", "sabrump", "srt", "rtsp", "rtsps",
-    "rtspt", "rtspu", "rtsph", "rtmp", "rtmps", "rtmpt", "rtmpe", "rtmpte", "rtmpts",
+    "rtspt", "rtspu", "rtsph", "rtspsu", "rtspst", "rtspsh", "rtsp-sdp", "rtmp", "rtmps", "rtmpt",
+    "rtmpe", "rtmpte", "rtmpts", "rtmfp",
 ];
 
 fn scheme_allowed(url: &str) -> bool {
@@ -3273,7 +3274,8 @@ impl Application {
         if current_show_duration.is_some() {
             return;
         }
-        if !Self::gapless_eligible(&next_item) {
+        // the pre-arm loads past load_current_media_item's check
+        if !Self::gapless_eligible(&next_item) || !scheme_allowed(&next_item.url) {
             return;
         }
         let Some(position) = self.player.get_position() else {
@@ -4123,6 +4125,7 @@ impl Application {
                 };
                 // A live object, so it cannot travel through a URI.
                 self.pending_fwebrtc_channel = Some(chan);
+                self.end_raop_session();
                 let play_message = v3::PlayMessage {
                     container: "application/x-fwebrtc".to_owned(),
                     // Placeholder: the fwebrtc source ignores the URL.
@@ -5641,7 +5644,7 @@ impl Application {
 
                 let config = server.config.clone();
                 let msg_tx = self.msg_tx.clone();
-                tokio::spawn(async move {
+                let session = tokio::spawn(async move {
                     // posted on drop, so a session that panics still frees the
                     // slot for the next RAOP sender
                     struct Disconnect(MessageSender);
