@@ -70,6 +70,29 @@ pub mod imp {
                 gst::PadProbeReturn::Ok
             });
 
+            // jpegparse's caps carry the header's size: past the cap the item
+            // fails here instead of allocating the surface.
+            let parse_src = parse.static_pad("src")?;
+            let weak = obj.downgrade();
+            parse_src.add_probe(gst::PadProbeType::EVENT_DOWNSTREAM, move |_pad, info| {
+                if let Some(gst::PadProbeData::Event(event)) = &info.data
+                    && let gst::EventView::Caps(caps_ev) = event.view()
+                    && let Some(s) = caps_ev.caps().structure(0)
+                    && let (Ok(w), Ok(h)) = (s.get::<i32>("width"), s.get::<i32>("height"))
+                    && super::too_large(w, h)
+                {
+                    if let Some(obj) = weak.upgrade() {
+                        gst::element_error!(
+                            obj,
+                            gst::StreamError::Decode,
+                            ["image too large to decode ({}x{})", w, h]
+                        );
+                    }
+                    return gst::PadProbeReturn::Drop;
+                }
+                gst::PadProbeReturn::Ok
+            });
+
             // Announce the image stream from the decoded caps, the way fimagedec does.
             let dec_src = dec.static_pad("src")?;
             let weak = obj.downgrade();
@@ -184,6 +207,15 @@ pub mod imp {
 /// Register `fvajpegdec` above `fimagedec` for baseline JPEG, only when VA JPEG
 /// decode is usable.
 #[cfg(target_os = "linux")]
+/// fimagedec's still cap, and the longest side every VA driver and the
+/// renderer's textures take.
+const MAX_PIXELS: u64 = 128_000_000;
+const MAX_SIDE: i32 = 16384;
+
+fn too_large(width: i32, height: i32) -> bool {
+    width <= 0 || height <= 0 || width > MAX_SIDE || height > MAX_SIDE || width as u64 * height as u64 > MAX_PIXELS
+}
+
 pub fn plugin_init() -> Result<(), glib::BoolError> {
     // Escape hatch: when VA is force-disabled images stay on the software path.
     if std::env::var_os("FCAST_DISABLE_VA").is_some() {
@@ -235,6 +267,15 @@ fn va_jpeg_decode_available() -> bool {
 
 #[cfg(all(test, target_os = "linux"))]
 mod tests {
+    #[test]
+    fn oversized_jpegs_are_refused() {
+        assert!(!super::too_large(4032, 3024));
+        assert!(!super::too_large(16384, 7000));
+        assert!(super::too_large(16385, 10));
+        assert!(super::too_large(12_000, 12_000));
+        assert!(super::too_large(0, 10));
+    }
+
     /// The gate must register `fvajpegdec` when the parser and a working VA
     /// JPEG decoder are both present; a no-op on a box without either.
     #[test]
