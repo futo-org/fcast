@@ -51,7 +51,7 @@ fn init_logging(settings: &rcore::Settings) {
 /// by the android backend, only the wgpu API may be named.
 fn select_renderer() {
     let selector = rcore::slint::BackendSelector::new();
-    let selector = if has_vulkan_adapter() {
+    let selector = if !gles_forced() && has_vulkan_adapter() {
         selector
     } else {
         warn!("no Vulkan adapter, rendering with GLES");
@@ -60,6 +60,16 @@ fn select_renderer() {
         selector.require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Automatic(settings))
     };
     selector.select().unwrap();
+}
+
+/// `adb shell setprop debug.fcast.renderer gles` takes the GLES path on a
+/// device with Vulkan, to test the fallback the boxes without it get.
+fn gles_forced() -> bool {
+    let mut value = [0u8; 92];
+    let len = unsafe {
+        libc::__system_property_get(c"debug.fcast.renderer".as_ptr(), value.as_mut_ptr().cast())
+    };
+    len > 0 && value.get(..len as usize) == Some(b"gles".as_slice())
 }
 
 fn has_vulkan_adapter() -> bool {
