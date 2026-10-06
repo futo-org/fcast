@@ -611,6 +611,11 @@ const REMOTE_SCHEMES: &[&str] = &[
     "rtmpe", "rtmpte", "rtmpts", "rtmfp",
 ];
 
+/// A companion resource URL, any case (`Url` lowercases the scheme).
+fn is_fcomp(url: &str) -> bool {
+    url.split_once(':').is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("fcomp"))
+}
+
 fn scheme_allowed(url: &str) -> bool {
     url.split_once(':')
         .is_some_and(|(scheme, _)| REMOTE_SCHEMES.iter().any(|s| s.eq_ignore_ascii_case(scheme)))
@@ -676,7 +681,7 @@ fn play_rejection(play: &WrappedPlayMessage) -> Option<ErrorKind> {
         WrappedPlayMessage::Chromecast(cast) => {
             if cast.url.is_empty() {
                 Some(ErrorKind::MalformedBody)
-            } else if cast.url.starts_with("fcomp:") {
+            } else if is_fcomp(&cast.url) {
                 // a cast session has no companion provider of its own
                 Some(ErrorKind::ResourceNotFound)
             } else {
@@ -1009,7 +1014,9 @@ pub struct Application {
     /// The running RAOP session, ended when another cast replaces it or
     /// both would play at once.
     #[cfg(feature = "raop")]
-    raop_session: Option<tokio::task::AbortHandle>,
+    raop_session: Option<(u64, tokio::task::AbortHandle)>,
+    #[cfg(feature = "raop")]
+    raop_session_ids: u64,
     #[cfg(feature = "airplay")]
     airplay_server: Option<AirPlayServer>,
     gui: GuiController,
@@ -1392,6 +1399,8 @@ impl Application {
             raop_server: None,
             #[cfg(feature = "raop")]
             raop_session: None,
+            #[cfg(feature = "raop")]
+            raop_session_ids: 0,
             #[cfg(feature = "airplay")]
             airplay_server: None,
             gui,
@@ -2005,7 +2014,7 @@ impl Application {
             fullscreen,
         } = std::mem::take(&mut self.window_restore);
         if let Some(fullscreen) = fullscreen {
-            self.gui.set_fullscreen(fullscreen);
+            self.gui.set_fullscreen_detached(fullscreen);
         }
         if let Some(visible) = visible {
             self.gui.set_window_visibility_detached(visible);
@@ -2799,7 +2808,7 @@ impl Application {
             // playlist items too, which carry no sender origin
             Some(url) if !scheme_allowed(&url) => return Err(LoadMediaError::RefusedScheme),
             // v3 playlists have no companion provider, an fcomp item is someone else's
-            Some(url) if playlist && url.starts_with("fcomp:") => {
+            Some(url) if playlist && is_fcomp(&url) => {
                 return Err(LoadMediaError::RefusedScheme);
             }
             Some(url) => url,
@@ -2830,7 +2839,8 @@ impl Application {
         };
         let playback_rate = match start_override {
             Some(start) => start.rate,
-            None => item.speed.unwrap_or(1.0) as f32,
+            // the item's own rate, unchecked on the wire
+            None => fcast::sanitize_rate(item.speed.unwrap_or(1.0) as f32).0,
         };
         let headers = item.headers;
 
@@ -2925,6 +2935,8 @@ impl Application {
             media_title = title.filter(|t| !t.is_empty());
             if !self.is_headless()
                 && let Some(thumbnail_url) = thumbnail_url
+                // a v3 playlist item's cover is no companion of its sender's
+                && !(playlist && is_fcomp(&thumbnail_url))
             {
                 self.have_audio_track_cover = true;
                 self.current_image_download_id += 1;
@@ -3045,7 +3057,7 @@ impl Application {
     /// closes the sender's connection and stops its pipeline.
     fn end_raop_session(&mut self) {
         #[cfg(feature = "raop")]
-        if let Some(session) = self.raop_session.take() {
+        if let Some((_, session)) = self.raop_session.take() {
             info!("Ending the AirPlay audio session for the new cast");
             session.abort();
         }
@@ -5709,19 +5721,21 @@ impl Application {
 
                 let config = server.config.clone();
                 let msg_tx = self.msg_tx.clone();
+                self.raop_session_ids += 1;
+                let id = self.raop_session_ids;
                 let session = tokio::spawn(async move {
                     // posted on drop, so a session that panics still frees the
                     // slot for the next RAOP sender
-                    struct Disconnect(MessageSender);
+                    struct Disconnect(MessageSender, u64);
                     impl Drop for Disconnect {
                         fn drop(&mut self) {
-                            self.0.raop(Raop::SenderDisconnected);
+                            self.0.raop(Raop::SenderDisconnected(self.1));
                         }
                     }
-                    let _disconnect = Disconnect(msg_tx.clone());
+                    let _disconnect = Disconnect(msg_tx.clone(), id);
                     raop::handle_sender(stream, config, msg_tx).await;
                 });
-                self.raop_session = Some(session.abort_handle());
+                self.raop_session = Some((id, session.abort_handle()));
 
                 debug!("Session started");
                 self.supersede_playlist_fetch();
@@ -5731,12 +5745,15 @@ impl Application {
                 self.transition_app_state(AppState::Playing);
                 self.set_player_type(UiPlayerVariant::Raop);
             }
-            Raop::SenderDisconnected => {
-                // a late disconnect must not wipe an item that replaced it
-                if !matches!(
-                    self.current_media.as_ref().map(|m| &m.source),
-                    Some(MediaSource::Raop)
-                ) {
+            Raop::SenderDisconnected(id) => {
+                // a late disconnect must not wipe an item that replaced it,
+                // a newer RAOP session included
+                if self.raop_session.as_ref().map(|(current, _)| *current) != Some(id)
+                    || !matches!(
+                        self.current_media.as_ref().map(|m| &m.source),
+                        Some(MediaSource::Raop)
+                    )
+                {
                     debug!("RAOP session ended under another item, ignoring");
                     return Ok(false);
                 }
@@ -7884,6 +7901,15 @@ mod tests {
             "https://cdn.example.com/v/main.mpd"
         );
         assert_eq!(strip_uri_query("file:///a/b.mkv"), "file:///a/b.mkv");
+    }
+
+    #[test]
+    fn companion_urls_are_recognised_in_any_case() {
+        assert!(is_fcomp("fcomp://1.fcast/2"));
+        assert!(is_fcomp("FCOMP://1.fcast/2"));
+        assert!(is_fcomp("FComp://1.fcast/2"));
+        assert!(!is_fcomp("http://fcomp/x"));
+        assert!(!is_fcomp("fcomp"));
     }
 
     #[test]

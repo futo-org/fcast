@@ -735,6 +735,19 @@ impl GuiController {
         }
     }
 
+    /// [`Self::set_fullscreen`] without waiting for the answer, see
+    /// [`Self::set_window_visibility_detached`].
+    pub fn set_fullscreen_detached(&self, fullscreen: bool) {
+        if self.tx.is_none() {
+            return;
+        }
+        let (prev_tx, _) = oneshot::channel();
+        self.send(UpdateGuiCommand::SetFullscreen {
+            fullscreen,
+            prev_tx,
+        });
+    }
+
     /// [`Self::set_window_visibility`] without waiting for the answer. The
     /// app thread must not block on a GUI thread that may be stuck in a
     /// present or already gone at quit.

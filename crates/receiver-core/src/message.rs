@@ -138,7 +138,8 @@ pub enum AirPlay {
 pub enum Raop {
     ConfigAvailable(raop::Configuration),
     SenderConnected(tokio::net::TcpStream),
-    SenderDisconnected,
+    /// The session's id, a late one from an ended session is ignored.
+    SenderDisconnected(u64),
     CoverArtSet(Vec<u8>),
     CoverArtRemoved,
     MetadataSet(raop::RaopMetadata),
