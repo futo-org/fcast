@@ -67,5 +67,6 @@
 # render_profile = "fast"
 
 [log]
-# Log verbosity: "off", "error", "warn", "info", "debug" or "trace".
+# Log verbosity: "off", "error", "warn", "info" (default), "debug" or
+# "trace". Trace is compiled out of release builds, where it acts as debug.
 # level = "info"

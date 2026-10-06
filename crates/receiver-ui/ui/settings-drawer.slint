@@ -836,7 +836,7 @@ export component SettingsDrawer inherits Rectangle {
                     SelectRow {
                         label: @tr("Log level");
                         setting-key: "log.level";
-                        model: ["Default", "off", "error", "warn", "info", "debug", "trace"];
+                        model: ["Default", "off", "error", "warn", "info", "debug"];
                         value <=> Bridge.cfg-log-level;
                     }
                 }

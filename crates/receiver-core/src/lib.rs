@@ -406,6 +406,8 @@ fn parse_render_profile(value: &str) -> Option<RenderProfile> {
 
 fn parse_log_level(value: &str) -> Option<LevelFilter> {
     match value.parse::<LevelFilter>() {
+        // compiled out of release builds (`release_max_level_debug`)
+        Ok(LevelFilter::TRACE) if !cfg!(debug_assertions) => Some(LevelFilter::DEBUG),
         Ok(level) => Some(level),
         Err(_) => {
             tracing::warn!(value, "Unknown log level in config, using default");

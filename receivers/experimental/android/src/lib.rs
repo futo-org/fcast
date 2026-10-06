@@ -24,11 +24,9 @@ static EVENT_CHANNEL: LazyLock<(
 /// Once per process, whichever comes first of the core start and a UI.
 fn init_logging(settings: &rcore::Settings) {
     log_panics::init();
-    // Debug only in debug builds: every tracing debug! line is a logcat
-    // write, and a release apk has no reader for them. A configured level wins.
+    // Info unless configured: every debug! line is a logcat write.
     let level = match settings.log_level() {
         Some(level) => log_filter(level),
-        None if cfg!(debug_assertions) => log::LevelFilter::Debug,
         None => log::LevelFilter::Info,
     };
     android_logger::init_once(

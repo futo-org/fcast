@@ -1,11 +1,7 @@
 use tracing::level_filters::LevelFilter;
 
 fn default_level() -> LevelFilter {
-    if cfg!(debug_assertions) {
-        LevelFilter::DEBUG
-    } else {
-        LevelFilter::OFF
-    }
+    LevelFilter::INFO
 }
 
 pub fn init(loglevel: Option<LevelFilter>) {

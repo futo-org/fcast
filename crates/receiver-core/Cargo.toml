@@ -106,10 +106,11 @@ gst-plugin-webrtcbin2.workspace = true
 [target.'cfg(not(target_os = "android"))'.dependencies]
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
-tracing.workspace = true
+# Trace is for debug builds only, release compiles it out.
+tracing = { workspace = true, features = [ "release_max_level_debug" ] }
 tracing-subscriber = { workspace = true, features = [ "env-filter" ] }
 # Only to cap the `log` bridge at the configured level, see logging.rs.
-log.workspace = true
+log = { workspace = true, features = [ "release_max_level_debug" ] }
 clap.workspace = true
 inhibit-screensaver.path = "../inhibit-screensaver"
 
@@ -128,7 +129,7 @@ android-activity = "0.6"
 libc = "0.2"
 tracing-gstreamer.workspace = true
 tracing-panic.workspace = true
-tracing = { workspace = true, features = [ "log" ] }
+tracing = { workspace = true, features = [ "log", "release_max_level_debug" ] }
 jni = "0.21.1"
 ndk-context = "0.1"
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
