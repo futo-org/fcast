@@ -923,6 +923,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
             bridge.set_cfg_interface_fullscreen_player(config.interface.fullscreen_player);
             bridge.set_cfg_interface_headless(config.interface.headless);
             bridge.set_cfg_interface_start_on_boot(config.interface.start_on_boot.unwrap_or(false));
+            bridge.set_cfg_video_match_frame_rate(config.video.match_frame_rate);
             // Formatted the way the drawer's dropdown labels it, so the active
             // option is the highlighted one: unset means the default mode,
             // shown under its own name rather than as "Default".

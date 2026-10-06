@@ -233,30 +233,32 @@ public class MainActivity extends NativeActivity {
         }
     }
 
-    /// Refresh-rate matching: prefer the lowest display mode at the current
-    /// resolution whose rate is a near-integer multiple of the content fps
-    /// (23.976 picks 24 or 120, never 60). 0 restores no-preference. From
-    /// ReceiverCore on the main thread.
+    /// Refresh-rate matching at the current resolution: a mode whose rate is a
+    /// near-integer multiple of the content fps (23.976 takes 24 or 120,
+    /// never 60). The current mode when it already is one, 30 and 25 fps on a
+    /// 60 and 50 Hz TV switch nothing, else the highest, a mode switch blanks
+    /// HDMI for seconds and a low rate makes the UI judder. 0 restores
+    /// no-preference. From ReceiverCore on the main thread.
     void applyContentFrameRate(float fps) {
         android.view.WindowManager.LayoutParams lp = getWindow().getAttributes();
         int modeId = 0;
         if (fps > 0) {
             android.view.Display display = getWindowManager().getDefaultDisplay();
             android.view.Display.Mode current = display.getMode();
-            float best = Float.MAX_VALUE;
-            for (android.view.Display.Mode mode : display.getSupportedModes()) {
-                if (mode.getPhysicalWidth() != current.getPhysicalWidth()
-                        || mode.getPhysicalHeight() != current.getPhysicalHeight()) {
-                    continue;
-                }
-                float rate = mode.getRefreshRate();
-                int multiple = Math.round(rate / fps);
-                if (multiple < 1) {
-                    continue;
-                }
-                if (Math.abs(rate / fps - multiple) <= 0.02f * multiple && rate < best) {
-                    best = rate;
-                    modeId = mode.getModeId();
+            if (rateFits(current.getRefreshRate(), fps)) {
+                modeId = lp.preferredDisplayModeId == 0 ? 0 : current.getModeId();
+            } else {
+                float best = 0;
+                for (android.view.Display.Mode mode : display.getSupportedModes()) {
+                    if (mode.getPhysicalWidth() != current.getPhysicalWidth()
+                            || mode.getPhysicalHeight() != current.getPhysicalHeight()) {
+                        continue;
+                    }
+                    float rate = mode.getRefreshRate();
+                    if (rateFits(rate, fps) && rate > best) {
+                        best = rate;
+                        modeId = mode.getModeId();
+                    }
                 }
             }
         }
@@ -265,6 +267,11 @@ public class MainActivity extends NativeActivity {
             lp.preferredDisplayModeId = modeId;
             getWindow().setAttributes(lp);
         }
+    }
+
+    private static boolean rateFits(float rate, float fps) {
+        int multiple = Math.round(rate / fps);
+        return multiple >= 1 && Math.abs(rate / fps - multiple) <= 0.02f * multiple;
     }
 
     private volatile boolean immersiveWanted = false;

@@ -166,6 +166,9 @@ pub struct VideoConfig {
     /// string so an unrecognised value warns instead of discarding the file.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub render_profile: Option<String>,
+    /// android: switch the display to a refresh rate that fits the video's
+    /// frame rate. Off for a TV that handles mode switches badly.
+    pub match_frame_rate: bool,
 }
 
 impl Default for VideoConfig {
@@ -173,6 +176,7 @@ impl Default for VideoConfig {
         Self {
             hdr_output: true,
             render_profile: None,
+            match_frame_rate: true,
         }
     }
 }
@@ -202,6 +206,7 @@ impl Config {
             "interface.headless" => self.interface.headless = value,
             "interface.start_on_boot" => self.interface.start_on_boot = Some(value),
             "video.hdr_output" => self.video.hdr_output = value,
+            "video.match_frame_rate" => self.video.match_frame_rate = value,
             _ => return false,
         }
         true

@@ -764,6 +764,11 @@ export component SettingsDrawer inherits Rectangle {
                         setting-key: "interface.start_on_boot";
                         value <=> Bridge.cfg-interface-start-on-boot;
                     }
+                    if Bridge.android: ToggleRow {
+                        label: @tr("Match refresh rate to video");
+                        setting-key: "video.match_frame_rate";
+                        value <=> Bridge.cfg-video-match-frame-rate;
+                    }
                     // Window management is a desktop concept: no tray, no
                     // start-fullscreen, no headless on android, and its
                     // fullscreen player is hardwired on rather than a

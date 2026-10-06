@@ -2701,15 +2701,9 @@ impl Application {
             | UiPlayerVariant::Video => {
                 self.cleanup_playback_data();
                 self.reset_gui_for_load(behind);
-                #[cfg(target_os = "android")]
-                if self.android_playback.0 {
-                    // back to the display's default mode between items
-                    self.call_activity(
-                        "setContentFrameRate",
-                        "(F)V",
-                        &[jni::objects::JValue::Float(0.0)],
-                    );
-                }
+                // The display mode stays across items: the next video picks
+                // its own, an audio item and the cast's end restore the
+                // default, where a reset here blanked HDMI twice per item.
             }
             UiPlayerVariant::Raop => (),
         }
@@ -2909,14 +2903,17 @@ impl Application {
         {
             self.android_visual = true;
             self.set_playback_active(self.android_playback.0);
-            let fps = self
-                .player
-                .streams
-                .iter()
-                .filter(|s| s.info.slot == flapjack::TrackSlot::Video)
-                .filter_map(|s| s.info.caps.as_ref()?.structure(0)?.get::<gst::Fraction>("framerate").ok())
-                .find(|fr| fr.numer() > 0 && fr.denom() > 0)
-                .map_or(0.0, |fr| fr.numer() as f32 / fr.denom() as f32);
+            let fps = if self.settings.config.get().video.match_frame_rate {
+                self.player
+                    .streams
+                    .iter()
+                    .filter(|s| s.info.slot == flapjack::TrackSlot::Video)
+                    .filter_map(|s| s.info.caps.as_ref()?.structure(0)?.get::<gst::Fraction>("framerate").ok())
+                    .find(|fr| fr.numer() > 0 && fr.denom() > 0)
+                    .map_or(0.0, |fr| fr.numer() as f32 / fr.denom() as f32)
+            } else {
+                0.0
+            };
             self.call_activity(
                 "setContentFrameRate",
                 "(F)V",
@@ -6613,6 +6610,15 @@ impl Application {
                         &[jni::objects::JValue::Bool(value as u8)],
                     );
                     self.push_settings_to_ui();
+                }
+                // turned off mid-cast, the default mode comes back now
+                #[cfg(target_os = "android")]
+                if known && key == "video.match_frame_rate" && !value {
+                    self.call_activity(
+                        "setContentFrameRate",
+                        "(F)V",
+                        &[jni::objects::JValue::Float(0.0)],
+                    );
                 }
             }
             Message::SetConfigString { key, value } => {
