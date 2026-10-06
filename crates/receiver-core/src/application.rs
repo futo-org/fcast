@@ -749,10 +749,10 @@ pub struct Application {
     /// flips it false when the item turns out to be audio only.
     #[cfg(target_os = "android")]
     android_visual: bool,
-    /// Whether the current item makes sound. Defaults to true per load (a
-    /// cast arriving during a call must not play over it, so focus is taken
-    /// before the tracks are known); false for images and for items whose
-    /// stream collection has no audio track. An inaudible item takes no
+    /// Whether the current item makes sound. Defaults to true per load for
+    /// anything but an image (a cast arriving during a call must not play
+    /// over it, so focus is taken before the tracks are known); false for
+    /// images and for items whose stream collection has no audio track. An inaudible item takes no
     /// audio focus and no media session, so a photo never pauses whatever
     /// else is playing.
     #[cfg(target_os = "android")]
@@ -761,6 +761,12 @@ pub struct Application {
     /// regain resumes it. A user pause never sets this.
     #[cfg(target_os = "android")]
     android_transient_pause: bool,
+    /// A cast that started while the activity was not visible is held paused,
+    /// without focus, until the activity shows (tap-to-play or a granted
+    /// bring-to-front), as the Kotlin receiver did. Whatever the user is
+    /// watching keeps playing in the meantime.
+    #[cfg(target_os = "android")]
+    android_hidden_hold: bool,
     /// Current item title for the MediaSession metadata, pushed with the
     /// duration on the progress tick whenever either changes.
     #[cfg(target_os = "android")]
@@ -1159,6 +1165,8 @@ impl Application {
             android_audible: true,
             #[cfg(target_os = "android")]
             android_transient_pause: false,
+            #[cfg(target_os = "android")]
+            android_hidden_hold: false,
             #[cfg(target_os = "android")]
             android_media_title: String::new(),
             #[cfg(target_os = "android")]
@@ -2160,7 +2168,7 @@ impl Application {
         let state = (
             active,
             active && self.android_visual,
-            active && self.android_audible,
+            active && self.android_audible && !self.android_hidden_hold,
         );
         if self.android_playback == state {
             return;
@@ -2326,18 +2334,32 @@ impl Application {
             let active = !matches!(state, AppState::Idle);
             if matches!(state, AppState::LoadingMedia) {
                 // A new item is visual until flapjack says otherwise, and it
-                // must not inherit the previous item's focus-loss hold.
+                // must not inherit the previous item's focus-loss hold. A
+                // photo takes no focus, it would stop the user's music.
+                let image = matches!(self.shown_variant, UiPlayerVariant::Image);
                 self.android_visual = true;
-                self.android_audible = true;
+                self.android_audible = !image;
                 self.android_transient_pause = false;
                 self.android_set_paused(false);
-                // The dedup below can absorb this transition entirely (stop
-                // then immediate re-cast), but focus still needs a re-check:
-                // a cast arriving during a phone call must not play over it.
-                self.call_activity("ensureAudioFocus", "()V", &[]);
+                let rising = !self.android_playback.0;
+                let fcast_item = matches!(
+                    self.current_media.as_ref().map(|m| &m.source),
+                    Some(MediaSource::Single(_) | MediaSource::Playlist { .. } | MediaSource::Queue(_))
+                );
+                if rising && !self.android_ui_visible && fcast_item && !image {
+                    debug!("Cast arrived in the background, held until the activity shows");
+                    self.pause();
+                    self.android_hidden_hold = true;
+                } else if self.android_audible && !self.android_hidden_hold {
+                    // The dedup below can absorb this transition entirely
+                    // (stop then immediate re-cast), but focus still needs a
+                    // re-check: a cast during a phone call must not play over it.
+                    self.call_activity("ensureAudioFocus", "()V", &[]);
+                }
             }
             if !active {
                 self.android_transient_pause = false;
+                self.android_hidden_hold = false;
                 self.android_set_paused(false);
                 // a real end, loads never pass through Idle (PiP leaves)
                 if self.android_playback.0 {
@@ -3710,6 +3732,10 @@ impl Application {
         #[cfg(target_os = "android")]
         {
             self.android_transient_pause = false;
+            if std::mem::take(&mut self.android_hidden_hold) {
+                // focus and the media session were held back with it
+                self.set_playback_active(self.android_playback.0);
+            }
             if self.android_audible {
                 self.call_activity("ensureAudioFocus", "()V", &[]);
             }
@@ -6420,7 +6446,12 @@ impl Application {
                 use crate::message::AndroidWindow;
                 debug!(?event, "android window event");
                 match event {
-                    AndroidWindow::Shown => self.android_ui_visible = true,
+                    AndroidWindow::Shown => {
+                        self.android_ui_visible = true;
+                        if self.android_hidden_hold {
+                            self.resume();
+                        }
+                    }
                     AndroidWindow::Hidden => {
                         self.android_ui_visible = false;
                         if let Some(reset) = self.presentation.hidden() {

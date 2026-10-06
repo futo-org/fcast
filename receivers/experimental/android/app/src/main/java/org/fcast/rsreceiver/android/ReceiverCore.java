@@ -652,8 +652,10 @@ public final class ReceiverCore {
                 nativeAudioEvent(0);
                 break;
             case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT:
-            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
                 nativeAudioEvent(1);
+                break;
+            case AudioManager.AUDIOFOCUS_LOSS_TRANSIENT_CAN_DUCK:
+                // the system ducks us (API 26+), a chime must not pause the cast
                 break;
             case AudioManager.AUDIOFOCUS_GAIN:
                 nativeAudioEvent(2);
@@ -664,8 +666,8 @@ public final class ReceiverCore {
     /// Request focus if none is held. Called from native code on every
     /// play/load edge: a cast arriving during a phone call must not play
     /// over it, and after a permanent loss the request is gone and needs
-    /// remaking. A refusal comes back as a transient-loss event, which
-    /// pauses and resumes on the eventual gain.
+    /// remaking. A delayed grant (during a call) pauses as a transient loss
+    /// and resumes on the gain that follows. A refusal only pauses.
     static void ensureAudioFocus() {
         onMain(() -> {
             if (focusRequest != null) {
@@ -679,11 +681,16 @@ public final class ReceiverCore {
                                     .setContentType(android.media.AudioAttributes.CONTENT_TYPE_MOVIE)
                                     .build())
                             .setOnAudioFocusChangeListener(focusListener)
-                            .setWillPauseWhenDucked(true)
+                            .setAcceptsDelayedFocusGain(true)
                             .build();
             int result = am.requestAudioFocus(req);
             if (result == AudioManager.AUDIOFOCUS_REQUEST_GRANTED) {
                 focusRequest = req;
+            } else if (result == AudioManager.AUDIOFOCUS_REQUEST_DELAYED) {
+                // on the stack, the gain arrives through the listener
+                focusRequest = req;
+                Log.i(TAG, "audio focus delayed");
+                nativeAudioEvent(1);
             } else {
                 Log.i(TAG, "audio focus refused (" + result + ")");
                 nativeAudioEvent(1);
