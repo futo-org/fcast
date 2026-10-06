@@ -155,6 +155,11 @@ export component MasterButton inherits Button {
             icon: Icons.play;
             enabled: true;
         }
+        // a stall is still playback the user may want to pause
+        buffering when Bridge.playback-state == GuiPlaybackState.Buffering: {
+            icon: Icons.pause;
+            enabled: true;
+        }
     ]
 
     clicked => {

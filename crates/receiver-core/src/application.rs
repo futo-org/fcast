@@ -4308,7 +4308,8 @@ impl Application {
             }
             Operation::ResumeOrPause => match self.player.player_state() {
                 PlayerState::Paused => self.resume(),
-                PlayerState::Playing => self.pause(),
+                // pausing a stall keeps it paused once the data is in
+                PlayerState::Playing | PlayerState::Buffering => self.pause(),
                 _ => {
                     error!(
                         "Cannot resume or pause in player current state: {:?}",

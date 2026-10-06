@@ -561,12 +561,12 @@ export global Bridge {
         } else if !android && event.text == "f" {
             toggle-fullscreen();
             return accept;
-        } else if Bridge.is-playing() && event.text == Key.Space {
+        } else if in-playback() && event.text == Key.Space {
             // With the chrome hidden the shortcut is an outside command as
             // far as feedback goes: the mini OSD says what it did.
             if !controls-overlay-visible {
                 mini-osd-by = "";
-                note-remote-transport(playback-state == GuiPlaybackState.Playing ? UiTransport.Pause : UiTransport.Resume);
+                note-remote-transport(playback-state == GuiPlaybackState.Paused ? UiTransport.Resume : UiTransport.Pause);
             }
             resume-or-pause();
             return accept;
