@@ -6529,11 +6529,15 @@ impl Application {
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
             Message::AppUpdate(event) => return self.handle_app_update_event(event),
             Message::GuiWindowClosed { shows, feedback } => {
-                // A show requested past the ones the teardown saw carried out
-                // means the player serves the next window's load, and a
-                // shutdown would blind the application to it.
+                // Wayland destroys a hidden window, so closing to the tray
+                // lands here. The cast ends but the player stays usable, a
+                // shutdown is final and only quitting may do it. A show past
+                // the ones the teardown saw means the next window is coming.
                 if shows == self.gui.shows() {
-                    self.player.shutdown(feedback);
+                    if self.is_playing() {
+                        self.handle_operation(Operation::Stop, PacketOrigin::Gui)?;
+                    }
+                    self.player.release(feedback);
                 } else {
                     debug!(shows, "Ignoring a teardown the window has since come back from");
                 }

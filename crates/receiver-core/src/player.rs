@@ -1434,6 +1434,15 @@ impl Player {
         self.go_to_stopped_state(Some(feedback));
     }
 
+    /// Stops and lets go of the picture like [`shutdown`](Self::shutdown),
+    /// but the player takes the next load.
+    pub fn release(&mut self, feedback: oneshot::Sender<()>) {
+        self.go_to_stopped_state(None);
+        self.fcast.barrier(Box::new(move || {
+            debug!(res = ?feedback.send(()), "Sent release feedback signal");
+        }));
+    }
+
     /// Returns `true` if any stream has new properties.
     pub fn update_stream_properties(&mut self) -> bool {
         let mut did_change = false;

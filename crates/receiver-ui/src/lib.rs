@@ -264,12 +264,12 @@ pub fn run(settings: Settings) -> Result<()> {
                         shows,
                         Duration::from_millis(2500),
                     ) {
-                        gui::TeardownWait::Released => debug!("Player shutdown successfully"),
+                        gui::TeardownWait::Released => debug!("Player released"),
                         gui::TeardownWait::ShowRequested => {
                             debug!("Window shown again during its teardown, not waiting on the player")
                         }
                         gui::TeardownWait::TimedOut => {
-                            error!("Timed out waiting for the player to shut down")
+                            error!("Timed out waiting for the player to let go")
                         }
                     }
                     // The overlay's scene pool outlives the renderer that
