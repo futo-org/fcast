@@ -429,7 +429,9 @@ fn image_download_error_kind(err: &image::DownloadImageError) -> ErrorKind {
         | E::InvalidCompUrl
         | E::ProviderNotFound
         | E::CompRequestFailed
+        | E::CompTimedOut
         | E::ResourceNotFound => ErrorKind::ResourceNotFound,
+        E::TooLarge(_) => ErrorKind::UnsupportedFormat,
         E::MissingContentType
         | E::InvalidContentType
         | E::ContentTypeIsNotString
@@ -1124,7 +1126,13 @@ impl Application {
 
         image::init_extra_decoders();
         let image_decoder = image::Decoder::new(msg_tx.clone())?;
-        let http_client = reqwest::Client::new();
+        // A server that accepts and then never answers would hold a load on
+        // its loading screen and a socket open forever. Idle based, a slow
+        // but moving update download is fine.
+        let http_client = reqwest::Client::builder()
+            .connect_timeout(Duration::from_secs(10))
+            .read_timeout(Duration::from_secs(30))
+            .build()?;
         #[cfg(target_os = "android")]
         tokio::spawn(crate::android_updater::run_checker(
             http_client.clone(),
@@ -2849,15 +2857,20 @@ impl Application {
                 if let Some(headers) = play_message.headers.as_ref() {
                     request = request.headers(map_to_header_map(headers));
                 }
+                // far past any real playlist, a bound on a body that never ends
+                const MAX_PLAYLIST: usize = 4 << 20;
                 let mut result = None;
                 match request.send().await {
-                    Ok(resp) => match resp.text().await {
-                        Ok(json) => {
-                            play_message.content = Some(json);
-                            result = Some(play_message);
-                        }
+                    Ok(resp) => match crate::utils::read_body_capped(resp, MAX_PLAYLIST).await {
+                        Ok(body) => match String::from_utf8(body.to_vec()) {
+                            Ok(json) => {
+                                play_message.content = Some(json);
+                                result = Some(play_message);
+                            }
+                            Err(err) => error!(?err, "Playlist is not UTF-8"),
+                        },
                         Err(err) => {
-                            error!(?err, "Failed to convert response to text");
+                            error!(?err, "Failed to read the playlist");
                         }
                     },
                     Err(err) => {

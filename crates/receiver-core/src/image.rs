@@ -44,7 +44,16 @@ pub enum DownloadImageError {
     CompRequestFailed,
     #[error("FCompanion resource not found")]
     ResourceNotFound,
+    #[error("image larger than {0} bytes")]
+    TooLarge(usize),
+    #[error("FCompanion provider stopped answering")]
+    CompTimedOut,
 }
+
+/// Bigger than any photo a phone takes (a 108 MP JPEG is ~40 MB).
+const MAX_IMAGE_DOWNLOAD: usize = 64 << 20;
+/// A companion that goes quiet this long mid-transfer is gone.
+const COMP_RECV_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
 pub fn orientation_to_degs(orientation: metadata::Orientation) -> f32 {
     match orientation {
@@ -451,7 +460,12 @@ impl Downloader {
             .map_err(|_| DownloadImageError::ContentTypeIsNotString)?;
         let format = Self::format_from_content_type(content_type)?;
 
-        let body = resp.bytes().await?;
+        let body = crate::utils::read_body_capped(resp, MAX_IMAGE_DOWNLOAD)
+            .await
+            .map_err(|err| match err {
+                crate::utils::BodyError::Request(err) => DownloadImageError::RequestFailed(err),
+                crate::utils::BodyError::TooLarge(max) => DownloadImageError::TooLarge(max),
+            })?;
         Ok((body, format))
     }
 
@@ -474,19 +488,27 @@ impl Downloader {
             .get_resource(url.resource_id, None)
             .map_err(|_| DownloadImageError::CompRequestFailed)?;
 
-        let info = info
-            .recv()
+        let info = tokio::time::timeout(COMP_RECV_TIMEOUT, info.recv())
             .await
+            .map_err(|_| DownloadImageError::CompTimedOut)?
             .ok_or(DownloadImageError::FailedToGetInfo)?;
         let format = Self::format_from_content_type(info.borrow_dependent().content_type())?;
 
         let mut res = Vec::new();
-        while let Some(a) = resource_rx.recv().await {
+        while let Some(a) = tokio::time::timeout(COMP_RECV_TIMEOUT, resource_rx.recv())
+            .await
+            .map_err(|_| DownloadImageError::CompTimedOut)?
+        {
             match a.result {
                 companion::GetResourceResult::NotFound => {
                     return Err(DownloadImageError::ResourceNotFound);
                 }
-                companion::GetResourceResult::Success(buf) => res.extend_from_slice(&buf),
+                companion::GetResourceResult::Success(buf) => {
+                    if res.len() + buf.len() > MAX_IMAGE_DOWNLOAD {
+                        return Err(DownloadImageError::TooLarge(MAX_IMAGE_DOWNLOAD));
+                    }
+                    res.extend_from_slice(&buf);
+                }
             }
         }
 
