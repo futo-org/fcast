@@ -1734,6 +1734,7 @@ pub fn txt_properties() -> HashMap<String, String> {
 pub fn service_info(device_name: String) -> Result<(ServiceInfo, Configuration)> {
     let hash = device_name_hash(&device_name);
     let fmt_device_name = format!("{}@{device_name}", hash_to_string(&hash),);
+    let fmt_device_name = crate::mdns::dns_label(&fmt_device_name).to_owned();
     let host_name = format!("{fmt_device_name}.local.");
 
     let config = Configuration {
@@ -1934,6 +1935,16 @@ mod tests {
         out.extend_from_slice(&(val.len() as u32).to_be_bytes());
         out.extend_from_slice(val);
         out
+    }
+
+    /// mdns-sd asserts on a label over 63 bytes while writing the packet,
+    /// on the daemon thread every protocol shares.
+    #[test]
+    fn a_long_name_still_fits_one_dns_label() {
+        let (service, _) = service_info("ø".repeat(100)).unwrap();
+        let instance = service.get_fullname().split("._raop").next().unwrap();
+        assert!(instance.len() <= 63, "{}", instance.len());
+        assert!(service.get_hostname().split('.').next().unwrap().len() <= 63);
     }
 
     #[test]

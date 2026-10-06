@@ -238,12 +238,13 @@ pub fn service_info(device_name: String) -> Result<(ServiceInfo, Configuration)>
         pk,
     };
 
-    let host_name = format!("{device_name}.local.");
+    let label = crate::mdns::dns_label(&device_name);
+    let host_name = format!("{label}.local.");
     let props = txt_properties(&config);
 
     let service = ServiceInfo::new(
         "_airplay._tcp.local.",
-        &device_name,
+        label,
         &host_name,
         (), // Auto
         AIRPLAY_TCP_PORT,

@@ -43,6 +43,12 @@ fn clip_utf8(s: &str, max: usize) -> &str {
 
 const MAX_LABEL: usize = 63;
 
+/// `s` as one DNS label. mdns-sd asserts on a longer one while writing the
+/// packet, which panics the daemon thread every protocol advertises on.
+pub(crate) fn dns_label(s: &str) -> &str {
+    clip_utf8(s, MAX_LABEL)
+}
+
 fn is_link_local_v6(ip: std::net::IpAddr) -> bool {
     matches!(ip, std::net::IpAddr::V6(v6) if v6.segments()[0] & 0xffc0 == 0xfe80)
 }
