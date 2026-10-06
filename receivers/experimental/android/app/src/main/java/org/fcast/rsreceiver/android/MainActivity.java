@@ -19,6 +19,9 @@ public class MainActivity extends NativeActivity {
     /// Between onStop and onStart. A PiP window closed on 9 to 12 stops the
     /// activity before the mode change, where an expand starts it.
     private boolean stopped = false;
+    /// An ended cast is taking the PiP window down itself, which looks like
+    /// a dismissal on 9 to 12 but must not send a stop.
+    private boolean leavingEndedCast = false;
     /// This instance has presented a receiver frame. SplashActivity skips its
     /// art while it holds.
     static volatile boolean painted = false;
@@ -349,6 +352,7 @@ public class MainActivity extends NativeActivity {
     void leaveForEndedCast(boolean fromBackground) {
         // Hidden from here, not from onStop: a cast landing before onStop
         // must still bring the receiver back up.
+        leavingEndedCast = isInPictureInPictureMode();
         if (leavesForEndedCast(fromBackground) && moveTaskToBack(true)) {
             ReceiverCore.setUiVisible(false);
         }
@@ -404,8 +408,12 @@ public class MainActivity extends NativeActivity {
         // only stops it behind Home. Either way the user dismissed the video:
         // end the cast for the senders, and keep the receiver reachable as
         // Home would, a finishing onStop starts no service.
+        boolean ownLeave = leavingEndedCast;
+        leavingEndedCast = false;
         if (!inPip && (isFinishing() || stopped)) {
-            ReceiverCore.nativeMediaCommand(0);
+            if (!ownLeave) {
+                ReceiverCore.nativeMediaCommand(0);
+            }
             keepReceiverUp();
         }
     }
@@ -438,6 +446,7 @@ public class MainActivity extends NativeActivity {
     protected void onStart() {
         super.onStart();
         stopped = false;
+        leavingEndedCast = false;
         ReceiverCore.setUiVisible(true);
         Updater.onActivityStarted(this);
         // The activity is back; its own lifecycle keeps the process warm,
