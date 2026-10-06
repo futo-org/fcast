@@ -113,6 +113,11 @@ pub struct SenderInfo {
     pub protocol: fcast_bug_report::Protocol,
 }
 
+/// How long the app thread waits for the GUI thread to answer. A GUI thread
+/// parked in a present (a window in an unfocused tab) would otherwise hang
+/// every session with it.
+const GUI_ANSWER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 #[derive(Debug)]
 pub enum UpdateGuiCommand {
     DeviceConnected,
@@ -484,7 +489,7 @@ impl GuiController {
             fullscreen,
             prev_tx,
         });
-        match prev_rx.recv() {
+        match prev_rx.recv_timeout(GUI_ANSWER_TIMEOUT) {
             Ok(p) => p,
             Err(err) => {
                 error!(?err, "Failed to receive previous window fullscreen state");
@@ -726,11 +731,12 @@ impl GuiController {
         }
         let (prev_tx, prev_rx) = oneshot::channel();
         self.send(UpdateGuiCommand::SetWindowVisibility { visible, prev_tx });
-        match prev_rx.recv() {
+        match prev_rx.recv_timeout(GUI_ANSWER_TIMEOUT) {
             Ok(p) => p,
+            // as if it was up, so the restore at the end never hides it
             Err(err) => {
                 error!(?err, "Failed to receive previous window visibility state");
-                false
+                true
             }
         }
     }
@@ -802,6 +808,20 @@ mod tests {
     use super::*;
 
     const LONG: Duration = Duration::from_secs(5);
+
+    /// A GUI thread that never answers costs the app thread a bounded wait.
+    #[test]
+    fn a_stuck_gui_thread_does_not_hang_the_app() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let gui = GuiController::new(Some(tx), GuiIsVisible::new());
+        let start = std::time::Instant::now();
+        assert!(gui.set_window_visibility(true), "assumed up, so a restore never hides it");
+        assert!(!gui.set_fullscreen(true));
+        assert!(start.elapsed() < GUI_ANSWER_TIMEOUT * 3);
+        // both commands were still sent, for a GUI thread that catches up
+        assert!(matches!(rx.try_recv(), Ok(UpdateGuiCommand::SetWindowVisibility { visible: true, .. })));
+        assert!(matches!(rx.try_recv(), Ok(UpdateGuiCommand::SetFullscreen { fullscreen: true, .. })));
+    }
 
     #[test]
     fn a_shutdown_answer_releases_the_teardown() {
