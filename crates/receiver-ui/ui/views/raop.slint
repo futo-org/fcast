@@ -65,6 +65,8 @@ export component RaopView inherits Rectangle {
         if !Bridge.media-title.is-empty: FText {
             horizontal-alignment: center;
             text: Bridge.media-title;
+            // one line: a long tag title pushed the controls off screen
+            overflow: elide;
             font-size: 28px;
             font-weight: 600;
             color: FCastPalette.neutral-100;
@@ -73,6 +75,8 @@ export component RaopView inherits Rectangle {
         if !Bridge.artist-name.is-empty: FText {
             horizontal-alignment: center;
             text: Bridge.artist-name;
+            // one line: a long tag title pushed the controls off screen
+            overflow: elide;
             font-size: 18px;
             font-weight: 600;
             color: FCastPalette.opacity-light-500;
