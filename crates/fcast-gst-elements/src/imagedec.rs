@@ -43,6 +43,8 @@ pub mod imp {
     /// A header can claim any size and an allocation failure aborts past
     /// every guard. 128 MP keeps a 108 MP phone photo.
     const MAX_STILL_PIXELS: u64 = 128_000_000;
+    /// Directly built decoders skip image's own 512 MB allocation limit.
+    const MAX_STILL_BYTES: u64 = 512 << 20;
     /// Every frame of an animation decodes at full size, again on each loop.
     const MAX_ANIMATION_PIXELS: u64 = 4096 * 4096;
     /// Longest side a still goes out at: above a 4K screen and within every
@@ -59,16 +61,32 @@ pub mod imp {
         Ok(())
     }
 
-    /// RGBA, scaled down to [`MAX_STILL_SIDE`] without a full size RGBA copy.
-    pub(crate) fn fit_still(img: image::DynamicImage) -> image::RgbaImage {
-        let (w, h) = (img.width(), img.height());
+    /// The size an image is shown at, its longest side at most
+    /// [`MAX_STILL_SIDE`]. None when it already fits.
+    fn fitted_size(w: u32, h: u32) -> Option<(u32, u32)> {
         let long = w.max(h);
         if long <= MAX_STILL_SIDE {
-            return img.into_rgba8();
+            return None;
         }
         let tw = (w as u64 * MAX_STILL_SIDE as u64 / long as u64).max(1) as u32;
         let th = (h as u64 * MAX_STILL_SIDE as u64 / long as u64).max(1) as u32;
-        image::imageops::thumbnail(&img, tw, th)
+        Some((tw, th))
+    }
+
+    /// RGBA, scaled down to [`MAX_STILL_SIDE`] without a full size RGBA copy.
+    pub(crate) fn fit_still(img: image::DynamicImage) -> image::RgbaImage {
+        match fitted_size(img.width(), img.height()) {
+            Some((tw, th)) => image::imageops::thumbnail(&img, tw, th),
+            None => img.into_rgba8(),
+        }
+    }
+
+    /// An animation frame past the texture limit, scaled like a still.
+    fn fit_frame(frame: image::RgbaImage) -> image::RgbaImage {
+        match fitted_size(frame.width(), frame.height()) {
+            Some((tw, th)) => image::imageops::thumbnail(&frame, tw, th),
+            None => frame,
+        }
     }
 
     /// The bus message the application uses to classify an image load.
@@ -435,7 +453,18 @@ pub mod imp {
                 if delay_ms <= MIN_DELAY_MS {
                     delay_ms = DEFAULT_DELAY_MS;
                 }
-                match self.push_frame(frame.into_buffer(), delay_ms.max(decode_ms)) {
+                let frame = frame.into_buffer();
+                // A GIF is only known to animate at its second frame, and it
+                // passed the still cap. Past the animation cap, the first
+                // frame stays up as a still.
+                if frames >= 1
+                    && frame.width() as u64 * frame.height() as u64 > MAX_ANIMATION_PIXELS
+                {
+                    warn!("fimagedec: animation too large, showing its first frame");
+                    self.input.park();
+                    return Ok(PassOutcome::Stop);
+                }
+                match self.push_frame(fit_frame(frame), delay_ms.max(decode_ms)) {
                     Ok(()) => frames += 1,
                     Err(gst::FlowError::Flushing | gst::FlowError::Eos) => {
                         return Ok(PassOutcome::Stop);
@@ -460,7 +489,8 @@ pub mod imp {
                 let decoder = GifDecoder::new(reader)?;
                 if first_pass {
                     let (w, h) = decoder.dimensions();
-                    check_pixels(w, h, MAX_ANIMATION_PIXELS)?;
+                    // one frame makes it a still, see push_pass
+                    check_pixels(w, h, MAX_STILL_PIXELS)?;
                     self.post_stream_info("gif", w, h, true);
                 }
                 match self.push_pass(decoder)? {
@@ -492,10 +522,15 @@ pub mod imp {
                 .unwrap_or(image::metadata::Orientation::NoTransforms);
             let (w, h) = decoder.dimensions();
             check_pixels(w, h, MAX_STILL_PIXELS)?;
+            if decoder.total_bytes() > MAX_STILL_BYTES {
+                return Err(DecodeError::Other(format!("image too large to decode ({w}x{h})")));
+            }
             self.post_stream_info(format, w, h, false);
-            let mut img = image::DynamicImage::from_decoder(decoder)?;
+            // scaled before the rotation, which copies the whole image
+            let mut img =
+                image::DynamicImage::ImageRgba8(fit_still(image::DynamicImage::from_decoder(decoder)?));
             img.apply_orientation(orientation);
-            match self.push_frame(fit_still(img), DEFAULT_DELAY_MS) {
+            match self.push_frame(img.into_rgba8(), DEFAULT_DELAY_MS) {
                 Ok(()) | Err(gst::FlowError::Flushing | gst::FlowError::Eos) => {}
                 Err(err) => return Err(err.into()),
             }
