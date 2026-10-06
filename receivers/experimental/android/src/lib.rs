@@ -105,7 +105,7 @@ fn android_main(app: slint::android::AndroidApp) {
     if !keep_core {
         // a running sticky service would bring the process straight back
         rcore::android_jni::call("stopServiceForExit", "()V", &[]);
-        std::process::exit(0);
+        end_process();
     }
 }
 
@@ -200,7 +200,14 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeShutdown<
     _class: jni::objects::JClass<'local>,
 ) {
     rcore::android_shutdown();
-    std::process::exit(0);
+    end_process();
+}
+
+/// `_exit`, not `exit`: the quit waits a bounded 2 s for a teardown that can
+/// take longer, and `exit`'s static destructors would run under MediaCodec
+/// threads still releasing, a crash on the way out.
+fn end_process() -> ! {
+    unsafe { libc::_exit(0) }
 }
 
 fn log_filter(level: rcore::tracing::level_filters::LevelFilter) -> log::LevelFilter {

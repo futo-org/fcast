@@ -13,6 +13,8 @@ jni = "0.21.1"
 ndk-context = "0.1.1"
 tokio.workspace = true
 parking_lot.workspace = true
+# _exit at quit, see end_process
+libc = "0.2"
 # GL beside the Vulkan the renderer brings, for boxes without a Vulkan driver
 wgpu = { version = "30", default-features = false, features = ["gles"] }
 

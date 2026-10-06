@@ -8583,6 +8583,7 @@ version = "0.1.0"
 dependencies = [
  "android_logger",
  "jni 0.21.1",
+ "libc",
  "log",
  "log-panics",
  "ndk-context",
