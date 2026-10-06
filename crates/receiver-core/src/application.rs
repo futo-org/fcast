@@ -772,9 +772,9 @@ pub struct Application {
     /// The hold resumes when the activity shows, unless paused meanwhile.
     #[cfg(target_os = "android")]
     android_hold_resumes: bool,
-    /// When a cast that was not held last ended. A cast following it closely
-    /// is the sender's next item (a playlist it advances itself) and plays on
-    /// in the background like the one before.
+    /// When a cast last ended while playing in the background, not held. A
+    /// cast following it closely is the sender's next item (a playlist it
+    /// advances itself) and plays on in the background like the one before.
     #[cfg(target_os = "android")]
     android_last_end: Option<Instant>,
     /// Current item title for the MediaSession metadata, pushed with the
@@ -2353,6 +2353,15 @@ impl Application {
     #[cfg(target_os = "android")]
     const ANDROID_NEXT_ITEM_WINDOW: Duration = Duration::from_secs(15);
 
+    /// Before playback is released. Only a cast that was playing in the
+    /// background counts, a watched one ending says nothing about the next.
+    #[cfg(target_os = "android")]
+    fn android_note_end(&mut self) {
+        if self.android_playback.0 && !self.android_hidden_hold && !self.android_ui_visible {
+            self.android_last_end = Some(Instant::now());
+        }
+    }
+
     #[cfg(target_os = "android")]
     fn android_cast_edge(&mut self, state: AppState) {
         {
@@ -2391,9 +2400,7 @@ impl Application {
                 }
             }
             if !active {
-                if self.android_playback.0 && !self.android_hidden_hold {
-                    self.android_last_end = Some(Instant::now());
-                }
+                self.android_note_end();
                 self.android_transient_pause = false;
                 self.android_hidden_hold = false;
                 self.android_set_paused(false);
@@ -2438,6 +2445,7 @@ impl Application {
             // The cast is over like a stop, the activity decides whether it
             // goes back to the background. Delayed there while a sender is
             // connected, it may load the next item on hearing of this end.
+            self.android_note_end();
             if self.android_playback.0 {
                 let next_may_come = self.updates_tx.receiver_count() > 0;
                 self.call_activity(
@@ -2717,7 +2725,7 @@ impl Application {
         // A still never reports a video stream, so the default mode comes back
         // here or a photo after a 24 fps video stays at 24 Hz.
         #[cfg(target_os = "android")]
-        if matches!(player_variant, UiPlayerVariant::Image) && self.android_playback.0 {
+        if matches!(player_variant, UiPlayerVariant::Image) {
             self.call_activity(
                 "setContentFrameRate",
                 "(F)V",
