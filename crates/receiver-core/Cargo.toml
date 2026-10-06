@@ -25,6 +25,8 @@ anyhow.workspace = true
 futures.workspace = true
 url = "2"
 thiserror = "2"
+# dual-stack FCast listener (IPV6_V6ONLY off), which tokio cannot set
+socket2 = "0.6"
 mdns-sd.workspace = true
 fast_qr = { version = "0.13", features = [ "svg" ] }
 # the bug report as the QR carries it, and its decoder's format

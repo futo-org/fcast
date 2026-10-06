@@ -6754,27 +6754,53 @@ impl Application {
     /// Bind the FCast listening socket(s); `port == 0` requests an ephemeral
     /// port. Later address families are pinned to the first's port so one
     /// number can be advertised.
+    #[cfg(target_os = "windows")]
     async fn bind_fcast_listeners(port: u16) -> std::io::Result<Vec<TcpListener>> {
-        use std::net::{IpAddr, Ipv6Addr, SocketAddr};
+        use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
-        #[cfg(target_os = "windows")]
-        let addrs: &[IpAddr] = &[
-            IpAddr::V4(std::net::Ipv4Addr::UNSPECIFIED),
-            IpAddr::V6(Ipv6Addr::UNSPECIFIED),
-        ];
-        #[cfg(not(target_os = "windows"))]
-        let addrs: &[IpAddr] = &[IpAddr::V6(Ipv6Addr::UNSPECIFIED)];
-
+        let addrs = [IpAddr::V4(Ipv4Addr::UNSPECIFIED), IpAddr::V6(Ipv6Addr::UNSPECIFIED)];
         let mut listeners = Vec::with_capacity(addrs.len());
         let mut chosen = port;
         for addr in addrs {
-            let listener = TcpListener::bind(SocketAddr::new(*addr, chosen)).await?;
+            let listener = TcpListener::bind(SocketAddr::new(addr, chosen)).await?;
             if chosen == 0 {
                 chosen = listener.local_addr()?.port();
             }
             listeners.push(listener);
         }
         Ok(listeners)
+    }
+
+    /// One dual-stack socket, IPv4 included even with bindv6only=1, and IPv4
+    /// alone where IPv6 is disabled, where binding [::] fails and used to end
+    /// the receiver at startup. `port == 0` requests an ephemeral port.
+    #[cfg(not(target_os = "windows"))]
+    async fn bind_fcast_listeners(port: u16) -> std::io::Result<Vec<TcpListener>> {
+        use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+
+        match Self::bind_dual_stack(port) {
+            Ok(listener) => Ok(vec![listener]),
+            Err(err) if err.kind() == std::io::ErrorKind::AddrInUse => Err(err),
+            Err(err) => {
+                warn!(?err, "No IPv6 listener, serving IPv4 only");
+                let v4 = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), port);
+                Ok(vec![TcpListener::bind(v4).await?])
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    fn bind_dual_stack(port: u16) -> std::io::Result<TcpListener> {
+        use socket2::{Domain, Protocol, Socket, Type};
+        let socket = Socket::new(Domain::IPV6, Type::STREAM, Some(Protocol::TCP))?;
+        socket.set_only_v6(false)?;
+        // as tokio's bind does on unix, so a restart rebinds at once
+        socket.set_reuse_address(true)?;
+        let addr = std::net::SocketAddr::new(std::net::Ipv6Addr::UNSPECIFIED.into(), port);
+        socket.bind(&addr.into())?;
+        socket.listen(1024)?;
+        socket.set_nonblocking(true)?;
+        TcpListener::from_std(socket.into())
     }
 
     /// Acquire the FCast listening socket(s); `None` if the user quit before
@@ -7380,6 +7406,17 @@ mod tests {
         // Sub-second durations are real durations.
         let tiny = gst::ClockTime::from_nseconds(1);
         assert_eq!(cacheable_duration(Some(tiny)), Some(tiny));
+    }
+
+    #[tokio::test]
+    async fn the_fcast_listener_takes_ipv4_and_ipv6() {
+        let listeners = Application::bind_fcast_listeners(0).await.unwrap();
+        let port = listeners[0].local_addr().unwrap().port();
+        tokio::net::TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        // a host without IPv6 gets the IPv4 fallback, nothing to dial there
+        if listeners[0].local_addr().unwrap().is_ipv6() {
+            tokio::net::TcpStream::connect(("::1", port)).await.unwrap();
+        }
     }
 
     #[test]

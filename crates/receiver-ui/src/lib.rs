@@ -117,6 +117,11 @@ pub fn select_wgpu_video_backend() -> bool {
 pub mod gui;
 pub mod scaling;
 
+/// Set when the event loop ends in an error, so the process exits non-zero
+/// and a service manager's restart-on-failure sees it.
+#[cfg(not(target_os = "android"))]
+static EVENT_LOOP_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// The receiver's event loop task returned or panicked. Either way nothing
 /// handles protocol traffic any more, so the window quits instead of staying
 /// up with nothing behind it. A clean return is the quit path itself.
@@ -130,6 +135,10 @@ fn event_loop_ended(result: std::result::Result<Result<()>, tokio::task::JoinErr
             error!(?result, "Receiver event loop ended with no UI up, exiting");
             std::process::exit(1);
         }
+    }
+    #[cfg(not(target_os = "android"))]
+    if !matches!(result, Ok(Ok(()))) {
+        EVENT_LOOP_FAILED.store(true, std::sync::atomic::Ordering::Release);
     }
     match result {
         Ok(Ok(())) => return,
@@ -501,6 +510,9 @@ pub fn run(settings: Settings) -> Result<()> {
         });
     }
 
+    if EVENT_LOOP_FAILED.load(std::sync::atomic::Ordering::Acquire) {
+        anyhow::bail!("the receiver event loop failed");
+    }
     Ok(())
 }
 
