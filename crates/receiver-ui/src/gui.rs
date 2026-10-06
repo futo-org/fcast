@@ -676,10 +676,19 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
             // builds, a window handed late costs a rebuild and a keyframe
             // wait (frozen first seconds)
             // (the item boundary itself ran on the core thread, see
-            // android_surface_video::item_boundary)
+            // android_surface_video::item_boundary). Not for an image: no
+            // codec to rebuild, and a still's caps and only buffer land
+            // together, so it could show stretched in the full-window
+            // pre-open before the letterbox rect took effect. Its surface
+            // is born at that rect instead. The variant is set ahead of
+            // LoadingMedia.
             #[cfg(target_os = "android")]
             if matches!(state, ui_types::AppState::LoadingMedia) {
-                crate::android_surface_video::preopen_current();
+                if bridge.get_player_variant() == UiPlayerVariant::Image {
+                    crate::android_surface_video::expect_window();
+                } else {
+                    crate::android_surface_video::preopen_current();
+                }
             }
             // Idle means no load in flight: a pre-open left pending (a stop
             // or failed load that beat the caps) would re-open a fullscreen

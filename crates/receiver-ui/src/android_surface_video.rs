@@ -37,6 +37,12 @@
 //!   landing after them wiped the new item's size and left the hole filled
 //!   for good (black screen). Not inferred from app states either: a load
 //!   over a still-loading item passes no state edge.
+//! * Reveal only a placed frame. The fill drops when the item's first buffer
+//!   has reached the sink AND the surface is on screen at the rect asked
+//!   for (`SurfaceEvent::Resized`). `set_rect` only posts to the android UI
+//!   thread, and a still sends its caps and its only buffer together: keyed
+//!   to the buffer alone, it showed for a frame stretched over the window
+//!   in the full-window pre-open. A give-up timer bounds the wait.
 //! * Clear the player's window BEFORE the surface dies, never after. Both the
 //!   caps-drop path and `app_visibility(false)` do set_video_window null first;
 //!   the generation bump it causes is also what lets a codec that already
@@ -53,7 +59,7 @@
 
 use std::sync::{
     Arc, Mutex, OnceLock,
-    atomic::{AtomicBool, AtomicI32, Ordering},
+    atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering},
 };
 
 use gst::prelude::*;
@@ -71,9 +77,13 @@ struct Sink {
     /// window transform (raw path) rotate the pixels, and this is the
     /// layout's half of the same fact.
     rotation: AtomicI32,
-    /// Mirrors `video-frame-pending`: set at an item boundary, cleared by the
-    /// item's first buffer at the sink.
+    /// Mirrors `video-frame-pending`: set at an item boundary, cleared once
+    /// the item's first buffer is at the sink and the surface is placed.
     frame_pending: AtomicBool,
+    /// The item's first buffer reached the sink.
+    buffer_seen: AtomicBool,
+    /// Bumped per fill, so a reveal give-up only drops its own.
+    fill_gen: AtomicU32,
 }
 
 /// The view behind one attached UI, and its surface handoff.
@@ -166,6 +176,15 @@ pub(crate) fn park_current() {
     this.retire_surface();
 }
 
+/// An image load, which skips the pre-open: renew the boundary's window
+/// promise (an Idle the UI thread ran late may have dropped it) and bound it,
+/// the surface only comes up at the image's caps. UI thread.
+pub(crate) fn expect_window() {
+    if let Some(this) = view() {
+        this.promise_window();
+    }
+}
+
 /// A retired surface is gone: whatever waited on it (the next item's caps, or
 /// a pre-open) may show the view again now.
 fn resume_after_retire() {
@@ -235,6 +254,7 @@ pub(crate) fn preopen_current() {
                 // the old surface's destruction re-fires this
                 return;
             }
+            st.wanted = (win.width as i32, win.height as i32);
             let _ = this
                 .surface
                 .set_rect(0, 0, win.width as i32, win.height as i32);
@@ -246,12 +266,58 @@ pub(crate) fn preopen_current() {
 
 /// Mirrors `video-frame-pending` into the attached UI, on change only.
 fn set_frame_pending(pending: bool) {
+    if pending {
+        sink().buffer_seen.store(false, Ordering::Relaxed);
+        sink().fill_gen.fetch_add(1, Ordering::Relaxed);
+    }
     if sink().frame_pending.swap(pending, Ordering::Relaxed) == pending {
         return;
     }
     if let Some(this) = view() {
         let _ = this.ui.upgrade_in_event_loop(move |ui| {
             ui.global::<crate::Bridge>().set_video_frame_pending(pending);
+        });
+    }
+}
+
+/// How long a frame that reached the sink waits for its rect before it is
+/// revealed regardless, in case the resize report never comes.
+const REVEAL_GIVE_UP: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Drops the fill once the first buffer is in and the surface is placed.
+fn reveal_when_placed() {
+    let state = sink();
+    if !state.frame_pending.load(Ordering::Relaxed) || !state.buffer_seen.load(Ordering::Relaxed) {
+        return;
+    }
+    // no view, nothing on screen to misplace
+    if view().is_none_or(|this| this.handoff.lock().unwrap().placed()) {
+        set_frame_pending(false);
+    }
+}
+
+/// The first buffer is in: reveal now if placed, else when the resize lands
+/// or the give-up runs out.
+fn first_buffer_seen() {
+    let state = sink();
+    if state.buffer_seen.swap(true, Ordering::Relaxed) {
+        return;
+    }
+    reveal_when_placed();
+    if !state.frame_pending.load(Ordering::Relaxed) {
+        return;
+    }
+    let generation = state.fill_gen.load(Ordering::Relaxed);
+    if let Some(this) = view() {
+        let _ = this.ui.upgrade_in_event_loop(move |_| {
+            slint::Timer::single_shot(REVEAL_GIVE_UP, move || {
+                if sink().fill_gen.load(Ordering::Relaxed) == generation
+                    && sink().frame_pending.load(Ordering::Relaxed)
+                {
+                    warn!("surface video: rect never reported placed, revealing anyway");
+                    set_frame_pending(false);
+                }
+            });
         });
     }
 }
@@ -297,9 +363,21 @@ struct Handoff {
     preopen_pending: bool,
     // bumped per window promise, so a give-up timer only drops its own
     promise_gen: u32,
+    // size of the rect last asked for, and the (seq, size) the live surface
+    // last reported on screen
+    wanted: (i32, i32),
+    placed_as: Option<(i32, i32, i32)>,
 }
 
 impl Handoff {
+    /// The live surface is on screen at the size last asked for.
+    fn placed(&self) -> bool {
+        let Some((_, seq)) = &self.live else {
+            return false;
+        };
+        self.wanted.0 > 0 && self.placed_as == Some((*seq, self.wanted.0, self.wanted.1))
+    }
+
     fn hand_live(&mut self) {
         if let Some((window, seq)) = &self.live
             && self.handed_seq != *seq
@@ -344,7 +422,7 @@ pub fn make_sink() -> Option<gst::Element> {
         let gap = matches!(&info.data, Some(gst::PadProbeData::Buffer(b))
             if b.flags().contains(gst::BufferFlags::GAP));
         if !gap && sink().frame_pending.load(Ordering::Relaxed) {
-            set_frame_pending(false);
+            first_buffer_seen();
         }
         gst::PadProbeReturn::Ok
     });
@@ -363,6 +441,9 @@ pub fn make_sink() -> Option<gst::Element> {
                     let prev = sink().rotation.swap(degrees, Ordering::Relaxed);
                     if prev != degrees {
                         info!(degrees, "surface video: display rotation");
+                        if let Some(this) = view() {
+                            this.handoff.lock().unwrap().wanted = (0, 0);
+                        }
                         relayout_current();
                     }
                 }
@@ -419,6 +500,9 @@ pub fn make_sink() -> Option<gst::Element> {
                 st.preopen_pending = false;
                 // a new item's caps: a later drop is its own
                 st.retired_at_boundary = false;
+                // the pre-open's rect no longer counts as placed, the
+                // relayout below asks for the real one
+                st.wanted = (0, 0);
             }
             *sink().video_size.lock().unwrap() = (w as u32, h as u32);
             if let Some(this) = &view {
@@ -524,9 +608,12 @@ impl SurfaceVideo {
                 }
                 info!(vw, vh, x, y, w, h, "surface video: rect");
                 crate::android_immersive::set_video_aspect(vw, vh);
+                st.wanted = (w, h);
                 let _ = this.surface.set_rect(x, y, w, h);
                 let _ = this.surface.set_visible(true);
             }
+            // a move that keeps the size reports no resize
+            reveal_when_placed();
             // The hole only exists in a frame slint actually painted after
             // the player view took over; nothing else changes here, so ask
             // for one instead of waiting for the next input
@@ -581,6 +668,12 @@ impl SurfaceVideo {
                     resume = true;
                 }
             }
+            SurfaceEvent::Resized { seq, width, height } => {
+                st.placed_as = Some((seq, width, height));
+                drop(st);
+                reveal_when_placed();
+                return;
+            }
         }
         drop(st);
         if resume {
@@ -600,6 +693,12 @@ impl SurfaceVideo {
                 return;
             }
         }
+        self.promise_window();
+    }
+
+    /// Promises the decoder a window, dropped if none is live by
+    /// `SURFACE_GIVE_UP`. UI thread.
+    fn promise_window(self: &Arc<Self>) {
         crate::set_video_window_pending(true);
         let promise = {
             let mut st = self.handoff.lock().unwrap();
