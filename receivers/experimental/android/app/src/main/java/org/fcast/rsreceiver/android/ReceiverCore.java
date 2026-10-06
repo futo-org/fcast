@@ -823,11 +823,11 @@ public final class ReceiverCore {
         handler.postDelayed(castWaitingCheck, CAST_WAITING_DELAY_MS);
     }
 
-    /// A legacy still image cast over an active cast, which raises no rising
-    /// edge in setPlaybackActive (every other load passes through Idle and
-    /// comes forward there). Native calls it only when the load sent no rising
-    /// edge, so one load brings the receiver forward once. Any thread, posted
-    /// behind the setPlaybackActive it follows.
+    /// A load over an active cast, which raises no rising edge in
+    /// setPlaybackActive (loads never pass through Idle). Native calls it
+    /// only when the load sent no rising edge, so one load brings the
+    /// receiver forward once. Any thread, posted behind the
+    /// setPlaybackActive it follows.
     static void castLoaded() {
         onMain(() -> {
             if (castActive && !uiVisible) {
@@ -839,6 +839,9 @@ public final class ReceiverCore {
     /// How long an item's end waits before leaving, for a sender that loads
     /// the next item when it hears of the end (desktop sender playlists).
     private static final long ENDED_LEAVE_DELAY_MS = 3000;
+    /// A stop's wait, the core's item-boundary hold (presentation.rs
+    /// END_HOLD), so a stop followed by a play never leaves and comes back.
+    private static final long STOPPED_LEAVE_DELAY_MS = 1000;
     private static final Runnable endedCastLeave = () -> {
         // a new cast took over, it keeps the window and the flag
         if (!castActive) {
@@ -846,23 +849,23 @@ public final class ReceiverCore {
         }
     };
 
-    /// The cast ended for real, a stop or the last item's end (native skips
-    /// a load clearing the previous item). A UI in PiP leaves it, and so does
-    /// one the cast brought forward from the background. A stop leaves at
-    /// once, an end (`finished`) after a grace a new item cancels. Any thread.
+    /// The cast ended for real, a stop or the last item's end. A UI in PiP
+    /// leaves it, and so does one the cast brought forward from the
+    /// background, after a grace a new item cancels (longer for an end a
+    /// sender may follow up on, `finished`). Native keeps the ended item on
+    /// screen until the window is gone. Any thread.
     static void castEnded(boolean finished) {
         onMain(() -> {
             handler.removeCallbacks(endedCastLeave);
-            if (finished) {
-                handler.postDelayed(endedCastLeave, ENDED_LEAVE_DELAY_MS);
-            } else {
-                leaveEndedCast();
+            handler.postDelayed(endedCastLeave,
+                    finished ? ENDED_LEAVE_DELAY_MS : STOPPED_LEAVE_DELAY_MS);
+            MainActivity a = activity.get();
+            if (a != null && a.leavesForEndedCast(castFromBackground)) {
+                nativeLeavingForEndedCast();
             }
         });
     }
 
-    /// Unguarded: native sends a stop's castEnded ahead of the inactive
-    /// edge, so castActive still reads true here.
     private static void leaveEndedCast() {
         boolean toBack = castFromBackground;
         castFromBackground = false;
@@ -973,4 +976,7 @@ public final class ReceiverCore {
     static native void nativeMediaCommand(int code);
     /// Absolute seek from the session (lock screen, BT remote), seconds.
     static native void nativeMediaSeek(double seconds);
+    /// An ended cast will send the task to the back: the core holds the
+    /// ended item on screen until onStop instead of showing the idle screen.
+    private static native void nativeLeavingForEndedCast();
 }

@@ -46,7 +46,7 @@ use crate::{
     media_source,
     message::{Mdns, Message, ReceiverToFCastSender},
     player::{self, PlayerState},
-    queue_cache,
+    presentation, queue_cache,
     stall_recovery::{self, StallAction},
     ui_types::{AppState, GuiPlaybackState, UiMediaTrack, UiPlayerVariant, UiToastKind},
     utils::{current_time_millis, map_to_header_map},
@@ -105,18 +105,6 @@ struct GuiSeekHold {
     /// Requested position in seconds, clamped to the media duration.
     target: f64,
     since: Instant,
-}
-
-#[derive(PartialEq, Eq)]
-enum PreservePlaylist {
-    Yes,
-    No,
-}
-
-#[derive(PartialEq, Eq)]
-enum ContinueToPlay {
-    Yes,
-    No,
 }
 
 /// What a bug report says about the item that failed, taken before the
@@ -749,9 +737,10 @@ pub struct Application {
     /// can tell whether that edge already brought the receiver forward.
     #[cfg(target_os = "android")]
     android_rise_gen: u32,
-    /// A load is clearing the previous item: its Idle is no end of the cast.
+    /// The activity is started (onStart to onStop). An item-boundary hold
+    /// nobody can see resets at once.
     #[cfg(target_os = "android")]
-    android_replacing: bool,
+    android_ui_visible: bool,
     /// Whether the current item has something to show. Defaults to true per
     /// load (video and images want the screen awake from the start); flapjack
     /// flips it false when the item turns out to be audio only.
@@ -832,6 +821,17 @@ pub struct Application {
     /// before then.
     port_committed: bool,
     have_media_title: bool,
+    /// The idle reset an ended item's hold defers.
+    presentation: presentation::Presentation,
+    /// What the GUI was last told to show, for [`presentation::load_behind`].
+    shown_app_state: AppState,
+    shown_variant: UiPlayerVariant,
+    load_behind: bool,
+    /// The previous item's title, artist and cover stay up until the new
+    /// item prerolls, which then clears what it did not replace.
+    item_display_committed: bool,
+    /// The current item put up its own cover.
+    cover_shown: bool,
     // GStreamer re-emits the artist tag many times per item and gapless has no
     // queue-metadata artist to gate on, so dedup by value rather than a seen-flag.
     last_artist_name: Option<String>,
@@ -1144,7 +1144,7 @@ impl Application {
             #[cfg(target_os = "android")]
             android_rise_gen: 0,
             #[cfg(target_os = "android")]
-            android_replacing: false,
+            android_ui_visible: false,
             #[cfg(target_os = "android")]
             android_visual: true,
             #[cfg(target_os = "android")]
@@ -1196,6 +1196,12 @@ impl Application {
             fcast_port: FCAST_TCP_PORT,
             port_committed: false,
             have_media_title: false,
+            presentation: Default::default(),
+            shown_app_state: AppState::Idle,
+            shown_variant: UiPlayerVariant::Unknown,
+            load_behind: false,
+            item_display_committed: true,
+            cover_shown: false,
             last_artist_name: None,
             last_position_updated: -1.0,
             http_client,
@@ -1539,6 +1545,12 @@ impl Application {
         };
         let playback_rate = self.player.rate();
 
+        if matches!(
+            playback_state,
+            GuiPlaybackState::Playing | GuiPlaybackState::Paused
+        ) {
+            self.commit_item_display();
+        }
         self.gui.set_playback_state(playback_state);
         self.gui.set_is_live(is_live);
         self.gui.set_playback_rate(playback_rate as f32);
@@ -1575,11 +1587,9 @@ impl Application {
         Ok(())
     }
 
-    fn cleanup_playback_data(
-        &mut self,
-        continue_to_play: ContinueToPlay,
-        preserve_playlist: PreservePlaylist,
-    ) {
+    /// Drops the item's playback state. The screen is reset by
+    /// [`Self::end_presentation`] or replaced by the next load.
+    fn cleanup_playback_data(&mut self) {
         self.current_duration = None;
         // Playback is stopping or being replaced: a real Idle must go out.
         self.seek_quiet = false;
@@ -1597,8 +1607,8 @@ impl Application {
         self.have_media_title = false;
         self.last_artist_name = None;
         self.last_position_updated = -1.0;
+        self.cover_shown = false;
         self.image_via_player = false;
-        self.gui.set_image_via_player(false);
         self.player.stop();
         self.is_loading_media = false;
         if let Some(current_media) = self.current_media.as_mut() {
@@ -1611,26 +1621,145 @@ impl Application {
         self.current_image_id += 1;
         self.current_image_download_id += 1;
         self.clear_source_backoff();
-        // The GUI's live flag otherwise only moves on progress ticks, and a
-        // new item posts none until it prerolls (a SABR backoff holds that for
-        // a minute), so the previous livestream's red LIVE badge outlived it.
-        self.gui.set_is_live(false);
+    }
 
-        if continue_to_play == ContinueToPlay::No {
-            self.set_media_title("".to_owned());
-            self.gui.set_artist_name("".to_owned());
-            self.gui.clear_images();
-            self.gui.update_playback_progress(0.0, 0.0);
-            self.transition_app_state(AppState::Idle);
-            self.gui.set_playback_state(GuiPlaybackState::Idle);
-            self.gui.clear_tracks();
-            self.gui.set_track_ids(-1, -1, -1);
-            self.gui.clear_common_playback_state();
-
-            if preserve_playlist == PreservePlaylist::No {
-                self.gui.update_playlist(0, 0);
-            }
+    /// The item is over (stop, end, error). What playback held is released
+    /// now, the screen keeps the item for [`presentation::END_HOLD`] when
+    /// `hold` and someone can see it, so a next item replaces it directly.
+    fn end_presentation(&mut self, clear_playlist: bool, hold: bool) {
+        #[cfg(target_os = "android")]
+        self.android_cast_edge(AppState::Idle);
+        let reset = presentation::IdleReset { clear_playlist };
+        let visible = hold && self.ui_visible();
+        match self.presentation.end(Instant::now(), reset, visible) {
+            Some(reset) => self.reset_to_idle(reset),
+            None => self.arm_presentation_timer(),
         }
+    }
+
+    fn ui_visible(&self) -> bool {
+        #[cfg(target_os = "android")]
+        return self.android_ui_visible;
+        #[cfg(not(target_os = "android"))]
+        true
+    }
+
+    fn arm_presentation_timer(&self) {
+        let Some(at) = self.presentation.deadline() else {
+            return;
+        };
+        let msg_tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep_until(tokio::time::Instant::from_std(at)).await;
+            msg_tx.send(Message::PresentationHoldTimer);
+        });
+    }
+
+    /// The idle screen, after the hold or at once.
+    fn reset_to_idle(&mut self, reset: presentation::IdleReset) {
+        // first, so a window going away never shows the idle screen
+        self.restore_window();
+        self.set_media_title(String::new());
+        self.gui.set_artist_name(String::new());
+        self.gui.clear_images();
+        self.gui.set_image_via_player(false);
+        self.gui.set_is_live(false);
+        self.gui.update_playback_progress(0.0, 0.0);
+        self.show_app_state(AppState::Idle);
+        self.set_player_type(UiPlayerVariant::Unknown);
+        self.gui.set_playback_state(GuiPlaybackState::Idle);
+        self.gui.clear_tracks();
+        self.gui.set_track_ids(-1, -1, -1);
+        self.gui.clear_common_playback_state();
+        if reset.clear_playlist {
+            self.gui.update_playlist(0, 0);
+        }
+    }
+
+    /// A new item takes over the screen from a held end. Returns whether
+    /// one was held.
+    fn drop_held_reset(&mut self) -> bool {
+        let Some(reset) = self.presentation.take() else {
+            return false;
+        };
+        // the one part a new item does not overwrite itself
+        if reset.clear_playlist {
+            self.gui.update_playlist(0, 0);
+        }
+        true
+    }
+
+    /// The GUI state of the item a load replaces. With the audio view kept
+    /// up (`behind`) its title, artist and cover stay until the new item
+    /// prerolls, see [`Self::commit_item_display`].
+    fn reset_gui_for_load(&mut self, behind: bool) {
+        // The live flag otherwise only moves on progress ticks, and a new
+        // item posts none until it prerolls (a SABR backoff holds that for a
+        // minute), so the previous livestream's LIVE badge outlived it.
+        self.gui.set_is_live(false);
+        self.gui.clear_tracks();
+        self.gui.set_track_ids(-1, -1, -1);
+        self.gui.set_playback_state(GuiPlaybackState::Loading);
+        self.item_display_committed = !behind;
+        if !behind {
+            self.set_media_title(String::new());
+            self.gui.set_artist_name(String::new());
+            // the preview too: a legacy image after this item must not
+            // show an older one while it downloads
+            self.gui.clear_images();
+            self.gui.clear_common_playback_state();
+        }
+    }
+
+    /// The item prerolled behind the previous item's view: whatever of its
+    /// title, artist and cover the new item did not replace goes now.
+    fn commit_item_display(&mut self) {
+        if std::mem::replace(&mut self.item_display_committed, true) {
+            return;
+        }
+        if !self.have_media_title {
+            self.set_media_title(String::new());
+        }
+        if self.last_artist_name.is_none() {
+            self.gui.set_artist_name(String::new());
+        }
+        let cover_pending = self.current_media.as_ref().is_some_and(|m| {
+            m.pending_thumbnail.is_some() || m.pending_thumbnail_download.is_some()
+        });
+        if !self.cover_shown && !cover_pending {
+            self.gui.clear_audio_covers();
+        }
+    }
+
+    /// The cover the item waited on failed, the previous one must not stay.
+    fn cover_failed(&mut self) {
+        if self.item_display_committed && !self.cover_shown {
+            self.gui.clear_audio_covers();
+        }
+    }
+
+    fn set_load_behind(&mut self, behind: bool) {
+        if self.load_behind != behind {
+            self.load_behind = behind;
+            self.gui.set_load_behind_player(behind);
+        }
+    }
+
+    fn set_player_type(&mut self, typ: UiPlayerVariant) {
+        self.shown_variant = typ;
+        self.gui.set_player_type(typ);
+    }
+
+    /// The GUI side of an app state change.
+    fn show_app_state(&mut self, state: AppState) {
+        if state != AppState::Idle {
+            self.drop_held_reset();
+        }
+        if state != AppState::LoadingMedia {
+            self.set_load_behind(false);
+        }
+        self.shown_app_state = state;
+        self.gui.set_app_state(state);
     }
 
     /// Playback has ended: hand the window back as the first item found it.
@@ -1753,8 +1882,8 @@ impl Application {
         // Taken before the cleanup below drops the item: the report names
         // what was playing and who cast it.
         let context = self.report_context();
-        self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
-        self.restore_window();
+        self.cleanup_playback_data();
+        self.end_presentation(true, false);
         self.current_media = None;
         self.queue_cache.clear();
 
@@ -2003,11 +2132,11 @@ impl Application {
         (self.current_media_item_id, self.android_rise_gen)
     }
 
-    /// A legacy still image over an active cast keeps the previous item up and
-    /// raises no active edge, so the activity hears of it here to come forward
-    /// or post tap-to-play. Every other load passes through Idle and its rising
-    /// edge already did it. Skipped too when no item load started (an async
-    /// playlist fetch, a rejected select).
+    /// A load over an active cast raises no active edge (loads never pass
+    /// through Idle), so the activity hears of it here to come forward or
+    /// post tap-to-play. A load after an end has its rising edge do it.
+    /// Skipped too when no item load started (an async playlist fetch, a
+    /// rejected select).
     #[cfg(target_os = "android")]
     fn android_cast_loaded(&self, mark: (MediaItemId, u32)) {
         if self.current_media_item_id != mark.0
@@ -2100,11 +2229,17 @@ impl Application {
         self.gui.set_media_title(title);
     }
 
-    /// The one gate for GUI app-state changes: the android resource edge
-    /// rides on the same transition, so every path out of playback (stop,
-    /// error, playlist end, image finish) releases what playback held.
+    /// An app state change, the android resource edge riding on it. The way
+    /// out of playback is [`Self::end_presentation`], which releases what
+    /// playback held at once and the screen after its hold.
     fn transition_app_state(&mut self, state: AppState) {
         #[cfg(target_os = "android")]
+        self.android_cast_edge(state);
+        self.show_app_state(state);
+    }
+
+    #[cfg(target_os = "android")]
+    fn android_cast_edge(&mut self, state: AppState) {
         {
             let active = !matches!(state, AppState::Idle);
             if matches!(state, AppState::LoadingMedia) {
@@ -2120,8 +2255,8 @@ impl Application {
             }
             if !active {
                 self.android_transient_pause = false;
-                // a real end, not a load clearing the previous item (PiP leaves)
-                if self.android_playback.0 && !self.android_replacing {
+                // a real end, loads never pass through Idle (PiP leaves)
+                if self.android_playback.0 {
                     self.call_activity("castEnded", "(Z)V", &[jni::objects::JValue::Bool(0)]);
                 }
                 if self.android_playback.0 {
@@ -2135,7 +2270,6 @@ impl Application {
             }
             self.set_playback_active(active);
         }
-        self.gui.set_app_state(state);
     }
 
     fn media_ended(&mut self) {
@@ -2163,8 +2297,8 @@ impl Application {
         // An autoplay queue with a next item is exempt: the receiver-side advance must
         // keep working after the last sender disconnects.
         if self.updates_tx.receiver_count() == 0 && self.autoplay_next_index().is_none() {
-            self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes);
-            self.restore_window();
+            self.cleanup_playback_data();
+            self.end_presentation(false, true);
             self.current_media = None;
         }
 
@@ -2416,27 +2550,43 @@ impl Application {
             UiPlayerVariant::Unknown
         };
 
+        // Never through the idle screen: an audio item stays up while the
+        // next audio item loads, anything else gets the loading screen.
+        let behind = presentation::load_behind(
+            self.shown_app_state,
+            self.load_behind,
+            self.shown_variant,
+            player_variant,
+        );
+        let replaced_held = self.drop_held_reset();
         match player_variant {
             // Legacy still images keep the previous frame up while the next one downloads.
             UiPlayerVariant::Image if !pipeline_image => {
-                self.cleanup_playback_data(ContinueToPlay::Yes, PreservePlaylist::Yes)
+                self.cleanup_playback_data();
+                self.gui.set_is_live(false);
+                if replaced_held {
+                    self.reset_gui_for_load(false);
+                }
             }
             UiPlayerVariant::Image
             | UiPlayerVariant::Unknown
             | UiPlayerVariant::Audio
             | UiPlayerVariant::Video => {
+                self.cleanup_playback_data();
+                self.reset_gui_for_load(behind);
                 #[cfg(target_os = "android")]
-                {
-                    self.android_replacing = true;
-                }
-                self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::Yes);
-                #[cfg(target_os = "android")]
-                {
-                    self.android_replacing = false;
+                if self.android_playback.0 {
+                    // back to the display's default mode between items
+                    self.call_activity(
+                        "setContentFrameRate",
+                        "(F)V",
+                        &[jni::objects::JValue::Float(0.0)],
+                    );
                 }
             }
             UiPlayerVariant::Raop => (),
         }
+        self.set_load_behind(behind);
 
         let was_visible = self.gui.set_window_visibility(true);
         self.window_restore.record_visible(was_visible);
@@ -2521,7 +2671,7 @@ impl Application {
 
         self.have_media_title = media_title.is_some();
 
-        self.gui.set_player_type(player_variant);
+        self.set_player_type(player_variant);
         if !is_image {
             self.transition_app_state(AppState::LoadingMedia);
         }
@@ -2638,7 +2788,7 @@ impl Application {
             );
         }
 
-        self.gui.set_player_type(UiPlayerVariant::Video);
+        self.set_player_type(UiPlayerVariant::Video);
 
         Ok(())
     }
@@ -2667,16 +2817,15 @@ impl Application {
             );
         }
 
-        self.gui.set_player_type(UiPlayerVariant::Audio);
+        self.set_player_type(UiPlayerVariant::Audio);
     }
 
     fn stop_playback(&mut self) {
         tracing::info!(is_playing = self.is_playing());
         if self.is_playing() {
             self.player.stop();
-            self.transition_app_state(AppState::Idle);
-            self.cleanup_playback_data(ContinueToPlay::No, PreservePlaylist::No);
-            self.restore_window();
+            self.cleanup_playback_data();
+            self.end_presentation(true, true);
             self.current_media = None;
             self.queue_cache.clear();
             #[cfg(not(target_os = "android"))]
@@ -3242,6 +3391,8 @@ impl Application {
         self.set_media_title(title.unwrap_or_default());
         self.last_artist_name = None;
         self.gui.set_artist_name(String::new());
+        self.item_display_committed = true;
+        self.cover_shown = false;
 
         // The gapless path bypasses the normal load, so refresh the audio cover here or
         // the previous track's thumbnail lingers and the Tags handler ignores new art.
@@ -5148,7 +5299,7 @@ impl Application {
                     Some(MediaSourceState::new(PacketOrigin::Raop, MediaSource::Raop));
 
                 self.transition_app_state(AppState::Playing);
-                self.gui.set_player_type(UiPlayerVariant::Raop);
+                self.set_player_type(UiPlayerVariant::Raop);
             }
             Raop::SenderDisconnected => {
                 // a late disconnect must not wipe an item that replaced it
@@ -5162,7 +5313,7 @@ impl Application {
                 debug!("Session ended");
                 self.current_media = None;
                 self.transition_app_state(AppState::Idle);
-                self.gui.set_player_type(UiPlayerVariant::Unknown);
+                self.set_player_type(UiPlayerVariant::Unknown);
                 self.gui.clear_common_playback_state();
             }
             Raop::CoverArtSet(data) => {
@@ -5305,7 +5456,7 @@ impl Application {
                     },
                 ));
                 self.transition_app_state(AppState::Playing);
-                self.gui.set_player_type(UiPlayerVariant::Video);
+                self.set_player_type(UiPlayerVariant::Video);
             }
             AirPlay::MirrorPaused {
                 stream_connection_id,
@@ -5340,8 +5491,9 @@ impl Application {
             } => {
                 if self.is_current_airplay_mirror(stream_connection_id) {
                     debug!(stream_connection_id, "Stopping AirPlay mirror playback");
+                    // the held screen keeps the mirror's variant, the idle
+                    // reset clears it
                     self.stop_playback();
-                    self.gui.set_player_type(UiPlayerVariant::Unknown);
                 }
             }
         }
@@ -5549,6 +5701,10 @@ impl Application {
                         }
                         Err(err) => {
                             error!(%err, "Thumbnail image download failed");
+                            if let Some(current_media) = self.current_media.as_mut() {
+                                current_media.pending_thumbnail_download = None;
+                            }
+                            self.cover_failed();
                         }
                     }
                     return Ok(false);
@@ -5589,12 +5745,23 @@ impl Application {
                     && let Some(pending_thumbnail) = current_media.pending_thumbnail
                     && pending_thumbnail == img.id
                 {
+                    self.cover_shown = true;
                     self.gui.set_audio_track_cover(img);
                 }
             }
             image::Event::DecodeFailed { id, typ, reason } => {
                 // a thumbnail failing only costs the artwork
-                if !matches!(typ, image::ImageDecodeJobType::Regular) || id != self.current_image_id {
+                if !matches!(typ, image::ImageDecodeJobType::Regular) {
+                    if let Some(current_media) = self.current_media.as_mut()
+                        && current_media.pending_thumbnail == Some(id)
+                    {
+                        current_media.pending_thumbnail = None;
+                        self.cover_failed();
+                    }
+                    debug!(id, reason, "Ignoring a thumbnail decode failure");
+                    return Ok(false);
+                }
+                if id != self.current_image_id {
                     debug!(id, reason, "Ignoring an image decode failure");
                     return Ok(false);
                 }
@@ -5627,6 +5794,7 @@ impl Application {
                     );
                 }
 
+                self.commit_item_display();
                 self.gui.set_image_preview(img);
                 // the image lane skips LoadingMedia, so the visual default
                 // set there must be re-asserted or a picture after an
@@ -6099,6 +6267,30 @@ impl Application {
             }
             Message::NewPlayerEvent { event, generation } => {
                 self.handle_player_event(event, generation)?;
+            }
+            Message::PresentationHoldTimer => {
+                if let Some(reset) = self.presentation.poll(Instant::now()) {
+                    self.reset_to_idle(reset);
+                }
+            }
+            #[cfg(target_os = "android")]
+            Message::AndroidWindow(event) => {
+                use crate::message::AndroidWindow;
+                debug!(?event, "android window event");
+                match event {
+                    AndroidWindow::Shown => self.android_ui_visible = true,
+                    AndroidWindow::Hidden => {
+                        self.android_ui_visible = false;
+                        if let Some(reset) = self.presentation.hidden() {
+                            self.reset_to_idle(reset);
+                        }
+                    }
+                    AndroidWindow::Leaving => {
+                        if self.presentation.leaving(Instant::now()).is_some() {
+                            self.arm_presentation_timer();
+                        }
+                    }
+                }
             }
             Message::ShouldSetLoadingStatus(id) => {
                 if id == self.current_media_item_id && self.is_loading_media {

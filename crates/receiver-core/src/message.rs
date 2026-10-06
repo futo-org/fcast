@@ -91,6 +91,18 @@ pub enum AndroidAudio {
     BecomingNoisy,
 }
 
+/// The activity's window as the item-boundary hold needs it.
+#[cfg(target_os = "android")]
+#[derive(Debug)]
+pub enum AndroidWindow {
+    /// onStart
+    Shown,
+    /// onStop
+    Hidden,
+    /// An ended cast will send the task to the back, onStop follows.
+    Leaving,
+}
+
 #[cfg(feature = "airplay")]
 #[derive(Debug)]
 pub enum AirPlay {
@@ -194,6 +206,8 @@ pub enum Message {
     Mdns(Mdns),
     #[cfg(target_os = "android")]
     AndroidAudio(AndroidAudio),
+    #[cfg(target_os = "android")]
+    AndroidWindow(AndroidWindow),
     PlaylistDataResult {
         play_message: Option<fcast_protocol::v3::PlayMessage>,
     },
@@ -215,6 +229,8 @@ pub enum Message {
         value: String,
     },
     ShouldSetLoadingStatus(MediaItemId),
+    /// The item-boundary hold may be due, see `presentation.rs`.
+    PresentationHoldTimer,
     /// Bounded wait for `AddSubtitleSource` parked on an in-flight load or
     /// unresolved seekability; on expiry the parked adds are rejected with
     /// `InvalidState`.

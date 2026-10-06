@@ -122,6 +122,8 @@ pub enum UpdateGuiCommand {
         prev_tx: oneshot::Sender<bool>,
     },
     SetAppState(AppState),
+    /// A load keeps the audio view up in place of the loading screen.
+    SetLoadBehindPlayer(bool),
     UpdatePlaylist {
         start_idx: i32,
         length: i32,
@@ -496,6 +498,10 @@ impl GuiController {
             hook(state);
         }
         self.send(UpdateGuiCommand::SetAppState(state));
+    }
+
+    pub fn set_load_behind_player(&self, behind: bool) {
+        self.send(UpdateGuiCommand::SetLoadBehindPlayer(behind));
     }
 
     #[cfg(not(target_os = "android"))]

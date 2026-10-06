@@ -123,6 +123,8 @@ export global Bridge {
     // `Player::buffered_ranges`). Drawn on the scrubber.
     in property <[UiBufferedRange]> buffered-ranges;
     in property <AppState> app-state: AppState.Idle;
+    // A load keeps the audio view up in place of the loading screen.
+    in property <bool> load-behind-player: false;
     in property <bool> is-live: false;
     in property <string> media-title;
     in property <string> artist-name;

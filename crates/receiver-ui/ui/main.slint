@@ -139,6 +139,11 @@ export component MainWindow inherits Window {
         }
     }
 
+    // The next audio item loads behind the current audio view. An item
+    // that turns out to be video brings the loading screen up.
+    property <bool> loading-behind: Bridge.app-state == AppState.LoadingMedia
+        && Bridge.load-behind-player && Bridge.player-variant == UiPlayerVariant.Audio;
+
     property <AppState> app-state: Bridge.app-state;
     changed app-state => {
         // On entry into Playing the video player's own scope focuses itself.
@@ -188,7 +193,7 @@ export component MainWindow inherits Window {
 
         if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Image: ImageView { }
 
-        if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
+        if (Bridge.app-state == AppState.Playing || root.loading-behind) && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
 
         if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Raop: RaopView { }
 
@@ -225,7 +230,7 @@ export component MainWindow inherits Window {
         }
 
         loading-view := LoadingMediaView {
-            opacity: Bridge.app-state == AppState.LoadingMedia ? 100% : 0%;
+            opacity: Bridge.app-state == AppState.LoadingMedia && !root.loading-behind ? 100% : 0%;
             visible: self.opacity > 0%;
 
             animate opacity {

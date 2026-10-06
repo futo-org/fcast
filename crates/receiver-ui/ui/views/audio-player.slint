@@ -264,6 +264,28 @@ export component AudioPlayerView inherits Rectangle {
         }
     }
 
+    // The next item loads behind this view: a thin sweep along the top edge,
+    // only once the load is slow enough to notice.
+    Rectangle {
+        y: 0;
+        width: 100%;
+        height: 3px;
+        clip: true;
+        opacity: Bridge.app-state == AppState.LoadingMedia ? 1.0 : 0.0;
+        animate opacity {
+            delay: 500ms;
+            duration: 200ms;
+        }
+
+        // Guarded by app-state: an always-on animation-tick() would redraw forever.
+        if Bridge.app-state == AppState.LoadingMedia: Rectangle {
+            height: 100%;
+            background: #ffffffcc;
+            width: parent.width * 0.35;
+            x: -self.width + (parent.width + self.width) * mod(animation-tick(), 1.6s) / 1.6s;
+        }
+    }
+
     VolumePreview {
         width: 100%;
         height: 100%;

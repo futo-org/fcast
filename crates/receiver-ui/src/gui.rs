@@ -704,6 +704,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
             bridge.set_app_state(state.into());
             unhide_cursor_outside_video_scene(&ui);
         }
+        UpdateGuiCommand::SetLoadBehindPlayer(behind) => bridge.set_load_behind_player(behind),
         UpdateGuiCommand::UpdatePlaylist { start_idx, length } => {
             bridge.set_playlist_idx(start_idx);
             bridge.set_playlist_length(length);

@@ -363,6 +363,28 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeAppVisibi
     visible: jni::sys::jboolean,
 ) {
     rcore::android_app_visibility(visible != 0);
+    use rcore::message::AndroidWindow;
+    let event = if visible != 0 {
+        AndroidWindow::Shown
+    } else {
+        AndroidWindow::Hidden
+    };
+    let _ = EVENT_CHANNEL
+        .0
+        .send(rcore::message::Message::AndroidWindow(event));
+}
+
+/// An ended cast will send the task to the back. The core keeps the ended
+/// item on screen until onStop instead of showing the idle screen on the way out.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeLeavingForEndedCast<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+) {
+    let _ = EVENT_CHANNEL.0.send(rcore::message::Message::AndroidWindow(
+        rcore::message::AndroidWindow::Leaving,
+    ));
 }
 
 /// The committed fcast listen port, 0 while the listeners are not bound yet.

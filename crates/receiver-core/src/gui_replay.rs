@@ -55,6 +55,7 @@ pub struct GuiSnapshot {
     backoff: Option<(u64, u64)>,
     playback_state: Option<GuiPlaybackState>,
     app_state: Option<AppState>,
+    load_behind: Option<bool>,
 }
 
 impl GuiSnapshot {
@@ -66,6 +67,7 @@ impl GuiSnapshot {
             C::DeviceConnected => self.connected += 1,
             C::DeviceDisconnected => self.connected = (self.connected - 1).max(0),
             C::SetAppState(state) => self.app_state = Some(*state),
+            C::SetLoadBehindPlayer(behind) => self.load_behind = Some(*behind),
             C::UpdatePlaylist { start_idx, length } => {
                 self.playlist_idx = Some(*start_idx);
                 self.playlist_len = Some(*length);
@@ -279,6 +281,9 @@ impl GuiSnapshot {
         if let Some(state) = self.playback_state {
             emit(C::SetPlaybackState(state));
         }
+        if let Some(behind) = self.load_behind {
+            emit(C::SetLoadBehindPlayer(behind));
+        }
         if let Some(state) = self.app_state {
             emit(C::SetAppState(state));
         }
@@ -319,6 +324,7 @@ mod tests {
         backoff: (u64, u64),
         playback_state: GuiPlaybackState,
         app_state: AppState,
+        load_behind: bool,
     }
 
     fn img_id(img: &Arc<DecodedImage>) -> usize {
@@ -332,6 +338,7 @@ mod tests {
                 C::DeviceConnected => self.connected += 1,
                 C::DeviceDisconnected => self.connected = (self.connected - 1).max(0),
                 C::SetAppState(s) => self.app_state = s,
+                C::SetLoadBehindPlayer(b) => self.load_behind = b,
                 C::UpdatePlaylist { start_idx, length } => self.playlist = (start_idx, length),
                 C::SetPlaylistIndex(idx) => self.playlist.0 = idx,
                 C::SetImage { typ, img } => match typ {
@@ -433,7 +440,7 @@ mod tests {
         ];
         let variants = [UiPlayerVariant::Video, UiPlayerVariant::Audio, UiPlayerVariant::Image];
         let img = images[v as usize % images.len()].clone();
-        match k % 33 {
+        match k % 34 {
             0 => C::DeviceConnected,
             1 => C::DeviceDisconnected,
             2 => C::SetAppState(states[v as usize % states.len()]),
@@ -502,6 +509,7 @@ mod tests {
             29 => C::ShowSystemTray,
             30 => C::ClearVideoOverlays,
             31 => C::HideBugReport,
+            32 => C::SetLoadBehindPlayer(v % 2 == 0),
             _ => C::TransportFromSender {
                 kind: crate::gui::TransportKind::Seek,
                 by: None,

@@ -35,6 +35,7 @@ pub mod media_formats;
 mod media_source;
 pub mod message;
 pub mod player;
+mod presentation;
 mod queue_cache;
 #[cfg(feature = "raop")]
 mod raop;

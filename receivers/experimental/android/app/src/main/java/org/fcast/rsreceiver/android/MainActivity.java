@@ -346,10 +346,14 @@ public class MainActivity extends NativeActivity {
     void leaveForEndedCast(boolean fromBackground) {
         // Hidden from here, not from onStop: a cast landing before onStop
         // must still bring the receiver back up.
-        if (!destroyed && (fromBackground || isInPictureInPictureMode())
-                && moveTaskToBack(true)) {
+        if (leavesForEndedCast(fromBackground) && moveTaskToBack(true)) {
             ReceiverCore.setUiVisible(false);
         }
+    }
+
+    /// Whether leaveForEndedCast will send the task to the back.
+    boolean leavesForEndedCast(boolean fromBackground) {
+        return !destroyed && (fromBackground || isInPictureInPictureMode());
     }
 
     private volatile android.util.Rational videoAspect = new android.util.Rational(16, 9);
@@ -424,6 +428,14 @@ public class MainActivity extends NativeActivity {
             stopService(new Intent(this, ReceiverService.class));
         }
         nativeAppVisibility(true);
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // A cast landing while an ended cast's leave animates brings the
+        // task back before onStop, so onStart never re-marks it visible.
+        ReceiverCore.setUiVisible(true);
     }
 
     @Override
