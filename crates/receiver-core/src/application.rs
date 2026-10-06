@@ -2659,23 +2659,27 @@ impl Application {
         }
 
         let mut media_title = None;
-        if !self.is_headless()
-            && let Some(v3::MetadataObject::Generic {
-                title,
-                thumbnail_url: Some(thumbnail_url),
-                ..
-            }) = item.metadata
+        if let Some(v3::MetadataObject::Generic {
+            title,
+            thumbnail_url,
+            ..
+        }) = item.metadata
         {
-            media_title = title;
-            self.have_audio_track_cover = true;
-            self.current_image_download_id += 1;
-            let this_id = self.current_image_download_id;
-            self.current_media
-                .as_mut()
-                .ok_or(LoadMediaError::NoItem)?
-                .pending_thumbnail_download = Some(this_id);
-            self.image_downloader
-                .queue_download(this_id, thumbnail_url, headers.clone());
+            // the title stands on its own, a thumbnail is optional
+            media_title = title.filter(|t| !t.is_empty());
+            if !self.is_headless()
+                && let Some(thumbnail_url) = thumbnail_url
+            {
+                self.have_audio_track_cover = true;
+                self.current_image_download_id += 1;
+                let this_id = self.current_image_download_id;
+                self.current_media
+                    .as_mut()
+                    .ok_or(LoadMediaError::NoItem)?
+                    .pending_thumbnail_download = Some(this_id);
+                self.image_downloader
+                    .queue_download(this_id, thumbnail_url, headers.clone());
+            }
         }
 
         self.image_via_player = pipeline_image;
@@ -3441,6 +3445,7 @@ impl Application {
         self.current_duration = None;
         #[cfg(not(target_os = "android"))]
         self.inspector.clear_item();
+        let title = title.filter(|t| !t.is_empty());
         self.have_media_title = title.is_some();
         // The gapless path skips cleanup_playback_data, so the labels roll
         // here too: a titleless item must not keep the retired item's title,
