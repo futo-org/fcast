@@ -2714,6 +2714,16 @@ impl Application {
             player_variant,
         );
         let replaced_held = self.drop_held_reset();
+        // A still never reports a video stream, so the default mode comes back
+        // here or a photo after a 24 fps video stays at 24 Hz.
+        #[cfg(target_os = "android")]
+        if matches!(player_variant, UiPlayerVariant::Image) && self.android_playback.0 {
+            self.call_activity(
+                "setContentFrameRate",
+                "(F)V",
+                &[jni::objects::JValue::Float(0.0)],
+            );
+        }
         match player_variant {
             // Legacy still images keep the previous frame up while the next one downloads.
             UiPlayerVariant::Image if !pipeline_image => {
@@ -2730,7 +2740,7 @@ impl Application {
                 self.cleanup_playback_data();
                 self.reset_gui_for_load(behind);
                 // The display mode stays across items: the next video picks
-                // its own, an audio item and the cast's end restore the
+                // its own, a still, an audio item and the cast's end restore the
                 // default, where a reset here blanked HDMI twice per item.
             }
             UiPlayerVariant::Raop => (),
