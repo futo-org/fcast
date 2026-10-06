@@ -1,4 +1,4 @@
-import { Slider, Button, Icons, FText } from "../../../ui-components/std-widgets.slint";
+import { Slider, Button, Icons, FText, Spinner } from "../../../ui-components/std-widgets.slint";
 import { Bridge, GuiPlaybackState } from "globals.slint";
 import { FCastPalette } from "../../../ui-components/styling.slint";
 
@@ -19,7 +19,8 @@ export component PositionScrubber inherits Slider {
     track-color: Bridge.is-live ? FCastPalette.negative-800 : FCastPalette.foreground;
     thumb-color: black.transparentize(85%);
     thumb-border-color: FCastPalette.foreground;
-    enabled: Bridge.playback-state != GuiPlaybackState.Loading;
+    enabled: Bridge.playback-state != GuiPlaybackState.Loading
+        && Bridge.playback-state != GuiPlaybackState.Buffering;
 }
 
 export component ProgressLabelBox inherits Rectangle {
@@ -107,6 +108,33 @@ export component ScrubbyMcScrub {
             text: Bridge.sec-to-string(Bridge.duration-secs * scrubber.mouse-x / scrubber.width);
             fade: root.fade;
         }
+    }
+}
+
+// A stall mid-playback. Shows after a moment so a quick seek or rebuffer
+// paints nothing, created per stall so the delay restarts each time.
+export component BufferingIndicator inherits Rectangle {
+    property <bool> shown: false;
+    width: 64px;
+    height: 64px;
+    border-radius: self.width / 2;
+    background: #000000B0;
+    opacity: shown ? 1.0 : 0.0;
+    animate opacity { duration: 150ms; }
+
+    Timer {
+        interval: 400ms;
+        running: !root.shown;
+        triggered => {
+            root.shown = true;
+        }
+    }
+
+    // Guarded, not hidden: the spinner's animation-tick() redraws forever
+    if root.shown: Spinner {
+        width: 36px;
+        height: 36px;
+        indeterminate: true;
     }
 }
 

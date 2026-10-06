@@ -23,6 +23,7 @@ import { VideoPlayerView } from "views/video-player.slint";
 import { ImageView } from "views/image.slint";
 import { AudioPlayerView } from "views/audio-player.slint";
 import { RaopView } from "views/raop.slint";
+import { BufferingIndicator } from "common.slint";
 import { ToastOverlay } from "toast-overlay.slint";
 import { ReportBugPopup } from "report-bug.slint";
 import { StartupView } from "startup.slint";
@@ -196,6 +197,12 @@ export component MainWindow inherits Window {
         if (Bridge.app-state == AppState.Playing || root.loading-behind) && Bridge.player-variant == UiPlayerVariant.Audio: AudioPlayerView { }
 
         if Bridge.app-state == AppState.Playing && Bridge.player-variant == UiPlayerVariant.Raop: RaopView { }
+
+        if Bridge.app-state == AppState.Playing && Bridge.playback-state == GuiPlaybackState.Buffering
+            && (Bridge.player-variant == UiPlayerVariant.Video || Bridge.player-variant == UiPlayerVariant.Audio): BufferingIndicator {
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
 
         // A mid-playback server backoff would otherwise look like a silent
         // freeze; part of video-obstructed.

@@ -1549,7 +1549,8 @@ impl Application {
         let is_live = self.player.is_live();
         let playback_state = {
             match self.player.player_state() {
-                PlayerState::Stopped | PlayerState::Buffering => GuiPlaybackState::Loading,
+                PlayerState::Stopped => GuiPlaybackState::Loading,
+                PlayerState::Buffering => GuiPlaybackState::Buffering,
                 PlayerState::Playing => GuiPlaybackState::Playing,
                 PlayerState::Paused => GuiPlaybackState::Paused,
             }
@@ -1644,6 +1645,9 @@ impl Application {
     fn end_presentation(&mut self, clear_playlist: bool, hold: bool) {
         #[cfg(target_os = "android")]
         self.android_cast_edge(AppState::Idle);
+        // a stopped player sends no more updates, a stall must not spin
+        // through the hold
+        self.gui.end_buffering();
         let reset = presentation::IdleReset { clear_playlist };
         let visible = hold && self.ui_visible();
         match self.presentation.end(Instant::now(), reset, visible) {
@@ -4858,6 +4862,10 @@ impl Application {
                 if self.player.buffering(percent) {
                     self.notify_updates(true)?;
                     self.playback_state_changed(fcast_protocol::v4::PlaybackState::Buffering);
+                } else if self.player.have_media_info() && !self.image_via_player {
+                    // a stall posts no state edge until it ends, so the GUI
+                    // hears of it here
+                    self.gui.set_playback_state(GuiPlaybackState::Buffering);
                 }
             }
             player::PlayerEvent::IsLive => {

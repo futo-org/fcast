@@ -636,6 +636,12 @@ impl GuiController {
         }
     }
 
+    pub fn end_buffering(&mut self) {
+        if self.playback_state == GuiPlaybackState::Buffering {
+            self.set_playback_state(GuiPlaybackState::Loading);
+        }
+    }
+
     pub fn clear_images(&self) {
         self.send(UpdateGuiCommand::ClearImageState);
     }

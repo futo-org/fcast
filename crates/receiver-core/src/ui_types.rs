@@ -22,6 +22,8 @@ pub enum GuiPlaybackState {
     Playing,
     Paused,
     Loading,
+    /// Stalled mid-playback, waiting on data.
+    Buffering,
 }
 
 /// Mirrors the generated `UiPlayerVariant`.

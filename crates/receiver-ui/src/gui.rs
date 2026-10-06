@@ -72,6 +72,7 @@ impl From<ui_types::GuiPlaybackState> for GuiPlaybackState {
             ui_types::GuiPlaybackState::Playing => GuiPlaybackState::Playing,
             ui_types::GuiPlaybackState::Paused => GuiPlaybackState::Paused,
             ui_types::GuiPlaybackState::Loading => GuiPlaybackState::Loading,
+            ui_types::GuiPlaybackState::Buffering => GuiPlaybackState::Buffering,
         }
     }
 }

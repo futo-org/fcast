@@ -435,6 +435,7 @@ mod tests {
         let pb = [
             GuiPlaybackState::Idle,
             GuiPlaybackState::Loading,
+            GuiPlaybackState::Buffering,
             GuiPlaybackState::Playing,
             GuiPlaybackState::Paused,
         ];
