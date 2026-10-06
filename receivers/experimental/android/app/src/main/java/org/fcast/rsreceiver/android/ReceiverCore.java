@@ -315,12 +315,18 @@ public final class ReceiverCore {
     private static final String KOTLIN_SERVICE_CHANNEL = "NetworkListenerServiceChannel";
 
     /// An install this app never started (every start sets the boot
-    /// component explicitly) that the Kotlin receiver ran in.
+    /// component explicitly) that the Kotlin receiver ran in. Or one whose
+    /// upgrade start died before the answer reached the config: that start
+    /// already enabled the component and deleted the channel, and only it
+    /// leaves the component on with the question unanswered.
     private static boolean upgradedFromKotlin(Context ctx) {
         android.content.pm.PackageManager pm = ctx.getPackageManager();
         android.content.ComponentName boot = new android.content.ComponentName(ctx, BootReceiver.class);
-        return pm.getComponentEnabledSetting(boot)
-                        == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
+        int state = pm.getComponentEnabledSetting(boot);
+        if (state == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_ENABLED) {
+            return true;
+        }
+        return state == android.content.pm.PackageManager.COMPONENT_ENABLED_STATE_DEFAULT
                 && ctx.getSystemService(NotificationManager.class)
                         .getNotificationChannel(KOTLIN_SERVICE_CHANNEL) != null;
     }
