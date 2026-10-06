@@ -1,6 +1,5 @@
 package org.fcast.rsreceiver.android;
 
-import android.content.Context;
 import android.content.Intent;
 import android.media.AudioManager;
 import android.os.Bundle;
@@ -20,13 +19,6 @@ public class MainActivity extends NativeActivity {
     /// This instance has presented a receiver frame. SplashActivity skips its
     /// art while it holds.
     static volatile boolean painted = false;
-
-    private boolean isTelevision() {
-        android.app.UiModeManager ui =
-                (android.app.UiModeManager) getSystemService(Context.UI_MODE_SERVICE);
-        return ui != null && ui.getCurrentModeType()
-                == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION;
-    }
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -57,8 +49,9 @@ public class MainActivity extends NativeActivity {
 
         ReceiverCore.attachActivity(this);
         Updater.onActivityCreated(this);
-        // No prompt on TV: no notification shade worth the dialog there.
-        if (android.os.Build.VERSION.SDK_INT >= 33 && !isTelevision()
+        // TVs too: tap-to-play, the boot and the update notices are the
+        // fallback when the overlay grant is missing.
+        if (android.os.Build.VERSION.SDK_INT >= 33
                 && checkSelfPermission(android.Manifest.permission.POST_NOTIFICATIONS)
                         != android.content.pm.PackageManager.PERMISSION_GRANTED) {
             // the overlay prompt waits for this one's answer
@@ -137,8 +130,8 @@ public class MainActivity extends NativeActivity {
     /// The soft keyboard came up (true) or went away (false).
     static native void nativeSoftKeyboardVisible(boolean visible);
 
-    /// The screen only pins for content someone is looking at. From
-    /// ReceiverCore on the main thread.
+    /// The screen pin, ReceiverCore.keepScreenOn decides. From ReceiverCore
+    /// on the main thread.
     void applyKeepScreenOn(boolean on) {
         if (on) {
             getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);

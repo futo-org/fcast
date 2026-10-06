@@ -72,6 +72,8 @@ fn android_main(app: slint::android::AndroidApp) {
     // With no service to keep it, the process ends with its activity, as
     // before: the next launch gets an honest cold start under the splash.
     if !keep_core {
+        // a running sticky service would bring the process straight back
+        rcore::android_jni::call("stopServiceForExit", "()V", &[]);
         std::process::exit(0);
     }
 }

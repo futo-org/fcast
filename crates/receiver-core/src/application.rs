@@ -771,6 +771,9 @@ pub struct Application {
     /// throttle.
     #[cfg(target_os = "android")]
     android_session_pushed: Option<((bool, i32), Instant)>,
+    /// Last pause edge pushed to the screen pin.
+    #[cfg(target_os = "android")]
+    android_paused: bool,
     msg_tx: MessageSender,
     updates_tx: broadcast::Sender<Arc<ReceiverToSenderMessage>>,
     // start of the current load, drives the load-latency marks
@@ -1162,6 +1165,8 @@ impl Application {
             android_meta_pushed: None,
             #[cfg(target_os = "android")]
             android_session_pushed: None,
+            #[cfg(target_os = "android")]
+            android_paused: false,
             msg_tx,
             updates_tx,
             load_t0: None,
@@ -1616,6 +1621,10 @@ impl Application {
         self.cover_shown = false;
         self.image_via_player = false;
         self.player.stop();
+        // a legacy image never ticks the player, a paused predecessor must
+        // not let its screen sleep
+        #[cfg(target_os = "android")]
+        self.android_set_paused(false);
         self.is_loading_media = false;
         if let Some(current_media) = self.current_media.as_mut() {
             current_media.image_id = None;
@@ -2113,7 +2122,7 @@ impl Application {
     /// The single edge every device resource hangs off: tells the activity
     /// whether playback is active, whether it is visual and whether it is
     /// audible. The Java side owns wake lock, wifi lock, FLAG_KEEP_SCREEN_ON
-    /// (visual only), audio focus and the media session (audible only)
+    /// (with the pause edge), audio focus and the media session (audible only)
     /// against exactly this signal, so nothing can leak past a stop, an
     /// error, or an item that turns out to be an image.
     ///
@@ -2144,6 +2153,10 @@ impl Application {
         ) {
             if state.0 && !self.android_playback.0 {
                 self.android_rise_gen = self.android_rise_gen.wrapping_add(1);
+            }
+            if !state.0 {
+                // the inactive edge clears the pause on the Java side too
+                self.android_paused = false;
             }
             self.android_playback = state;
         }
@@ -2191,6 +2204,12 @@ impl Application {
     #[cfg(target_os = "android")]
     fn android_media_progress(&mut self, position_secs: f64, duration_secs: f64) {
         let playing = matches!(self.player.player_state(), PlayerState::Playing);
+        // the wire state rides out seeks, a pipeline image parks in Paused
+        // but is shown, not paused
+        self.android_set_paused(
+            matches!(self.player.wire_playback_state(), PlaybackState::Paused)
+                && !self.image_via_player,
+        );
         let speed = self.player.rate() as f32;
         let dur_ms = (duration_secs * 1000.0) as i64;
         // compared in place, the title is only cloned on an actual push
@@ -2242,6 +2261,20 @@ impl Application {
         }
     }
 
+    /// A pause edge for the screen pin, cached on success like the others.
+    #[cfg(target_os = "android")]
+    fn android_set_paused(&mut self, paused: bool) {
+        if self.android_paused != paused
+            && self.call_activity(
+                "setCastPaused",
+                "(Z)V",
+                &[jni::objects::JValue::Bool(paused as u8)],
+            )
+        {
+            self.android_paused = paused;
+        }
+    }
+
     /// The GUI title, mirrored into the android MediaSession metadata on
     /// the next progress tick.
     fn set_media_title(&mut self, title: String) {
@@ -2271,6 +2304,7 @@ impl Application {
                 self.android_visual = true;
                 self.android_audible = true;
                 self.android_transient_pause = false;
+                self.android_set_paused(false);
                 // The dedup below can absorb this transition entirely (stop
                 // then immediate re-cast), but focus still needs a re-check:
                 // a cast arriving during a phone call must not play over it.
@@ -2278,6 +2312,7 @@ impl Application {
             }
             if !active {
                 self.android_transient_pause = false;
+                self.android_set_paused(false);
                 // a real end, loads never pass through Idle (PiP leaves)
                 if self.android_playback.0 {
                     self.call_activity("castEnded", "(Z)V", &[jni::objects::JValue::Bool(0)]);

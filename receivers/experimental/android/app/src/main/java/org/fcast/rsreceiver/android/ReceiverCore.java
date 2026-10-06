@@ -100,6 +100,15 @@ public final class ReceiverCore {
     /// the receiver back there instead of on the idle screen. Main thread.
     private static boolean castFromBackground = false;
     private static boolean castPlaying = false;
+    /// Paused by the player, and paused long enough to let the screen sleep.
+    private static boolean castPaused = false;
+    private static boolean castPausedLong = false;
+    private static boolean television = false;
+    private static final long PAUSED_SCREEN_GRACE_MS = 5 * 60_000;
+    private static final Runnable pausedScreenGrace = () -> {
+        castPausedLong = true;
+        syncKeepScreenOn();
+    };
 
     /// Runs `r` on the main thread, inline when already there.
     private static void onMain(Runnable r) {
@@ -118,6 +127,10 @@ public final class ReceiverCore {
         }
         started = true;
         app = ctx.getApplicationContext();
+        android.app.UiModeManager ui =
+                (android.app.UiModeManager) app.getSystemService(Context.UI_MODE_SERVICE);
+        television = ui != null && ui.getCurrentModeType()
+                == android.content.res.Configuration.UI_MODE_TYPE_TELEVISION;
         nativeCoreInit(app);
         // the Rust core too: a boot start has no activity to start it
         String filesDir = app.getFilesDir().getPath();
@@ -190,8 +203,41 @@ public final class ReceiverCore {
 
     static void attachActivity(MainActivity a) {
         activity = new WeakReference<>(a);
-        // a new window starts without the flag a running video wants
-        a.applyKeepScreenOn(castActive && castVisual);
+        // a new window starts without the flag a running cast wants
+        a.applyKeepScreenOn(keepScreenOn());
+    }
+
+    /// Visual casts pin the screen, audio ones too on a TV, where the audio
+    /// usually plays through the screen. A long pause lets it sleep.
+    private static boolean keepScreenOn() {
+        return castActive && (castVisual || television) && !castPausedLong;
+    }
+
+    private static void syncKeepScreenOn() {
+        MainActivity a = activity.get();
+        if (a != null) {
+            a.applyKeepScreenOn(keepScreenOn());
+        }
+    }
+
+    /// The player paused or left pause, from native code. Any thread.
+    static void setCastPaused(boolean paused) {
+        onMain(() -> {
+            if (paused == castPaused) {
+                return;
+            }
+            castPaused = paused;
+            castPausedLong = false;
+            handler.removeCallbacks(pausedScreenGrace);
+            if (paused) {
+                // the screen times out at once when the flag drops, the grace
+                // keeps short pauses lit
+                handler.postDelayed(pausedScreenGrace, PAUSED_SCREEN_GRACE_MS);
+            }
+            // No wake on resume: ACQUIRE_CAUSES_WAKEUP needs the privileged
+            // TURN_SCREEN_ON from 34, and a wake can power the TV over CEC
+            syncKeepScreenOn();
+        });
     }
 
     static void detachActivity(MainActivity a) {
@@ -277,7 +323,17 @@ public final class ReceiverCore {
     /// The notification's Quit: the receiver ends, whatever owns it.
     static void quit() {
         Log.i(TAG, "quit from the notification");
+        stopServiceForExit();
         nativeShutdown();
+    }
+
+    /// The process is about to exit on purpose. The service is sticky, so it
+    /// must stop first or the system restarts it as after a kill. Any thread.
+    static void stopServiceForExit() {
+        serviceWanted = false;
+        if (app != null) {
+            app.stopService(new Intent(app, ReceiverService.class));
+        }
     }
 
     static void setServiceWanted(boolean wanted) {
@@ -730,8 +786,8 @@ public final class ReceiverCore {
     ///
     /// `audible` is false for images and for items with no audio track:
     /// those take no audio focus (a photo must not pause whatever else is
-    /// playing), no media session and no CPU wake lock. The screen pin and
-    /// the wifi lock follow `active` and `visual` as before.
+    /// playing), no media session and no CPU wake lock. The wifi lock follows
+    /// `active` and `visual`, the screen pin keepScreenOn.
     @SuppressLint("WakelockTimeout")
     static void setPlaybackActive(boolean active, boolean visual, boolean audible) {
         onMain(() -> {
@@ -748,13 +804,6 @@ public final class ReceiverCore {
                 handler.removeCallbacks(castWaitingCheck);
                 ReceiverService.cancelCastWaiting(app);
             }
-            // The screen only pins for content someone is looking at; an
-            // audio cast relies on the wake lock instead.
-            MainActivity a = activity.get();
-            if (a != null) {
-                a.applyKeepScreenOn(active && visual);
-            }
-
             boolean audio = active && audible;
             if (mediaSession != null) {
                 mediaSession.setActive(audio);
@@ -764,6 +813,12 @@ public final class ReceiverCore {
             castVisual = active && visual;
 
             castActive = active;
+            if (!active) {
+                castPaused = false;
+                castPausedLong = false;
+                handler.removeCallbacks(pausedScreenGrace);
+            }
+            syncKeepScreenOn();
             // For an audible item playing usually follows within a tick;
             // acquiring here too covers the load window, syncWakeLock drops
             // it on pause. A silent item never needs the CPU awake.

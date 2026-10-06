@@ -19,7 +19,8 @@ import android.os.Looper;
 /// registration. Also carries the media notification with a Stop action,
 /// the only way to end a cast without reopening the app.
 ///
-/// Started by MainActivity.onStop, stopped by onStart. The notification
+/// Started by MainActivity.onStop, stopped by onStart. Sticky, so a low
+/// memory kill brings the receiver back discoverable. The notification
 /// content mirrors the MediaSession MainActivity owns.
 public class ReceiverService extends Service {
     static final String CHANNEL_ID = "receiver";
@@ -179,8 +180,9 @@ public class ReceiverService extends Service {
             if (running == null) {
                 // started only to carry the action; do not linger
                 stopSelf(startId);
+                return START_NOT_STICKY;
             }
-            return START_NOT_STICKY;
+            return START_STICKY;
         }
         ensureChannel(this);
         goForeground();
@@ -192,7 +194,7 @@ public class ReceiverService extends Service {
             leased = true;
             MulticastLease.acquire(this);
         }
-        return START_NOT_STICKY;
+        return START_STICKY;
     }
 
     private int foregroundType = -1;

@@ -124,7 +124,8 @@ fn event_loop_ended(result: std::result::Result<Result<()>, tokio::task::JoinErr
     #[cfg(target_os = "android")]
     {
         ANDROID_CORE_ENDED.store(true, std::sync::atomic::Ordering::Release);
-        // no window to quit, nothing else would end the process
+        // no window to quit, nothing else would end the process. The sticky
+        // service is left running on purpose so the system restarts it
         if !matches!(result, Ok(Ok(()))) && android_ui::current().is_none() {
             error!(?result, "Receiver event loop ended with no UI up, exiting");
             std::process::exit(1);
