@@ -43,6 +43,10 @@ fn clip_utf8(s: &str, max: usize) -> &str {
 
 const MAX_LABEL: usize = 63;
 
+fn is_link_local_v6(ip: std::net::IpAddr) -> bool {
+    matches!(ip, std::net::IpAddr::V6(v6) if v6.segments()[0] & 0xffc0 == 0xfe80)
+}
+
 /// Advertise `_fcast._tcp` under `name`. Call only once the listening port is
 /// committed, so a second instance that can't bind the default port never
 /// advertises a duplicate record.
@@ -81,6 +85,14 @@ pub fn start_daemon(
 
     let daemon = mdns_sd::ServiceDaemon::new()?;
     let monitor = daemon.monitor()?;
+
+    // A sender that connects over a link-local IPv6 address serves its files
+    // at a URL that needs a zone no sender writes and no URL parser keeps, so
+    // the receiver can never fetch them. IPv4 and global IPv6 stay.
+    let link_local_v6 = mdns_sd::IfPredicate::new(|iface| is_link_local_v6(iface.ip()));
+    if let Err(err) = daemon.disable_interface(mdns_sd::IfKind::Predicate(link_local_v6)) {
+        error!(?err, "Failed to stop advertising link-local IPv6");
+    }
 
     if let Some(excluded_interfaces) = settings.exclude_interfaces() {
         match regex::Regex::new(excluded_interfaces) {
@@ -195,6 +207,16 @@ mod tests {
         let clipped = clip_utf8(&long, MAX_LABEL);
         assert!(clipped.len() <= MAX_LABEL);
         assert_eq!(clipped.len(), 62);
+    }
+
+    #[test]
+    fn only_link_local_v6_is_filtered() {
+        for ll in ["fe80::1", "fe80::d9b7:7c8e:a3b2:a07", "febf::1"] {
+            assert!(is_link_local_v6(ll.parse().unwrap()), "{ll}");
+        }
+        for keep in ["192.168.1.2", "169.254.1.1", "2001:db8::1", "fd00::1", "::1", "fec0::1"] {
+            assert!(!is_link_local_v6(keep.parse().unwrap()), "{keep}");
+        }
     }
 
     #[test]
