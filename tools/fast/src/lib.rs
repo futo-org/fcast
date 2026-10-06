@@ -74,6 +74,11 @@ pub enum Send {
     PlayFakeUrlV4 {
         container: &'static str,
     },
+    /// A Play of exactly this URL, for URLs the receiver must refuse.
+    PlayUrlV4 {
+        url: &'static str,
+        container: &'static str,
+    },
     LoadQueueV4 {
         items: &'static [PlaylistItem],
         start_index: Option<u8>,
@@ -381,6 +386,8 @@ cases!(
     cast_video_hold_v4,
     cast_fake_image_url_resource_not_found_v4,
     cast_fake_video_url_resource_not_found_v4,
+    play_local_file_refused_keeps_playing_v4,
+    queue_start_out_of_range_refused_v4,
     cast_queue_v4,
     cast_queue_with_headers_v4,
     cast_queue_insert_remove_v4,
@@ -1184,6 +1191,47 @@ define_test_case!(
             container: "video/mp4",
         }),
         recv!(Receive::Error(ErrorKind::ResourceNotFound)),
+        send!(Send::StopV4),
+    ]
+);
+
+// A LAN sender must not make the receiver read its own files, and the refused
+// Play must leave the playing item alone.
+define_test_case!(
+    play_local_file_refused_keeps_playing_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        send!(Send::SetProgressIntervalV4 { millis: 200 }),
+        recv!(Receive::ProgressV4AtLeast(1.0)),
+        send!(Send::PlayUrlV4 {
+            url: "file:///etc/hostname",
+            container: "video/mp4",
+        }),
+        recv!(Receive::Error(ErrorKind::UnsupportedFormat)),
+        recv!(Receive::ProgressV4AtLeast(3.0)),
+        send!(Send::StopV4),
+    ]
+);
+
+define_test_case!(
+    queue_start_out_of_range_refused_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("image/flowers.jpg", 0, "image/jpeg"),
+        send!(Send::LoadQueueV4 {
+            items: &[PlaylistItem { file_id: 0 }],
+            start_index: Some(3),
+            autoplay: false,
+        }),
+        recv!(Receive::Error(ErrorKind::QueuePositionOutOfRange)),
         send!(Send::StopV4),
     ]
 );

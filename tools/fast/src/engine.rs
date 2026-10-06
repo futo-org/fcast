@@ -2276,6 +2276,22 @@ impl<'a> Engine<'a> {
                 let msg = v4::MessageBuilder::new().load_single(item);
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }
+            Op::PlayUrlV4 { url, container } => {
+                let item = v4::MediaItem {
+                    container: (*container).to_owned(),
+                    source_url: (*url).to_owned(),
+                    start_time: None,
+                    volume: None,
+                    speed: None,
+                    headers: None,
+                    title: None,
+                    thumbnail_url: None,
+                    metadata: None,
+                    extra_metadata: None,
+                };
+                let msg = v4::MessageBuilder::new().load_single(item);
+                self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
+            }
             Op::LoadQueueV4 {
                 items,
                 start_index,
