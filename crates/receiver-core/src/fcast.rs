@@ -1539,23 +1539,33 @@ impl SessionDriver {
                     self.pending_tls_upgrade = true;
                 }
                 Action::RespondCompanionHello => {
-                    let id = self
-                        .companion_ctx
-                        .register_provider(self.internal_companion_tx.clone());
-                    debug!(id, "Registered companion provider");
-                    tokio::spawn(async move {});
-
+                    // One provider per session, a repeated hello gets the same
+                    // id, or a hello flood fills the registry.
+                    let id = match self.companion_provider_id() {
+                        Some(id) => id,
+                        None => {
+                            let Some(id) = self
+                                .companion_ctx
+                                .register_provider(self.internal_companion_tx.clone())
+                            else {
+                                error!("No free companion provider id");
+                                return Ok(false);
+                            };
+                            debug!(id, "Registered companion provider");
+                            if let StateVariant::Active {
+                                version:
+                                    SessionVersion::V4 {
+                                        companion_provider_id,
+                                        ..
+                                    },
+                            } = &mut self.state.variant
+                            {
+                                *companion_provider_id = Some(id);
+                            }
+                            id
+                        }
+                    };
                     self.send_v4_message(&V4Message::CompanionHello(id)).await?;
-                    if let StateVariant::Active {
-                        version:
-                            SessionVersion::V4 {
-                                companion_provider_id,
-                                ..
-                            },
-                    } = &mut self.state.variant
-                    {
-                        *companion_provider_id = Some(id);
-                    }
                 }
                 Action::Companion(resp) => match resp {
                     CompanionResponse::ResourceInfo(resource_info) => {
@@ -1674,8 +1684,37 @@ impl SessionDriver {
     }
 
     #[cfg_attr(not(target_os = "android"), instrument(name = "session", skip_all, fields(id = self.id)))]
+    fn companion_provider_id(&self) -> Option<u16> {
+        match self.state.variant {
+            StateVariant::Active {
+                version:
+                    SessionVersion::V4 {
+                        companion_provider_id,
+                        ..
+                    },
+            } => companion_provider_id,
+            _ => None,
+        }
+    }
+
     pub async fn run(
         mut self,
+        updates_rx: Receiver<Arc<ReceiverToSenderMessage>>,
+        msg_tx: &MessageSender,
+        comp_rx: CompanionMsgReceiver,
+        msg_rx: UnboundedReceiver<ReceiverToFCastSender>,
+    ) -> anyhow::Result<()> {
+        let res = self.run_loop(updates_rx, msg_tx, comp_rx, msg_rx).await;
+        debug!(state = ?self.state.variant);
+        // on every exit, an error included
+        if let Some(id) = self.companion_provider_id() {
+            self.companion_ctx.unregister_provider(id);
+        }
+        res
+    }
+
+    async fn run_loop(
+        &mut self,
         mut updates_rx: Receiver<Arc<ReceiverToSenderMessage>>,
         msg_tx: &MessageSender,
         mut comp_rx: CompanionMsgReceiver,
@@ -1820,19 +1859,6 @@ impl SessionDriver {
                     }
                 }
             }
-        }
-
-        debug!(state = ?self.state.variant);
-
-        if let StateVariant::Active {
-            version:
-                SessionVersion::V4 {
-                    companion_provider_id: Some(id),
-                    ..
-                },
-        } = self.state.variant
-        {
-            self.companion_ctx.unregister_provider(id);
         }
 
         Ok(())

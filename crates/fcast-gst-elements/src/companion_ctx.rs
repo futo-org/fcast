@@ -107,19 +107,19 @@ impl std::error::Error for CompanionGone {}
 #[derive(Default)]
 struct InnerCompanionContext {
     providers: HashMap<companion::ProviderId, CompanionProviderHandle>,
+    /// Where the next search starts, past the last id handed out.
+    next: companion::ProviderId,
 }
 
 impl InnerCompanionContext {
-    fn register_provider(&mut self, tx: CompanionMsgSender) -> companion::ProviderId {
-        let mut id = 0;
-        while self.providers.contains_key(&id) {
-            id += 1;
-        }
-
-        let handle = CompanionProviderHandle { tx };
-        self.providers.insert(id, handle);
-
-        id
+    /// None once every id is taken, the search never wraps into a spin.
+    fn register_provider(&mut self, tx: CompanionMsgSender) -> Option<companion::ProviderId> {
+        let id = (0..=companion::ProviderId::MAX)
+            .map(|step| self.next.wrapping_add(step))
+            .find(|id| !self.providers.contains_key(id))?;
+        self.next = id.wrapping_add(1);
+        self.providers.insert(id, CompanionProviderHandle { tx });
+        Some(id)
     }
 
     pub fn unregister_provider(&mut self, id: companion::ProviderId) {
@@ -148,7 +148,7 @@ impl CompanionContext {
         Self(Arc::new(Mutex::new(InnerCompanionContext::default())))
     }
 
-    pub fn register_provider(&self, tx: CompanionMsgSender) -> companion::ProviderId {
+    pub fn register_provider(&self, tx: CompanionMsgSender) -> Option<companion::ProviderId> {
         self.0.lock().register_provider(tx)
     }
 
@@ -158,5 +158,22 @@ impl CompanionContext {
 
     pub fn get_provider(&self, id: companion::ProviderId) -> Option<CompanionProviderHandle> {
         self.0.lock().providers.get(&id).cloned()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ids_are_reused_and_exhaustion_is_refused() {
+        let ctx = CompanionContext::new();
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        for want in 0..=companion::ProviderId::MAX {
+            assert_eq!(ctx.register_provider(tx.clone()), Some(want));
+        }
+        assert_eq!(ctx.register_provider(tx.clone()), None);
+        ctx.unregister_provider(7);
+        assert_eq!(ctx.register_provider(tx), Some(7));
     }
 }

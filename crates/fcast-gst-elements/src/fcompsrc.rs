@@ -729,7 +729,7 @@ mod tests {
                 let (provider_tx, mut provider_rx) =
                     tokio::sync::mpsc::unbounded_channel::<CompanionMessage>();
                 let provider_id = context.register_provider(provider_tx);
-                assert_eq!(provider_id, 0);
+                assert_eq!(provider_id, Some(0));
 
                 std::thread::Builder::new()
                     .name("fake-companion-provider".into())

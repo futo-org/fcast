@@ -371,7 +371,7 @@ mod tests {
         use crate::fcast::{CompanionMessage, FeedbackSender, ResourceInfoResponseCell};
         use fcast_protocol::{companion, v4};
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<CompanionMessage>();
-        ctx.register_provider(tx);
+        ctx.register_provider(tx).expect("a free provider id");
         std::thread::Builder::new()
             .name("fake-companion".into())
             .spawn(move || {
