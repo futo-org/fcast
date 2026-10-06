@@ -271,8 +271,9 @@ impl ConfigStore {
                 continue;
             }
             match std::fs::read_to_string(&path) {
-                Ok(text) => match toml_edit::de::from_str::<Config>(&text) {
-                    Ok(config) => {
+                Ok(text) => match text.parse::<DocumentMut>() {
+                    Ok(doc) => {
+                        let config = parse_lenient(&doc);
                         info!(?path, ?config, "Loaded receiver config");
                         loaded = Some((path, config));
                         break;
@@ -323,7 +324,7 @@ impl ConfigStore {
     #[allow(dead_code)]
     pub fn open(path: PathBuf) -> Self {
         let doc = load_document(&path).unwrap_or_default();
-        let config = toml_edit::de::from_str::<Config>(&doc.to_string()).unwrap_or_default();
+        let config = parse_lenient(&doc);
         Self {
             path: Some(path),
             config,
@@ -365,6 +366,9 @@ impl ConfigStore {
             return Ok(());
         };
 
+        if self.doc.as_table().is_empty() {
+            keep_unparsable(&path);
+        }
         let merged = apply(&self.doc, &self.config)
             .map_err(|err| std::io::Error::other(format!("failed to serialize config: {err}")))?;
         write_atomic(&path, merged.to_string().as_bytes())?;
@@ -416,6 +420,64 @@ fn writable_path(explicit_path: Option<&str>, loaded_from: Option<&Path>) -> Opt
 
 fn is_system_path(path: &Path) -> bool {
     path.starts_with("/etc")
+}
+
+/// The typed view of `doc`. A key of the wrong type is dropped and logged
+/// instead of resetting every other setting to its default, which the next
+/// save would then write over the user's file.
+fn parse_lenient(doc: &DocumentMut) -> Config {
+    let parse = |d: &DocumentMut| toml_edit::de::from_str::<Config>(&d.to_string());
+    let err = match parse(doc) {
+        Ok(config) => return config,
+        Err(err) => err,
+    };
+    warn!(%err, "Config has values of the wrong type, dropping them");
+    let mut clean = doc.clone();
+    for (section, item) in doc.iter() {
+        let Some(table) = item.as_table_like() else {
+            let mut probe = DocumentMut::new();
+            probe.insert(section, item.clone());
+            if parse(&probe).is_err() {
+                warn!(section, "Dropping config section of the wrong type");
+                clean.remove(section);
+            }
+            continue;
+        };
+        for (key, value) in table.iter() {
+            let mut probe = DocumentMut::new();
+            let mut probe_table = toml_edit::Table::new();
+            probe_table.insert(key, value.clone());
+            probe.insert(section, Item::Table(probe_table));
+            if parse(&probe).is_err() {
+                warn!(section, key, "Dropping config key of the wrong type");
+                if let Some(t) = clean.get_mut(section).and_then(Item::as_table_like_mut) {
+                    t.remove(key);
+                }
+            }
+        }
+    }
+    parse(&clean).unwrap_or_else(|err| {
+        error!(%err, "Config still does not load, using defaults");
+        Config::default()
+    })
+}
+
+/// A file that is not TOML at all is moved aside before the first save
+/// replaces it, so a hand edit with a typo is not lost.
+fn keep_unparsable(path: &Path) {
+    let Ok(text) = std::fs::read_to_string(path) else {
+        return;
+    };
+    if text.trim().is_empty() || text.parse::<DocumentMut>().is_ok() {
+        return;
+    }
+    let mut name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    name.push(".invalid");
+    let aside = path.with_file_name(name);
+    match std::fs::rename(path, &aside) {
+        Ok(()) => warn!(?aside, "Moved the unparsable config aside"),
+        Err(err) => error!(?err, ?aside, "Failed to move the unparsable config aside"),
+    }
 }
 
 fn load_document(path: &Path) -> Option<DocumentMut> {
@@ -867,6 +929,68 @@ exclude_interfaces = \"old\" # trailing note
         assert!(store.get().fcast.enabled);
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_key_of_the_wrong_type_keeps_the_rest() {
+        let doc: DocumentMut = "[interface]\ntray = \"yes\"\nshow_window = false\n\
+                                [fcast]\nname = \"Den\"\n[video]\nmatch_frame_rate = 1\n"
+            .parse()
+            .unwrap();
+        let config = parse_lenient(&doc);
+        assert!(config.interface.tray, "the bad key falls back to its default");
+        assert!(!config.interface.show_window);
+        assert_eq!(config.fcast.name.as_deref(), Some("Den"));
+        assert!(config.video.match_frame_rate);
+    }
+
+    #[test]
+    fn a_section_of_the_wrong_type_keeps_the_rest() {
+        let doc: DocumentMut = "video = 3\n[fcast]\nname = \"Den\"\n".parse().unwrap();
+        let config = parse_lenient(&doc);
+        assert_eq!(config.fcast.name.as_deref(), Some("Den"));
+        assert!(config.video.match_frame_rate);
+    }
+
+    #[test]
+    fn a_save_after_a_type_error_keeps_the_users_settings() {
+        let path = unique_temp_path();
+        std::fs::write(
+            &path,
+            "# mine\n[interface]\ntray = \"yes\"\nshow_window = false\n[fcast]\nname = \"Den\"\n",
+        )
+        .unwrap();
+        let mut store = ConfigStore::open(path.clone());
+        assert!(!store.get().interface.show_window);
+        store.update(|c| c.raop.enabled = false).unwrap();
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        let reloaded = ConfigStore::open(path.clone());
+        assert!(text.contains("# mine"), "{text}");
+        assert!(!reloaded.get().interface.show_window, "{text}");
+        assert_eq!(reloaded.get().fcast.name.as_deref(), Some("Den"), "{text}");
+        assert!(!reloaded.get().raop.enabled, "{text}");
+        assert!(reloaded.get().interface.tray, "{text}");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn an_unparsable_file_is_moved_aside_before_a_save() {
+        let path = unique_temp_path();
+        std::fs::write(&path, b"[interface\ntray = false\n").unwrap();
+        let mut store = ConfigStore::open(path.clone());
+        store.update(|c| c.raop.enabled = false).unwrap();
+
+        let mut aside = path.file_name().unwrap().to_os_string();
+        aside.push(".invalid");
+        let aside = path.with_file_name(aside);
+        assert_eq!(std::fs::read(&aside).unwrap(), b"[interface\ntray = false\n");
+        assert!(!ConfigStore::open(path.clone()).get().raop.enabled);
+        // a second save has nothing left to move
+        store.update(|c| c.raop.enabled = true).unwrap();
+        assert_eq!(std::fs::read(&aside).unwrap(), b"[interface\ntray = false\n");
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&aside);
     }
 
     fn unique_temp_path() -> PathBuf {
