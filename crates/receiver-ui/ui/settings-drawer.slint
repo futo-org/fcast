@@ -708,34 +708,32 @@ export component SettingsDrawer inherits Rectangle {
                         value <=> Bridge.cfg-fcast-name;
                     }
 
-                    SectionHeader {
+                    if Bridge.settings-raop-available: SectionHeader {
                         title: @tr("AirPlay audio");
                         icon: Icons.audio;
                     }
-                    ToggleRow {
+                    if Bridge.settings-raop-available: ToggleRow {
                         label: @tr("Enabled");
                         setting-key: "raop.enabled";
                         value <=> Bridge.cfg-raop-enabled;
                     }
-                    TextRow {
+                    if Bridge.settings-raop-available: TextRow {
                         label: @tr("Name");
                         setting-key: "raop.name";
                         placeholder: "FCast-{hostname}";
                         value <=> Bridge.cfg-raop-name;
                     }
 
-                    // android runs no Google Cast server, its activity
-                    // registers no _googlecast record
-                    if !Bridge.android: SectionHeader {
+                    if Bridge.settings-gcast-available: SectionHeader {
                         title: @tr("Google Cast");
                         icon: Icons.gcast-small;
                     }
-                    if !Bridge.android: ToggleRow {
+                    if Bridge.settings-gcast-available: ToggleRow {
                         label: @tr("Enabled");
                         setting-key: "chromecast.enabled";
                         value <=> Bridge.cfg-chromecast-enabled;
                     }
-                    if !Bridge.android: TextRow {
+                    if Bridge.settings-gcast-available: TextRow {
                         label: @tr("Name");
                         setting-key: "chromecast.name";
                         placeholder: "Chromecast-{hostname}";

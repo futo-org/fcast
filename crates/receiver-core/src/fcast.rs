@@ -351,6 +351,7 @@ impl std::fmt::Debug for FlatLoadMessage {
 pub enum WrappedPlayMessage {
     Legacy(v3::PlayMessage),
     V4(FlatLoadMessage),
+    #[cfg(feature = "google-cast")]
     Chromecast(crate::gcast::ChromecastLoadItem),
 }
 

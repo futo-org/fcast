@@ -235,9 +235,18 @@ pub enum UpdateGuiCommand {
     InitSettings {
         config: crate::config::Config,
         config_path: String,
-        airplay_available: bool,
+        services: Services,
     },
     QuitLoop,
+}
+
+/// The cast services this build serves, each one's settings section shows
+/// only when it is.
+#[derive(Debug, Clone, Copy)]
+pub struct Services {
+    pub raop: bool,
+    pub google_cast: bool,
+    pub airplay: bool,
 }
 
 struct GuiIsVisibleHandle {
@@ -429,12 +438,12 @@ impl GuiController {
         &self,
         config: crate::config::Config,
         config_path: String,
-        airplay_available: bool,
+        services: Services,
     ) {
         self.send(UpdateGuiCommand::InitSettings {
             config,
             config_path,
-            airplay_available,
+            services,
         });
     }
 

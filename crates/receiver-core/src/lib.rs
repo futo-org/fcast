@@ -2,8 +2,6 @@
 // plugins before main.
 use gst_static_env as _;
 
-use tokio::sync::mpsc::UnboundedSender;
-use tracing::debug;
 use tracing::level_filters::LevelFilter;
 
 #[cfg(not(target_os = "android"))]
@@ -22,6 +20,7 @@ pub mod bug_report;
 pub mod config;
 mod external_subtitles;
 pub mod fcast;
+#[cfg(feature = "google-cast")]
 mod gcast;
 pub mod gstreamer;
 pub mod gui;
@@ -36,6 +35,7 @@ mod media_source;
 pub mod message;
 pub mod player;
 mod queue_cache;
+#[cfg(feature = "raop")]
 mod raop;
 mod stall_recovery;
 pub mod ui_scaling;
@@ -60,17 +60,19 @@ use i_slint_video::RenderProfile;
 pub use gst;
 pub use gst_video;
 
-use crate::{fcast::Operation, player::PlayerState};
-
-pub use raop::{Configuration, device_name_hash, hash_to_string, txt_properties};
+use crate::fcast::Operation;
+#[cfg(feature = "google-cast")]
+use crate::player::PlayerState;
 
 pub type SenderId = u32;
 
 #[cfg(not(target_os = "android"))]
 use message::Mdns;
+#[cfg(feature = "raop")]
 use message::Raop;
 
 pub const FCAST_TCP_PORT: u16 = 46899;
+#[cfg(feature = "google-cast")]
 pub const GCAST_TCP_PORT: u16 = 8009;
 pub type MediaItemId = u64;
 
@@ -150,8 +152,10 @@ pub fn install_default_crypto_provider() {
     }
 }
 
-struct GCastUpdateSender(Option<UnboundedSender<gcast::StatusUpdate>>);
+#[cfg(feature = "google-cast")]
+struct GCastUpdateSender(Option<tokio::sync::mpsc::UnboundedSender<gcast::StatusUpdate>>);
 
+#[cfg(feature = "google-cast")]
 impl GCastUpdateSender {
     fn send(&mut self, update: gcast::StatusUpdate) {
         let Some(tx) = self.0.as_ref() else {
@@ -160,7 +164,7 @@ impl GCastUpdateSender {
         if tx.send(update).is_err() {
             // The gcast server stopped (e.g. its port was taken); make later updates
             // no-ops.
-            debug!("GCast server not running, disabling status updates");
+            tracing::debug!("GCast server not running, disabling status updates");
             self.0 = None;
         }
     }
@@ -187,6 +191,7 @@ pub struct CliArgs {
     #[arg(long, default_value_t = false)]
     no_systray: bool,
     /// Disable the RAOP receiver
+    #[cfg(feature = "raop")]
     #[arg(long, default_value_t = false)]
     no_raop: bool,
     /// Disable the AirPlay screen-mirroring receiver
@@ -194,6 +199,7 @@ pub struct CliArgs {
     #[arg(long, default_value_t = false)]
     no_airplay: bool,
     /// Disable the Google Cast receiver
+    #[cfg(feature = "google-cast")]
     #[arg(long, default_value_t = false)]
     no_google_cast: bool,
     /// Disable the FCast receiver
@@ -271,10 +277,12 @@ impl Settings {
         !self.cli.no_fcast && self.config.get().fcast.enabled
     }
 
+    #[cfg(feature = "raop")]
     pub fn raop_enabled(&self) -> bool {
         !self.cli.no_raop && self.config.get().raop.enabled
     }
 
+    #[cfg(feature = "google-cast")]
     pub fn google_cast_enabled(&self) -> bool {
         !self.cli.no_google_cast && self.config.get().chromecast.enabled
     }
@@ -296,6 +304,7 @@ impl Settings {
     }
 
     /// Broadcast name for RAOP. Defaults to `FCast-<hostname>`.
+    #[cfg(feature = "raop")]
     pub fn raop_name(&self) -> String {
         self.config
             .get()
@@ -307,6 +316,7 @@ impl Settings {
     }
 
     /// Broadcast name for Google Cast. Defaults to `Chromecast-<hostname>`.
+    #[cfg(feature = "google-cast")]
     pub fn chromecast_name(&self) -> String {
         self.config
             .get()
@@ -440,10 +450,6 @@ impl Settings {
     pub fn fcast_enabled(&self) -> bool {
         self.config.get().fcast.enabled
     }
-
-    pub fn raop_enabled(&self) -> bool {
-        self.config.get().raop.enabled
-    }
 }
 
 /// The start-on-boot answer, `None` while the user was never asked.
@@ -455,18 +461,15 @@ pub fn android_start_on_boot(files_dir: &std::path::Path) -> Option<bool> {
         .start_on_boot
 }
 
-/// The FCast and RAOP names the activity registers, read from the config in
-/// `files_dir`, `None` for a disabled service. `hostname` fills `{hostname}`
+/// The FCast name the activity registers, read from the config in
+/// `files_dir`, `None` while FCast is disabled. `hostname` fills `{hostname}`
 /// and the `FCast-<hostname>` default. The activity asks before the receiver
 /// is up, so this reads the file itself.
 #[cfg(target_os = "android")]
-pub fn android_service_names(
-    files_dir: &std::path::Path,
-    hostname: &str,
-) -> (Option<String>, Option<String>) {
+pub fn android_fcast_name(files_dir: &std::path::Path, hostname: &str) -> Option<String> {
     config::ConfigStore::open(files_dir.join(ANDROID_CONFIG_FILE))
         .get()
-        .advertised_names(hostname)
+        .advertised_fcast_name(hostname)
 }
 
 /// Cap the number of glibc malloc arenas: GStreamer's many short-lived worker

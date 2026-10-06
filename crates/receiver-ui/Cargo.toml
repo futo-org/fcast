@@ -7,7 +7,7 @@ license = "GPL-3.0-only"
 [dependencies]
 gst-static-env.workspace = true
 gstreamer-src.workspace = true
-receiver-core = { path = "../receiver-core" }
+receiver-core = { path = "../receiver-core", default-features = false }
 fcast-video = { path = "../fcast-video" }
 # The hop from a cue's display list to the dodvg renderer's overlay slot, on
 # the lane that draws them. Pulled in by `scene-cues`, not named here, so a
@@ -86,7 +86,10 @@ gst-static-link.workspace = true
 slint-build.workspace = true
 
 [features]
-default = []
+# Dropped by the android receiver, which serves neither.
+default = ["raop", "google-cast"]
+raop = ["receiver-core/raop"]
+google-cast = ["receiver-core/google-cast"]
 airplay = ["receiver-core/airplay"]
 desktop = [
     "slint/backend-winit",

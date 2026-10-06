@@ -5,7 +5,9 @@ use tracing::error;
 
 #[cfg(feature = "airplay")]
 use crate::airplay;
-use crate::{MediaItemId, SenderId, application::PacketOrigin, player, raop};
+use crate::{MediaItemId, SenderId, application::PacketOrigin, player};
+#[cfg(feature = "raop")]
+use crate::raop;
 
 #[derive(Clone, Debug)]
 pub struct MessageSender(UnboundedSender<Message>);
@@ -25,6 +27,7 @@ impl MessageSender {
         self.send(Message::Op { origin, op })
     }
 
+    #[cfg(feature = "raop")]
     pub fn raop(&self, msg: Raop) {
         self.send(Message::Raop(msg));
     }
@@ -118,6 +121,7 @@ pub enum AirPlay {
     },
 }
 
+#[cfg(feature = "raop")]
 #[derive(Debug)]
 pub enum Raop {
     ConfigAvailable(raop::Configuration),
@@ -237,6 +241,7 @@ pub enum Message {
     SourceBackoffTick {
         epoch: u64,
     },
+    #[cfg(feature = "raop")]
     Raop(Raop),
     #[cfg(feature = "airplay")]
     AirPlay(AirPlay),

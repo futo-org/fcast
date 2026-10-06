@@ -184,8 +184,9 @@ fn log_filter(level: rcore::tracing::level_filters::LevelFilter) -> log::LevelFi
     }
 }
 
-/// The FCast and RAOP names to register, `{fcast, raop}` with null for a
-/// disabled service. Read from the config before the receiver is up.
+/// The FCast name to register as `{fcast}`, a null element while FCast is
+/// disabled and a null array when the call failed. Read from the config
+/// before the receiver is up.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
 pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeServiceNames<'local>(
@@ -203,18 +204,17 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeServiceNa
         return null_names(&env);
     };
     let files_dir = std::path::PathBuf::from(files_dir.to_string_lossy().into_owned());
-    let (fcast, raop) = rcore::android_service_names(&files_dir, &hostname.to_string_lossy());
+    let fcast = rcore::android_fcast_name(&files_dir, &hostname.to_string_lossy());
 
-    let Ok(names) = env.new_object_array(2, "java/lang/String", jni::objects::JObject::null())
+    let Ok(names) = env.new_object_array(1, "java/lang/String", jni::objects::JObject::null())
     else {
         return null_names(&env);
     };
-    for (idx, name) in [fcast, raop].into_iter().enumerate() {
-        let Some(name) = name else { continue };
+    if let Some(name) = fcast {
         let Ok(name) = env.new_string(name) else {
             return null_names(&env);
         };
-        if env.set_object_array_element(&names, idx as i32, name).is_err() {
+        if env.set_object_array_element(&names, 0, name).is_err() {
             return null_names(&env);
         }
     }
@@ -268,50 +268,6 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_setMdnsDeviceNa
 
     let event = Mdns::NameSet(device_name.to_string_lossy().to_string());
     let _ = EVENT_CHANNEL.0.send(rcore::message::Message::Mdns(event));
-}
-
-#[allow(non_snake_case)]
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_getDeviceNameRaopHash<'local>(
-    mut env: jni::JNIEnv<'local>,
-    _class: jni::objects::JClass<'local>,
-    name: jni::objects::JString,
-) -> jni::sys::jstring {
-    // no unwraps in extern "C": a panic here aborts the process
-    let Ok(name) = env.get_string(&name) else {
-        return std::ptr::null_mut();
-    };
-    let name = name.to_string_lossy();
-    let hash = rcore::device_name_hash(&name);
-    let hash_str = rcore::hash_to_string(&hash);
-    let _ = EVENT_CHANNEL.0.send(rcore::message::Message::Raop(
-        rcore::message::Raop::ConfigAvailable(rcore::Configuration { hw_addr: hash }),
-    ));
-
-    match env.new_string(hash_str) {
-        Ok(s) => s.into_raw(),
-        Err(_) => std::ptr::null_mut(),
-    }
-}
-
-#[allow(non_snake_case)]
-#[unsafe(no_mangle)]
-pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_getRaopTxtAttribs<'local>(
-    mut env: jni::JNIEnv<'local>,
-    _class: jni::objects::JClass<'local>,
-    attrs: jni::objects::JObject,
-) {
-    let Ok(attrs) = env.get_map(&attrs) else {
-        return;
-    };
-    for (k, v) in rcore::txt_properties() {
-        let (Ok(k), Ok(v)) = (env.new_string(k), env.new_string(v)) else {
-            return;
-        };
-        if attrs.put(&mut env, &k, &v).is_err() {
-            return;
-        }
-    }
 }
 
 /// Transport commands from the MediaSession and the notification Stop

@@ -72,28 +72,22 @@ public final class ReceiverCore {
     private static PowerManager.WakeLock cpuWakeLock = null;
     private static ConnectivityManager connectivityManager = null;
 
-    /// The names registrations always use, from the settings, null for a
-    /// disabled service. Never reassigned: adopting a collision-renamed value
+    /// The name the registration always uses, from the settings, null while
+    /// FCast is disabled. Never reassigned: adopting a collision-renamed value
     /// as the new base compounds " (2)" suffixes on every re-registration cycle.
     private static String fcastServiceName;
-    private static String raopServiceName;
     // The listener instance IS the registration handle: one fresh instance per
     // register call, never reused, so re-registration cycles cannot trip
     // NsdManager's listener-in-use checks.
     private static NsdListener fcastReg = null;
-    private static NsdListener raopReg = null;
     /// Cancels stale registerFCastWhenReady poll chains: each
     /// registerServices() bumps it and in-flight lambdas holding an older
     /// value stop, so two overlapping chains cannot both register.
     private static int fcastPollGen = 0;
-    /// Per-service backoff and single-retry-pending flags: a failure retries
-    /// only ITS OWN service (re-registering the healthy one would flap it),
-    /// and only one retry is ever queued per service, or two both-fail
-    /// rounds would fan out exponentially.
+    /// Registration backoff and its single-retry-pending flag: only one retry
+    /// is ever queued, or back-to-back failures would fan out exponentially.
     private static int fcastRetries = 0;
-    private static int raopRetries = 0;
     private static boolean fcastRetryPending = false;
-    private static boolean raopRetryPending = false;
 
     // Re-sweep even without a callback: tethering/hotspot interfaces never
     // surface as Networks, so their addresses are only found by polling.
@@ -154,17 +148,15 @@ public final class ReceiverCore {
         // so reading them once here is enough.
         String hostname = android.os.Build.MANUFACTURER + "-" + modelName;
         String[] names = nativeServiceNames(app.getFilesDir().getPath(), hostname);
-        if (names == null || names.length < 2) {
-            // An unreadable config is an unset one: nothing disabled, the
-            // default names, as rcore's advertised_names resolves it.
-            Log.w(TAG, "service names unavailable from native, advertising defaults");
-            names = new String[] { "FCast-" + hostname, "FCast-" + hostname };
+        if (names == null || names.length < 1) {
+            // An unreadable config is an unset one: FCast enabled under the
+            // default name, as rcore's advertised_fcast_name resolves it.
+            Log.w(TAG, "service name unavailable from native, advertising the default");
+            names = new String[] { "FCast-" + hostname };
         }
         fcastServiceName = names[0] == null ? null : truncateUtf8(names[0], 63);
-        raopServiceName = names[1] == null ? null : truncateUtf8(names[1], 63);
 
         setMdnsDeviceName(fcastServiceName != null ? fcastServiceName
-                : raopServiceName != null ? raopServiceName
                 : truncateUtf8("FCast-" + hostname, 63));
         registerServices();
 
@@ -311,55 +303,33 @@ public final class ReceiverCore {
     /// thread.
     static final class NsdListener implements NsdManager.RegistrationListener {
         final String label;
-        final boolean isFcast;
 
-        NsdListener(String label, boolean isFcast) {
+        NsdListener(String label) {
             this.label = label;
-            this.isFcast = isFcast;
         }
 
         @Override
         public void onRegistrationFailed(NsdServiceInfo info, int errorCode) {
             handler.post(() -> {
                 // the platform already dropped this listener
-                if (isFcast) {
-                    if (fcastReg == this) {
-                        fcastReg = null;
-                    }
-                    if (fcastRetryPending) {
-                        return;
-                    }
-                    fcastRetryPending = true;
-                    fcastRetries += 1;
-                    long delay = 3_000L << Math.min(fcastRetries - 1, 4);
-                    Log.e(TAG, label + " registration failed: " + errorCode
-                            + ", retry " + fcastRetries + " in " + delay + "ms");
-                    handler.postDelayed(() -> {
-                        fcastRetryPending = false;
-                        if (fcastReg == null) {
-                            fcastPollGen += 1;
-                            registerFCastWhenReady(fcastPollGen);
-                        }
-                    }, delay);
-                } else {
-                    if (raopReg == this) {
-                        raopReg = null;
-                    }
-                    if (raopRetryPending) {
-                        return;
-                    }
-                    raopRetryPending = true;
-                    raopRetries += 1;
-                    long delay = 3_000L << Math.min(raopRetries - 1, 4);
-                    Log.e(TAG, label + " registration failed: " + errorCode
-                            + ", retry " + raopRetries + " in " + delay + "ms");
-                    handler.postDelayed(() -> {
-                        raopRetryPending = false;
-                        if (raopReg == null) {
-                            registerRaop();
-                        }
-                    }, delay);
+                if (fcastReg == this) {
+                    fcastReg = null;
                 }
+                if (fcastRetryPending) {
+                    return;
+                }
+                fcastRetryPending = true;
+                fcastRetries += 1;
+                long delay = 3_000L << Math.min(fcastRetries - 1, 4);
+                Log.e(TAG, label + " registration failed: " + errorCode
+                        + ", retry " + fcastRetries + " in " + delay + "ms");
+                handler.postDelayed(() -> {
+                    fcastRetryPending = false;
+                    if (fcastReg == null) {
+                        fcastPollGen += 1;
+                        registerFCastWhenReady(fcastPollGen);
+                    }
+                }, delay);
             });
         }
 
@@ -372,17 +342,11 @@ public final class ReceiverCore {
         public void onServiceRegistered(NsdServiceInfo info) {
             Log.i(TAG, label + " registered as " + info.getServiceName());
             handler.post(() -> {
-                // per service: raop succeeding must not defeat fcast's
-                // backoff or vice versa
-                if (isFcast) {
-                    fcastRetries = 0;
-                    // The daemon renames on collision. The DISPLAYED name
-                    // follows the network's truth; the registration base
-                    // never moves, or renames would compound.
-                    setMdnsDeviceName(info.getServiceName());
-                } else {
-                    raopRetries = 0;
-                }
+                fcastRetries = 0;
+                // The daemon renames on collision. The DISPLAYED name
+                // follows the network's truth; the registration base
+                // never moves, or renames would compound.
+                setMdnsDeviceName(info.getServiceName());
             });
         }
 
@@ -413,8 +377,8 @@ public final class ReceiverCore {
         return new String(bytes, 0, maxBytes, StandardCharsets.UTF_8);
     }
 
-    /// (Re-)register both services, dropping any prior registrations first.
-    /// The fcast one waits for the TXT records (TLS fingerprint + protocol
+    /// (Re-)register the fcast service, dropping any prior registration first.
+    /// It waits for the TXT records (TLS fingerprint + protocol
     /// version) AND the committed listen port: v4 senders key their secure
     /// connect on the records, and an advertisement pointing at an unbound
     /// port hands early senders a connection refuse.
@@ -422,35 +386,10 @@ public final class ReceiverCore {
         fcastPollGen += 1;
         quietUnregister(fcastReg);
         fcastReg = null;
-        quietUnregister(raopReg);
-        raopReg = null;
 
-        if (raopServiceName != null) {
-            registerRaop();
-        }
         if (fcastServiceName != null) {
             registerFCastWhenReady(fcastPollGen);
         }
-    }
-
-    private static void registerRaop() {
-        String raopHash = getDeviceNameRaopHash(raopServiceName);
-        if (raopHash == null) {
-            Log.e(TAG, "raop hash unavailable, skipping raop registration");
-            return;
-        }
-        NsdServiceInfo raopServiceInfo = new NsdServiceInfo();
-        // the combined instance name also lives under DNS-SD's 63 bytes
-        raopServiceInfo.setServiceName(truncateUtf8(raopHash + "@" + raopServiceName, 63));
-        raopServiceInfo.setServiceType("_raop._tcp");
-        raopServiceInfo.setPort(33505);
-        Map<String, String> raopAttrs = new HashMap<>();
-        getRaopTxtAttribs(raopAttrs);
-        for (Map.Entry<String, String> a : raopAttrs.entrySet()) {
-            raopServiceInfo.setAttribute(a.getKey(), a.getValue());
-        }
-        raopReg = new NsdListener("_raop", false);
-        nsdManager.registerService(raopServiceInfo, NsdManager.PROTOCOL_DNS_SD, raopReg);
     }
 
     private static void registerFCastWhenReady(int gen) {
@@ -471,7 +410,7 @@ public final class ReceiverCore {
         for (Map.Entry<String, String> a : attrs.entrySet()) {
             info.setAttribute(a.getKey(), a.getValue());
         }
-        fcastReg = new NsdListener("_fcast", true);
+        fcastReg = new NsdListener("_fcast");
         nsdManager.registerService(info, NsdManager.PROTOCOL_DNS_SD, fcastReg);
     }
 
@@ -990,9 +929,7 @@ public final class ReceiverCore {
     private static native void nativeSetStartOnBoot(boolean on);
     private static native void nativeSetAddresses(List<ByteBuffer> addrs);
     private static native void setMdnsDeviceName(String name);
-    private static native String getDeviceNameRaopHash(String name);
     private static native String[] nativeServiceNames(String filesDir, String hostname);
-    private static native void getRaopTxtAttribs(Map<String, String> attrs);
     private static native boolean getFCastTxtAttribs(Map<String, String> attrs);
     private static native int getFCastPort();
     /// Codes: 0 loss, 1 transient loss, 2 gain, 3 becoming noisy. The pause

@@ -5,7 +5,7 @@ edition = "2024"
 license = "GPL-3.0-only"
 
 [dependencies]
-rcore = { package = "receiver-ui", path = "../../../crates/receiver-ui", features = ["android"] }
+rcore = { package = "receiver-ui", path = "../../../crates/receiver-ui", default-features = false, features = ["android"] }
 android_logger = "0.15.1"
 log-panics = { version = "2.1.0", features = ["with-backtrace"]}
 log.workspace = true

@@ -68,21 +68,22 @@ image = { workspace = true, features = [
     "jpeg", "png", "pnm", "qoi", "tga", "tiff", "webp",
 ] }
 
-# RAOP
-rtsp-types = "0.1"
-sdp-types = "0.1"
-rsa = { version = "0.9", features = ["sha2", "sha1"] }
 sha2.workspace = true
-sha1 = "0.10"
-lazy_static = "1.5"
-md-5 = "0.11"
-aes = "0.8"
-alac = { version = "0.5", default-features = false }
-cbc = { version = "0.1", features = ["alloc", "std"] }
-nom = "7.1"
-gst-audio = { package = "gstreamer-audio", version = "0.25" }
-byte-slice-cast = "1"
-rtp-types = "0.1"
+
+# RAOP
+rtsp-types = { version = "0.1", optional = true }
+sdp-types = { version = "0.1", optional = true }
+rsa = { version = "0.9", features = ["sha2", "sha1"], optional = true }
+sha1 = { version = "0.10", optional = true }
+lazy_static = { version = "1.5", optional = true }
+md-5 = { version = "0.11", optional = true }
+aes = { version = "0.8", optional = true }
+alac = { version = "0.5", default-features = false, optional = true }
+cbc = { version = "0.1", features = ["alloc", "std"], optional = true }
+nom = { version = "7.1", optional = true }
+gst-audio = { package = "gstreamer-audio", version = "0.25", optional = true }
+byte-slice-cast = { version = "1", optional = true }
+rtp-types = { version = "0.1", optional = true }
 
 # AirPlay
 plist = { version = "1", optional = true }
@@ -90,7 +91,7 @@ ctr = { version = "0.9", optional = true }
 apple-fairplay = { path = "../apple-fairplay", optional = true }
 
 # Google Cast
-google-cast-protocol = { path = "../google-cast-protocol" }
+google-cast-protocol = { path = "../google-cast-protocol", optional = true }
 rcgen.workspace = true
 uuid.workspace = true
 
@@ -151,8 +152,17 @@ simulator.workspace = true
 
 
 [features]
-default = []
-airplay = ["dep:plist", "dep:ctr", "dep:apple-fairplay"]
+# On for every receiver but android, which serves neither and drops them
+# through receiver-ui. Default here so the plain test lane covers them.
+default = ["raop", "google-cast"]
+raop = [
+    "dep:rtsp-types", "dep:sdp-types", "dep:rsa", "dep:sha1", "dep:lazy_static",
+    "dep:md-5", "dep:aes", "dep:alac", "dep:cbc", "dep:nom", "dep:gst-audio",
+    "dep:byte-slice-cast", "dep:rtp-types",
+]
+google-cast = ["dep:google-cast-protocol", "dep:md-5"]
+# Rides on the RAOP module for its device hash and volume curve.
+airplay = ["raop", "dep:plist", "dep:ctr", "dep:apple-fairplay"]
 desktop = ["static-gst-plugins"]
 systray = []
 kms-backend = []

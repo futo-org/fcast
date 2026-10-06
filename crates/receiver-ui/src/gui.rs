@@ -890,7 +890,7 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
         UpdateGuiCommand::InitSettings {
             config,
             config_path,
-            airplay_available,
+            services,
         } => {
             let bridge = ui.global::<Bridge>();
             bridge.set_cfg_fcast_enabled(config.fcast.enabled);
@@ -943,7 +943,9 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
                     .into(),
             );
             bridge.set_settings_config_path(config_path.into());
-            bridge.set_settings_airplay_available(airplay_available);
+            bridge.set_settings_raop_available(services.raop);
+            bridge.set_settings_gcast_available(services.google_cast);
+            bridge.set_settings_airplay_available(services.airplay);
         }
         // Handled in `spawn_command_handler`, which holds the tray handle.
         UpdateGuiCommand::ShowSystemTray => (),

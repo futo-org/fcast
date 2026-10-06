@@ -28,21 +28,25 @@ use tracing::{debug, error, info, warn};
 use crate::bug_report;
 #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
 use crate::message;
+#[cfg(feature = "google-cast")]
+use crate::{GCastUpdateSender, gcast};
+#[cfg(feature = "raop")]
+use crate::{message::Raop, raop};
 use crate::{
-    FCAST_TCP_PORT, GCastUpdateSender, MediaItemId, MessageSender, SenderId,
+    FCAST_TCP_PORT, MediaItemId, MessageSender, SenderId,
     external_subtitles::{self, ExternalSubtitle, is_external_track_id},
     fcast::{
         self, CompanionContext, InitialV4State, Operation, ReceiverToSenderMessage, SessionDriver,
         SessionSeed, TranslatableMessage, WrappedPlayMessage,
     },
-    fcompsrc, fwebrtcsrc, gcast,
+    fcompsrc, fwebrtcsrc,
     gui::{self, GuiController},
     image,
     media_formats::SupportedFormats,
     media_source,
-    message::{Mdns, Message, Raop, ReceiverToFCastSender},
+    message::{Mdns, Message, ReceiverToFCastSender},
     player::{self, PlayerState},
-    queue_cache, raop,
+    queue_cache,
     stall_recovery::{self, StallAction},
     ui_types::{AppState, GuiPlaybackState, UiMediaTrack, UiPlayerVariant, UiToastKind},
     utils::{current_time_millis, map_to_header_map},
@@ -143,6 +147,7 @@ impl WindowRestore {
     }
 }
 
+#[cfg(feature = "raop")]
 struct RaopServer {
     config: raop::Configuration,
 }
@@ -577,6 +582,7 @@ enum MediaSource {
         index: usize,
     },
     Queue(QueueState),
+    #[cfg_attr(not(feature = "raop"), allow(dead_code))]
     Raop,
     #[cfg_attr(not(feature = "airplay"), allow(dead_code))]
     AirPlayMirror {
@@ -613,9 +619,11 @@ pub enum PacketOrigin {
         sender_id: SenderId,
         packet_num: Option<u32>,
     },
+    #[cfg_attr(not(feature = "google-cast"), allow(dead_code))]
     GCast {
         sender_id: SenderId,
     },
+    #[cfg_attr(not(feature = "raop"), allow(dead_code))]
     Raop,
     #[cfg_attr(not(feature = "airplay"), allow(dead_code))]
     AirPlay,
@@ -629,6 +637,7 @@ impl PacketOrigin {
         }
     }
 
+    #[cfg(feature = "google-cast")]
     pub(crate) fn gcast(sender_id: SenderId) -> Self {
         Self::GCast { sender_id }
     }
@@ -839,6 +848,7 @@ pub struct Application {
     /// Last few classified warnings of the current item, bug-report context.
     recent_warnings: RecentWarnings,
     is_loading_media: bool,
+    #[cfg(feature = "raop")]
     raop_server: Option<RaopServer>,
     #[cfg(feature = "airplay")]
     airplay_server: Option<AirPlayServer>,
@@ -847,6 +857,7 @@ pub struct Application {
     update: Option<app_updater::Release>,
     #[cfg(target_os = "android")]
     android_update: AndroidUpdate,
+    #[cfg(feature = "google-cast")]
     gcast_tx: GCastUpdateSender,
     settings: Settings,
     window_restore: WindowRestore,
@@ -1032,14 +1043,15 @@ impl Application {
         #[cfg(not(target_os = "android"))]
         let mdns = mdns::start_daemon(&msg_tx, &settings)?;
 
-        #[cfg(not(target_os = "android"))]
+        #[cfg(all(feature = "google-cast", not(target_os = "android")))]
         let run_gcast = settings.google_cast_enabled();
         // Off on android until the activity registers _googlecast._tcp with
         // NsdManager: senders discover by mDNS only, so the server was a
         // bound port with zero reachable users.
-        #[cfg(target_os = "android")]
+        #[cfg(all(feature = "google-cast", target_os = "android"))]
         let run_gcast = false;
 
+        #[cfg(feature = "google-cast")]
         let gcast_tx = if run_gcast {
             let (gcast_tx, gcast_rx) = mpsc::unbounded_channel::<gcast::StatusUpdate>();
             tokio::spawn({
@@ -1176,6 +1188,7 @@ impl Application {
             bug_report_shown_for: None,
             recent_warnings: RecentWarnings::new(),
             is_loading_media: false,
+            #[cfg(feature = "raop")]
             raop_server: None,
             #[cfg(feature = "airplay")]
             airplay_server: None,
@@ -1184,6 +1197,7 @@ impl Application {
             update: None,
             #[cfg(target_os = "android")]
             android_update: AndroidUpdate::Idle,
+            #[cfg(feature = "google-cast")]
             gcast_tx,
             settings,
             window_restore: WindowRestore::default(),
@@ -1238,6 +1252,7 @@ impl Application {
             ));
         }
 
+        #[cfg(feature = "google-cast")]
         self.gcast_tx
             .send(gcast::StatusUpdate::Volume(volume as f64));
     }
@@ -1491,8 +1506,11 @@ impl Application {
         };
         let duration = duration.seconds_f64();
 
-        self.gcast_tx.send(gcast::StatusUpdate::Duration(duration));
-        self.gcast_tx.send(gcast::StatusUpdate::Position(position));
+        #[cfg(feature = "google-cast")]
+        {
+            self.gcast_tx.send(gcast::StatusUpdate::Duration(duration));
+            self.gcast_tx.send(gcast::StatusUpdate::Position(position));
+        }
 
         let is_live = self.player.is_live();
         let playback_state = {
@@ -1815,6 +1833,7 @@ impl Application {
                     .borrow_dependent()
                     .source_as_single()
                     .map(|s| (s.container().to_owned(), Some(s.source_url().to_owned()))),
+                #[cfg(feature = "google-cast")]
                 fcast::WrappedPlayMessage::Chromecast(cast) => {
                     Some((cast.container.clone(), Some(cast.url.clone())))
                 }
@@ -2279,6 +2298,7 @@ impl Application {
                         ..Default::default()
                     }
                 }
+                #[cfg(feature = "google-cast")]
                 fcast::WrappedPlayMessage::Chromecast(cast) => v3::MediaItem {
                     container: cast.container.clone(),
                     url: Some(cast.url.clone()),
@@ -3502,6 +3522,7 @@ impl Application {
                     _ => (),
                 }
             }
+            #[cfg(feature = "google-cast")]
             fcast::WrappedPlayMessage::Chromecast(_) => {
                 self.current_media = Some(MediaSourceState::new(
                     origin,
@@ -4428,6 +4449,7 @@ impl Application {
                                     ),
                                 ));
                             }
+                            #[cfg(feature = "google-cast")]
                             fcast::WrappedPlayMessage::Chromecast(_) => (),
                         },
                         MediaSource::Queue(_) => {
@@ -4639,6 +4661,7 @@ impl Application {
                     }
                 }
 
+                #[cfg(feature = "google-cast")]
                 self.gcast_tx
                     .send(gcast::StatusUpdate::PlayerState(self.player.player_state()));
 
@@ -5015,6 +5038,7 @@ impl Application {
         Ok(())
     }
 
+    #[cfg(feature = "raop")]
     #[tracing::instrument(skip_all)]
     fn handle_raop_event(&mut self, event: Raop) -> Result<bool> {
         match event {
@@ -6093,6 +6117,7 @@ impl Application {
                     }
                 }
             }
+            #[cfg(feature = "raop")]
             Message::Raop(event) => return self.handle_raop_event(event),
             #[cfg(feature = "airplay")]
             Message::AirPlay(event) => return self.handle_airplay_event(event),
@@ -6183,7 +6208,12 @@ impl Application {
         self.gui.init_settings(
             self.settings.config.get().clone(),
             path,
-            cfg!(feature = "airplay"),
+            crate::gui::Services {
+                raop: cfg!(feature = "raop"),
+                // android runs no Google Cast server, see `run_gcast`
+                google_cast: cfg!(all(feature = "google-cast", not(target_os = "android"))),
+                airplay: cfg!(feature = "airplay"),
+            },
         );
     }
 

@@ -5,7 +5,11 @@ use if_addrs::get_if_addrs;
 use mdns_sd::ServiceDaemon;
 use tracing::error;
 
-use crate::{GCAST_TCP_PORT, Mdns, Raop, gcast, raop};
+use crate::Mdns;
+#[cfg(feature = "google-cast")]
+use crate::{GCAST_TCP_PORT, gcast};
+#[cfg(feature = "raop")]
+use crate::{message::Raop, raop};
 #[cfg(feature = "airplay")]
 use crate::{airplay, message::AirPlay};
 
@@ -21,6 +25,7 @@ pub fn fcast_device_name() -> String {
 }
 
 /// The default Google Cast display name, `Chromecast-<hostname>`.
+#[cfg(feature = "google-cast")]
 pub fn chromecast_device_name() -> String {
     format!("Chromecast-{}", hostname())
 }
@@ -55,8 +60,6 @@ pub fn start_daemon(
     settings: &crate::Settings,
 ) -> Result<ServiceDaemon> {
     let fcast_name = settings.fcast_name();
-    let raop_name = settings.raop_name();
-    let chromecast_name = settings.chromecast_name();
     msg_tx.mdns(Mdns::NameSet(fcast_name.clone()));
 
     let ifaces = get_if_addrs();
@@ -106,7 +109,9 @@ pub fn start_daemon(
     // `_fcast._tcp` is registered later, from `register_fcast`, once the listening
     // port is committed.
 
+    #[cfg(feature = "google-cast")]
     if settings.google_cast_enabled() {
+        let chromecast_name = settings.chromecast_name();
         let gcast_props = HashMap::from([
             ("fn".to_owned(), chromecast_name.clone()),
             ("ca".to_owned(), "1".to_owned()), // Has display
@@ -125,9 +130,10 @@ pub fn start_daemon(
         daemon.register(gcast_service)?;
     }
 
+    #[cfg(feature = "raop")]
     if settings.raop_enabled() {
         // one protocol failing to advertise must not take the others down
-        match raop::service_info(raop_name)
+        match raop::service_info(settings.raop_name())
             .and_then(|(service, config)| Ok((daemon.register(service)?, config)))
         {
             Ok((_, raop_config)) => msg_tx.raop(Raop::ConfigAvailable(raop_config)),

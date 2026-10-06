@@ -229,18 +229,15 @@ impl Config {
 }
 
 impl Config {
-    /// The FCast and RAOP names to advertise, `None` for a disabled service.
+    /// The FCast name to advertise, `None` while FCast is disabled.
     /// `hostname` fills `{hostname}` and the `FCast-<hostname>` default. The
-    /// android activity registers these itself.
+    /// android activity registers it itself.
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-    pub fn advertised_names(&self, hostname: &str) -> (Option<String>, Option<String>) {
-        let resolve = |name: Option<&str>| match name {
+    pub fn advertised_fcast_name(&self, hostname: &str) -> Option<String> {
+        self.fcast.enabled.then(|| match self.fcast.name.as_deref() {
             Some(name) => name.replace("{hostname}", hostname),
             None => format!("FCast-{hostname}"),
-        };
-        let fcast = self.fcast.enabled.then(|| resolve(self.fcast.name.as_deref()));
-        let raop = self.raop.enabled.then(|| resolve(self.raop.name.as_deref()));
-        (fcast, raop)
+        })
     }
 }
 
@@ -657,29 +654,21 @@ mod tests {
     }
 
     #[test]
-    fn advertised_names_follow_the_config() {
+    fn advertised_fcast_name_follows_the_config() {
         let mut config = Config::default();
-        let defaults = (
-            Some("FCast-samsung-SM-G950F".to_owned()),
-            Some("FCast-samsung-SM-G950F".to_owned()),
+        assert_eq!(
+            config.advertised_fcast_name("samsung-SM-G950F").as_deref(),
+            Some("FCast-samsung-SM-G950F")
         );
-        assert_eq!(config.advertised_names("samsung-SM-G950F"), defaults);
 
         config.set_string("fcast.name", "Living room ({hostname})");
-        config.set_string("raop.name", "Speakers");
         assert_eq!(
-            config.advertised_names("box"),
-            (Some("Living room (box)".to_owned()), Some("Speakers".to_owned()))
+            config.advertised_fcast_name("box").as_deref(),
+            Some("Living room (box)")
         );
 
-        // A disabled service advertises nothing, the other keeps its name.
-        config.set_bool("raop.enabled", false);
-        assert_eq!(
-            config.advertised_names("box"),
-            (Some("Living room (box)".to_owned()), None)
-        );
         config.set_bool("fcast.enabled", false);
-        assert_eq!(config.advertised_names("box"), (None, None));
+        assert_eq!(config.advertised_fcast_name("box"), None);
     }
 
     /// A name edited in the drawer is read back by the next start, which is
@@ -699,7 +688,7 @@ mod tests {
 
         let reopened = ConfigStore::open(path);
         assert_eq!(
-            reopened.get().advertised_names("host").0.as_deref(),
+            reopened.get().advertised_fcast_name("host").as_deref(),
             Some("Kitchen")
         );
         let _ = std::fs::remove_dir_all(dir);
