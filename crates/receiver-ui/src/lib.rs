@@ -467,11 +467,13 @@ pub fn run(settings: Settings) -> Result<()> {
             // up: the app hasn't committed to running yet, so quit instead.
             ui.window().on_close_requested({
                 let ui_weak = ui.as_weak();
+                let holder = systray_holder.clone();
                 move || {
                     let resolving = ui_weak
                         .upgrade()
                         .is_some_and(|ui| ui.global::<Bridge>().get_show_port_conflict());
-                    if resolving {
+                    // no tray came up, a hidden window could never be shown again
+                    if resolving || holder.borrow().is_none() {
                         let _ = slint::quit_event_loop();
                     }
                     slint::CloseRequestResponse::HideWindow
