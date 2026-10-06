@@ -2419,7 +2419,8 @@ impl Application {
         let meta_stale = self
             .android_meta_pushed
             .as_ref()
-            .is_none_or(|(title, dur)| *title != self.android_media_title || *dur != dur_ms);
+            // a live window's duration creeps every tick, a second is news
+            .is_none_or(|(title, dur)| *title != self.android_media_title || (*dur - dur_ms).abs() >= 1000);
         if meta_stale {
             let pushed = crate::android_jni::with_core("updateMediaMetadata", |env, core| {
                 let title = env.new_string(&self.android_media_title)?;

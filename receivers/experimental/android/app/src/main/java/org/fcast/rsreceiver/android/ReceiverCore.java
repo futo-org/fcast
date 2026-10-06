@@ -821,8 +821,13 @@ public final class ReceiverCore {
                     .putLong(android.media.MediaMetadata.METADATA_KEY_DURATION, durationMs)
                     .build());
         }
+        // the notification shows the title only, a duration change (every
+        // tick on a live stream) must not rebuild it
+        boolean titleChanged = !java.util.Objects.equals(ReceiverService.castTitle, title);
         ReceiverService.castTitle = title;
-        ReceiverService.refreshIfRunning();
+        if (titleChanged) {
+            ReceiverService.refreshIfRunning();
+        }
     }
 
     /// The single owner of every playback-scoped device resource, called
