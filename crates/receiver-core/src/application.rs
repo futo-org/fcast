@@ -979,6 +979,10 @@ pub struct Application {
     pending_fwebrtc_channel: Option<fwebrtcsrc::SignallingChannel>,
     device_name: Option<String>,
     current_media_item_id: MediaItemId,
+    /// Bumped by every Play and Stop, a playlist fetch that finishes under an
+    /// older value was superseded and must not replace what came after it.
+    playlist_gen: u64,
+    playlist_fetch: Option<tokio::task::JoinHandle<()>>,
     /// Which item already showed the report-bug popup, one per item max.
     bug_report_shown_for: Option<MediaItemId>,
     /// Last few classified warnings of the current item, bug-report context.
@@ -986,6 +990,10 @@ pub struct Application {
     is_loading_media: bool,
     #[cfg(feature = "raop")]
     raop_server: Option<RaopServer>,
+    /// The running RAOP session, ended when another cast replaces it or
+    /// both would play at once.
+    #[cfg(feature = "raop")]
+    raop_session: Option<tokio::task::AbortHandle>,
     #[cfg(feature = "airplay")]
     airplay_server: Option<AirPlayServer>,
     gui: GuiController,
@@ -1361,11 +1369,15 @@ impl Application {
             pending_fwebrtc_channel: None,
             device_name: None,
             current_media_item_id: 0,
+            playlist_gen: 0,
+            playlist_fetch: None,
             bug_report_shown_for: None,
             recent_warnings: RecentWarnings::new(),
             is_loading_media: false,
             #[cfg(feature = "raop")]
             raop_server: None,
+            #[cfg(feature = "raop")]
+            raop_session: None,
             #[cfg(feature = "airplay")]
             airplay_server: None,
             gui,
@@ -2772,7 +2784,7 @@ impl Application {
         };
 
         let container = item.container;
-        let url = match item.url {
+        let url = match item.url.filter(|u| !u.is_empty()) {
             // playlist items too, which carry no sender origin
             Some(url) if !scheme_allowed(&url) => return Err(LoadMediaError::RefusedScheme),
             Some(url) => url,
@@ -3014,13 +3026,32 @@ impl Application {
         Ok(())
     }
 
-    fn handle_playlist_play_request(&mut self, play_message: &v3::PlayMessage) {
+    /// Another cast takes over from AirPlay audio. Aborting the session
+    /// closes the sender's connection and stops its pipeline.
+    fn end_raop_session(&mut self) {
+        #[cfg(feature = "raop")]
+        if let Some(session) = self.raop_session.take() {
+            info!("Ending the AirPlay audio session for the new cast");
+            session.abort();
+        }
+    }
+
+    /// A newer Play or a Stop supersedes a playlist fetch still in flight.
+    fn supersede_playlist_fetch(&mut self) {
+        self.playlist_gen += 1;
+        if let Some(fetch) = self.playlist_fetch.take() {
+            fetch.abort();
+        }
+    }
+
+    fn handle_playlist_play_request(&mut self, play_message: &v3::PlayMessage, origin: PacketOrigin) {
+        let generation = self.playlist_gen;
         if let Some(url) = play_message.url.as_ref() {
             let url = url.clone();
             let mut play_message = play_message.clone();
             let msg_tx = self.msg_tx.clone();
             let client = self.http_client.clone();
-            tokio::spawn(async move {
+            self.playlist_fetch = Some(tokio::spawn(async move {
                 let mut request = client.get(url);
                 if let Some(headers) = play_message.headers.as_ref() {
                     request = request.headers(map_to_header_map(headers));
@@ -3048,11 +3079,15 @@ impl Application {
 
                 msg_tx.send(Message::PlaylistDataResult {
                     play_message: result,
+                    generation,
+                    origin,
                 });
-            });
+            }));
         } else if play_message.content.is_some() {
             self.msg_tx.send(Message::PlaylistDataResult {
                 play_message: Some(play_message.clone()),
+                generation,
+                origin,
             });
         } else {
             error!("Cannot load playlist since there's no URL or content");
@@ -3854,6 +3889,11 @@ impl Application {
         }
 
         let insert = insert.borrow_dependent();
+        if !scheme_allowed(insert.item().media_item().source_url()) {
+            error!("Refusing a queue insert with a local scheme");
+            self.send_error(origin, ErrorKind::UnsupportedFormat);
+            return;
+        }
         let idx = match insert.position_type() {
             v4::flat::QueuePosition::Back => queue.items.len(),
             v4::flat::QueuePosition::Front => 0,
@@ -3941,11 +3981,13 @@ impl Application {
             self.send_error(origin, kind);
             return;
         }
+        self.supersede_playlist_fetch();
+        self.end_raop_session();
         let play_data = Arc::new(msg);
         match play_data.as_ref() {
             fcast::WrappedPlayMessage::Legacy(msg) => {
                 if msg.container == "application/json" {
-                    self.handle_playlist_play_request(msg);
+                    self.handle_playlist_play_request(msg, origin);
                 } else {
                     let mut media =
                         MediaSourceState::new(origin, MediaSource::Single(Arc::clone(&play_data)));
@@ -4054,6 +4096,8 @@ impl Application {
             Operation::Pause => self.pause(),
             Operation::Resume => self.resume(),
             Operation::Stop => {
+                self.supersede_playlist_fetch();
+                self.end_raop_session();
                 self.stop_playback();
                 self.relay_to_other_senders(
                     origin,
@@ -5656,6 +5700,7 @@ impl Application {
                     let _disconnect = Disconnect(msg_tx.clone());
                     raop::handle_sender(stream, config, msg_tx).await;
                 });
+                self.raop_session = Some(session.abort_handle());
 
                 debug!("Session started");
                 self.current_media =
@@ -6530,9 +6575,19 @@ impl Application {
                     }
                 }
             }
-            Message::PlaylistDataResult { play_message } => {
+            Message::PlaylistDataResult {
+                play_message,
+                generation,
+                origin,
+            } => {
+                if generation != self.playlist_gen {
+                    debug!(generation, current = self.playlist_gen, "Dropping a superseded playlist");
+                    return Ok(false);
+                }
+                self.playlist_fetch = None;
                 let Some(play_message) = play_message else {
-                    error!("Playlist failed to laod");
+                    error!("Playlist failed to load");
+                    self.send_error(origin, ErrorKind::ResourceNotFound);
                     return Ok(false);
                 };
 
@@ -6542,7 +6597,14 @@ impl Application {
                     return Ok(false);
                 };
 
-                let playlist = serde_json::from_str::<v3::PlaylistContent>(content)?;
+                let playlist = match serde_json::from_str::<v3::PlaylistContent>(content) {
+                    Ok(playlist) => playlist,
+                    Err(err) => {
+                        error!(?err, "Playlist is not a valid playlist");
+                        self.send_error(origin, ErrorKind::MalformedBody);
+                        return Ok(false);
+                    }
+                };
 
                 let start_idx = match playlist.offset {
                     Some(idx) => idx as usize,
@@ -6556,6 +6618,7 @@ impl Application {
                         ?playlist,
                         "Playlist's start index is out of bounds"
                     );
+                    self.send_error(origin, ErrorKind::MalformedBody);
                     return Ok(false);
                 }
 

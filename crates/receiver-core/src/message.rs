@@ -210,6 +210,10 @@ pub enum Message {
     AndroidWindow(AndroidWindow),
     PlaylistDataResult {
         play_message: Option<fcast_protocol::v3::PlayMessage>,
+        /// `Application::playlist_gen` when the fetch started.
+        generation: u64,
+        /// The Play's sender, errors go back to it.
+        origin: crate::application::PacketOrigin,
     },
     MediaItemFinish(MediaItemId),
     SelectTrack {
