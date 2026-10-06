@@ -404,10 +404,19 @@ impl Decoder {
     }
 }
 
+/// Downloads in one lane supersede each other, a cast replacing a still
+/// stops fetching the old one instead of buffering it to the cap.
+#[derive(Debug, Clone, Copy)]
+pub enum DownloadLane {
+    Image = 0,
+    Thumbnail = 1,
+}
+
 pub struct Downloader {
     msg_tx: crate::MessageSender,
     client: reqwest::Client,
     companion_ctx: CompanionContext,
+    inflight: [Option<tokio::task::AbortHandle>; 2],
 }
 
 impl Downloader {
@@ -420,6 +429,7 @@ impl Downloader {
             msg_tx,
             client,
             companion_ctx,
+            inflight: [None, None],
         }
     }
 
@@ -531,7 +541,16 @@ impl Downloader {
         Ok((Bytes::from_owner(res), format))
     }
 
-    pub fn queue_download(&self, id: u32, url: String, headers: Option<HashMap<String, String>>) {
+    pub fn queue_download(
+        &mut self,
+        lane: DownloadLane,
+        id: u32,
+        url: String,
+        headers: Option<HashMap<String, String>>,
+    ) {
+        if let Some(old) = self.inflight[lane as usize].take() {
+            old.abort();
+        }
         let tx = self.msg_tx.clone();
 
         // `url` is sender-supplied and unvalidated, so the parse and the scheme
@@ -550,17 +569,19 @@ impl Downloader {
         match url.scheme() {
             "http" | "https" => {
                 let client = self.client.clone();
-                tokio::spawn(async move {
+                let task = tokio::spawn(async move {
                     let res = Self::download_image_http(&client, url, headers).await;
                     tx.image(Event::DownloadResult { id, res });
                 });
+                self.inflight[lane as usize] = Some(task.abort_handle());
             }
             "fcomp" => {
                 let ctx = self.companion_ctx.clone();
-                tokio::spawn(async move {
+                let task = tokio::spawn(async move {
                     let res = Self::download_image_comp(&ctx, url).await;
                     tx.image(Event::DownloadResult { id, res });
                 });
+                self.inflight[lane as usize] = Some(task.abort_handle());
             }
             scheme => {
                 tx.image(Event::DownloadResult {
@@ -734,11 +755,34 @@ mod tests {
         }
     }
 
+    /// A second image download aborts the first, a thumbnail runs alongside.
+    #[tokio::test]
+    async fn a_newer_download_in_the_lane_supersedes_the_older() {
+        // accepts and then never answers, so a download only ends by abort
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let mut held = Vec::new();
+            while let Ok((sock, _)) = listener.accept().await {
+                held.push(sock);
+            }
+        });
+        let (mut downloader, _events) = downloader();
+        downloader.queue_download(DownloadLane::Image, 1, format!("{base}/a.png"), None);
+        downloader.queue_download(DownloadLane::Thumbnail, 2, format!("{base}/t.png"), None);
+        let first = downloader.inflight[0].clone().unwrap();
+        downloader.queue_download(DownloadLane::Image, 3, format!("{base}/b.png"), None);
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        assert!(first.is_finished(), "the superseded download still runs");
+        assert!(!downloader.inflight[0].as_ref().unwrap().is_finished());
+        assert!(!downloader.inflight[1].as_ref().unwrap().is_finished());
+    }
+
     #[test]
     fn unparseable_url_is_reported_not_panicked() {
-        let (downloader, mut events) = downloader();
+        let (mut downloader, mut events) = downloader();
 
-        downloader.queue_download(7, "not a url".to_owned(), None);
+        downloader.queue_download(DownloadLane::Image, 7, "not a url".to_owned(), None);
 
         let err = download_error(&mut events, 7);
         assert!(
@@ -749,9 +793,14 @@ mod tests {
 
     #[test]
     fn unsupported_url_scheme_is_reported_not_panicked() {
-        let (downloader, mut events) = downloader();
+        let (mut downloader, mut events) = downloader();
 
-        downloader.queue_download(9, "ftp://example.invalid/cover.png".to_owned(), None);
+        downloader.queue_download(
+            DownloadLane::Image,
+            9,
+            "ftp://example.invalid/cover.png".to_owned(),
+            None,
+        );
 
         let err = download_error(&mut events, 9);
         assert!(

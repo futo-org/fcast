@@ -2894,8 +2894,12 @@ impl Application {
                     .as_mut()
                     .ok_or(LoadMediaError::NoItem)?
                     .pending_thumbnail_download = Some(this_id);
-                self.image_downloader
-                    .queue_download(this_id, thumbnail_url, headers.clone());
+                self.image_downloader.queue_download(
+                    image::DownloadLane::Thumbnail,
+                    this_id,
+                    thumbnail_url,
+                    headers.clone(),
+                );
             }
         }
 
@@ -2927,8 +2931,12 @@ impl Application {
             } else {
                 self.current_image_download_id += 1;
                 let id = self.current_image_download_id;
-                self.image_downloader
-                    .queue_download(id, url.clone(), headers.clone());
+                self.image_downloader.queue_download(
+                    image::DownloadLane::Image,
+                    id,
+                    url.clone(),
+                    headers.clone(),
+                );
             }
         } else {
             // Live sources get no post-preroll start seek.
@@ -3699,8 +3707,12 @@ impl Application {
             if let Some(media) = self.current_media.as_mut() {
                 media.pending_thumbnail_download = Some(this_id);
             }
-            self.image_downloader
-                .queue_download(this_id, thumbnail_url, headers);
+            self.image_downloader.queue_download(
+                image::DownloadLane::Thumbnail,
+                this_id,
+                thumbnail_url,
+                headers,
+            );
         } else {
             self.gui.clear_audio_covers();
         }
