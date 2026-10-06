@@ -878,6 +878,11 @@ pub struct Application {
     /// The hold resumes when the activity shows, unless paused meanwhile.
     #[cfg(target_os = "android")]
     android_hold_resumes: bool,
+    /// Set by every load, taken by the next LoadingMedia edge. The delayed
+    /// loading status re-enters LoadingMedia for the same item, which must
+    /// neither reset the item's focus state nor re-arm a paused hold.
+    #[cfg(target_os = "android")]
+    android_fresh_load: bool,
     /// When a cast last ended while playing in the background, not held. A
     /// cast following it closely is the sender's next item (a playlist it
     /// advances itself) and plays on in the background like the one before.
@@ -1291,6 +1296,8 @@ impl Application {
             android_hidden_hold: false,
             #[cfg(target_os = "android")]
             android_hold_resumes: false,
+            #[cfg(target_os = "android")]
+            android_fresh_load: false,
             #[cfg(target_os = "android")]
             android_last_end: None,
             #[cfg(target_os = "android")]
@@ -2472,7 +2479,7 @@ impl Application {
     fn android_cast_edge(&mut self, state: AppState) {
         {
             let active = !matches!(state, AppState::Idle);
-            if matches!(state, AppState::LoadingMedia) {
+            if matches!(state, AppState::LoadingMedia) && std::mem::take(&mut self.android_fresh_load) {
                 // A new item is visual until flapjack says otherwise, and it
                 // must not inherit the previous item's focus-loss hold. A
                 // photo takes no focus, it would stop the user's music.
@@ -2702,6 +2709,10 @@ impl Application {
         // Taken unconditionally: surviving one of the early exits would relocate a
         // LATER load.
         let start_override = self.load_start_override.take();
+        #[cfg(target_os = "android")]
+        {
+            self.android_fresh_load = true;
+        }
         if let Some(media) = self.current_media.as_mut()
             && let PacketOrigin::FCast { sender_id, .. } = media.origin
         {
@@ -5050,6 +5061,15 @@ impl Application {
                         .streams
                         .iter()
                         .any(|s| s.info.slot == flapjack::TrackSlot::Audio);
+                    // a focus refusal (a call) paused it, but a silent item
+                    // never needs the focus that would resume it
+                    if !self.android_audible
+                        && !self.android_hidden_hold
+                        && std::mem::take(&mut self.android_transient_pause)
+                    {
+                        debug!("Silent item paused for focus, resuming without it");
+                        self.resume();
+                    }
                 }
 
                 self.transition_app_state(AppState::Playing);
