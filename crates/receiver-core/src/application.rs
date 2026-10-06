@@ -658,6 +658,9 @@ fn play_rejection(play: &WrappedPlayMessage) -> Option<ErrorKind> {
         WrappedPlayMessage::Chromecast(cast) => {
             if cast.url.is_empty() {
                 Some(ErrorKind::MalformedBody)
+            } else if cast.url.starts_with("fcomp:") {
+                // a cast session has no companion provider of its own
+                Some(ErrorKind::ResourceNotFound)
             } else {
                 (!scheme_allowed(&cast.url)).then_some(ErrorKind::UnsupportedFormat)
             }
@@ -2784,9 +2787,14 @@ impl Application {
         };
 
         let container = item.container;
+        let playlist = matches!(current_media.source, MediaSource::Playlist { .. });
         let url = match item.url.filter(|u| !u.is_empty()) {
             // playlist items too, which carry no sender origin
             Some(url) if !scheme_allowed(&url) => return Err(LoadMediaError::RefusedScheme),
+            // v3 playlists have no companion provider, an fcomp item is someone else's
+            Some(url) if playlist && url.starts_with("fcomp:") => {
+                return Err(LoadMediaError::RefusedScheme);
+            }
             Some(url) => url,
             None => {
                 let Some(content) = item.content else {

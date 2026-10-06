@@ -1274,6 +1274,13 @@ fn names_foreign_companion(op: &Operation, own: Option<u16>) -> bool {
     };
     let item = |m: v4::flat::MediaItem| foreign(m.source_url()) || m.thumbnail_url().is_some_and(foreign);
     match op {
+        Operation::PlayNew(WrappedPlayMessage::Legacy(msg)) => {
+            let thumb = match &msg.metadata {
+                Some(v3::MetadataObject::Generic { thumbnail_url, .. }) => thumbnail_url.as_deref(),
+                _ => None,
+            };
+            msg.url.as_deref().is_some_and(foreign) || thumb.is_some_and(foreign)
+        }
         Operation::PlayNew(WrappedPlayMessage::V4(load)) => {
             let play = load.borrow_dependent();
             match play.source_type() {
@@ -1292,6 +1299,9 @@ fn names_foreign_companion(op: &Operation, own: Option<u16>) -> bool {
 
 pub struct SessionDriver {
     op_budget: OpBudget,
+    /// Transport commands draw on their own bucket, so a volume flood cannot
+    /// starve a Stop and a Stop flood is still bounded.
+    transport_budget: OpBudget,
     stream: NetworkStream,
     id: SenderId,
     state: State,
@@ -1318,6 +1328,7 @@ impl SessionDriver {
     ) -> Self {
         Self {
             op_budget: OpBudget::new(std::time::Instant::now()),
+            transport_budget: OpBudget::new(std::time::Instant::now()),
             stream: NetworkStream::new(stream),
             id,
             state: State::new(),
@@ -1521,18 +1532,19 @@ impl SessionDriver {
         res: Result<Action, StateError>,
         internal_msg_tx: &tokio::sync::mpsc::UnboundedSender<InternalMessage>,
     ) -> anyhow::Result<bool> {
-        // transport commands always pass, a dropped Stop would leave the
-        // sender and the receiver disagreeing
         if let Ok(Action::Op(op)) = &res
-            && !matches!(
-                op,
-                Operation::Stop
-                    | Operation::Pause
-                    | Operation::Resume
-                    | Operation::ResumeOrPause
-                    | Operation::SetPlaybackState(_)
-            )
-            && !self.op_budget.take(std::time::Instant::now())
+            && !{
+                let transport = matches!(
+                    op,
+                    Operation::Stop
+                        | Operation::Pause
+                        | Operation::Resume
+                        | Operation::ResumeOrPause
+                        | Operation::SetPlaybackState(_)
+                );
+                let budget = if transport { &mut self.transport_budget } else { &mut self.op_budget };
+                budget.take(std::time::Instant::now())
+            }
         {
             self.op_budget.dropped += 1;
             if self.op_budget.dropped.is_power_of_two() {
