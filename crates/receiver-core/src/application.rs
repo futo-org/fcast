@@ -4369,7 +4369,7 @@ impl Application {
         Ok(false)
     }
 
-    fn handle_mdns_event(&mut self, event: Mdns) -> Result<()> {
+    fn handle_mdns_event(&mut self, event: Mdns) {
         // Unchanged inputs stop here. The rebuild below is a fast_qr run, a
         // pixel buffer and a scene dirty, and android re-sends the name on
         // every NSD re-registration and the address set from a 30 s sweep.
@@ -4397,7 +4397,7 @@ impl Application {
             }
         };
         if !changed {
-            return Ok(());
+            return;
         }
         if addresses_changed {
             // A pooled HTTP connection outlives the change as a corpse until
@@ -4411,10 +4411,12 @@ impl Application {
 
     /// Rebuild the idle-screen QR code / IP list from the current addresses and
     /// bound port.
-    fn update_connection_details(&mut self) -> Result<()> {
+    /// Infallible: a QR that cannot be built (serialization, capacity) costs
+    /// the QR, never the receiver.
+    fn update_connection_details(&mut self) {
         if !self.port_committed {
             // Never advertise a QR for a port that is not bound yet.
-            return Ok(());
+            return;
         }
 
         let reachable = reachable_addresses(&self.current_addresses);
@@ -4440,8 +4442,19 @@ impl Application {
                 txt: Some(self.fcast_txt_records.clone()),
             };
             debug!(?net_config, "Network config for QR code created");
-            let device_url = net_config.to_url()?;
-            let qrcode = fast_qr::QRBuilder::new(device_url.as_bytes()).build()?;
+            let qrcode = match net_config.to_url() {
+                Ok(url) => match fast_qr::QRBuilder::new(url.as_bytes()).build() {
+                    Ok(qrcode) => qrcode,
+                    Err(err) => {
+                        error!(?err, len = url.len(), "Connection QR not built");
+                        return;
+                    }
+                },
+                Err(err) => {
+                    error!(?err, "Connection URL not built");
+                    return;
+                }
+            };
             let dims = qrcode.size as u32;
             let module_count = (dims * dims) as usize;
             let dark = qrcode.data[0..module_count]
@@ -4452,8 +4465,6 @@ impl Application {
             self.gui
                 .set_connection_details(crate::ui_types::QrCode { size: dims, dark }, ips_string);
         }
-
-        Ok(())
     }
 
     fn on_media_info_updated(&mut self) {
@@ -6622,7 +6633,7 @@ impl Application {
             Message::QueueCache(event) => self.queue_cache.on_event(event),
             Message::Mdns(event) => {
                 debug!(?event, "mDNS event");
-                self.handle_mdns_event(event)?;
+                self.handle_mdns_event(event);
             }
             #[cfg(target_os = "android")]
             Message::AndroidAudio(event) => {
@@ -7303,7 +7314,7 @@ impl Application {
                     error!(?err, "FCast not advertised");
                 }
             }
-            self.update_connection_details()?;
+            self.update_connection_details();
             self.gui.show_system_tray();
             self.gui.set_starting_up(false);
             // startup's garbage (plugin registration) goes back too
