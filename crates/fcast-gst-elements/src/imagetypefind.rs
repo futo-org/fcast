@@ -93,8 +93,8 @@ fn register_jpeg() -> Result<(), glib::BoolError> {
 }
 
 /// Walk the JPEG marker segments to the frame header. True only for a baseline
-/// / extended-sequential frame (SOF0 / SOF1), what the VA JPEG decoder handles.
-/// A malformed header or an SOF past `data` is false.
+/// / extended-sequential frame (SOF0 / SOF1), the split a hardware decoder
+/// would take. A malformed header or an SOF past `data` is false.
 fn jpeg_is_baseline(data: &[u8]) -> bool {
     // Skip the SOI (FF D8).
     let mut i = 2;
@@ -401,7 +401,7 @@ mod tests {
     #[test]
     fn jpeg_progressive_labeled_for_sw() {
         init();
-        // A progressive (SOF2) JPEG cannot use the VA decoder.
+        // A progressive (SOF2) JPEG takes the software caps.
         assert_eq!(
             detect(&minimal_jpeg(0xC2)).as_deref(),
             Some("image/x-fcast-jpeg-sw")

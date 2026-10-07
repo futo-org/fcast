@@ -292,6 +292,13 @@ pub enum Message {
     GuiDetached {
         generation: u64,
     },
+    /// The user closed the window to the tray. The window stays hidden when
+    /// the cast ends, whatever it was when the cast started. Not on Wayland
+    /// alone: there the hide destroys the window and `GuiWindowClosed`
+    /// follows, elsewhere the window merely hides and this is all the core
+    /// hears.
+    #[cfg(not(target_os = "android"))]
+    GuiWindowHidden,
     /// The renderer is going away. `shows` is the count of window shows the
     /// GUI thread had carried out when it started, a newer request means the
     /// window is already being brought back.

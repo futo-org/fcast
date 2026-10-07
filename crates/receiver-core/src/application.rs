@@ -6934,15 +6934,25 @@ impl Application {
             Message::InspectorBitrateTick => self.inspector_tick(),
             #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
             Message::AppUpdate(event) => return self.handle_app_update_event(event),
+            #[cfg(not(target_os = "android"))]
+            Message::GuiWindowHidden => {
+                // Hidden by the user mid-cast (X11, macOS, Windows): the end
+                // of the cast must not show it again. Fullscreen still
+                // restores, so a later tray show is not a fullscreen idle screen.
+                self.window_restore.visible = None;
+            }
             Message::GuiWindowClosed { shows, feedback } => {
                 // Wayland destroys a hidden window, so closing to the tray
                 // lands here. The cast ends but the player stays usable, a
                 // shutdown is final and only quitting may do it. A show past
                 // the ones the teardown saw means the next window is coming.
                 if shows == self.gui.shows() {
-                    // The user closed the window: nothing to hand back at the
-                    // end of the hold, or the idle reset shows it again.
-                    self.window_restore = WindowRestore::default();
+                    // The user closed the window: no visibility to hand back
+                    // at the end of the hold, or the idle reset shows it
+                    // again. The fullscreen half stays, slint carries the
+                    // flag into the recreated window and the idle screen
+                    // must not come up fullscreen.
+                    self.window_restore.visible = None;
                     if self.is_playing() {
                         self.handle_operation(Operation::Stop, PacketOrigin::Gui)?;
                     }
