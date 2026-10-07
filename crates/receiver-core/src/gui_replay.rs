@@ -25,7 +25,7 @@ pub struct GuiSnapshot {
     starting_up: Option<bool>,
     port_conflict: Option<u16>,
     system_tray: bool,
-    connection: Option<(QrCode, String)>,
+    connection: Option<(Option<QrCode>, String)>,
     device_name: Option<String>,
     senders: Option<Vec<SenderInfo>>,
     #[cfg(any(target_os = "macos", target_os = "windows", target_os = "android"))]
@@ -312,7 +312,7 @@ mod tests {
         starting_up: bool,
         port_conflict: Option<u16>,
         system_tray: bool,
-        connection: Option<(QrCode, String)>,
+        connection: Option<(Option<QrCode>, String)>,
         device_name: String,
         senders: Vec<SenderInfo>,
         player_type: UiPlayerVariant,
@@ -492,11 +492,13 @@ mod tests {
                 subtitle: -1,
             },
             17 => C::SetConnectionDetails {
-                qr_code: QrCode {
-                    size: v,
-                    dark: vec![v % 2 == 0],
-                }
-                .into(),
+                // every fifth has no QR, the URL did not fit one
+                qr_code: (v % 5 != 0)
+                    .then(|| QrCode {
+                        size: v,
+                        dark: vec![v % 2 == 0],
+                    })
+                    .into(),
                 addrs: format!("10.0.0.{v}"),
             },
             18 => C::SetLocalDeviceName(format!("dev {v}")),

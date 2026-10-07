@@ -158,8 +158,10 @@ pub enum UpdateGuiCommand {
         subtitle: i32,
     },
     ClearVideoOverlays,
+    /// `qr_code` is `None` when the connection URL did not fit a QR, the
+    /// addresses still show.
     SetConnectionDetails {
-        qr_code: IgnoredDebug<QrCode>,
+        qr_code: IgnoredDebug<Option<QrCode>>,
         addrs: String,
     },
     SetLocalDeviceName(String),
@@ -602,7 +604,7 @@ impl GuiController {
         self.send(UpdateGuiCommand::ClearVideoOverlays);
     }
 
-    pub fn set_connection_details(&self, qr_code: QrCode, addrs: String) {
+    pub fn set_connection_details(&self, qr_code: Option<QrCode>, addrs: String) {
         self.send(UpdateGuiCommand::SetConnectionDetails {
             qr_code: qr_code.into(),
             addrs,

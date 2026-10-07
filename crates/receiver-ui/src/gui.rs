@@ -778,7 +778,11 @@ fn handle_command(ui: MainWindow, cmd: UpdateGuiCommand, damper: &mut TickDamper
         // application clears alongside this, so the repaint is all it takes.
         UpdateGuiCommand::ClearVideoOverlays => ui.window().request_redraw(),
         UpdateGuiCommand::SetConnectionDetails { qr_code, addrs } => {
-            bridge.set_qr_code(slint::Image::from_rgb8(qr_pixbuf(&qr_code.0)));
+            // an empty image shows the idle view's placeholder in its place
+            bridge.set_qr_code(match &qr_code.0 {
+                Some(qr) => slint::Image::from_rgb8(qr_pixbuf(qr)),
+                None => slint::Image::default(),
+            });
             bridge.set_local_ip_addrs(addrs.to_shared_string());
         }
         UpdateGuiCommand::SetLocalDeviceName(name) => {

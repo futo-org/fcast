@@ -4460,28 +4460,32 @@ impl Application {
                 txt: Some(self.fcast_txt_records.clone()),
             };
             debug!(?net_config, "Network config for QR code created");
+            // The addresses show either way, a URL past the QR's capacity
+            // (dozens of addresses) only costs the QR.
             let qrcode = match net_config.to_url() {
                 Ok(url) => match fast_qr::QRBuilder::new(url.as_bytes()).build() {
-                    Ok(qrcode) => qrcode,
+                    Ok(qrcode) => Some(qrcode),
                     Err(err) => {
                         error!(?err, len = url.len(), "Connection QR not built");
-                        return;
+                        None
                     }
                 },
                 Err(err) => {
                     error!(?err, "Connection URL not built");
-                    return;
+                    None
                 }
             };
-            let dims = qrcode.size as u32;
-            let module_count = (dims * dims) as usize;
-            let dark = qrcode.data[0..module_count]
-                .iter()
-                .map(|module| *module != fast_qr::Module::LIGHT)
-                .collect();
+            let qrcode = qrcode.map(|qrcode| {
+                let dims = qrcode.size as u32;
+                let module_count = (dims * dims) as usize;
+                let dark = qrcode.data[0..module_count]
+                    .iter()
+                    .map(|module| *module != fast_qr::Module::LIGHT)
+                    .collect();
+                crate::ui_types::QrCode { size: dims, dark }
+            });
 
-            self.gui
-                .set_connection_details(crate::ui_types::QrCode { size: dims, dark }, ips_string);
+            self.gui.set_connection_details(qrcode, ips_string);
         }
     }
 
