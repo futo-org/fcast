@@ -6929,6 +6929,9 @@ impl Application {
                 // shutdown is final and only quitting may do it. A show past
                 // the ones the teardown saw means the next window is coming.
                 if shows == self.gui.shows() {
+                    // The user closed the window: nothing to hand back at the
+                    // end of the hold, or the idle reset shows it again.
+                    self.window_restore = WindowRestore::default();
                     if self.is_playing() {
                         self.handle_operation(Operation::Stop, PacketOrigin::Gui)?;
                     }

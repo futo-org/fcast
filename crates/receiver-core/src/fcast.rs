@@ -1821,7 +1821,6 @@ impl SessionDriver {
         Ok(())
     }
 
-    #[cfg_attr(not(target_os = "android"), instrument(name = "session", skip_all, fields(id = self.id)))]
     fn companion_provider_id(&self) -> Option<u16> {
         match self.state.variant {
             StateVariant::Active {
@@ -1835,6 +1834,7 @@ impl SessionDriver {
         }
     }
 
+    #[cfg_attr(not(target_os = "android"), instrument(name = "session", skip_all, fields(id = self.id)))]
     pub async fn run(
         mut self,
         updates_rx: Receiver<Arc<ReceiverToSenderMessage>>,

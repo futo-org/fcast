@@ -133,7 +133,7 @@ fn event_loop_ended(result: std::result::Result<Result<()>, tokio::task::JoinErr
         // service is left running on purpose so the system restarts it
         if !matches!(result, Ok(Ok(()))) && android_ui::current().is_none() {
             error!(?result, "Receiver event loop ended with no UI up, exiting");
-            std::process::exit(1);
+            android_end_process(1);
         }
     }
     #[cfg(not(target_os = "android"))]
@@ -539,6 +539,14 @@ static ANDROID_MEDIA: std::sync::OnceLock<AndroidMedia> = std::sync::OnceLock::n
 #[cfg(target_os = "android")]
 static ANDROID_CORE_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// `_exit`, not `exit`: static destructors run under MediaCodec threads still
+/// releasing, a crash on the way out that hides the real cause. The sticky
+/// service stays so the system restarts the receiver.
+#[cfg(target_os = "android")]
+fn android_end_process(code: i32) -> ! {
+    unsafe { libc::_exit(code) }
+}
+
 /// Starts the receiver once per process: the application, gst and the
 /// player's sinks. It owns no window, UIs attach to it (ANDROID-BOOT-START-PLAN.md).
 #[cfg(target_os = "android")]
@@ -596,7 +604,12 @@ fn start_core(
             // quit so the failure is loud.
             if std::panic::catch_unwind(gstreamer::init_and_load_plugins).is_err() {
                 error!("gstreamer registration failed, the receiver cannot start");
-                let _ = slint::quit_event_loop();
+                ANDROID_CORE_ENDED.store(true, std::sync::atomic::Ordering::Release);
+                // A UI quits through its loop. Without one (a boot start) the
+                // sticky service would keep an empty process up for good.
+                if slint::quit_event_loop().is_err() || android_ui::current().is_none() {
+                    android_end_process(1);
+                }
                 return;
             }
             // Zero-copy surface video by default (android_surface_video.rs),

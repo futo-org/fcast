@@ -47,6 +47,8 @@ gst-app.workspace = true
 # the immersive toggle's call into the activity
 jni = "0.21"
 ndk-context = "0.1"
+# _exit when the core dies with no UI, see android_end_process
+libc = "0.2"
 # ANativeWindow reference counting for the video surface handoff. Same
 # version the slint android backend pulls in, so nothing is duplicated.
 ndk-sys = "0.6"
