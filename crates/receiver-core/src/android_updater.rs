@@ -352,7 +352,10 @@ mod android {
                 .call_static_method(core, "prepareUpdateDownload", "()Ljava/lang/String;", &[])?
                 .l()?;
             let path: String = env.get_string(&JString::from(path))?.into();
-            Ok(PathBuf::from(path))
+            let path = PathBuf::from(path);
+            // a download a killed process left half written
+            let _ = std::fs::remove_file(path.with_extension("apk.part"));
+            Ok(path)
         })
     }
 
