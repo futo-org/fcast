@@ -351,6 +351,7 @@ pub fn run(settings: Settings) -> Result<()> {
                                         msg_tx.send(Message::GuiWindowHidden);
                                         let _ = win.hide();
                                     } else {
+                                        msg_tx.send(Message::GuiWindowShown);
                                         let _ = win.show();
                                     }
                                 }

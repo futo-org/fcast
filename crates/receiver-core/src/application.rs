@@ -139,10 +139,18 @@ impl WindowRestore {
 
     /// The user hid the window mid-cast: a visible start is forgotten, so the
     /// end of the cast leaves the window where the user put it. A hidden
-    /// start stays, hiding again is right either way. Fullscreen is kept, the
-    /// next show must come up windowed.
+    /// start stays, hiding again is a no-op. Fullscreen is kept, the next
+    /// show must come up windowed.
     fn hidden_by_user(&mut self) {
         if self.visible == Some(true) {
+            self.visible = None;
+        }
+    }
+
+    /// The mirror: the user showed the window mid-cast, a hidden start is
+    /// forgotten so the end of the cast does not take it away again.
+    fn shown_by_user(&mut self) {
+        if self.visible == Some(false) {
             self.visible = None;
         }
     }
@@ -6946,9 +6954,14 @@ impl Application {
             Message::AppUpdate(event) => return self.handle_app_update_event(event),
             #[cfg(not(target_os = "android"))]
             Message::GuiWindowHidden => {
-                // Hidden by the user mid-cast (X11, macOS, Windows): the end
-                // of the cast must not show it again.
+                // Hidden by the user mid-cast: the end of the cast must not
+                // show it again. On Wayland GuiWindowClosed follows and
+                // repeats this, which is idempotent.
                 self.window_restore.hidden_by_user();
+            }
+            #[cfg(not(target_os = "android"))]
+            Message::GuiWindowShown => {
+                self.window_restore.shown_by_user();
             }
             Message::GuiWindowClosed { shows, feedback } => {
                 // Wayland destroys a hidden window, so closing to the tray
@@ -7665,12 +7678,12 @@ mod tests {
         );
     }
 
-    /// Closed to the tray mid-cast: the end of the cast leaves the window
-    /// hidden but still takes it out of fullscreen. A cast that found the
-    /// window hidden hides it again whether or not the user also closed it,
-    /// and a close while idle records nothing.
+    /// The record's rule for a user hide or show mid-cast (the GUI plumbing
+    /// that reports them is not under test here): the user's last action
+    /// wins at the end of the cast, fullscreen always restores, and a hide
+    /// or show while idle records nothing.
     #[test]
-    fn a_user_hide_forgets_a_visible_start_only() {
+    fn a_user_hide_or_show_forgets_the_opposite_start_only() {
         let mut restore = WindowRestore::default();
         restore.record_visible(true);
         restore.record_fullscreen(false);
@@ -7686,10 +7699,18 @@ mod tests {
         let mut restore = WindowRestore::default();
         restore.record_visible(false);
         restore.hidden_by_user();
-        assert_eq!(restore.visible, Some(false));
+        assert_eq!(restore.visible, Some(false), "a hidden start hides again");
+        restore.shown_by_user();
+        assert_eq!(restore.visible, None, "unless the user opened it meanwhile");
+
+        let mut restore = WindowRestore::default();
+        restore.record_visible(true);
+        restore.shown_by_user();
+        assert_eq!(restore.visible, Some(true), "a visible start shows again");
 
         let mut restore = WindowRestore::default();
         restore.hidden_by_user();
+        restore.shown_by_user();
         assert_eq!(restore, WindowRestore::default());
     }
 

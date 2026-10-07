@@ -299,6 +299,10 @@ pub enum Message {
     /// hears.
     #[cfg(not(target_os = "android"))]
     GuiWindowHidden,
+    /// The user showed the window from the tray. A cast that found it hidden
+    /// no longer hides it when it ends.
+    #[cfg(not(target_os = "android"))]
+    GuiWindowShown,
     /// The renderer is going away. `shows` is the count of window shows the
     /// GUI thread had carried out when it started, a newer request means the
     /// window is already being brought back.
