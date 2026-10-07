@@ -136,6 +136,16 @@ impl WindowRestore {
     fn record_fullscreen(&mut self, was: bool) {
         self.fullscreen.get_or_insert(was);
     }
+
+    /// The user hid the window mid-cast: a visible start is forgotten, so the
+    /// end of the cast leaves the window where the user put it. A hidden
+    /// start stays, hiding again is right either way. Fullscreen is kept, the
+    /// next show must come up windowed.
+    fn hidden_by_user(&mut self) {
+        if self.visible == Some(true) {
+            self.visible = None;
+        }
+    }
 }
 
 #[cfg(feature = "raop")]
@@ -6937,9 +6947,8 @@ impl Application {
             #[cfg(not(target_os = "android"))]
             Message::GuiWindowHidden => {
                 // Hidden by the user mid-cast (X11, macOS, Windows): the end
-                // of the cast must not show it again. Fullscreen still
-                // restores, so a later tray show is not a fullscreen idle screen.
-                self.window_restore.visible = None;
+                // of the cast must not show it again.
+                self.window_restore.hidden_by_user();
             }
             Message::GuiWindowClosed { shows, feedback } => {
                 // Wayland destroys a hidden window, so closing to the tray
@@ -6948,11 +6957,8 @@ impl Application {
                 // the ones the teardown saw means the next window is coming.
                 if shows == self.gui.shows() {
                     // The user closed the window: no visibility to hand back
-                    // at the end of the hold, or the idle reset shows it
-                    // again. The fullscreen half stays, slint carries the
-                    // flag into the recreated window and the idle screen
-                    // must not come up fullscreen.
-                    self.window_restore.visible = None;
+                    // at the end of the hold, or the idle reset shows it again.
+                    self.window_restore.hidden_by_user();
                     if self.is_playing() {
                         self.handle_operation(Operation::Stop, PacketOrigin::Gui)?;
                     }
@@ -7657,6 +7663,34 @@ mod tests {
                 fullscreen: None,
             }
         );
+    }
+
+    /// Closed to the tray mid-cast: the end of the cast leaves the window
+    /// hidden but still takes it out of fullscreen. A cast that found the
+    /// window hidden hides it again whether or not the user also closed it,
+    /// and a close while idle records nothing.
+    #[test]
+    fn a_user_hide_forgets_a_visible_start_only() {
+        let mut restore = WindowRestore::default();
+        restore.record_visible(true);
+        restore.record_fullscreen(false);
+        restore.hidden_by_user();
+        assert_eq!(
+            restore,
+            WindowRestore {
+                visible: None,
+                fullscreen: Some(false),
+            }
+        );
+
+        let mut restore = WindowRestore::default();
+        restore.record_visible(false);
+        restore.hidden_by_user();
+        assert_eq!(restore.visible, Some(false));
+
+        let mut restore = WindowRestore::default();
+        restore.hidden_by_user();
+        assert_eq!(restore, WindowRestore::default());
     }
 
     /// Scrubbing to the far end asks for the duration itself, which selects an

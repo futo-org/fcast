@@ -330,6 +330,7 @@ pub fn run(settings: Settings) -> Result<()> {
                 if want_systray {
                     let ui_weak = ui.as_weak();
                     let holder = systray_holder.clone();
+                    let msg_tx = msg_tx.clone();
                     Box::new(move || {
                         let systray = match SystemTray::new() {
                             Ok(systray) => systray,
@@ -340,10 +341,14 @@ pub fn run(settings: Settings) -> Result<()> {
                         };
                         systray.on_toggle_window({
                             let ui_weak = ui_weak.clone();
+                            let msg_tx = msg_tx.clone();
                             move || {
                                 if let Some(ui) = ui_weak.upgrade() {
                                     let win = ui.window();
                                     if win.is_visible() {
+                                        // a hide, not a close request: the
+                                        // core hears of it here
+                                        msg_tx.send(Message::GuiWindowHidden);
                                         let _ = win.hide();
                                     } else {
                                         let _ = win.show();
