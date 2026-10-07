@@ -46,9 +46,6 @@ pub fn init_and_load_plugins() {
     crate::airplay::source::plugin_init().unwrap();
     fcast_gst_elements::imagetypefind::plugin_init().unwrap();
     fcast_gst_elements::imagedec::plugin_init().unwrap();
-    // Disabled because of a bug in the parser
-    // #[cfg(target_os = "linux")]
-    // fcast_gst_elements::vajpegdec::plugin_init().unwrap();
     // Mirroring and WHEP: webrtcbin2 (webrtcsend/webrtcrecv on rtpbin2, librice
     // ICE, dimpl DTLS) and fcast's bins on it, the same element names the
     // C-webrtcbin bins had, so nothing downstream of the registry changes.

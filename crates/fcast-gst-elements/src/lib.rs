@@ -7,5 +7,3 @@ pub mod companion_ctx;
 pub mod fcompsrc;
 pub mod imagedec;
 pub mod imagetypefind;
-// #[cfg(target_os = "linux")]
-// pub mod vajpegdec;

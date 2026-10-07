@@ -48,10 +48,9 @@ pub fn plugin_init() -> Result<(), glib::BoolError> {
 
 /// JPEG still. Magic: SOI plus the next marker's FF, i.e. FF D8 FF. Suggests a
 /// private caps rather than image/jpeg so this never competes with
-/// avdec_mjpeg/vajpegdec for real MJPEG video. Baseline / extended-sequential
-/// (SOF0 / SOF1) get image/x-fcast-jpeg, which fvajpegdec prefers. Everything
-/// else gets image/x-fcast-jpeg-sw, which only fimagedec claims (VA JPEG is
-/// baseline-only).
+/// avdec_mjpeg for real MJPEG video. Baseline / extended-sequential (SOF0 /
+/// SOF1) get image/x-fcast-jpeg, everything else image/x-fcast-jpeg-sw: a
+/// split kept from the removed VA JPEG decoder, fimagedec claims both.
 fn register_jpeg() -> Result<(), glib::BoolError> {
     const JPEG_MAGIC: [u8; 3] = [0xFF, 0xD8, 0xFF];
 

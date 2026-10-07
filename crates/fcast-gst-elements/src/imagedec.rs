@@ -239,8 +239,7 @@ pub mod imp {
                 "image/gif" => Some(Self::Gif),
                 "image/png" | "image/apng" => Some(Self::Png),
                 "image/webp" => Some(Self::WebP),
-                // With VA hardware the baseline caps is claimed at a higher rank
-                // by fvajpegdec. Both private JPEG caps still decode here.
+                // both private JPEG caps imagetypefind suggests decode here
                 "image/x-fcast-jpeg" | "image/x-fcast-jpeg-sw" => {
                     Some(Self::Other(ImageFormat::Jpeg))
                 }
