@@ -2227,7 +2227,7 @@ dependencies = [
 
 [[package]]
 name = "desktop-receiver"
-version = "3.0.4"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "enable-ansi-support",
@@ -8579,7 +8579,7 @@ dependencies = [
 
 [[package]]
 name = "receiver-android"
-version = "0.1.0"
+version = "3.1.0"
 dependencies = [
  "android_logger",
  "jni 0.21.1",
@@ -8595,7 +8595,7 @@ dependencies = [
 
 [[package]]
 name = "receiver-core"
-version = "3.0.4"
+version = "3.1.0"
 dependencies = [
  "aes",
  "alac",
@@ -8691,7 +8691,7 @@ dependencies = [
 
 [[package]]
 name = "receiver-ui"
-version = "3.0.4"
+version = "3.1.0"
 dependencies = [
  "anyhow",
  "dav1d-sys",
