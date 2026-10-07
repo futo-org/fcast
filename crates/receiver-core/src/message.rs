@@ -311,6 +311,9 @@ pub enum ReceiverToFCastSender {
     Error {
         kind: fcast_protocol::v4::flat::ErrorKind,
         packet_num: Option<u32>,
+        /// Also told to a v2/v3 sender as a PlaybackError. Only for a refusal
+        /// that keeps the current item, a media error already broadcasts one.
+        legacy: Option<String>,
     },
     ProgressUpdate {
         pos: gst::ClockTime,

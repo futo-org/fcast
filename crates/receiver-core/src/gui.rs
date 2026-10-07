@@ -478,11 +478,12 @@ impl GuiController {
         });
     }
 
-    /// Returns the the previous window fulscreen state.
-    pub fn set_fullscreen(&self, fullscreen: bool) -> bool {
+    /// Returns the the previous window fulscreen state, `None` when the GUI
+    /// did not answer in time and it is unknown.
+    pub fn set_fullscreen(&self, fullscreen: bool) -> Option<bool> {
         // no UI to answer (android, detached)
         if self.tx.is_none() {
-            return false;
+            return Some(false);
         }
         let (prev_tx, prev_rx) = oneshot::channel();
         self.send(UpdateGuiCommand::SetFullscreen {
@@ -490,10 +491,10 @@ impl GuiController {
             prev_tx,
         });
         match prev_rx.recv_timeout(GUI_ANSWER_TIMEOUT) {
-            Ok(p) => p,
+            Ok(p) => Some(p),
             Err(err) => {
                 error!(?err, "Failed to receive previous window fullscreen state");
-                false
+                None
             }
         }
     }
@@ -816,7 +817,7 @@ mod tests {
         let gui = GuiController::new(Some(tx), GuiIsVisible::new());
         let start = std::time::Instant::now();
         assert!(gui.set_window_visibility(true), "assumed up, so a restore never hides it");
-        assert!(!gui.set_fullscreen(true));
+        assert_eq!(gui.set_fullscreen(true), None, "unknown, so nothing is restored");
         assert!(start.elapsed() < GUI_ANSWER_TIMEOUT * 3);
         // both commands were still sent, for a GUI thread that catches up
         assert!(matches!(rx.try_recv(), Ok(UpdateGuiCommand::SetWindowVisibility { visible: true, .. })));

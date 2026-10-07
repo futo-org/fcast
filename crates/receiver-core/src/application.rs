@@ -1670,6 +1670,22 @@ impl Application {
     }
 
     fn send_error(&self, origin: PacketOrigin, error: fcast_protocol::v4::flat::ErrorKind) {
+        self.send_error_to(origin, error, None);
+    }
+
+    /// An operation refused while the current item plays on. A v2/v3 sender
+    /// hears of it too, it would otherwise take the old item's updates for
+    /// its new cast.
+    fn send_refusal(&self, origin: PacketOrigin, error: fcast_protocol::v4::flat::ErrorKind) {
+        self.send_error_to(origin, error, Some(format!("The receiver refused the media: {error:?}")));
+    }
+
+    fn send_error_to(
+        &self,
+        origin: PacketOrigin,
+        error: fcast_protocol::v4::flat::ErrorKind,
+        legacy: Option<String>,
+    ) {
         error!(?origin, ?error, "An error occured");
 
         match origin {
@@ -1685,6 +1701,7 @@ impl Application {
                     let _ = sender_handle.msg_tx.send(ReceiverToFCastSender::Error {
                         kind: error,
                         packet_num,
+                        legacy,
                     });
                 }
             }
@@ -2926,8 +2943,10 @@ impl Application {
             // fullscreen there is the immersive toggle.
             #[cfg(not(target_os = "android"))]
             self.gui.wait_for_is_visible();
-            let was_fullscreen = self.gui.set_fullscreen(true);
-            self.window_restore.record_fullscreen(was_fullscreen);
+            // unknown when the GUI did not answer: then nothing is restored
+            if let Some(was_fullscreen) = self.gui.set_fullscreen(true) {
+                self.window_restore.record_fullscreen(was_fullscreen);
+            }
         }
 
         let mut media_title = None;
@@ -4011,11 +4030,15 @@ impl Application {
     fn handle_play_message(&mut self, msg: WrappedPlayMessage, origin: PacketOrigin) {
         if let Some(kind) = play_rejection(&msg) {
             error!(?kind, "Refusing a play message that cannot load");
-            self.send_error(origin, kind);
+            self.send_refusal(origin, kind);
             return;
         }
         self.supersede_playlist_fetch();
-        self.end_raop_session();
+        // a JSON playlist ends AirPlay audio once its fetch takes over, a
+        // failed fetch must not leave the receiver on a dead AirPlay view
+        if !matches!(&msg, WrappedPlayMessage::Legacy(m) if m.container == "application/json") {
+            self.end_raop_session();
+        }
         let play_data = Arc::new(msg);
         match play_data.as_ref() {
             fcast::WrappedPlayMessage::Legacy(msg) => {
@@ -6642,7 +6665,7 @@ impl Application {
                 self.playlist_fetch = None;
                 let Some(play_message) = play_message else {
                     error!("Playlist failed to load");
-                    self.send_error(origin, ErrorKind::ResourceNotFound);
+                    self.send_refusal(origin, ErrorKind::ResourceNotFound);
                     return Ok(false);
                 };
 
@@ -6656,7 +6679,7 @@ impl Application {
                     Ok(playlist) => playlist,
                     Err(err) => {
                         error!(?err, "Playlist is not a valid playlist");
-                        self.send_error(origin, ErrorKind::MalformedBody);
+                        self.send_refusal(origin, ErrorKind::MalformedBody);
                         return Ok(false);
                     }
                 };
@@ -6673,10 +6696,12 @@ impl Application {
                         ?playlist,
                         "Playlist's start index is out of bounds"
                     );
-                    self.send_error(origin, ErrorKind::MalformedBody);
+                    self.send_refusal(origin, ErrorKind::MalformedBody);
                     return Ok(false);
                 }
 
+                // the playlist takes over only now, AirPlay audio ends here
+                self.end_raop_session();
                 let mut media = MediaSourceState::new(
                     PacketOrigin::Gui,
                     MediaSource::Playlist {
@@ -7069,6 +7094,15 @@ impl Application {
                 legacy: self.initial_legacy_state(),
             };
             async move {
+                // posted on drop, so a session task that panics still frees
+                // its slot under the session cap
+                struct Disconnect(MessageSender, SenderId);
+                impl Drop for Disconnect {
+                    fn drop(&mut self) {
+                        self.0.send(Message::FCastSenderDisconnect(self.1));
+                    }
+                }
+                let _disconnect = Disconnect(msg_tx.clone(), id);
                 if let Err(err) = SessionDriver::new(
                     stream,
                     id,
@@ -7083,8 +7117,6 @@ impl Application {
                 {
                     error!("Session exited with error: {err}");
                 }
-
-                msg_tx.send(Message::FCastSenderDisconnect(id));
             }
         });
 

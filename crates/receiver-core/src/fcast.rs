@@ -1559,6 +1559,8 @@ impl SessionDriver {
             if let PacketOrigin::FCast { packet_num, .. } = origin {
                 self.send_v4_error(packet_num, v4::flat::ErrorKind::ResourceNotFound).await?;
             }
+            self.send_legacy_error("The receiver refused the media: ResourceNotFound".to_owned())
+                .await?;
             return Ok(false);
         }
         match res {
@@ -1765,6 +1767,18 @@ impl SessionDriver {
         Ok(false)
     }
 
+    /// A PlaybackError for a v2/v3 session, nothing for v1 or v4.
+    async fn send_legacy_error(&mut self, message: String) -> anyhow::Result<()> {
+        if let StateVariant::Active {
+            version: SessionVersion::V2 | SessionVersion::V3,
+        } = &self.state.variant
+        {
+            self.send_legacy_msg(Opcode::PlaybackError, PlaybackErrorMessage { message })
+                .await?;
+        }
+        Ok(())
+    }
+
     async fn send_v4_error(
         &mut self,
         packet_num: Option<u32>,
@@ -1783,8 +1797,15 @@ impl SessionDriver {
 
     async fn handle_msg_from_receiver(&mut self, msg: ReceiverToFCastSender) -> anyhow::Result<()> {
         match msg {
-            ReceiverToFCastSender::Error { kind, packet_num } => {
+            ReceiverToFCastSender::Error {
+                kind,
+                packet_num,
+                legacy,
+            } => {
                 self.send_v4_error(packet_num, kind).await?;
+                if let Some(message) = legacy {
+                    self.send_legacy_error(message).await?;
+                }
             }
             ReceiverToFCastSender::ProgressUpdate { pos, dur } => {
                 if let StateVariant::Active {
