@@ -80,10 +80,7 @@ build_receiver_android_native:
           echo "$APK is signed by $GOT, Updater.java expects $WANT"; exit 1
         fi
       done
-    # The self-update channel (crates/receiver-core/src/android_updater.rs):
-    # one zstd-compressed apk per ABI and the latest.json naming them, all
-    # uploaded to dl.fcast.org/receiver/android/, latest.json last. zstd -19
-    # keeps the 8 MB window the updater accepts, --ultra levels would not.
+    # -19 keeps the 8 MB window android_updater.rs accepts, --ultra would not.
     - |
       OUT=receivers/experimental/android/channel
       APKS=receivers/experimental/android/app/build/outputs/apk/defaultFlavor/release
