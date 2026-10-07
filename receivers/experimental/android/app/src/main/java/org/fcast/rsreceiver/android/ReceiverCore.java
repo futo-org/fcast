@@ -161,19 +161,9 @@ public final class ReceiverCore {
 
         nsdManager = (NsdManager) app.getSystemService(Context.NSD_SERVICE);
 
-        String modelName;
-        if (android.os.Build.MODEL.contains(android.os.Build.MANUFACTURER)) {
-            // quoted: a manufacturer string with regex metacharacters would
-            // throw out of onCreate on that device
-            modelName = android.os.Build.MODEL
-                    .replaceFirst("^" + Pattern.quote(android.os.Build.MANUFACTURER), "")
-                    .trim();
-        } else {
-            modelName = android.os.Build.MODEL;
-        }
         // Fills {hostname} and the default names. Settings apply on restart,
         // so reading them once here is enough.
-        String hostname = android.os.Build.MANUFACTURER + "-" + modelName;
+        String hostname = deviceHostname(app);
         String[] names = nativeServiceNames(app.getFilesDir().getPath(), hostname);
         if (names == null || names.length < 1) {
             // An unreadable config is an unset one: FCast enabled under the
@@ -721,6 +711,27 @@ public final class ReceiverCore {
     // gets no button there, a custom action does.
     private static final String CUSTOM_ACTION_STOP = "stop";
     private static volatile android.media.session.PlaybackState.CustomAction stopAction = null;
+
+    /// The name the user gave the device in Settings (what Cast and AirPlay
+    /// show as well), else manufacturer and model. Unset on some boxes.
+    private static String deviceHostname(Context ctx) {
+        String name = android.provider.Settings.Global.getString(
+                ctx.getContentResolver(), android.provider.Settings.Global.DEVICE_NAME);
+        if (name != null && !name.trim().isEmpty()) {
+            return name.trim();
+        }
+        String modelName;
+        if (android.os.Build.MODEL.contains(android.os.Build.MANUFACTURER)) {
+            // quoted: a manufacturer string with regex metacharacters would
+            // throw out of onCreate on that device
+            modelName = android.os.Build.MODEL
+                    .replaceFirst("^" + Pattern.quote(android.os.Build.MANUFACTURER), "")
+                    .trim();
+        } else {
+            modelName = android.os.Build.MODEL;
+        }
+        return android.os.Build.MANUFACTURER + "-" + modelName;
+    }
 
     /// The session: what routes media buttons, drives the lock-screen and
     /// BT transport surfaces, and feeds the notification's MediaStyle.
