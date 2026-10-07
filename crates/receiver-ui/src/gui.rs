@@ -492,7 +492,10 @@ fn set_android_fullscreen(ui: &MainWindow, fullscreen: bool) {
     if bridge.get_is_fullscreen() == fullscreen {
         return;
     }
-    crate::android_immersive::set(fullscreen);
+    // a dropped call stays unrecorded, so the next item asks again
+    if !crate::android_immersive::set(fullscreen) {
+        return;
+    }
     bridge.set_is_fullscreen(fullscreen);
     bridge.invoke_window_geometry_changed();
     let ui_weak = ui.as_weak();

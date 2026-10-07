@@ -481,15 +481,17 @@ impl GuiController {
     /// Returns the the previous window fulscreen state, `None` when the GUI
     /// did not answer in time and it is unknown.
     pub fn set_fullscreen(&self, fullscreen: bool) -> Option<bool> {
-        // no UI to answer (android, detached)
-        if self.tx.is_none() {
-            return Some(false);
-        }
+        let attached = self.tx.is_some();
         let (prev_tx, prev_rx) = oneshot::channel();
+        // sent detached too, so the replay hands it to the next UI
         self.send(UpdateGuiCommand::SetFullscreen {
             fullscreen,
             prev_tx,
         });
+        // no UI to answer (headless, android between activities)
+        if !attached {
+            return Some(false);
+        }
         match prev_rx.recv_timeout(GUI_ANSWER_TIMEOUT) {
             Ok(p) => Some(p),
             Err(err) => {
@@ -745,9 +747,6 @@ impl GuiController {
     /// [`Self::set_fullscreen`] without waiting for the answer, see
     /// [`Self::set_window_visibility_detached`].
     pub fn set_fullscreen_detached(&self, fullscreen: bool) {
-        if self.tx.is_none() {
-            return;
-        }
         let (prev_tx, _) = oneshot::channel();
         self.send(UpdateGuiCommand::SetFullscreen {
             fullscreen,
@@ -822,6 +821,22 @@ mod tests {
         // both commands were still sent, for a GUI thread that catches up
         assert!(matches!(rx.try_recv(), Ok(UpdateGuiCommand::SetWindowVisibility { visible: true, .. })));
         assert!(matches!(rx.try_recv(), Ok(UpdateGuiCommand::SetFullscreen { fullscreen: true, .. })));
+    }
+
+    /// A cast that starts with no activity UI still hides the bars once one
+    /// attaches, and the end-of-item restore reaches the replay too.
+    #[test]
+    fn fullscreen_set_without_a_ui_reaches_the_next_one() {
+        let mut gui = GuiController::new(None, GuiIsVisible::new()).with_replay();
+        assert_eq!(gui.set_fullscreen(true), Some(false));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(gui.attach(tx, 1));
+        assert!(matches!(rx.try_recv(), Ok(UpdateGuiCommand::SetFullscreen { fullscreen: true, .. })));
+        assert!(gui.detach(1));
+        gui.set_fullscreen_detached(false);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        assert!(gui.attach(tx, 2));
+        assert!(matches!(rx.try_recv(), Ok(UpdateGuiCommand::SetFullscreen { fullscreen: false, .. })));
     }
 
     #[test]

@@ -44,7 +44,8 @@ pub(crate) fn with_activity(
     }
 }
 
-pub fn set(on: bool) {
+/// False when the call never reached an activity.
+pub fn set(on: bool) -> bool {
     with_activity("setImmersiveUi", |env, activity| {
         env.call_method(
             activity,
@@ -53,7 +54,7 @@ pub fn set(on: bool) {
             &[jni::objects::JValue::Bool(on as u8)],
         )
         .map(drop)
-    });
+    })
 }
 
 /// Whether this device is a television (leanback). Read from UiModeManager

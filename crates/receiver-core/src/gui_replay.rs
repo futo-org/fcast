@@ -56,6 +56,9 @@ pub struct GuiSnapshot {
     playback_state: Option<GuiPlaybackState>,
     app_state: Option<AppState>,
     load_behind: Option<bool>,
+    /// Android's immersive state: a UI born after the item started (a
+    /// background cast, a recreated activity) must still hide the bars.
+    fullscreen: Option<bool>,
 }
 
 impl GuiSnapshot {
@@ -145,10 +148,10 @@ impl GuiSnapshot {
                 }
             }
             C::ShowSystemTray => self.system_tray = true,
+            C::SetFullscreen { fullscreen, .. } => self.fullscreen = Some(*fullscreen),
             // One-offs and requests with a reply channel, nothing to restore.
             // InitSettings is re-pushed from the live config on attach.
-            C::SetFullscreen { .. }
-            | C::SetWindowVisibility { .. }
+            C::SetWindowVisibility { .. }
             | C::ClearVideoOverlays
             | C::ShowToastMessage { .. }
             | C::ShowBugReport { .. }
@@ -281,6 +284,13 @@ impl GuiSnapshot {
         if let Some(state) = self.playback_state {
             emit(C::SetPlaybackState(state));
         }
+        if let Some(fullscreen) = self.fullscreen {
+            // nobody waits for the previous state of a replay
+            emit(C::SetFullscreen {
+                fullscreen,
+                prev_tx: oneshot::channel().0,
+            });
+        }
         if let Some(behind) = self.load_behind {
             emit(C::SetLoadBehindPlayer(behind));
         }
@@ -325,6 +335,7 @@ mod tests {
         playback_state: GuiPlaybackState,
         app_state: AppState,
         load_behind: bool,
+        fullscreen: bool,
     }
 
     fn img_id(img: &Arc<DecodedImage>) -> usize {
@@ -405,6 +416,7 @@ mod tests {
                     }
                 }
                 C::ShowSystemTray => self.system_tray = true,
+                C::SetFullscreen { fullscreen, .. } => self.fullscreen = fullscreen,
                 _ => {}
             }
         }
@@ -441,7 +453,7 @@ mod tests {
         ];
         let variants = [UiPlayerVariant::Video, UiPlayerVariant::Audio, UiPlayerVariant::Image];
         let img = images[v as usize % images.len()].clone();
-        match k % 34 {
+        match k % 35 {
             0 => C::DeviceConnected,
             1 => C::DeviceDisconnected,
             2 => C::SetAppState(states[v as usize % states.len()]),
@@ -511,6 +523,10 @@ mod tests {
             30 => C::ClearVideoOverlays,
             31 => C::HideBugReport,
             32 => C::SetLoadBehindPlayer(v % 2 == 0),
+            33 => C::SetFullscreen {
+                fullscreen: v % 2 == 0,
+                prev_tx: oneshot::channel().0,
+            },
             _ => C::TransportFromSender {
                 kind: crate::gui::TransportKind::Seek,
                 by: None,
