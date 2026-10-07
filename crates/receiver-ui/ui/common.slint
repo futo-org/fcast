@@ -123,7 +123,7 @@ export component BufferingIndicator inherits Rectangle {
     animate opacity { duration: 150ms; }
 
     Timer {
-        interval: 400ms;
+        interval: 1500ms;
         running: !root.shown;
         triggered => {
             root.shown = true;

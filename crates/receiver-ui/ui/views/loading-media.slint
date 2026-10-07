@@ -6,6 +6,23 @@ export component LoadingMediaView inherits Rectangle {
     property <bool> backing-off: Bridge.source-backoff-remaining-ms > 0
         && Bridge.source-backoff-total-ms > 0;
     property <int> backoff-seconds: Math.ceil(Bridge.source-backoff-remaining-ms / 1000.0);
+    // The background covers the video hole at once, the text and bar wait
+    // 1500ms so a fast load flashes nothing.
+    property <bool> loading: Bridge.app-state == AppState.LoadingMedia;
+    property <bool> content-shown: false;
+    changed loading => {
+        if !self.loading {
+            self.content-shown = false;
+        }
+    }
+
+    Timer {
+        interval: 1500ms;
+        running: root.loading && !root.content-shown;
+        triggered => {
+            root.content-shown = true;
+        }
+    }
 
     Image {
         source: Assets.background-dark;
@@ -16,6 +33,8 @@ export component LoadingMediaView inherits Rectangle {
     VerticalLayout {
         alignment: center;
         spacing: 14px;
+        opacity: root.content-shown ? 1.0 : 0.0;
+        animate opacity { duration: 150ms; }
 
         FText {
             text: root.backing-off
@@ -33,7 +52,7 @@ export component LoadingMediaView inherits Rectangle {
 
         // Guarded by app-state, not opacity: the view stays in the tree at
         // opacity 0 and an always-on animation-tick() would redraw forever.
-        if Bridge.app-state == AppState.LoadingMedia: HorizontalLayout {
+        if root.loading && root.content-shown: HorizontalLayout {
             alignment: center;
 
             Rectangle {
