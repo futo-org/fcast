@@ -599,6 +599,10 @@ impl<'a> Engine<'a> {
 
         match opcode {
             Opcode::Ping => self.conn.write(Opcode::Pong, None).await?,
+            Opcode::PlaybackError if self.expect.waiting_opcode == Some(Opcode::PlaybackError) => {
+                let msg: PlaybackErrorMessage = parse(opcode, body.as_deref())?;
+                debug!(message = msg.message, "expected playback error received");
+            }
             Opcode::PlaybackError => {
                 let msg: PlaybackErrorMessage = parse(opcode, body.as_deref())?;
                 bail!("receiver reported a playback error: {}", msg.message);
@@ -2138,6 +2142,22 @@ impl<'a> Engine<'a> {
                     metadata: None,
                 })
                 .await?;
+            }
+            Op::PlayRefusedUrlV3 { url, container } => {
+                // a refused play gets a PlaybackError, never a PlayUpdate or
+                // a media item, so play_v3's expectations are left out
+                let body = v3::PlayMessage {
+                    container: (*container).to_owned(),
+                    url: Some((*url).to_owned()),
+                    content: None,
+                    time: None,
+                    volume: None,
+                    speed: None,
+                    headers: None,
+                    metadata: None,
+                };
+                self.expect.waiting_opcode = Some(Opcode::PlaybackError);
+                self.send_json(Opcode::Play, &body).await?;
             }
             Op::PlayV3WithBody {
                 file_id,

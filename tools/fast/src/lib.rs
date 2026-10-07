@@ -25,6 +25,12 @@ pub enum Send {
     PlayV3 {
         file_id: u32,
     },
+    /// A v3 Play of exactly this URL the receiver must refuse, its
+    /// PlaybackError is awaited as part of the step.
+    PlayRefusedUrlV3 {
+        url: &'static str,
+        container: &'static str,
+    },
     PlayV3WithBody {
         file_id: u32,
         time: Option<f64>,
@@ -387,6 +393,7 @@ cases!(
     cast_fake_image_url_resource_not_found_v4,
     cast_fake_video_url_resource_not_found_v4,
     play_local_file_refused_keeps_playing_v4,
+    play_local_file_refused_v3,
     queue_start_out_of_range_refused_v4,
     cast_queue_v4,
     cast_queue_with_headers_v4,
@@ -1215,6 +1222,22 @@ define_test_case!(
         recv!(Receive::Error(ErrorKind::UnsupportedFormat)),
         recv!(Receive::ProgressV4AtLeast(3.0)),
         send!(Send::StopV4),
+    ]
+);
+
+// A v3 sender has no v4 error, it hears of the refusal as a PlaybackError.
+define_test_case!(
+    play_local_file_refused_v3,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(3)),
+        send!(Send::Initial),
+        recv!(Receive::Initial),
+        send!(Send::PlayRefusedUrlV3 {
+            url: "file:///etc/hostname",
+            container: "video/mp4",
+        }),
+        send!(Send::Stop),
     ]
 );
 
