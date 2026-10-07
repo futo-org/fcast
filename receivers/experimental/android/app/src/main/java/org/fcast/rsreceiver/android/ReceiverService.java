@@ -66,14 +66,23 @@ public class ReceiverService extends Service {
         });
     }
 
+    private static long lastSwitchRetry = 0;
+
     /// Retries a refused foreground type switch without rebuilding the
-    /// notification when the type already matches.
-    static void retrySwitchIfNeeded() {
+    /// notification when the type already matches. `soon` paces the retries
+    /// metadata pushes make, a refusal throws and logs every time.
+    static void retrySwitchIfNeeded(boolean soon) {
         mainHandler.post(() -> {
             ReceiverService service = running;
-            if (service != null && service.foregroundType != service.wantedType()) {
-                service.goForeground();
+            if (service == null || service.foregroundType == service.wantedType()) {
+                return;
             }
+            long now = android.os.SystemClock.elapsedRealtime();
+            if (soon && now - lastSwitchRetry < 30_000) {
+                return;
+            }
+            lastSwitchRetry = now;
+            service.goForeground();
         });
     }
 
