@@ -38,6 +38,9 @@ enum Command {
     /// uniffi bindings generator.
     TestSender,
     Protocol(protocol::ProtocolArgs),
+    /// Refuse a GStreamer fork pin that differs from flapjack's. The receiver
+    /// builds and the test lane run it too.
+    GstPin,
 }
 
 #[derive(Parser)]
@@ -73,10 +76,12 @@ fn main() {
         #[cfg(feature = "mdns")]
         Command::Mdns(cmd) => cmd.run().unwrap(),
         Command::Receiver(cmd) => cmd.run().unwrap(),
+        Command::GstPin => xtask::gst_pin::check_matches_flapjack().unwrap(),
         Command::Test => {
             let sh = sh();
             let root_path = workspace::root_path().unwrap();
             let _p = sh.push_dir(root_path.clone());
+            xtask::gst_pin::check_matches_flapjack().unwrap();
 
             // Named packages, not `--workspace --exclude …`: the exclusion list had
             // grown to fifteen entries and still swept in the whole sender tree.

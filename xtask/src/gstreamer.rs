@@ -29,6 +29,7 @@ impl GstreamerArgs {
         let sh = sh();
         let root = workspace::root_path()?;
         let _p = sh.push_dir(root.clone());
+        crate::gst_pin::check_matches_flapjack()?;
         let bin = receiver_bin_path(&self.profile);
         force_relink_for_fresh_gst(&root.join(&bin))?;
         let profile = &self.profile;
@@ -48,6 +49,7 @@ impl GstreamerArgs {
 
 /// The relink guard for the plain cargo wrapper commands (build/run).
 pub fn guard_receiver_relink(release: bool) -> Result<()> {
+    crate::gst_pin::check_matches_flapjack()?;
     let profile = if release { "release" } else { "dev" };
     let root = workspace::root_path()?;
     force_relink_for_fresh_gst(&root.join(receiver_bin_path(profile)))

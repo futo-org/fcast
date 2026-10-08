@@ -12,6 +12,7 @@ pub mod android;
 #[cfg(feature = "uniffi")]
 pub mod csharp;
 pub mod flutter;
+pub mod gst_pin;
 pub mod gstreamer;
 #[cfg(feature = "uniffi")]
 pub mod kotlin;
