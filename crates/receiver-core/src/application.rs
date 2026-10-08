@@ -5266,8 +5266,11 @@ impl Application {
                 // A video item loads as audio until its selection is confirmed
                 // at preroll, which showed the audio view for a third of a
                 // second. The collection's seeded video pick is known now, the
-                // confirmation corrects it if no video gets selected.
-                if self.shown_variant == UiPlayerVariant::Audio
+                // confirmation corrects it if no video gets selected. The
+                // load's own collection only: a later one seeds the default
+                // video again, over a video the user turned off.
+                if self.shown_app_state == AppState::LoadingMedia
+                    && self.shown_variant == UiPlayerVariant::Audio
                     && self.player.current_video_sid().is_some()
                 {
                     self.video_stream_available()?;
