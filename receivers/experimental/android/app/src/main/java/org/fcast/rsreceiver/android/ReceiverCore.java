@@ -100,6 +100,9 @@ public final class ReceiverCore {
     /// The cast came in while the UI was in the background, so its end puts
     /// the receiver back there instead of on the idle screen. Main thread.
     private static boolean castFromBackground = false;
+    /// A cast is coming forward and may turn the screen on for it, until the
+    /// window has focus or the cast goes idle. Main thread.
+    private static boolean castWake = false;
     private static boolean castPlaying = false;
     /// Paused by the player, and paused long enough to let the screen sleep.
     private static boolean castPaused = false;
@@ -206,6 +209,7 @@ public final class ReceiverCore {
         activity = new WeakReference<>(a);
         // a new window starts without the flag a running cast wants
         a.applyKeepScreenOn(keepScreenOn());
+        a.applyCastWake(castWake, television);
     }
 
     /// Visual casts pin the screen, audio ones too on a TV, where the audio
@@ -891,6 +895,7 @@ public final class ReceiverCore {
             } else if (!active) {
                 handler.removeCallbacks(castWaitingCheck);
                 ReceiverService.cancelCastWaiting(app);
+                setCastWake(false);
             }
             boolean audio = active && audible;
             if (mediaSession != null) {
@@ -962,9 +967,30 @@ public final class ReceiverCore {
     /// Come forward, or post tap-to-play if the start is refused.
     private static void castArrived() {
         castFromBackground = true;
+        // before the start, an existing window resumes on it
+        setCastWake(true);
         bringToFront();
         handler.removeCallbacks(castWaitingCheck);
         handler.postDelayed(castWaitingCheck, CAST_WAITING_DELAY_MS);
+    }
+
+    /// Waking the screen is all an app can do about a TV that is off: a TV box
+    /// runs CEC One Touch Play on any wake, which powers the TV and switches
+    /// its input. Per cast, a window that resumes later for any other reason
+    /// (a relaunch, the user) must not wake it.
+    private static void setCastWake(boolean on) {
+        castWake = on;
+        MainActivity a = activity.get();
+        if (a != null) {
+            a.applyCastWake(on, television);
+        }
+    }
+
+    /// The window has focus, the screen is on. From MainActivity.
+    static void castWakeDone() {
+        if (castWake) {
+            setCastWake(false);
+        }
     }
 
     /// A load over an active cast, which raises no rising edge in

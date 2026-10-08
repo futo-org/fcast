@@ -339,10 +339,22 @@ public class MainActivity extends NativeActivity {
         // pauses the activity, and the prompt dialog never stops it.
         if (hasFocus) {
             nativeOverlayState(hasOverlayPermission(), canOpenOverlaySettings());
+            ReceiverCore.castWakeDone();
         }
     }
 
     static native void nativeOverlayState(boolean granted, boolean canOpenSettings);
+
+    /// Turn the screen on as a cast resumes this window, see
+    /// ReceiverCore.setCastWake. A screen only turns on for a window that is
+    /// visible after it, so over the lock screen too on a TV, where nobody
+    /// unlocks it. Not on a phone, whose lock screen stays in front of a cast.
+    void applyCastWake(boolean on, boolean television) {
+        setTurnScreenOn(on);
+        if (television) {
+            setShowWhenLocked(true);
+        }
+    }
 
     /// A cast that ended for real: the idle UI does not belong in a video
     /// window (PiP), nor on screen when the cast is what brought the
