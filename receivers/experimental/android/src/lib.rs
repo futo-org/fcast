@@ -2,6 +2,7 @@ use jni::objects::JByteBuffer;
 use parking_lot::Mutex;
 use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
+    path::Path,
     sync::LazyLock,
 };
 
@@ -45,31 +46,99 @@ fn init_logging(settings: &rcore::Settings) {
     );
 }
 
+/// The wgpu backend dodvg renders on.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Renderer {
+    Vulkan,
+    Gles,
+}
+
+/// The renderer probe, in the files dir: `pending <version>` from the choice
+/// of Vulkan until its first frame, then `ok <version>`, or `gles <version>`
+/// once a launch died on it.
+const RENDERER_PROBE: &str = "renderer-probe";
+const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Vulkan when an adapter enumerates, unless an earlier launch died on it
+/// before its first frame. A buggy driver fails anywhere from device creation
+/// to the first pipeline, as an error or a SIGSEGV, and the one test that
+/// catches both is the launch itself: the probe file reads `pending` from
+/// here until the first frame lands, so `pending` found at launch means the
+/// previous attempt never painted and GLES is used from then on. Per app
+/// version, so a death of another cause before the first frame costs Vulkan
+/// until the next update, not forever. `debug.fcast.renderer` (gles or
+/// vulkan) overrides it all.
+fn choose_renderer(files_dir: Option<&Path>) -> Renderer {
+    match renderer_prop().as_deref() {
+        Some("gles") => return Renderer::Gles,
+        Some("vulkan") => return Renderer::Vulkan,
+        _ => {}
+    }
+    let Some(probe) = files_dir.map(|dir| dir.join(RENDERER_PROBE)) else {
+        return if has_vulkan_adapter() { Renderer::Vulkan } else { Renderer::Gles };
+    };
+    let record = std::fs::read_to_string(&probe).unwrap_or_default();
+    let record = record.trim();
+    let (state, version) = record.split_once(' ').unwrap_or((record, ""));
+    match state {
+        "gles" if version == APP_VERSION => return Renderer::Gles,
+        "pending" => {
+            warn!("the last launch died on Vulkan before its first frame, rendering with GLES");
+            write_probe(&probe, "gles");
+            return Renderer::Gles;
+        }
+        _ => {}
+    }
+    if !has_vulkan_adapter() {
+        return Renderer::Gles;
+    }
+    write_probe(&probe, "pending");
+    rcore::android_on_first_frame(move || write_probe(&probe, "ok"));
+    Renderer::Vulkan
+}
+
+/// Whether this launch's Vulkan probe is still open: the UI failed before
+/// any frame, so the failure is the renderer's.
+fn renderer_probe_pending(files_dir: Option<&Path>) -> bool {
+    files_dir
+        .and_then(|dir| std::fs::read_to_string(dir.join(RENDERER_PROBE)).ok())
+        .is_some_and(|record| record.trim().starts_with("pending"))
+}
+
+fn write_probe(probe: &Path, state: &str) {
+    if let Err(err) = std::fs::write(probe, format!("{state} {APP_VERSION}\n")) {
+        error!(?err, state, "renderer probe not written");
+    }
+}
+
 /// dodvg renders on wgpu, Vulkan unless the GL backend is asked for by name.
 /// A box without a Vulkan driver (many GLES 3 ones) gets GL, or the first
 /// frame fails and the app closes on launch. Requiring GLES itself is refused
 /// by the android backend, only the wgpu API may be named.
-fn select_renderer() {
+fn select_renderer(renderer: Renderer) {
     let selector = rcore::slint::BackendSelector::new();
-    let selector = if !gles_forced() && has_vulkan_adapter() {
-        selector
-    } else {
-        warn!("no Vulkan adapter, rendering with GLES");
-        let mut settings = slint::wgpu_30::WGPUSettings::default();
-        settings.backends = wgpu::Backends::GL;
-        selector.require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Automatic(settings))
+    let selector = match renderer {
+        Renderer::Vulkan => selector,
+        Renderer::Gles => {
+            warn!("rendering with GLES");
+            let mut settings = slint::wgpu_30::WGPUSettings::default();
+            settings.backends = wgpu::Backends::GL;
+            selector.require_wgpu_30(slint::wgpu_30::WGPUConfiguration::Automatic(settings))
+        }
     };
     selector.select().unwrap();
 }
 
 /// `adb shell setprop debug.fcast.renderer gles` takes the GLES path on a
-/// device with Vulkan, to test the fallback the boxes without it get.
-fn gles_forced() -> bool {
+/// device with Vulkan, to test the fallback the boxes without it get, and
+/// `vulkan` retries Vulkan where the probe gave it up.
+fn renderer_prop() -> Option<String> {
     let mut value = [0u8; 92];
     let len = unsafe {
         libc::__system_property_get(c"debug.fcast.renderer".as_ptr(), value.as_mut_ptr().cast())
     };
-    len > 0 && value.get(..len as usize) == Some(b"gles".as_slice())
+    let value = value.get(..usize::try_from(len).ok()?)?;
+    (!value.is_empty()).then(|| String::from_utf8_lossy(value).into_owned())
 }
 
 fn has_vulkan_adapter() -> bool {
@@ -91,12 +160,14 @@ fn has_vulkan_adapter() -> bool {
 #[unsafe(no_mangle)]
 fn android_main(app: slint::android::AndroidApp) {
     // The activity's files dir, where the drawer's settings persist.
-    let settings = rcore::Settings::load(app.internal_data_path().as_deref());
+    let files_dir = app.internal_data_path();
+    let settings = rcore::Settings::load(files_dir.as_deref());
     init_logging(&settings);
 
     slint::android::init(app.clone()).unwrap();
 
-    select_renderer();
+    let renderer = choose_renderer(files_dir.as_deref());
+    select_renderer(renderer);
 
     // Only the first activity in a process starts the core, later ones
     // attach a new UI to it (each android_main gets a fresh thread, so slint's
@@ -107,6 +178,17 @@ fn android_main(app: slint::android::AndroidApp) {
         Ok(keep) => keep,
         Err(err) => {
             error!(?err, "receiver UI failed");
+            if renderer == Renderer::Vulkan && renderer_probe_pending(files_dir.as_deref()) {
+                // No frame came out of Vulkan: the next activity renders
+                // with GLES. The process stays up for the relaunch, the new
+                // UI attaches to the running core.
+                warn!("the UI failed on Vulkan before its first frame, relaunching with GLES");
+                if let Some(dir) = files_dir.as_deref() {
+                    write_probe(&dir.join(RENDERER_PROBE), "gles");
+                }
+                rcore::android_jni::call("relaunchUi", "()V", &[]);
+                return;
+            }
             false
         }
     };

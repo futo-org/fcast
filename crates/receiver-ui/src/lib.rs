@@ -548,6 +548,18 @@ static ANDROID_MEDIA: std::sync::OnceLock<AndroidMedia> = std::sync::OnceLock::n
 /// The Application task returned or died, a kept-alive process has no core.
 #[cfg(target_os = "android")]
 static ANDROID_CORE_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Runs once, on the first frame a UI renders. The renderer probe in
+/// receiver-android marks its backend as working here: a frame on screen is
+/// the one proof a driver got through device, pipeline and present.
+#[cfg(target_os = "android")]
+static ANDROID_FIRST_FRAME: std::sync::Mutex<Option<Box<dyn FnOnce() + Send>>> =
+    std::sync::Mutex::new(None);
+
+/// Registers the first-frame hook, replacing an unfired one.
+#[cfg(target_os = "android")]
+pub fn android_on_first_frame(f: impl FnOnce() + Send + 'static) {
+    *ANDROID_FIRST_FRAME.lock().unwrap() = Some(Box::new(f));
+}
 
 /// `_exit`, not `exit`: static destructors run under MediaCodec threads still
 /// releasing, a crash on the way out that hides the real cause. The sticky
@@ -725,6 +737,9 @@ fn attach_ui(android_app: &slint::android::AndroidApp, core: &AndroidCore) -> Re
                 env.call_method(activity, "onReceiverPainted", "()V", &[])
                     .map(drop)
             });
+            if let Some(hook) = ANDROID_FIRST_FRAME.lock().unwrap().take() {
+                hook();
+            }
         });
         if let Err(err) = notifier {
             tracing::warn!(?err, "no rendering notifier, the splash retires on its backstop");

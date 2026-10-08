@@ -343,6 +343,22 @@ public final class ReceiverCore {
         }
     }
 
+    /// The UI could not start on the renderer it probed, the next activity
+    /// takes the fallback (receiver-android's choose_renderer). From native
+    /// code as the failed activity finishes, delayed past that finish so the
+    /// singleTask MainActivity comes up as a fresh instance.
+    static void relaunchUi() {
+        handler.postDelayed(() -> {
+            Intent launch = new Intent(app, SplashActivity.class);
+            launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            try {
+                app.startActivity(launch);
+            } catch (Exception e) {
+                Log.w(TAG, "relaunch after the renderer fallback refused", e);
+            }
+        }, 500);
+    }
+
     /// The notification's Quit: the receiver ends, whatever owns it.
     static void quit() {
         Log.i(TAG, "quit from the notification");
