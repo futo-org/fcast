@@ -935,6 +935,18 @@ pub struct Application {
     /// advances itself) and plays on in the background like the one before.
     #[cfg(target_os = "android")]
     android_last_end: Option<Instant>,
+    /// The UI drew since the activity started and its video view is up
+    /// (`AndroidWindow::Drawn`), until onStop.
+    #[cfg(target_os = "android")]
+    android_window_drawn: bool,
+    /// Bumped on every onStart and onStop, so a held load's give-up timer
+    /// only acts on the show that armed it.
+    #[cfg(target_os = "android")]
+    android_show_gen: u32,
+    /// The held load's item boundary ran and the video view is pre-opening,
+    /// the load starts once its surface is live.
+    #[cfg(target_os = "android")]
+    android_deferred_prepared: bool,
     /// Current item title for the MediaSession metadata, pushed with the
     /// duration on the progress tick whenever either changes.
     #[cfg(target_os = "android")]
@@ -1355,6 +1367,12 @@ impl Application {
             android_hold_resumes: false,
             #[cfg(target_os = "android")]
             android_last_end: None,
+            #[cfg(target_os = "android")]
+            android_window_drawn: false,
+            #[cfg(target_os = "android")]
+            android_show_gen: 0,
+            #[cfg(target_os = "android")]
+            android_deferred_prepared: false,
             #[cfg(target_os = "android")]
             android_media_title: String::new(),
             #[cfg(target_os = "android")]
@@ -2559,6 +2577,12 @@ impl Application {
     #[cfg(target_os = "android")]
     const ANDROID_NEXT_ITEM_WINDOW: Duration = Duration::from_secs(15);
 
+    /// How long a shown window has to draw, and a drawn one to bring its
+    /// video surface up, before a held load starts without them. A cold
+    /// activity draws in about a second.
+    #[cfg(target_os = "android")]
+    const DEFERRED_LOAD_GIVE_UP: Duration = Duration::from_secs(3);
+
     /// Before playback is released. Only a cast that was playing in the
     /// background counts, a watched one ending says nothing about the next.
     #[cfg(target_os = "android")]
@@ -2566,6 +2590,60 @@ impl Application {
         if self.android_playback.0 && !self.android_hidden_hold && !self.android_ui_visible {
             self.android_last_end = Some(Instant::now());
         }
+    }
+
+    #[cfg(target_os = "android")]
+    fn android_fcast_item(&self) -> bool {
+        matches!(
+            self.current_media.as_ref().map(|m| &m.source),
+            Some(MediaSource::Single(_) | MediaSource::Playlist { .. } | MediaSource::Queue(_))
+        )
+    }
+
+    #[cfg(target_os = "android")]
+    fn android_follows_a_cast(&self) -> bool {
+        self.android_last_end
+            .is_some_and(|end| end.elapsed() < Self::ANDROID_NEXT_ITEM_WINDOW)
+    }
+
+    /// A UI that cannot draw must not hold a load forever: from a shown
+    /// window, it starts without it after `DEFERRED_LOAD_GIVE_UP`.
+    #[cfg(target_os = "android")]
+    fn arm_deferred_load_give_up(&self) {
+        let generation = self.android_show_gen;
+        let msg_tx = self.msg_tx.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Self::DEFERRED_LOAD_GIVE_UP).await;
+            msg_tx.send(Message::AndroidDeferredLoadTimeout(generation));
+        });
+    }
+
+    /// The window is drawn: the held load's item boundary, and the video
+    /// view pre-opens for it. The load waits for that surface, a decoder
+    /// that builds before it runs headless (a cold window takes ~0.5s).
+    #[cfg(target_os = "android")]
+    fn android_prepare_deferred_load(&mut self) {
+        if !self.player.has_deferred_load() || self.android_deferred_prepared {
+            return;
+        }
+        self.android_deferred_prepared = true;
+        self.gui.item_boundary();
+        // the boundary retired the video view, LoadingMedia pre-opens it
+        if self.shown_app_state == AppState::LoadingMedia {
+            self.gui.set_app_state(AppState::LoadingMedia);
+        }
+    }
+
+    /// Starts a load held for the window, see [`load_waits_for_window`].
+    #[cfg(target_os = "android")]
+    fn android_release_deferred_load(&mut self) {
+        if !self.player.has_deferred_load() {
+            return;
+        }
+        info!("Starting the load held for the window");
+        self.android_prepare_deferred_load();
+        self.android_deferred_prepared = false;
+        self.player.release_deferred_load();
     }
 
     #[cfg(target_os = "android")]
@@ -2582,13 +2660,8 @@ impl Application {
                 self.android_transient_pause = false;
                 self.android_set_paused(false);
                 let rising = !self.android_playback.0;
-                let fcast_item = matches!(
-                    self.current_media.as_ref().map(|m| &m.source),
-                    Some(MediaSource::Single(_) | MediaSource::Playlist { .. } | MediaSource::Queue(_))
-                );
-                let follows_a_cast = self
-                    .android_last_end
-                    .is_some_and(|end| end.elapsed() < Self::ANDROID_NEXT_ITEM_WINDOW);
+                let fcast_item = self.android_fcast_item();
+                let follows_a_cast = self.android_follows_a_cast();
                 if rising && !self.android_ui_visible && fcast_item && !image && !follows_a_cast {
                     debug!("Cast arrived in the background, held until the activity shows");
                     self.pause();
@@ -3055,9 +3128,33 @@ impl Application {
                 rate: playback_rate,
             });
             let source = self.build_media_source(&container, url, headers.clone());
-            // before the load, which can reach caps before anything below runs
-            self.gui.item_boundary();
-            self.player.load(source, start);
+            #[cfg(target_os = "android")]
+            let defer = load_waits_for_window(
+                !self.android_playback.0,
+                self.android_window_drawn,
+                self.android_fcast_item(),
+                player_variant == UiPlayerVariant::Image,
+                self.android_follows_a_cast(),
+            );
+            #[cfg(not(target_os = "android"))]
+            let defer = false;
+            if defer {
+                info!("Load held until the window is drawn");
+                self.player.load_deferred(source, start);
+                #[cfg(target_os = "android")]
+                {
+                    self.android_deferred_prepared = false;
+                }
+                // already shown, so no onStart will arm it
+                #[cfg(target_os = "android")]
+                if self.android_ui_visible {
+                    self.arm_deferred_load_give_up();
+                }
+            } else {
+                // before the load, which can reach caps before anything below runs
+                self.gui.item_boundary();
+                self.player.load(source, start);
+            }
             if let Some(volume) = volume {
                 // Stamp the echo window so stale read-back notifies aren't relayed as
                 // external changes; the confirm comes from the Load relay itself.
@@ -6902,6 +6999,10 @@ impl Application {
                 match event {
                     AndroidWindow::Shown => {
                         self.android_ui_visible = true;
+                        self.android_show_gen = self.android_show_gen.wrapping_add(1);
+                        if self.player.has_deferred_load() {
+                            self.arm_deferred_load_give_up();
+                        }
                         if self.android_hidden_hold && self.android_hold_resumes {
                             self.resume();
                         } else if std::mem::take(&mut self.android_hidden_hold) {
@@ -6912,6 +7013,8 @@ impl Application {
                     }
                     AndroidWindow::Hidden => {
                         self.android_ui_visible = false;
+                        self.android_window_drawn = false;
+                        self.android_show_gen = self.android_show_gen.wrapping_add(1);
                         if let Some(reset) = self.presentation.hidden() {
                             self.reset_to_idle(reset);
                         }
@@ -6921,6 +7024,25 @@ impl Application {
                             self.arm_presentation_timer();
                         }
                     }
+                    AndroidWindow::Drawn => {
+                        self.android_window_drawn = true;
+                        if self.player.has_deferred_load() {
+                            self.android_prepare_deferred_load();
+                            self.arm_deferred_load_give_up();
+                        }
+                    }
+                    AndroidWindow::VideoSurfaceLive => {
+                        if self.android_deferred_prepared {
+                            self.android_release_deferred_load();
+                        }
+                    }
+                }
+            }
+            #[cfg(target_os = "android")]
+            Message::AndroidDeferredLoadTimeout(generation) => {
+                if generation == self.android_show_gen && self.player.has_deferred_load() {
+                    warn!("The window showed but never reported drawn, loading without it");
+                    self.android_release_deferred_load();
                 }
             }
             Message::ShouldSetLoadingStatus(id) => {
@@ -6962,6 +7084,7 @@ impl Application {
                 // the dumped collection-vs-routed tells the two apart.
                 if epoch == self.load_watchdog_epoch
                     && item == self.current_media_item_id
+                    && !self.player.has_deferred_load()
                     && !self.player.is_pipeline_stable()
                 {
                     self.player
@@ -7546,6 +7669,22 @@ fn displayed_addresses(reachable: &[IpAddr]) -> impl Iterator<Item = &IpAddr> {
     reachable.iter().filter(move |addr| !has_v4 || addr.is_ipv4())
 }
 
+/// Whether a load waits for the window before it starts: a cast arriving
+/// with no drawn UI, the casts the hidden hold holds (an image, the sender's
+/// next item and a cast already running play on). A decoder built before the
+/// window's video view exists runs headless, and its rebuild onto the surface
+/// drops every frame until the next keyframe, seconds of missing video.
+#[cfg(any(target_os = "android", test))]
+fn load_waits_for_window(
+    rising: bool,
+    drawn: bool,
+    fcast_item: bool,
+    image: bool,
+    follows_a_cast: bool,
+) -> bool {
+    rising && !drawn && fcast_item && !image && !follows_a_cast
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7741,6 +7880,18 @@ mod tests {
                 fullscreen: None,
             }
         );
+    }
+
+    /// Only a new cast with no drawn window waits, never an image, a
+    /// continuation or a cast already running.
+    #[test]
+    fn only_a_new_cast_without_a_drawn_window_waits() {
+        assert!(load_waits_for_window(true, false, true, false, false));
+        assert!(!load_waits_for_window(true, true, true, false, false), "drawn");
+        assert!(!load_waits_for_window(false, false, true, false, false), "already casting");
+        assert!(!load_waits_for_window(true, false, false, false, false), "not an fcast item");
+        assert!(!load_waits_for_window(true, false, true, true, false), "an image");
+        assert!(!load_waits_for_window(true, false, true, false, true), "the sender's next item");
     }
 
     /// Only a hide or a fullscreen exit at the end earns the long hold.

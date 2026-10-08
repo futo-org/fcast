@@ -56,6 +56,13 @@ mod android_immersive;
 #[cfg(target_os = "android")]
 pub fn android_app_visibility(visible: bool) {
     android_surface_video::app_visibility(visible);
+    // The core forgets a drawn window at onStop. One that kept its surface
+    // draws no new first frame on return, so it is reported again here.
+    if visible {
+        report_window_ready();
+    } else {
+        DRAWN_REPORTED.store(false, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 /// The overlay grant and whether a settings page for it exists, from the
 /// activity on every focus gain.
@@ -560,15 +567,54 @@ static ANDROID_CORE_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::At
 /// Bridge.fresh-surface from the window's render lifecycle: set when the
 /// surface goes (backgrounded, hidden to the tray), cleared after the first
 /// frame on the next one. Not set at setup, which notifies from inside the
-/// first render, possibly after the views it must reach.
-fn track_fresh_surface(ui: &MainWindow, state: &slint::RenderingState) {
+/// first render, possibly after the views it must reach. Returns true after
+/// that first frame.
+fn track_fresh_surface(ui: &MainWindow, state: &slint::RenderingState) -> bool {
     let bridge = ui.global::<Bridge>();
     match state {
         slint::RenderingState::RenderingTeardown => bridge.set_fresh_surface(true),
         slint::RenderingState::AfterRendering if bridge.get_fresh_surface() => {
-            bridge.set_fresh_surface(false)
+            bridge.set_fresh_surface(false);
+            return true;
         }
         _ => (),
+    }
+    false
+}
+
+/// The UI drew since its window came up, and whether the core heard of it.
+#[cfg(target_os = "android")]
+static WINDOW_DRAWN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+#[cfg(target_os = "android")]
+static DRAWN_REPORTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Tells the core the window can take a load (`AndroidWindow::Drawn`): drawn
+/// since it came up, with its video view attached, which lands on either
+/// side of that first frame. Once per window.
+#[cfg(target_os = "android")]
+fn report_window_ready() {
+    use std::sync::atomic::Ordering;
+    let video_ready = ANDROID_MEDIA
+        .get()
+        .is_some_and(|media| !media.surface_video || android_surface_video::has_view());
+    if !WINDOW_DRAWN.load(Ordering::Relaxed)
+        || !video_ready
+        || DRAWN_REPORTED.swap(true, Ordering::Relaxed)
+    {
+        return;
+    }
+    use receiver_core::message::AndroidWindow;
+    notify_core_android_window(AndroidWindow::Drawn);
+    // no surface will report itself live
+    if ANDROID_MEDIA.get().is_some_and(|media| !media.surface_video) {
+        notify_core_android_window(AndroidWindow::VideoSurfaceLive);
+    }
+}
+
+#[cfg(target_os = "android")]
+fn notify_core_android_window(event: receiver_core::message::AndroidWindow) {
+    if let Some(core) = ANDROID_CORE.get() {
+        core.msg_tx.send(Message::AndroidWindow(event));
     }
 }
 
@@ -730,6 +776,7 @@ fn attach_media() {
         }
     }
     android_subtitles::attach(&media.subtitles, &ui);
+    report_window_ready();
 }
 
 /// Builds a UI for this activity and attaches it to the core.
@@ -752,10 +799,22 @@ fn attach_ui(android_app: &slint::android::AndroidApp, core: &AndroidCore) -> Re
     // instead of a timer, see SplashActivity.retire.
     {
         let mut reported = false;
+        // a new UI's first frame is a fresh surface's too
+        ui.global::<Bridge>().set_fresh_surface(true);
+        WINDOW_DRAWN.store(false, std::sync::atomic::Ordering::Relaxed);
+        DRAWN_REPORTED.store(false, std::sync::atomic::Ordering::Relaxed);
         let ui_weak = ui.as_weak();
         let notifier = ui.window().set_rendering_notifier(move |state, _| {
             if let Some(ui) = ui_weak.upgrade() {
-                track_fresh_surface(&ui, &state);
+                use std::sync::atomic::Ordering;
+                if matches!(state, slint::RenderingState::RenderingTeardown) {
+                    WINDOW_DRAWN.store(false, Ordering::Relaxed);
+                    DRAWN_REPORTED.store(false, Ordering::Relaxed);
+                }
+                if track_fresh_surface(&ui, &state) {
+                    WINDOW_DRAWN.store(true, Ordering::Relaxed);
+                    report_window_ready();
+                }
                 if matches!(state, slint::RenderingState::BeforeRendering) {
                     android_surface_video::sync_frame_pending(&ui);
                 }

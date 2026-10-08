@@ -106,6 +106,10 @@ fn view() -> Option<Arc<SurfaceVideo>> {
     VIEW.lock().unwrap().clone()
 }
 
+pub(crate) fn has_view() -> bool {
+    VIEW.lock().unwrap().is_some()
+}
+
 /// Activity start/stop. The SurfaceView's surface dies with the activity;
 /// clearing the player's window first bumps the surface generation, so a
 /// codec mid-frame recovers through the swap path instead of erroring on
@@ -397,6 +401,9 @@ impl Handoff {
             // takes its own reference, and fulfils the pending promise
             crate::set_video_window(window.0.as_ptr().cast());
             self.handed_seq = *seq;
+            crate::notify_core_android_window(
+                receiver_core::message::AndroidWindow::VideoSurfaceLive,
+            );
         }
     }
 }

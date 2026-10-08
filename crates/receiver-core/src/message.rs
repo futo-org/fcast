@@ -101,6 +101,11 @@ pub enum AndroidWindow {
     Hidden,
     /// An ended cast will send the task to the back, onStop follows.
     Leaving,
+    /// The UI drew its first frame since onStart and its video view is up.
+    Drawn,
+    /// The video view's surface is live and handed to the player, or the UI
+    /// has no surface lane. A held load starts on it.
+    VideoSurfaceLive,
 }
 
 #[cfg(feature = "airplay")]
@@ -209,6 +214,10 @@ pub enum Message {
     AndroidAudio(AndroidAudio),
     #[cfg(target_os = "android")]
     AndroidWindow(AndroidWindow),
+    /// A load held for the window starts without it, the window showed but
+    /// never reported drawn. Carries `Application::android_show_gen`.
+    #[cfg(target_os = "android")]
+    AndroidDeferredLoadTimeout(u32),
     PlaylistDataResult {
         play_message: Option<fcast_protocol::v3::PlayMessage>,
         /// `Application::playlist_gen` when the fetch started.

@@ -662,6 +662,10 @@ pub struct Player {
     is_live: bool,
     /// The playback rate flapjack last reported. Per item.
     rate: flapjack::PlaybackRate,
+    /// A load held until the app has a window to show it in, and the newest
+    /// seek that arrived meanwhile. The state reads as loading throughout.
+    deferred_load: Option<(MediaInput, flapjack::StartPoint)>,
+    deferred_seek: Option<Seek>,
     /// `shutdown` ran and its barrier fired, so the pipeline is down and no
     /// job may be queued behind it. See [`Drop`].
     shut_down: bool,
@@ -929,6 +933,8 @@ impl Player {
             seekable_known: false,
             pending_volume: None,
             mirror: TransportMirror::STOPPED,
+            deferred_load: None,
+            deferred_seek: None,
             is_live: false,
             rate: flapjack::PlaybackRate::NORMAL,
             shut_down: false,
@@ -1259,6 +1265,8 @@ impl Player {
     /// `UriLoaded`). External subtitles attach separately as live inputs
     /// (`attach_external_subtitle`). Callers go through `load`.
     fn set_source(&mut self, source: MediaInput, start: flapjack::StartPoint) {
+        self.deferred_load = None;
+        self.deferred_seek = None;
         self.clear_state();
         self.expected_generation = Some(self.fcast.load(source, start));
         self.mirror = TransportMirror::LOADING;
@@ -1270,11 +1278,43 @@ impl Player {
     pub fn load(&mut self, source: MediaInput, start: Option<RestorePoint>) {
         // A new load auto-plays unless a pause arrives while it is in flight.
         self.desired_transport = Transport::Playing;
-        // The start position/rate is applied inside `flapjack::load`
-        // while the pipeline is still in PAUSED, so a non-1.0 rate never
-        // renders a 1.0x slice that a later seek flushes (the pop). `None`
-        // marks a source with no start seek (live sources).
-        let start = match start {
+        self.set_source(source, Self::start_point(start));
+    }
+
+    /// `load`, held until [`Self::release_deferred_load`]. Nothing reaches
+    /// flapjack until then, plays and pauses are recorded as for a load in
+    /// flight and the newest seek is replayed at the release.
+    pub fn load_deferred(&mut self, source: MediaInput, start: Option<RestorePoint>) {
+        self.desired_transport = Transport::Playing;
+        self.clear_state();
+        self.mirror = TransportMirror::LOADING;
+        self.deferred_load = Some((source, Self::start_point(start)));
+        self.deferred_seek = None;
+    }
+
+    pub fn has_deferred_load(&self) -> bool {
+        self.deferred_load.is_some()
+    }
+
+    /// Starts a held load. Returns false when none is held.
+    pub fn release_deferred_load(&mut self) -> bool {
+        let Some((source, start)) = self.deferred_load.take() else {
+            return false;
+        };
+        let seek = self.deferred_seek.take();
+        self.set_source(source, start);
+        if let Some(seek) = seek {
+            self.seek_internal(seek);
+        }
+        true
+    }
+
+    /// The start position/rate is applied inside `flapjack::load` while the
+    /// pipeline is still in PAUSED, so a non-1.0 rate never renders a 1.0x
+    /// slice that a later seek flushes (the pop). `None` marks a source with
+    /// no start seek (live sources).
+    fn start_point(start: Option<RestorePoint>) -> flapjack::StartPoint {
+        match start {
             Some(rp) => {
                 // A sender's Load can carry speed 0.0 (or NaN): gst seeks
                 // assert rate != 0.0 and the binding panics on the NULL
@@ -1287,11 +1327,15 @@ impl Player {
                 flapjack::StartPoint::at_rate(rp.position, rate)
             }
             None => flapjack::StartPoint::Live,
-        };
-        self.set_source(source, start);
+        }
     }
 
     fn seek_internal(&mut self, seek: Seek) {
+        if self.deferred_load.is_some() {
+            debug!(?seek, "Seek held with its load");
+            self.deferred_seek = Some(seek);
+            return;
+        }
         // Nothing to seek in, and flapjack would only answer with a failure.
         if !self.mirror.loaded {
             warn!(?seek, "Cannot seek when not playing");
@@ -1589,6 +1633,8 @@ impl Player {
         // mirror and the per-item state must reset or the aborted load's
         // leftovers leak into the next one.
         self.mirror = TransportMirror::STOPPED;
+        self.deferred_load = None;
+        self.deferred_seek = None;
         self.clear_state();
     }
 
