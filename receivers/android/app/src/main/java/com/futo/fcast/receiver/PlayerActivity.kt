@@ -173,6 +173,23 @@ class PlayerActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         Log.i(TAG, "onCreate")
+
+        // Waking the display is all an app can do about a TV that is off: the
+        // CEC half is the platform's. Android TV playback devices run One Touch
+        // Play (<Text View On> + <Active Source>) on any wake, which turns the
+        // TV on and switches its input - the same mechanism a Chromecast uses.
+        // The manifest attributes cover API 27+, this covers the rest.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+                        or WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED
+            )
+        }
+
         initializeExoPlayer()
 
         setContent {
