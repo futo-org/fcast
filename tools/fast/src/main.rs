@@ -55,6 +55,11 @@ struct Cli {
     /// applies on top.
     #[arg(long, global = true)]
     only: Vec<String>,
+    /// Pause between two cases of `run-all` and `run`, in milliseconds. Tells
+    /// a receiver that degrades under back-to-back casts from one that
+    /// degrades with the count of casts.
+    #[arg(long, global = true, default_value_t = 0)]
+    case_gap_ms: u64,
     #[command(flatten)]
     verbosity: clap_verbosity_flag::Verbosity<clap_verbosity_flag::OffLevel>,
     #[command(subcommand)]
@@ -114,6 +119,7 @@ async fn run_tests(
     sample_media: PathBuf,
     targets: Vec<String>,
     fingerprint: Option<Vec<u8>>,
+    case_gap: Duration,
 ) {
     let file_server = FileServer::new(0).await.unwrap();
     let mut stdout = std::io::stdout();
@@ -150,6 +156,9 @@ async fn run_tests(
             }
 
             println!("{}test {} ... {GREEN}OK{RESET}", clear_line(), case.name);
+            if !case_gap.is_zero() {
+                tokio::time::sleep(case_gap).await;
+            }
         }
     }
 }
@@ -274,6 +283,7 @@ async fn main() {
             .expect("invalid base64 fingerprint")
     });
 
+    let case_gap = Duration::from_millis(cli.case_gap_ms);
     match cli.command {
         Command::RunAll => {
             let all = fast::TEST_CASES
@@ -285,9 +295,11 @@ async fn main() {
                 .filter(|name| !cli.exclude.iter().any(|e| name.contains(e.as_str())))
                 .map(str::to_string)
                 .collect();
-            run_tests(receiver, sample_media, all, fingerprint).await;
+            run_tests(receiver, sample_media, all, fingerprint, case_gap).await;
         }
-        Command::Run { tests } => run_tests(receiver, sample_media, tests, fingerprint).await,
+        Command::Run { tests } => {
+            run_tests(receiver, sample_media, tests, fingerprint, case_gap).await
+        }
         Command::Stress => stress(receiver, sample_media, fingerprint, cli.exclude, cli.only).await,
     }
 }
