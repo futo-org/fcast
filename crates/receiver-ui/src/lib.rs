@@ -257,6 +257,9 @@ pub fn run(settings: Settings) -> Result<()> {
                 }
                 slint::RenderingState::RenderingTeardown => {
                     gui_is_visible.set(false);
+                    if let Some(ui) = ui_weak.upgrade() {
+                        track_fresh_surface(&ui, &state);
+                    }
 
                     let (feedback_tx, feedback_rx) = oneshot::channel::<()>();
                     // The GUI thread's own count: a show the application has
@@ -285,6 +288,11 @@ pub fn run(settings: Settings) -> Result<()> {
                     // holds the other half of it otherwise.
                     cue_tick = None;
                     cues.lock().take();
+                }
+                slint::RenderingState::AfterRendering => {
+                    if let Some(ui) = ui_weak.upgrade() {
+                        track_fresh_surface(&ui, &state);
+                    }
                 }
                 _ => (),
             }
@@ -548,6 +556,22 @@ static ANDROID_MEDIA: std::sync::OnceLock<AndroidMedia> = std::sync::OnceLock::n
 /// The Application task returned or died, a kept-alive process has no core.
 #[cfg(target_os = "android")]
 static ANDROID_CORE_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Bridge.fresh-surface from the window's render lifecycle: set when the
+/// surface goes (backgrounded, hidden to the tray), cleared after the first
+/// frame on the next one. Not set at setup, which notifies from inside the
+/// first render, possibly after the views it must reach.
+fn track_fresh_surface(ui: &MainWindow, state: &slint::RenderingState) {
+    let bridge = ui.global::<Bridge>();
+    match state {
+        slint::RenderingState::RenderingTeardown => bridge.set_fresh_surface(true),
+        slint::RenderingState::AfterRendering if bridge.get_fresh_surface() => {
+            bridge.set_fresh_surface(false)
+        }
+        _ => (),
+    }
+}
+
 /// Runs once, on the first frame a UI renders. The renderer probe in
 /// receiver-android marks its backend as working here: a frame on screen is
 /// the one proof a driver got through device, pipeline and present.
@@ -728,7 +752,14 @@ fn attach_ui(android_app: &slint::android::AndroidApp, core: &AndroidCore) -> Re
     // instead of a timer, see SplashActivity.retire.
     {
         let mut reported = false;
+        let ui_weak = ui.as_weak();
         let notifier = ui.window().set_rendering_notifier(move |state, _| {
+            if let Some(ui) = ui_weak.upgrade() {
+                track_fresh_surface(&ui, &state);
+                if matches!(state, slint::RenderingState::BeforeRendering) {
+                    android_surface_video::sync_frame_pending(&ui);
+                }
+            }
             if reported || !matches!(state, slint::RenderingState::AfterRendering) {
                 return;
             }

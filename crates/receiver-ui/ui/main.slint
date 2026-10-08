@@ -145,6 +145,13 @@ export component MainWindow inherits Window {
     property <bool> loading-behind: Bridge.app-state == AppState.LoadingMedia
         && Bridge.load-behind-player && Bridge.player-variant == UiPlayerVariant.Audio;
 
+    // A video item plays from its stream collection, its first frame lands
+    // a decoder start later. The loading view stays up across that gap
+    // instead of the hole's black fill.
+    property <bool> video-starting: Bridge.app-state == AppState.Playing
+        && Bridge.player-variant == UiPlayerVariant.Video
+        && Bridge.behind-window-video && Bridge.video-frame-pending;
+
     property <AppState> app-state: Bridge.app-state;
     changed app-state => {
         // On entry into Playing the video player's own scope focuses itself.
@@ -232,16 +239,17 @@ export component MainWindow inherits Window {
             visible: self.opacity > 0%;
 
             animate opacity {
-                duration: 100ms;
+                duration: Bridge.fresh-surface ? 0ms : 100ms;
             }
         }
 
         loading-view := LoadingMediaView {
-            opacity: Bridge.app-state == AppState.LoadingMedia && !root.loading-behind ? 100% : 0%;
+            opacity: (Bridge.app-state == AppState.LoadingMedia && !root.loading-behind)
+                || root.video-starting ? 100% : 0%;
             visible: self.opacity > 0%;
 
             animate opacity {
-                duration: 100ms;
+                duration: Bridge.fresh-surface ? 0ms : 100ms;
             }
         }
 

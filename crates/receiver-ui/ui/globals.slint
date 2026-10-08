@@ -215,6 +215,10 @@ export global Bridge {
     // Ns"). remaining == 0 means none; total sizes the drain bar.
     in property <int> source-backoff-remaining-ms: 0;
     in property <int> source-backoff-total-ms: 0;
+    // From a new render surface (the window back from the background or the
+    // tray) to its first frame. State changed while nothing rendered, and an
+    // animated view would only start fading out the old state now.
+    in property <bool> fresh-surface: false;
     // True from launch until the FCast port is committed. Drives the startup
     // screen (spinner / port-conflict prompt) shown over the idle background.
     in property <bool> starting-up: true;

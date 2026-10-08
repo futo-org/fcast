@@ -264,6 +264,17 @@ pub(crate) fn preopen_current() {
     });
 }
 
+/// Brings `video-frame-pending` up to the sink before a render. The mirror
+/// below is queued to the UI thread, and the first frame after a resume runs
+/// ahead of that queue, painting a fill the sink already dropped.
+pub(crate) fn sync_frame_pending(ui: &crate::MainWindow) {
+    let bridge = ui.global::<crate::Bridge>();
+    let pending = sink().frame_pending.load(Ordering::Relaxed);
+    if bridge.get_video_frame_pending() != pending {
+        bridge.set_video_frame_pending(pending);
+    }
+}
+
 /// Mirrors `video-frame-pending` into the attached UI, on change only.
 fn set_frame_pending(pending: bool) {
     if pending {
