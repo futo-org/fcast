@@ -8,9 +8,7 @@ use gst::prelude::*;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::MessageSender;
-use flapjack::state_machine::{
-    BufferingStateResult, RunningState, Seek, StateChangeResult, StateMachine,
-};
+use flapjack::Seek;
 
 /// What plays. Re-exported from `flapjack`: a URI, or a pre-built source
 /// element. The APPLICATION builds the element (HTTP with per-load headers,
@@ -107,15 +105,117 @@ impl PlayerState {
 /// is resuming toward (`desired`) rather than a bogus Idle. Mapping it to Idle
 /// makes senders read "playback ended" and advance/stop the queue in the
 /// middle of a gapless handoff.
-fn project_wire_state(state: PlayerState, desired: RunningState) -> PlaybackState {
+fn project_wire_state(state: PlayerState, desired: Transport) -> PlaybackState {
     match state {
         PlayerState::Stopped => PlaybackState::Idle,
         PlayerState::Playing => PlaybackState::Playing,
         PlayerState::Paused => PlaybackState::Paused,
         PlayerState::Buffering => match desired {
-            RunningState::Paused => PlaybackState::Paused,
-            RunningState::Playing => PlaybackState::Playing,
+            Transport::Paused => PlaybackState::Paused,
+            Transport::Playing => PlaybackState::Playing,
         },
+    }
+}
+
+/// The transport the user asked for. flapjack holds the pipeline wherever a
+/// load, a seek or a rebuffer needs it and comes back here by itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Transport {
+    Paused,
+    Playing,
+}
+
+/// What the receiver knows of flapjack's transport, from its events alone.
+///
+/// flapjack runs the one state machine. The receiver used to run a second
+/// copy beside it, and both paused on a rebuffer: the receiver's pause for
+/// the hold reached flapjack as the user's, replaced the Playing it was
+/// going to restore, and the two ended at PAUSED with nobody asking for more.
+/// Nothing in here drives the pipeline. It says what to show while flapjack
+/// works, and every field is put down by an event that is promised.
+///
+/// `Op` is flapjack's op id. A parameter so the rules can be stepped by hand
+/// in a test, which cannot mint one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct TransportMirror<Op = flapjack::OpId> {
+    /// An item is loaded or loading. False from a stop to the next load.
+    loaded: bool,
+    /// The load has not reported `Loaded` yet.
+    loading: bool,
+    /// The last settled state flapjack reported.
+    settled: flapjack::PlaybackState,
+    /// A rebuffer is holding the pipeline (a report below 100 with no 100
+    /// behind it yet).
+    holding: bool,
+    /// The newest seek sent, until its one answer arrives.
+    seek: Option<Op>,
+    /// The newest play or pause sent, until its one answer arrives.
+    transport: Option<Op>,
+}
+
+impl<Op: Copy + PartialEq> TransportMirror<Op> {
+    const STOPPED: Self = Self {
+        loaded: false,
+        loading: false,
+        settled: flapjack::PlaybackState::Idle,
+        holding: false,
+        seek: None,
+        transport: None,
+    };
+
+    /// A load went out. Whatever the last item still owed is the last
+    /// item's, flapjack answers those under a generation that is dropped.
+    const LOADING: Self = Self {
+        loaded: true,
+        loading: true,
+        ..Self::STOPPED
+    };
+
+    /// Something is on its way and the settled state is not the whole story.
+    fn busy(&self) -> bool {
+        self.loading || self.holding || self.seek.is_some() || self.transport.is_some()
+    }
+
+    fn state(&self) -> PlayerState {
+        if !self.loaded {
+            return PlayerState::Stopped;
+        }
+        if self.busy() {
+            // The wire protocol has no loading/seeking state. Buffering is
+            // the honest "not rendering, working on it" for everything in
+            // transition.
+            return PlayerState::Buffering;
+        }
+        match self.settled {
+            flapjack::PlaybackState::Paused => PlayerState::Paused,
+            flapjack::PlaybackState::Playing => PlayerState::Playing,
+            // Loaded and at rest with nothing settled is a load whose first
+            // settle has not come.
+            flapjack::PlaybackState::Idle => PlayerState::Buffering,
+        }
+    }
+
+    /// The settled transport, `None` while anything is in flight.
+    fn running(&self) -> Option<Transport> {
+        match self.state() {
+            PlayerState::Paused => Some(Transport::Paused),
+            PlayerState::Playing => Some(Transport::Playing),
+            PlayerState::Buffering | PlayerState::Stopped => None,
+        }
+    }
+
+    /// One answer for `op`, whichever request it was. An answer for an
+    /// older request than the newest names an op nothing waits on.
+    fn answered(&mut self, op: Option<Op>) {
+        if op.is_none() {
+            return;
+        }
+        if self.seek == op {
+            self.seek = None;
+        }
+        if self.transport == op {
+            self.transport = None;
+        }
     }
 }
 
@@ -322,6 +422,22 @@ pub enum PlayerEvent {
     SeekFailed {
         op: Option<flapjack::OpId>,
     },
+    /// A seek's flush has prerolled again. `op` as on `SeekFailed`.
+    SeekSettled {
+        op: Option<flapjack::OpId>,
+    },
+    /// A request was discarded before it acted, by a newer one or by the
+    /// item going away. Its one answer, in place of the outcome.
+    Superseded {
+        op: Option<flapjack::OpId>,
+    },
+    /// flapjack's transport settled somewhere new, or answered the play or
+    /// pause `op` names (which can be where it already was). Steady through
+    /// a seek and a rebuffer, which end where they began.
+    PlaybackChanged {
+        state: flapjack::PlaybackState,
+        op: Option<flapjack::OpId>,
+    },
     /// The element providing the pipeline clock went away. A report only:
     /// flapjack re-elects the clock itself whenever the transport is running
     /// toward PLAYING, nothing is owed back.
@@ -487,6 +603,26 @@ fn merge_streams_stable(previous: Vec<Stream>, fresh: &[flapjack::StreamInfo]) -
     merged
 }
 
+/// One slot's selection across a collection: kept while its stream is still
+/// advertised, the media's own pick for the slot otherwise. That pick is not
+/// the first stream listed where the manifest marks a later one (HLS
+/// `DEFAULT=YES`, DASH `Role=main`), and it is nothing for a subtitle slot the
+/// media asks no subtitle for.
+fn carried_or_default(
+    current: Option<StreamId>,
+    streams: &[Stream],
+    slot: flapjack::TrackSlot,
+) -> Option<StreamId> {
+    current
+        .filter(|sid| streams.iter().any(|stream| stream.sid() == *sid))
+        .or_else(|| {
+            streams
+                .iter()
+                .find(|stream| stream.info.slot == slot && stream.info.default)
+                .map(Stream::sid)
+        })
+}
+
 pub struct Player {
     /// The flapjack playback orchestrator: the only pipeline handle.
     /// State changes, seeks, queries and events all go through its API.
@@ -498,7 +634,7 @@ pub struct Player {
     /// `uri_loaded` once a load prerolls. Requests landing mid-load are
     /// recorded here instead of being stomped by the load's own climb, so
     /// there is exactly ONE post-load transport driver.
-    desired_transport: RunningState,
+    desired_transport: Transport,
     /// The generation of the load this player currently expects events for
     /// (returned by `flapjack::load_async`); `None` when stopped. The
     /// application drops load-scoped events from any other generation.
@@ -520,7 +656,12 @@ pub struct Player {
     /// The newest volume requested while a previous change's confirmation
     /// was still in flight, applied when it arrives (see `set_volume`).
     pending_volume: Option<f32>,
-    state_machine: StateMachine,
+    /// What flapjack's events say of its transport (see [`TransportMirror`]).
+    mirror: TransportMirror,
+    /// The item is live (flapjack's `Loaded` said so). Per item.
+    is_live: bool,
+    /// The playback rate flapjack last reported. Per item.
+    rate: flapjack::PlaybackRate,
     /// `shutdown` ran and its barrier fired, so the pipeline is down and no
     /// job may be queued behind it. See [`Drop`].
     shut_down: bool,
@@ -780,14 +921,16 @@ impl Player {
             picture,
             fcast,
             volume_confirm_in_flight: false,
-            desired_transport: RunningState::Playing,
+            desired_transport: Transport::Playing,
             expected_generation: None,
             pending_gapless: None,
             selected: TrackSelection::default(),
             seekable: false,
             seekable_known: false,
             pending_volume: None,
-            state_machine: StateMachine::new(),
+            mirror: TransportMirror::STOPPED,
+            is_live: false,
+            rate: flapjack::PlaybackRate::NORMAL,
             shut_down: false,
             streams: Vec::new(),
         })
@@ -832,9 +975,9 @@ impl Player {
                 pending,
             },
             E::RequestState(state) => PlayerEvent::RequestState(state),
-            // the receiver's transport is driven by its own state machine
-            // over StateChanged, the high-level mirror is redundant here
-            E::PlaybackChanged(_) => return,
+            // flapjack's settled state, and the answer to a play or a pause
+            // of the receiver's when `op` names one
+            E::PlaybackChanged(state) => PlayerEvent::PlaybackChanged { state, op },
             // the engine's ABR rung, logged for session triage; nothing in
             // the protocol carries it yet
             E::QualityChanged(quality) => {
@@ -858,13 +1001,11 @@ impl Player {
                 seqnum,
             },
             E::RateChanged(rate) => PlayerEvent::RateChanged(rate.get()),
-            // `op` rides along to tell the receiver's own seeks apart; the
-            // transport seeks resolve through the state machine's edges
+            // The one answer each request of the receiver's gets, `op` says
+            // which. A seek flapjack sent for itself answers under no op.
             E::SeekFailed => PlayerEvent::SeekFailed { op },
-            // a seek's success and a command discarded before it acted; the
-            // receiver derives both from StateChanged and keys nothing else on
-            // op ids, so they resolve silently
-            E::SeekSettled { .. } | E::Superseded { .. } => return,
+            E::SeekSettled { .. } => PlayerEvent::SeekSettled { op },
+            E::Superseded { .. } => PlayerEvent::Superseded { op },
             E::ClockLost => PlayerEvent::ClockLost,
             E::Error {
                 origin,
@@ -961,39 +1102,24 @@ impl Player {
 
         // The selection is stream-id-keyed, so nothing needs remapping across
         // collections: drop slots whose stream left the collection and seed
-        // still-unselected slots with playbin3's defaults (the first stream
-        // of each type), so a track change arriving before the initial
-        // `StreamsSelected` keeps the other streams selected instead of
-        // dropping them. The real `StreamsSelected` corrects these the moment
-        // it arrives.
-        self.selected.video = self
-            .selected
-            .video
-            .take()
-            .filter(|sid| Self::find_stream_idx(sid, &self.streams).is_some())
-            .or_else(|| self.first_sid_of(gst::StreamType::VIDEO));
-        self.selected.audio = self
-            .selected
-            .audio
-            .take()
-            .filter(|sid| Self::find_stream_idx(sid, &self.streams).is_some())
-            .or_else(|| self.first_sid_of(gst::StreamType::AUDIO));
-        self.selected.subtitle = self
-            .selected
-            .subtitle
-            .take()
-            .filter(|sid| Self::find_stream_idx(sid, &self.streams).is_some())
-            .or_else(|| self.first_sid_of(gst::StreamType::TEXT));
+        // still-unselected slots with the media's own pick (the stream
+        // flapjack flags `default`, which is what plays absent a choice), so
+        // a track change arriving before the initial `StreamsSelected` keeps
+        // the other streams selected instead of dropping them. No
+        // `StreamsSelected` follows a selection nobody moved, so the seed has
+        // to be right by itself.
+        use flapjack::TrackSlot as Slot;
+        let selected = &mut self.selected;
+        selected.video = carried_or_default(selected.video.take(), &self.streams, Slot::Video);
+        selected.audio = carried_or_default(selected.audio.take(), &self.streams, Slot::Audio);
+        selected.subtitle =
+            carried_or_default(selected.subtitle.take(), &self.streams, Slot::Subtitle);
 
         // The crate's selection engine already reconciled against this
         // collection (and abandoned unconfirmable in-flight work) when it
         // translated the message; give it a pump now that the receiver's
         // own bookkeeping is consistent too.
         self.pump_selection();
-    }
-
-    fn first_sid_of(&self, ty: gst::StreamType) -> Option<StreamId> {
-        self.streams.iter().find(|s| s.is_of_type(ty)).map(Stream::sid)
     }
 
     /// The applied (or optimistically in-flight) stream id per slot.
@@ -1040,6 +1166,8 @@ impl Player {
         self.selected = TrackSelection::default();
         self.seekable = false;
         self.seekable_known = false;
+        self.is_live = false;
+        self.rate = flapjack::PlaybackRate::NORMAL;
         self.volume_confirm_in_flight = false;
         self.expected_generation = None;
         // A load or stop supersedes any pending pre-arm (flapjack drops
@@ -1132,9 +1260,8 @@ impl Player {
     /// (`attach_external_subtitle`). Callers go through `load`.
     fn set_source(&mut self, source: MediaInput, start: flapjack::StartPoint) {
         self.clear_state();
-        self.state_machine.clear_state();
         self.expected_generation = Some(self.fcast.load(source, start));
-        self.state_machine.begin_load();
+        self.mirror = TransportMirror::LOADING;
     }
 
     /// Load a new main source. `start` is the post-preroll start seek
@@ -1142,7 +1269,7 @@ impl Player {
     /// and links itself inside `flapjack`, nothing to sequence here.
     pub fn load(&mut self, source: MediaInput, start: Option<RestorePoint>) {
         // A new load auto-plays unless a pause arrives while it is in flight.
-        self.desired_transport = RunningState::Playing;
+        self.desired_transport = Transport::Playing;
         // The start position/rate is applied inside `flapjack::load`
         // while the pipeline is still in PAUSED, so a non-1.0 rate never
         // renders a 1.0x slice that a later seek flushes (the pop). `None`
@@ -1165,17 +1292,26 @@ impl Player {
     }
 
     fn seek_internal(&mut self, seek: Seek) {
+        // Nothing to seek in, and flapjack would only answer with a failure.
+        if !self.mirror.loaded {
+            warn!(?seek, "Cannot seek when not playing");
+            return;
+        }
+        if self.is_live {
+            warn!(?seek, "Cannot seek when source is live");
+            return;
+        }
         // An unresolved seekability query (`!seekable_known`) is not a
-        // refusal: let the seek through. The state machine queues seeks that
-        // land mid-preroll, so it runs once the pipeline settles. Only a
-        // KNOWN unseekable stream drops the seek.
+        // refusal: let the seek through. flapjack parks a seek that lands
+        // mid-preroll and sends it once the pipeline settles, the newest
+        // one wins. Only a KNOWN unseekable stream drops the seek.
         if self.seekable || !self.seekable_known {
             // A user seek is itself a flushing seek and re-emits the current
             // subtitle cue, a separately queued refresh flush is redundant.
             self.fcast.cancel_selection_refresh();
-            if let Some(seek) = self.state_machine.seek_internal(seek) {
-                self.fcast.seek(seek, self.fcast.allocate_op());
-            }
+            let op = self.fcast.allocate_op();
+            self.mirror.seek = Some(op.id());
+            self.fcast.seek(seek, op);
         } else {
             warn!(?seek, "Attempted to seek on a non seekable stream");
         }
@@ -1242,8 +1378,8 @@ impl Player {
         // preroll) is in progress instead of predicting from the kind of
         // change, mispredictions are what used to wedge this logic.
         let async_busy = self.fcast.has_async_transition();
-        let (running, paused) = match self.state_machine.running() {
-            Some(state) => (true, state == RunningState::Paused),
+        let (running, paused) = match self.mirror.running() {
+            Some(state) => (true, state == Transport::Paused),
             None => (false, false),
         };
         self.fcast.pump_selection(flapjack::SelectionGate {
@@ -1267,12 +1403,9 @@ impl Player {
         self.pump_selection();
     }
 
+    /// A seek of the receiver's is out and not yet answered.
     pub fn is_seeking(&self) -> bool {
-        self.state_machine.is_seeking()
-    }
-
-    pub fn queue_seek(&mut self, seek: Seek) {
-        self.state_machine.queue_seek(seek);
+        self.mirror.seek.is_some()
     }
 
     /// The current volume: the queued pending request when one exists (it
@@ -1353,9 +1486,7 @@ impl Player {
     }
 
     fn set_state_async(&self, target_state: gst::State) {
-        // the raw state API is gone, flapjack speaks transport verbs; their
-        // completions ride PlaybackChanged, which the receiver's own state
-        // machine over StateChanged makes redundant (see relay_event)
+        // the raw state API is gone, flapjack speaks transport verbs
         match target_state {
             gst::State::Playing => self.fcast.play(self.fcast.allocate_op()),
             gst::State::Paused => self.fcast.pause(self.fcast.allocate_op()),
@@ -1363,11 +1494,34 @@ impl Player {
         }
     }
 
-    pub fn play(&mut self) {
-        self.desired_transport = RunningState::Playing;
-        if let Some(state) = self.state_machine.set_playback_state(RunningState::Playing) {
-            self.set_state_async(state);
+    /// Ask flapjack for `want` and remember the request until its answer.
+    /// flapjack keeps it across whatever is in flight, a seek or a rebuffer
+    /// ends there by itself.
+    fn commit_transport(&mut self, want: Transport) {
+        let op = self.fcast.allocate_op();
+        self.mirror.transport = Some(op.id());
+        match want {
+            Transport::Playing => self.fcast.play(op),
+            Transport::Paused => self.fcast.pause(op),
         }
+    }
+
+    /// A play or a pause of the user's. Recorded while a load is in flight,
+    /// which `uri_loaded` commits, and not sent where the transport already
+    /// rests there.
+    fn request_transport(&mut self, want: Transport) {
+        self.desired_transport = want;
+        if !self.mirror.loaded || self.mirror.loading {
+            return;
+        }
+        if self.mirror.running() == Some(want) {
+            return;
+        }
+        self.commit_transport(want);
+    }
+
+    pub fn play(&mut self) {
+        self.request_transport(Transport::Playing);
     }
 
     /// Honor a `RequestState` message from an element by dispatching the state
@@ -1397,14 +1551,11 @@ impl Player {
     }
 
     pub fn pause(&mut self) {
-        self.desired_transport = RunningState::Paused;
-        if let Some(state) = self.state_machine.set_playback_state(RunningState::Paused) {
-            self.set_state_async(state);
-        }
+        self.request_transport(Transport::Paused);
     }
 
     fn go_to_stopped_state(&mut self, null: Option<oneshot::Sender<()>>) {
-        self.desired_transport = RunningState::Playing;
+        self.desired_transport = Transport::Playing;
         // A full teardown either way (pipeline down, inputs and the per-load
         // audio sink removed), so a Stop releases the item's network/audio
         // resources NOW rather than at the next load. Queued on the worker,
@@ -1418,7 +1569,7 @@ impl Player {
             }
             None => {
                 // Don't raise an already shut-down pipeline back to READY.
-                if self.state_machine.current_state != gst::State::Null {
+                if !self.shut_down {
                     self.fcast.stop();
                     // The picture goes with the item, or it shows again when
                     // the next load brings the video view up ahead of its
@@ -1435,9 +1586,9 @@ impl Player {
 
         // Unconditional: even when the pipeline needed no state change (a
         // stop landing mid-load, with the pipeline still at READY), the
-        // machine and the per-item state must reset or the aborted load's
+        // mirror and the per-item state must reset or the aborted load's
         // leftovers leak into the next one.
-        self.state_machine.clear_state();
+        self.mirror = TransportMirror::STOPPED;
         self.clear_state();
     }
 
@@ -1632,44 +1783,24 @@ impl Player {
         // transport the user last asked for: Playing unless a pause landed
         // while the load was in flight. This is the ONE post-load transport
         // driver. A load whose user already paused never blips through
-        // Playing at all.
-        let desired = self.desired_transport;
-        if let Some(state) = self.state_machine.set_playback_state(desired) {
-            self.set_state_async(state);
-        } else if self.state_machine.running() != Some(desired) {
-            // The machine could not act on it, typically because the load's
-            // preroll has not settled yet (Loaded arrives when the load job
-            // returns, before the async climb finishes). Drive the pipeline
-            // directly; the machine follows the state edges as always.
-            self.set_state_async(desired.into());
-        }
+        // Playing at all. flapjack takes it mid-preroll and ends the load's
+        // climb there.
+        self.mirror.loading = false;
+        self.commit_transport(self.desired_transport);
     }
 
-    /// Returns `true` if buffering completed
+    /// One buffering report. flapjack holds the pipeline at PAUSED below 100
+    /// and comes back to the user's transport at 100 by itself, so nothing
+    /// is asked of it here. Answers whether this report ended a hold.
     pub fn buffering(&mut self, percent: i32) -> bool {
-        let res = match self.state_machine.buffering(percent) {
-            BufferingStateResult::Started => {
-                // Buffering holds the pipeline at PAUSED until it completes.
-                self.set_state_async(gst::State::Paused);
-                false
-            }
-            BufferingStateResult::Buffering => false,
-            BufferingStateResult::FinishedWithSeek(seek) => {
-                debug!("Buffering finished, dispatching seek");
-                self.fcast.seek(seek, self.fcast.allocate_op());
-                true
-            }
-            BufferingStateResult::Finished(state) => {
-                debug!("Buffering finished");
-                if let Some(state) = state {
-                    self.set_state_async(state);
-                }
-                true
-            }
-        };
+        let was_holding = std::mem::replace(&mut self.mirror.holding, percent < 100);
+        let res = was_holding && percent >= 100;
+        if res {
+            debug!("Buffering finished");
+        }
 
         // Buffering completion can settle the pipeline, dispatch queued track
-        // work (no-op while still buffering: the machine is not `Running`).
+        // work (no-op while still buffering: the transport is not at rest).
         self.pump_selection();
 
         res
@@ -1714,12 +1845,10 @@ impl Player {
         sid
     }
 
-    pub fn state_changed(
-        &mut self,
-        old: gst::State,
-        new: gst::State,
-        pending: gst::State,
-    ) -> Option<PlaybackState> {
+    /// A raw pipeline state edge. What the transport settled on is not read
+    /// off these any more, it arrives as `PlaybackChanged` from the one
+    /// machine that reads them, flapjack's.
+    pub fn state_changed(&mut self) {
         // A state change is the settle event for the crate's text link
         // policy: parked text may join its renderer only once the
         // pipeline is SETTLED >= PAUSED, and this callback fires exactly
@@ -1734,28 +1863,40 @@ impl Player {
         // and its reconfigure runs outside steady PLAYING (a parked
         // video-disable dispatched at the commit once wedged the pipeline
         // for good). The application pumps at the END of the cascade
-        // instead, when the seek, if any, already owns the state machine.
-        match self.state_machine.state_changed(old, new, pending) {
-            // Map the backend-native playback state onto the FCast wire enum
-            // (flapjack is protocol-agnostic, this is the only seam).
-            StateChangeResult::NewPlaybackState(new_state) => {
-                use flapjack::state_machine::PlaybackState as SmState;
-                Some(match new_state {
-                    SmState::Idle => PlaybackState::Idle,
-                    SmState::Paused => PlaybackState::Paused,
-                    SmState::Playing => PlaybackState::Playing,
-                })
-            }
-            StateChangeResult::Seek(seek) => {
-                self.fcast.seek(seek, self.fcast.allocate_op());
-                None
-            }
-            StateChangeResult::Waiting => None,
-            StateChangeResult::ChangeState(state) => {
-                self.set_state_async(state);
-                None
-            }
-        }
+        // instead, when the seek, if any, already owns the transport.
+    }
+
+    /// flapjack's transport settled on `state`, or answered the play or
+    /// pause `op` names. Answers the state to show where that moved it.
+    pub fn playback_changed(
+        &mut self,
+        state: flapjack::PlaybackState,
+        op: Option<flapjack::OpId>,
+    ) -> Option<PlayerState> {
+        self.mirrored(|mirror| {
+            mirror.settled = state;
+            mirror.answered(op);
+        })
+    }
+
+    /// The seek `op` names has prerolled again. Answers as
+    /// [`Self::playback_changed`].
+    pub fn seek_settled(&mut self, op: Option<flapjack::OpId>) -> Option<PlayerState> {
+        self.mirrored(|mirror| mirror.answered(op))
+    }
+
+    /// The request `op` names was discarded before it acted. Answers as
+    /// [`Self::playback_changed`].
+    pub fn superseded(&mut self, op: Option<flapjack::OpId>) -> Option<PlayerState> {
+        self.mirrored(|mirror| mirror.answered(op))
+    }
+
+    /// Apply one event to the mirror and say what it did to the state shown.
+    fn mirrored(&mut self, apply: impl FnOnce(&mut TransportMirror)) -> Option<PlayerState> {
+        let before = self.mirror.state();
+        apply(&mut self.mirror);
+        let after = self.mirror.state();
+        (after != before).then_some(after)
     }
 
     pub fn have_media_info(&self) -> bool {
@@ -1805,17 +1946,7 @@ impl Player {
     }
 
     pub fn player_state(&self) -> PlayerState {
-        if self.state_machine.is_stopped() {
-            return PlayerState::Stopped;
-        }
-        match self.state_machine.running() {
-            Some(RunningState::Paused) => PlayerState::Paused,
-            Some(RunningState::Playing) => PlayerState::Playing,
-            // The wire protocol has no loading/seeking state. Buffering is
-            // the honest "not rendering, working on it" for everything in
-            // transition.
-            None => PlayerState::Buffering,
-        }
+        self.mirror.state()
     }
 
     /// The player state projected onto the v3 wire enum (Idle/Playing/Paused,
@@ -1827,29 +1958,29 @@ impl Player {
     }
 
     pub fn is_live(&self) -> bool {
-        self.state_machine.is_live
+        self.is_live
     }
 
     pub fn set_is_live(&mut self, live: bool) {
-        self.state_machine.is_live = live;
+        self.is_live = live;
     }
 
     pub fn rate(&self) -> f64 {
-        self.state_machine.rate.get()
+        self.rate.get()
     }
 
+    /// The seek `op` names did not reach the pipeline. flapjack puts the
+    /// transport back where the user had it. Answers as
+    /// [`Self::playback_changed`].
     #[instrument(skip_all)]
-    pub fn seek_failed(&mut self) {
-        if let Some(target_state) = self.state_machine.seek_failed() {
-            debug!(?target_state);
-            self.set_state_async(target_state);
-        }
+    pub fn seek_failed(&mut self, op: Option<flapjack::OpId>) -> Option<PlayerState> {
+        self.mirrored(|mirror| mirror.answered(op))
     }
 
     pub fn set_rate_changed(&mut self, rate: f64) {
         // a reported rate is one the crate accepted
         if let Some(rate) = flapjack::PlaybackRate::new(rate) {
-            self.state_machine.rate = rate;
+            self.rate = rate;
         }
     }
 }
@@ -1977,6 +2108,18 @@ mod tests {
                     PlayerEvent::Buffering(percent) => {
                         player.buffering(percent);
                     }
+                    PlayerEvent::PlaybackChanged { state, op } => {
+                        player.playback_changed(state, op);
+                    }
+                    PlayerEvent::SeekSettled { op } => {
+                        player.seek_settled(op);
+                    }
+                    PlayerEvent::Superseded { op } => {
+                        player.superseded(op);
+                    }
+                    PlayerEvent::SeekFailed { op } => {
+                        player.seek_failed(op);
+                    }
                     _ => {}
                 }
             }
@@ -1984,7 +2127,10 @@ mod tests {
             // A cue is on screen when the engine has an overlay for now. Edges
             // are counted, not polls: one cue held across many ticks is one
             // cue.
-            let now_overlay = !engine.current_overlays().is_empty();
+            // Headless nothing shows a frame, so the schedule is driven from
+            // the position here. `current_overlays` reads the last SHOWN
+            // running time and stays empty without a consumer.
+            let now_overlay = !engine.overlays_for(player.get_position()).is_empty();
             if now_overlay && !had_overlay {
                 overlays_seen += 1;
             }
@@ -2084,6 +2230,18 @@ mod tests {
                     PlayerEvent::RequestState(state) => player.request_state(state),
                     PlayerEvent::Buffering(percent) => {
                         player.buffering(percent);
+                    }
+                    PlayerEvent::PlaybackChanged { state, op } => {
+                        player.playback_changed(state, op);
+                    }
+                    PlayerEvent::SeekSettled { op } => {
+                        player.seek_settled(op);
+                    }
+                    PlayerEvent::Superseded { op } => {
+                        player.superseded(op);
+                    }
+                    PlayerEvent::SeekFailed { op } => {
+                        player.seek_failed(op);
                     }
                     _ => {}
                 }
@@ -2682,33 +2840,271 @@ mod tests {
         );
     }
 
+    /// The receiver's player over a real pipeline, shown what flapjack does
+    /// by its events alone: a load that plays, a rebuffer flapjack holds and
+    /// ends by itself, a seek, a pause and a play. The receiver asks for a
+    /// transport once at the load and once per user request, and reads the
+    /// rest. With its own state machine beside flapjack's the rebuffer could
+    /// end with both at PAUSED and nobody asking for more.
+    #[test]
+    fn the_player_follows_flapjack_through_a_load_a_rebuffer_a_seek_and_a_pause() {
+        use simulator::{
+            scenario::ScenarioBuilder,
+            spec::{BufferingDip, BufferingRecovery, BufferingSpec, Pacing, StreamSpec},
+        };
+
+        crate::gstreamer::init_for_tests();
+        static INIT: std::sync::Once = std::sync::Once::new();
+        INIT.call_once(|| {
+            simulator::register_for_tests();
+            flapjack::audiostretch::plugin_init().expect("registering audiostretch");
+        });
+
+        // Video alone, so no audio device is asked for. One rebuffer about
+        // two seconds in, over in 600 ms.
+        let scenario = ScenarioBuilder::new("receiver_follows_flapjack")
+            .stream(StreamSpec::video("video_0").with_pacing(Pacing::Realtime))
+            .duration(gst::ClockTime::from_seconds(60))
+            .buffering(BufferingSpec::new(20).with_dip(BufferingDip {
+                stream: "video_0".to_owned(),
+                buffer_index: 50,
+                recovery: BufferingRecovery::AfterMs(600),
+            }))
+            .register();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut player = Player::new(
+            Some(headless_video_sink().upcast()),
+            None,
+            MessageSender::new(tx),
+            crate::fcompsrc::imp::CompContext(crate::fcast::CompanionContext::new()),
+        )
+        .expect("building the player");
+
+        // Every state the player showed, in order, with repeats folded.
+        let mut shown = vec![player.player_state()];
+        assert_eq!(shown, [PlayerState::Stopped]);
+        let mut holds = 0usize;
+        // The application's dispatch, as far as the transport goes.
+        let mut pump = |player: &mut Player, shown: &mut Vec<PlayerState>, holds: &mut usize| {
+            while let Ok(msg) = rx.try_recv() {
+                let crate::message::Message::NewPlayerEvent { event, .. } = msg else {
+                    continue;
+                };
+                match event {
+                    PlayerEvent::UriLoaded => player.uri_loaded(),
+                    PlayerEvent::RequestState(state) => player.request_state(state),
+                    PlayerEvent::StateChanged { .. } => player.state_changed(),
+                    PlayerEvent::Buffering(percent) => {
+                        if percent < 100 {
+                            *holds += 1;
+                        }
+                        player.buffering(percent);
+                    }
+                    PlayerEvent::PlaybackChanged { state, op } => {
+                        player.playback_changed(state, op);
+                    }
+                    PlayerEvent::SeekSettled { op } => {
+                        player.seek_settled(op);
+                    }
+                    PlayerEvent::Superseded { op } => {
+                        player.superseded(op);
+                    }
+                    PlayerEvent::SeekFailed { op } => {
+                        player.seek_failed(op);
+                    }
+                    PlayerEvent::Error { message, .. } => panic!("pipeline error: {message}"),
+                    _ => {}
+                }
+                let state = player.player_state();
+                if shown.last() != Some(&state) {
+                    shown.push(state);
+                }
+            }
+            player.poll_track_ops();
+        };
+        macro_rules! wait_for {
+            ($what:expr, $done:expr) => {{
+                let deadline = Instant::now() + Duration::from_secs(30);
+                loop {
+                    pump(&mut player, &mut shown, &mut holds);
+                    if $done {
+                        break;
+                    }
+                    assert!(
+                        Instant::now() < deadline,
+                        "timed out waiting for {}; shown {shown:?}, flapjack at {:?}, position {:?}",
+                        $what,
+                        player.fcast.playback_state(),
+                        player.get_position()
+                    );
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+            }};
+        }
+
+        // The load plays by itself, and shows nothing but the wait on its way.
+        player.load(MediaInput::uri(scenario.uri()), None);
+        wait_for!("the load to play", player.player_state() == PlayerState::Playing);
+        assert_eq!(
+            shown,
+            [PlayerState::Stopped, PlayerState::Buffering, PlayerState::Playing],
+            "a load showed more than its wait"
+        );
+
+        // The rebuffer. flapjack holds the pipeline and lets it go again,
+        // and the player shows both with nothing asked of flapjack.
+        wait_for!("the rebuffer to begin", holds > 0);
+        assert_eq!(player.player_state(), PlayerState::Buffering);
+        wait_for!("the rebuffer to end", player.player_state() == PlayerState::Playing);
+        wait_for!(
+            "flapjack to be playing behind the rebuffer",
+            player.fcast.playback_state() == flapjack::PlaybackState::Playing
+                && player.fcast.is_settled()
+        );
+        let before = player.get_position().expect("a position while playing");
+        std::thread::sleep(Duration::from_millis(400));
+        let after = player.get_position().expect("a position while playing");
+        assert!(
+            after > before,
+            "the playhead stood at {before} behind the rebuffer, so nothing came back to Playing"
+        );
+
+        // A seek, answered by its own op.
+        let target = gst::ClockTime::from_seconds(20);
+        player.seek(target);
+        assert!(player.is_seeking());
+        assert_eq!(player.player_state(), PlayerState::Buffering);
+        wait_for!("the seek to settle", !player.is_seeking());
+        wait_for!("the seek to play on", player.player_state() == PlayerState::Playing);
+        assert!(player.get_position().is_some_and(|position| position >= target));
+
+        // A pause and a play, each answered where the transport settles.
+        player.pause();
+        wait_for!("the pause", player.player_state() == PlayerState::Paused);
+        assert_eq!(player.fcast.playback_state(), flapjack::PlaybackState::Paused);
+        // Asked for again, it is where it rests and nothing goes out.
+        player.pause();
+        assert_eq!(player.player_state(), PlayerState::Paused);
+        player.play();
+        wait_for!("the play", player.player_state() == PlayerState::Playing);
+
+        player.stop();
+        assert_eq!(player.player_state(), PlayerState::Stopped);
+        scenario.unregister();
+    }
+
+    /// A mirror stepped by hand, ops as plain numbers.
+    type Mirror = TransportMirror<u32>;
+
+    fn playing() -> Mirror {
+        Mirror {
+            loaded: true,
+            loading: false,
+            settled: flapjack::PlaybackState::Playing,
+            ..Mirror::STOPPED
+        }
+    }
+
+    /// The class this replaced the receiver's own state machine for. A
+    /// rebuffer is flapjack's to hold and to end: the mirror shows it and
+    /// comes back to where the transport was with nothing asked of flapjack,
+    /// where the receiver's pause for the hold was taken for the user's and
+    /// both machines ended at PAUSED.
+    #[test]
+    fn a_rebuffer_is_shown_and_ends_where_it_began() {
+        let mut mirror = playing();
+        assert_eq!(mirror.state(), PlayerState::Playing);
+        mirror.holding = true;
+        assert_eq!(mirror.state(), PlayerState::Buffering);
+        assert_eq!(mirror.running(), None);
+        // No settle event comes for a rebuffer, it ends where it began.
+        mirror.holding = false;
+        assert_eq!(mirror.state(), PlayerState::Playing);
+        assert_eq!(mirror.running(), Some(Transport::Playing));
+    }
+
+    #[test]
+    fn a_load_shows_buffering_until_its_transport_is_answered() {
+        let mut mirror = Mirror::LOADING;
+        assert_eq!(mirror.state(), PlayerState::Buffering);
+        // The preroll's settle at PAUSED, ahead of `Loaded` or behind it.
+        mirror.settled = flapjack::PlaybackState::Paused;
+        assert_eq!(mirror.state(), PlayerState::Buffering, "a load blipped through Paused");
+        // `Loaded`, and the play it commits.
+        mirror.loading = false;
+        mirror.transport = Some(1);
+        assert_eq!(mirror.state(), PlayerState::Buffering);
+        mirror.settled = flapjack::PlaybackState::Playing;
+        mirror.answered(Some(1));
+        assert_eq!(mirror.state(), PlayerState::Playing);
+    }
+
+    #[test]
+    fn only_the_newest_requests_answer_ends_the_wait() {
+        let mut mirror = playing();
+        // Two seeks, the second replaces the first.
+        mirror.seek = Some(4);
+        mirror.seek = Some(5);
+        assert_eq!(mirror.state(), PlayerState::Buffering);
+        // The first is answered superseded, which names an op nothing waits on.
+        mirror.answered(Some(4));
+        assert_eq!(mirror.state(), PlayerState::Buffering);
+        // A seek flapjack sent for itself answers under no op.
+        mirror.answered(None);
+        assert_eq!(mirror.state(), PlayerState::Buffering);
+        mirror.answered(Some(5));
+        assert_eq!(mirror.state(), PlayerState::Playing);
+
+        // A pause behind it, answered where the transport settles.
+        mirror.transport = Some(6);
+        assert_eq!(mirror.state(), PlayerState::Buffering);
+        mirror.settled = flapjack::PlaybackState::Paused;
+        mirror.answered(Some(6));
+        assert_eq!(mirror.state(), PlayerState::Paused);
+    }
+
+    #[test]
+    fn a_stop_and_a_load_owe_the_last_item_nothing() {
+        // A stop. The answers still on their way find nothing waiting.
+        let mut mirror = Mirror::STOPPED;
+        assert_eq!(mirror.state(), PlayerState::Stopped);
+        mirror.answered(Some(7));
+        mirror.settled = flapjack::PlaybackState::Playing;
+        assert_eq!(mirror.state(), PlayerState::Stopped, "a straggler revived a stopped player");
+        // And a load starts from nothing.
+        mirror = Mirror::LOADING;
+        assert!(mirror.seek.is_none() && mirror.transport.is_none() && !mirror.holding);
+        assert_eq!(mirror.state(), PlayerState::Buffering);
+    }
+
     #[test]
     fn buffering_projects_onto_the_resuming_transport_not_idle() {
-        // Regression: a gapless switch / rebuffer briefly leaves the state
-        // machine in a transient (running() == None -> Buffering). The v3
+        // Regression: a gapless switch / rebuffer briefly leaves the
+        // transport in a transient (nothing settled -> Buffering). The v3
         // wire enum has no Buffering, and the old mapping collapsed it to
         // Idle, broadcasting "playback ended" mid-handoff (senders then
         // advanced or stopped the queue). Buffering must project onto the
         // transport being resumed instead.
         assert_eq!(
-            project_wire_state(PlayerState::Buffering, RunningState::Playing),
+            project_wire_state(PlayerState::Buffering, Transport::Playing),
             PlaybackState::Playing,
         );
         assert_eq!(
-            project_wire_state(PlayerState::Buffering, RunningState::Paused),
+            project_wire_state(PlayerState::Buffering, Transport::Paused),
             PlaybackState::Paused,
         );
         // Steady states pass straight through; a genuine stop is still Idle.
         assert_eq!(
-            project_wire_state(PlayerState::Playing, RunningState::Playing),
+            project_wire_state(PlayerState::Playing, Transport::Playing),
             PlaybackState::Playing,
         );
         assert_eq!(
-            project_wire_state(PlayerState::Paused, RunningState::Paused),
+            project_wire_state(PlayerState::Paused, Transport::Paused),
             PlaybackState::Paused,
         );
         assert_eq!(
-            project_wire_state(PlayerState::Stopped, RunningState::Playing),
+            project_wire_state(PlayerState::Stopped, Transport::Playing),
             PlaybackState::Idle,
         );
     }
@@ -2743,7 +3139,45 @@ mod tests {
             title: None,
             codec: None,
             caps: None,
+            default: false,
         }
+    }
+
+    fn default_stream(id: u32, slot: flapjack::TrackSlot) -> flapjack::StreamInfo {
+        flapjack::StreamInfo {
+            default: true,
+            ..stream(id, slot)
+        }
+    }
+
+    #[test]
+    fn a_slot_is_seeded_with_the_medias_default_and_not_the_first_listed() {
+        use flapjack::TrackSlot as Slot;
+        let sid = |id: u32| Some(sid_out(flapjack::StreamId::from_raw(id)));
+        let streams = merge_streams_stable(
+            Vec::new(),
+            &[
+                default_stream(0, Slot::Video),
+                stream(1, Slot::Audio),
+                default_stream(2, Slot::Audio),
+                stream(3, Slot::Subtitle),
+                default_stream(4, Slot::Subtitle),
+            ],
+        );
+        assert_eq!(carried_or_default(None, &streams, Slot::Video), sid(0));
+        assert_eq!(carried_or_default(None, &streams, Slot::Audio), sid(2));
+        assert_eq!(carried_or_default(None, &streams, Slot::Subtitle), sid(4));
+        // A selection whose stream is still advertised is carried.
+        assert_eq!(carried_or_default(sid(3), &streams, Slot::Subtitle), sid(3));
+        // One whose stream left falls back to the default.
+        assert_eq!(carried_or_default(sid(9), &streams, Slot::Subtitle), sid(4));
+
+        // A subtitle slot the media asks nothing for stays empty.
+        let opt_in = merge_streams_stable(
+            Vec::new(),
+            &[default_stream(0, Slot::Audio), stream(1, Slot::Subtitle)],
+        );
+        assert_eq!(carried_or_default(None, &opt_in, Slot::Subtitle), None);
     }
 
     fn ids(streams: &[Stream]) -> Vec<u32> {

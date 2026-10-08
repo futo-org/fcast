@@ -5008,6 +5008,12 @@ impl Application {
                 | player::PlayerEvent::RequestState(_)
                 | player::PlayerEvent::ClockLost
                 | player::PlayerEvent::StreamTagsUpdated
+                // The answers to the receiver's own requests, matched by the op
+                // they name. One for a request the last item took with it
+                // names an op nothing waits on.
+                | player::PlayerEvent::SeekFailed { .. }
+                | player::PlayerEvent::SeekSettled { .. }
+                | player::PlayerEvent::Superseded { .. }
                 // Carry the PREPARED (future) generation and are validated against the
                 // pre-arm bookkeeping, not against the current load.
                 | player::PlayerEvent::GaplessActivated
@@ -5017,14 +5023,37 @@ impl Application {
     }
 
     /// Whether an event describes the pipeline rather than the item playing
-    /// out of it. Both transport edges are pipeline-wide, and there is exactly
-    /// one pipeline across a gapless boundary, so the pending pre-arm's
-    /// generation on them is a future ATTRIBUTION, not a future event.
+    /// out of it. Both transport edges and the transport's settled state are
+    /// pipeline-wide, and there is exactly one pipeline across a gapless
+    /// boundary, so the pending pre-arm's generation on them is a future
+    /// ATTRIBUTION, not a future event.
     fn player_event_is_pipeline_scoped(event: &player::PlayerEvent) -> bool {
         matches!(
             event,
-            player::PlayerEvent::StateChanged { .. } | player::PlayerEvent::AsyncDone
+            player::PlayerEvent::StateChanged { .. }
+                | player::PlayerEvent::AsyncDone
+                | player::PlayerEvent::PlaybackChanged { .. }
         )
+    }
+
+    /// The state the player shows moved to `state`: tell the senders and the
+    /// GUI. Driven by flapjack's settle and answer events, where it used to
+    /// be read off the raw state edges.
+    fn player_state_moved(&mut self, state: PlayerState) -> Result<()> {
+        // The item ended with a sender still on, which released
+        // playback and set the activity's leave going, and is
+        // now played again (a scrub back and play). Active again
+        // cancels the leave, or brings a window that left back.
+        #[cfg(target_os = "android")]
+        if state == PlayerState::Playing && self.current_media.is_some() && !self.android_playback.0
+        {
+            self.set_playback_active(true);
+        }
+        self.notify_updates(true)?;
+        self.playback_state_changed(state.as_fcast_v4());
+        #[cfg(feature = "google-cast")]
+        self.gcast_tx.send(gcast::StatusUpdate::PlayerState(state));
+        Ok(())
     }
 
     fn handle_player_event(
@@ -5291,9 +5320,12 @@ impl Application {
             }
             player::PlayerEvent::Buffering(percent) => {
                 if self.player.buffering(percent) {
-                    self.notify_updates(true)?;
-                    self.playback_state_changed(fcast_protocol::v4::PlaybackState::Buffering);
-                } else if self.player.have_media_info() && !self.image_via_player {
+                    // The hold is over and flapjack is on its way back to the
+                    // user's transport with no event of its own for it, a
+                    // rebuffer ends where it began.
+                    self.player_state_moved(self.player.player_state())?;
+                } else if percent < 100 && self.player.have_media_info() && !self.image_via_player
+                {
                     // a stall posts no state edge until it ends, so the GUI
                     // hears of it here
                     self.gui.set_playback_state(GuiPlaybackState::Buffering);
@@ -5308,27 +5340,7 @@ impl Application {
                 current,
                 pending,
             } => {
-                if self.player.state_changed(old, current, pending).is_some() {
-                    // The item ended with a sender still on, which released
-                    // playback and set the activity's leave going, and is
-                    // now played again (a scrub back and play). Active again
-                    // cancels the leave, or brings a window that left back.
-                    #[cfg(target_os = "android")]
-                    if self.player.player_state() == PlayerState::Playing
-                        && self.current_media.is_some()
-                        && !self.android_playback.0
-                    {
-                        self.set_playback_active(true);
-                    }
-                    self.notify_updates(true)?;
-                    let v4_state = match self.player.player_state() {
-                        PlayerState::Paused => fcast_protocol::v4::PlaybackState::Paused,
-                        PlayerState::Playing => fcast_protocol::v4::PlaybackState::Playing,
-                        PlayerState::Buffering => fcast_protocol::v4::PlaybackState::Buffering,
-                        PlayerState::Stopped => fcast_protocol::v4::PlaybackState::Idle,
-                    };
-                    self.playback_state_changed(v4_state);
-                }
+                self.player.state_changed();
 
                 let first_paused = old == gst::State::Ready
                     && current == gst::State::Paused
@@ -5407,8 +5419,28 @@ impl Application {
                     self.video_stream_unavailable();
                 }
             }
-            player::PlayerEvent::SeekFailed { .. } => {
-                self.player.seek_failed();
+            // What flapjack's transport settled on, and the one answer each
+            // of the receiver's requests gets. The player keeps the state to
+            // show from these and says when one moved it.
+            player::PlayerEvent::PlaybackChanged { state, op } => {
+                if let Some(state) = self.player.playback_changed(state, op) {
+                    self.player_state_moved(state)?;
+                }
+            }
+            player::PlayerEvent::SeekSettled { op } => {
+                if let Some(state) = self.player.seek_settled(op) {
+                    self.player_state_moved(state)?;
+                }
+            }
+            player::PlayerEvent::Superseded { op } => {
+                if let Some(state) = self.player.superseded(op) {
+                    self.player_state_moved(state)?;
+                }
+            }
+            player::PlayerEvent::SeekFailed { op } => {
+                if let Some(state) = self.player.seek_failed(op) {
+                    self.player_state_moved(state)?;
+                }
             }
             player::PlayerEvent::ClockLost => {
                 // a report only, flapjack re-elects the clock itself
@@ -7780,11 +7812,18 @@ mod tests {
         assert_eq!(stale_event_action(7, None, true), StaleEventAction::Drop);
     }
 
-    /// Only the two transport edges describe the pipeline instead of the item.
+    /// Only the two transport edges and the transport's settled state describe
+    /// the pipeline instead of the item.
     #[test]
     fn only_transport_edges_are_pipeline_scoped() {
         assert!(Application::player_event_is_pipeline_scoped(
             &player::PlayerEvent::AsyncDone
+        ));
+        assert!(Application::player_event_is_pipeline_scoped(
+            &player::PlayerEvent::PlaybackChanged {
+                state: flapjack::PlaybackState::Paused,
+                op: None,
+            }
         ));
         assert!(Application::player_event_is_pipeline_scoped(
             &player::PlayerEvent::StateChanged {
