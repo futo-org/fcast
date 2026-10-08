@@ -5263,6 +5263,16 @@ impl Application {
                     }
                 }
 
+                // A video item loads as audio until its selection is confirmed
+                // at preroll, which showed the audio view for a third of a
+                // second. The collection's seeded video pick is known now, the
+                // confirmation corrects it if no video gets selected.
+                if self.shown_variant == UiPlayerVariant::Audio
+                    && self.player.current_video_sid().is_some()
+                {
+                    self.video_stream_available()?;
+                }
+
                 self.transition_app_state(AppState::Playing);
                 if self.image_via_player {
                     // it never ticks, v1-v3 senders hear of it once
