@@ -44,7 +44,7 @@ const GSTREAMER_BASE_LIBS: [&'static str; 20] = [
 ];
 
 #[cfg(target_os = "windows")]
-const GSTREAMER_WIN_DEPENDENCY_LIBS: [&'static str; 15] = [
+const GSTREAMER_WIN_DEPENDENCY_LIBS: [&'static str; 16] = [
     "bz2.dll",
     "ffi-7.dll",
     "gio-2.0-0.dll",
@@ -60,6 +60,8 @@ const GSTREAMER_WIN_DEPENDENCY_LIBS: [&'static str; 15] = [
     "pcre2-8-0.dll",
     "z-1.dll",
     "srtp2-1.dll",
+    // opusenc, for system audio
+    "opus-0.dll",
 ];
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -79,8 +81,25 @@ const GSTREAMER_PLUGIN_LIBS_COMMON: [&'static str; 13] = [
     "gstvideotestsrc",
 ];
 
+// System audio: WASAPI loopback capture (wasapi2 preferred; wasapi as the
+// fallback, also for Windows N where 1.26's gstwasapi2.dll cannot load
+// without mfplat), conversion to the fixed 48 kHz stereo webrtcsink gets,
+// opusenc. rtpopuspay is in gstrtp above.
+//
+// Note: this bundle only matters for a dynamically linked sender. The static
+// build (gstreamer-src, the default since 2026-08) registers its plugins in
+// gst_init and disables the registry, so nothing next to the exe is scanned;
+// wasapi2 for that build is enabled in gstreamer-src's gst-build-config.
 #[cfg(target_os = "windows")]
-const GSTREAMER_PLUGIN_LIBS_WIN: [&'static str; 2] = ["gstd3d11", "gstd3d12"];
+const GSTREAMER_PLUGIN_LIBS_WIN: [&'static str; 7] = [
+    "gstd3d11",
+    "gstd3d12",
+    "gstwasapi2",
+    "gstwasapi",
+    "gstaudioconvert",
+    "gstaudioresample",
+    "gstopus",
+];
 
 #[cfg(target_os = "macos")]
 const GSTREAMER_PLUGIN_LIBS_MACOS: [&'static str; 1] = ["gstapplemedia"];
