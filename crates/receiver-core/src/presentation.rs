@@ -7,8 +7,12 @@ use std::time::{Duration, Instant};
 
 use crate::ui_types::{AppState, UiPlayerVariant};
 
-/// How long an ended or stopped item stays up before the idle screen.
-pub const END_HOLD: Duration = Duration::from_secs(1);
+/// How long an ended or stopped item stays up before the idle screen, long
+/// enough for a sender's stop then load. Only the content changes after it.
+pub const END_HOLD: Duration = Duration::from_millis(250);
+/// The hold when the window hides or leaves fullscreen after it, where a next
+/// item arriving late would bring the window back.
+pub const RESTORE_HOLD: Duration = Duration::from_secs(1);
 /// Bound on a hold the activity extended while it goes to the back, in case
 /// the hidden edge never comes.
 #[cfg_attr(not(target_os = "android"), allow(dead_code))]
@@ -45,9 +49,22 @@ pub struct Presentation {
 
 impl Presentation {
     /// An item ended or stopped. Returns the reset to apply now, which is
-    /// at once when nobody can see the screen.
-    pub fn end(&mut self, now: Instant, reset: IdleReset, ui_visible: bool) -> Option<IdleReset> {
-        let hold = if self.leaving { LEAVE_HOLD } else { END_HOLD };
+    /// at once when nobody can see the screen. `window_changes` when the
+    /// reset hides the window or leaves fullscreen.
+    pub fn end(
+        &mut self,
+        now: Instant,
+        reset: IdleReset,
+        ui_visible: bool,
+        window_changes: bool,
+    ) -> Option<IdleReset> {
+        let hold = if self.leaving {
+            LEAVE_HOLD
+        } else if window_changes {
+            RESTORE_HOLD
+        } else {
+            END_HOLD
+        };
         let (at, reset) = match self.hold {
             Hold::Off => (now + hold, reset),
             Hold::Until { at, reset: held } => (at.max(now + hold), held.merge(reset)),
@@ -137,7 +154,7 @@ mod tests {
     fn an_end_holds_then_resets_at_the_deadline() {
         let t0 = Instant::now();
         let mut p = Presentation::default();
-        assert_eq!(p.end(t0, KEEP, true), None);
+        assert_eq!(p.end(t0, KEEP, true, false), None);
         assert_eq!(p.deadline(), Some(t0 + END_HOLD));
         assert_eq!(p.poll(t0 + END_HOLD / 2), None, "early wake");
         assert_eq!(p.poll(t0 + END_HOLD), Some(KEEP));
@@ -146,10 +163,29 @@ mod tests {
     }
 
     #[test]
+    fn a_window_that_changes_holds_longer() {
+        let t0 = Instant::now();
+        let mut p = Presentation::default();
+        assert_eq!(p.end(t0, KEEP, true, true), None);
+        assert_eq!(p.deadline(), Some(t0 + RESTORE_HOLD));
+        assert_eq!(p.poll(t0 + END_HOLD), None, "the short hold does not apply");
+        assert_eq!(p.poll(t0 + RESTORE_HOLD), Some(KEEP));
+    }
+
+    #[test]
+    fn a_short_end_after_a_long_one_never_shortens() {
+        let t0 = Instant::now();
+        let mut p = Presentation::default();
+        p.end(t0, KEEP, true, true);
+        p.end(t0, CLEAR, true, false);
+        assert_eq!(p.deadline(), Some(t0 + RESTORE_HOLD));
+    }
+
+    #[test]
     fn a_hidden_ui_resets_at_once() {
         let t0 = Instant::now();
         let mut p = Presentation::default();
-        assert_eq!(p.end(t0, CLEAR, false), Some(CLEAR));
+        assert_eq!(p.end(t0, CLEAR, false, false), Some(CLEAR));
         assert_eq!(p.deadline(), None);
     }
 
@@ -157,7 +193,7 @@ mod tests {
     fn a_load_during_the_hold_takes_the_reset_over() {
         let t0 = Instant::now();
         let mut p = Presentation::default();
-        p.end(t0, CLEAR, true);
+        p.end(t0, CLEAR, true, false);
         assert_eq!(p.take(), Some(CLEAR), "the load applies what it must");
         assert_eq!(p.poll(t0 + END_HOLD), None, "and the timer finds nothing");
     }
@@ -166,9 +202,9 @@ mod tests {
     fn a_stop_after_an_end_merges_and_never_shortens() {
         let t0 = Instant::now();
         let mut p = Presentation::default();
-        p.end(t0, KEEP, true);
+        p.end(t0, KEEP, true, false);
         let t1 = t0 + END_HOLD / 2;
-        assert_eq!(p.end(t1, CLEAR, true), None);
+        assert_eq!(p.end(t1, CLEAR, true, false), None);
         assert_eq!(p.deadline(), Some(t1 + END_HOLD));
         assert_eq!(p.poll(t1 + END_HOLD), Some(CLEAR));
     }
@@ -178,7 +214,7 @@ mod tests {
         let t0 = Instant::now();
         let mut p = Presentation::default();
         assert_eq!(p.leaving(t0), None, "nothing held, nothing to extend");
-        p.end(t0, KEEP, true);
+        p.end(t0, KEEP, true, false);
         assert_eq!(p.leaving(t0), Some(t0 + LEAVE_HOLD));
         assert_eq!(p.poll(t0 + END_HOLD), None, "the plain hold no longer applies");
         assert_eq!(p.hidden(), Some(KEEP));
@@ -190,11 +226,11 @@ mod tests {
         let t0 = Instant::now();
         let mut p = Presentation::default();
         assert_eq!(p.leaving(t0), None);
-        assert_eq!(p.end(t0, CLEAR, true), None);
+        assert_eq!(p.end(t0, CLEAR, true, false), None);
         assert_eq!(p.deadline(), Some(t0 + LEAVE_HOLD));
         assert_eq!(p.hidden(), Some(CLEAR));
         // spent: the next end holds the plain time
-        p.end(t0, KEEP, true);
+        p.end(t0, KEEP, true, false);
         assert_eq!(p.deadline(), Some(t0 + END_HOLD));
     }
 
@@ -204,7 +240,7 @@ mod tests {
         let mut p = Presentation::default();
         p.leaving(t0);
         assert_eq!(p.take(), None);
-        p.end(t0, KEEP, true);
+        p.end(t0, KEEP, true, false);
         assert_eq!(p.deadline(), Some(t0 + END_HOLD));
     }
 
@@ -212,7 +248,7 @@ mod tests {
     fn leaving_is_bounded() {
         let t0 = Instant::now();
         let mut p = Presentation::default();
-        p.end(t0, KEEP, true);
+        p.end(t0, KEEP, true, false);
         p.leaving(t0);
         assert_eq!(p.poll(t0 + LEAVE_HOLD), Some(KEEP));
     }

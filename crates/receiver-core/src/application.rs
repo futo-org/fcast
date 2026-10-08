@@ -137,6 +137,12 @@ impl WindowRestore {
         self.fullscreen.get_or_insert(was);
     }
 
+    /// The restore hides the window or leaves fullscreen.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
+    fn changes(&self) -> bool {
+        self.visible == Some(false) || self.fullscreen == Some(false)
+    }
+
     /// The user hid the window mid-cast: a visible start is forgotten, so the
     /// end of the cast leaves the window where the user put it. A hidden
     /// start stays, hiding again is a no-op. Fullscreen is kept, the next
@@ -1886,7 +1892,8 @@ impl Application {
 
     /// The item is over (stop, end, error). What playback held is released
     /// now, the screen keeps the item for [`presentation::END_HOLD`] when
-    /// `hold` and someone can see it, so a next item replaces it directly.
+    /// `hold` and someone can see it, so a next item replaces it directly,
+    /// [`presentation::RESTORE_HOLD`] when the window goes away after it.
     fn end_presentation(&mut self, clear_playlist: bool, hold: bool) {
         #[cfg(target_os = "android")]
         self.android_cast_edge(AppState::Idle);
@@ -1895,7 +1902,16 @@ impl Application {
         self.gui.end_buffering();
         let reset = presentation::IdleReset { clear_playlist };
         let visible = hold && self.ui_visible();
-        match self.presentation.end(Instant::now(), reset, visible) {
+        // Android's activity says it leaves only after this, a short hold
+        // could run out first
+        #[cfg(target_os = "android")]
+        let window_changes = true;
+        #[cfg(not(target_os = "android"))]
+        let window_changes = self.window_restore.changes();
+        match self
+            .presentation
+            .end(Instant::now(), reset, visible, window_changes)
+        {
             Some(reset) => self.reset_to_idle(reset),
             None => self.arm_presentation_timer(),
         }
@@ -7712,6 +7728,28 @@ mod tests {
                 fullscreen: None,
             }
         );
+    }
+
+    /// Only a hide or a fullscreen exit at the end earns the long hold.
+    #[test]
+    fn the_restore_changes_the_window_only_when_playback_took_it_over() {
+        let mut restore = WindowRestore::default();
+        assert!(!restore.changes(), "nothing recorded");
+        restore.record_visible(true);
+        assert!(!restore.changes(), "already shown, windowed player");
+        restore.record_fullscreen(true);
+        assert!(!restore.changes(), "already fullscreen");
+
+        let mut restore = WindowRestore::default();
+        restore.record_visible(true);
+        restore.record_fullscreen(false);
+        assert!(restore.changes(), "leaves fullscreen");
+
+        let mut restore = WindowRestore::default();
+        restore.record_visible(false);
+        assert!(restore.changes(), "hides");
+        restore.shown_by_user();
+        assert!(!restore.changes(), "the user's show keeps it up");
     }
 
     /// The record's rule for a user hide or show mid-cast (the GUI plumbing
