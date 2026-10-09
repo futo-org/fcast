@@ -1189,9 +1189,19 @@ enum CompanionQueueItem {
 // so `crate::fcast::InternalMessage` and friends still resolve.
 pub use fcast_webrtc::{InternalMessage, MirroringOfferRx};
 
+/// What a v4 sender connecting mid-cast is sent to catch up, as the
+/// receiver stood at accept time.
 pub struct InitialV4State {
-    pub play_data: Arc<WrappedPlayMessage>,
+    /// The current item or queue as a `Load`, request headers left out.
+    pub load: v4::ConstructedMessage<'static>,
     pub playback_state: v4::PlaybackState,
+    /// Position and duration. Progress only ticks while playing, so a
+    /// paused item would never say where it is.
+    pub progress: Option<(gst::ClockTime, gst::ClockTime)>,
+    pub rate: f32,
+    /// `TracksAvailable` and the selection per kind, broadcasts the
+    /// newcomer was not there for.
+    pub tracks: Vec<v4::ConstructedMessage<'static>>,
 }
 
 /// What a v3 sender gets in `Initial`: the item a legacy sender cast, with
@@ -1497,15 +1507,22 @@ impl SessionDriver {
         let volume_msg = v4::MessageBuilder::new().volume_changed(self.seed.volume);
         self.send_bin_msg(Opcode::Flatbuf, &volume_msg).await?;
 
-        if let Some(initial) = self.seed.v4.take()
-            && let WrappedPlayMessage::V4(play_msg) = initial.play_data.as_ref()
-        {
-            let load = play_msg.borrow_dependent();
-            if let Some(load_msg) = v4::MessageBuilder::new().from_play_stripped(&load) {
-                self.send_bin_msg(Opcode::Flatbuf, &load_msg).await?;
-                let state_msg =
-                    v4::MessageBuilder::new().playback_state_changed(initial.playback_state);
-                self.send_bin_msg(Opcode::Flatbuf, &state_msg).await?;
+        if let Some(initial) = self.seed.v4.take() {
+            self.send_bin_msg(Opcode::Flatbuf, &initial.load).await?;
+            let state_msg =
+                v4::MessageBuilder::new().playback_state_changed(initial.playback_state);
+            self.send_bin_msg(Opcode::Flatbuf, &state_msg).await?;
+            if let Some((pos, dur)) = initial.progress {
+                self.send_v4_message(&V4Message::ProgressUpdated { pos, dur })
+                    .await?;
+            }
+            // a sender takes 1.0 until told otherwise
+            if initial.rate != 1.0 {
+                self.send_v4_message(&V4Message::PlaybackRateChanged(initial.rate))
+                    .await?;
+            }
+            for msg in &initial.tracks {
+                self.send_bin_msg(Opcode::Flatbuf, msg).await?;
             }
         }
 

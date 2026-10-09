@@ -243,6 +243,39 @@ struct QueueState {
     autoplay: bool,
 }
 
+/// One `ChangeTrack` per kind for the selected video, audio and subtitle
+/// tracks, the form a selection is relayed in.
+fn selected_track_msgs(ids: [Option<u32>; 3]) -> Vec<v4::ConstructedMessage<'static>> {
+    let [video_id, audio_id, subtitle_id] = ids;
+    vec![
+        v4::MessageBuilder::new().change_track(video_id, v4::flat::MediaTrackType::Video),
+        v4::MessageBuilder::new().change_track(audio_id, v4::flat::MediaTrackType::Audio),
+        v4::MessageBuilder::new().change_track(subtitle_id, v4::flat::MediaTrackType::Subtitle),
+    ]
+}
+
+/// The queue as a `Load` for a sender that was not there for the original:
+/// as it stands after any inserts and removes, starting at the current item,
+/// with the request headers left out as on every relayed `Load`.
+fn queue_load_msg(queue: &QueueState) -> v4::ConstructedMessage<'static> {
+    let items = queue.items.iter().map(|item| {
+        let media_item = v4::MediaItem {
+            container: item.content_type.clone(),
+            source_url: item.url.clone(),
+            start_time: item.time,
+            volume: item.volume.map(|v| v as f32),
+            speed: item.speed.map(|s| s as f32),
+            headers: None,
+            title: item.title.clone(),
+            thumbnail_url: item.thumbnail_url.clone(),
+            metadata: None,
+            extra_metadata: None,
+        };
+        (media_item, item.show_duration)
+    });
+    v4::MessageBuilder::new().load_queue(items, Some(queue.current_idx), queue.autoplay)
+}
+
 /// A gapless pre-arm in flight: the next queue item is prepared on the live
 /// pipeline and activates at the current item's drain, with no pipeline EOS.
 struct GaplessPrearm {
@@ -4736,6 +4769,23 @@ impl Application {
     /// indices, for the GUI and every sender. On a confirmed selection, and
     /// again when the collection lands after one.
     fn publish_track_ids(&mut self) {
+        let [video_id, audio_id, subtitle_id] = self.selected_track_ids();
+        self.gui.set_track_ids(
+            video_id.map(|i| i as i32).unwrap_or(-1),
+            audio_id.map(|i| i as i32).unwrap_or(-1),
+            subtitle_id.map(|i| i as i32).unwrap_or(-1),
+        );
+
+        if self.updates_tx.strong_count() > 0 {
+            let msgs = selected_track_msgs([video_id, audio_id, subtitle_id]);
+            let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
+                fcast::V4Message::TracksSelected(msgs),
+            )));
+        }
+    }
+
+    /// The advertised ids of the selected video, audio and subtitle tracks.
+    fn selected_track_ids(&self) -> [Option<u32>; 3] {
         let video_id = self
             .player
             .current_video_sid()
@@ -4745,23 +4795,7 @@ impl Application {
             .current_audio_sid()
             .and_then(|sid| self.player.stream_idx_by_id(sid));
         let subtitle_id = self.advertised_subtitle_id(self.player.current_subtitle_sid());
-        self.gui.set_track_ids(
-            video_id.map(|i| i as i32).unwrap_or(-1),
-            audio_id.map(|i| i as i32).unwrap_or(-1),
-            subtitle_id.map(|i| i as i32).unwrap_or(-1),
-        );
-
-        if self.updates_tx.strong_count() > 0 {
-            let msgs = vec![
-                v4::MessageBuilder::new().change_track(video_id, v4::flat::MediaTrackType::Video),
-                v4::MessageBuilder::new().change_track(audio_id, v4::flat::MediaTrackType::Audio),
-                v4::MessageBuilder::new()
-                    .change_track(subtitle_id, v4::flat::MediaTrackType::Subtitle),
-            ];
-            let _ = self.updates_tx.send(Arc::new(ReceiverToSenderMessage::V4(
-                fcast::V4Message::TracksSelected(msgs),
-            )));
-        }
+        [video_id, audio_id, subtitle_id]
     }
 
     fn advertised_subtitle_id(&self, subtitle_sid: Option<&str>) -> Option<u32> {
@@ -5127,10 +5161,25 @@ impl Application {
             return;
         }
 
-        // Externals are advertised by STABLE id, in catalog order, after the embedded
-        // tracks, so the advertised order is fixed as the selection changes.
-        // Materialized ones are skipped in the stream loops so they are never
-        // advertised twice.
+        let (external_stream_idxs, externals) = self.external_tracks();
+
+        if self.should_broadcast()
+            && let Some(serialized_msg) =
+                self.tracks_available_msg(&external_stream_idxs, &externals)
+        {
+            self.broadcast_update(ReceiverToSenderMessage::V4(
+                fcast::V4Message::TracksAvailable { serialized_msg },
+            ));
+        }
+        self.set_gui_tracks(&external_stream_idxs, &externals);
+    }
+
+    /// The stream indices external subtitles materialized as, and every
+    /// external's stable id and name. Externals are advertised by STABLE id,
+    /// in catalog order, after the embedded tracks, so the advertised order is
+    /// fixed as the selection changes. Materialized ones are skipped in the
+    /// stream loops so they are never advertised twice.
+    fn external_tracks(&self) -> (Vec<u32>, Vec<(u32, Option<SmolStr>)>) {
         let external_stream_idxs: Vec<u32> = self
             .current_media
             .as_ref()
@@ -5146,56 +5195,68 @@ impl Application {
             .as_ref()
             .map(|m| m.externals.iter().map(|s| (s.id, s.name.clone())).collect())
             .unwrap_or_default();
+        (external_stream_idxs, externals)
+    }
 
-        if self.should_broadcast() {
-            let mut tracks: Vec<v4::MediaTrack> = self
-                .player
-                .streams
-                .iter()
-                .enumerate()
-                .filter_map(|(idx, s)| {
-                    // External streams are advertised below, by stable id.
-                    if external_stream_idxs.contains(&(idx as u32)) {
-                        return None;
-                    }
-                    let metadata = match s.info.slot {
-                        flapjack::TrackSlot::Video => Some(v4::MediaTrackMetadata::Video),
-                        flapjack::TrackSlot::Audio => Some(v4::MediaTrackMetadata::Audio),
-                        flapjack::TrackSlot::Subtitle => Some(v4::MediaTrackMetadata::Subtitle),
-                    };
+    /// `TracksAvailable` for the current item, `None` when it would not fit a
+    /// packet.
+    fn tracks_available_msg(
+        &self,
+        external_stream_idxs: &[u32],
+        externals: &[(u32, Option<SmolStr>)],
+    ) -> Option<v4::ConstructedMessage<'static>> {
+        let mut tracks: Vec<v4::MediaTrack> = self
+            .player
+            .streams
+            .iter()
+            .enumerate()
+            .filter_map(|(idx, s)| {
+                // External streams are advertised below, by stable id.
+                if external_stream_idxs.contains(&(idx as u32)) {
+                    return None;
+                }
+                let metadata = match s.info.slot {
+                    flapjack::TrackSlot::Video => Some(v4::MediaTrackMetadata::Video),
+                    flapjack::TrackSlot::Audio => Some(v4::MediaTrackMetadata::Audio),
+                    flapjack::TrackSlot::Subtitle => Some(v4::MediaTrackMetadata::Subtitle),
+                };
 
-                    let title = s.info.title.as_deref().map(clip_title);
-                    let iso_639 = s.info.language.as_deref().map(|l| clip(l, MAX_LANGUAGE_TAG));
+                let title = s.info.title.as_deref().map(clip_title);
+                let iso_639 = s.info.language.as_deref().map(|l| clip(l, MAX_LANGUAGE_TAG));
 
-                    Some(v4::MediaTrack {
-                        id: idx as u32,
-                        title,
-                        iso_639: iso_639.unwrap_or(SmolStr::new("und")),
-                        metadata,
-                    })
+                Some(v4::MediaTrack {
+                    id: idx as u32,
+                    title,
+                    iso_639: iso_639.unwrap_or(SmolStr::new("und")),
+                    metadata,
                 })
-                .collect();
+            })
+            .collect();
 
-            for (id, name) in &externals {
-                tracks.push(v4::MediaTrack {
-                    id: *id,
-                    title: name.clone(),
-                    iso_639: SmolStr::new("und"),
-                    metadata: Some(v4::MediaTrackMetadata::Subtitle),
-                });
-            }
-
-            let serialized_msg = v4::MessageBuilder::new().tracks_available(tracks.into_iter());
-            // senders drop the connection on an oversized packet
-            if serialized_msg.len() + 64 > v4::MAX_PACKET_SIZE {
-                error!(len = serialized_msg.len(), "TracksAvailable too large to send");
-            } else {
-                self.broadcast_update(ReceiverToSenderMessage::V4(
-                    fcast::V4Message::TracksAvailable { serialized_msg },
-                ));
-            }
+        for (id, name) in externals {
+            tracks.push(v4::MediaTrack {
+                id: *id,
+                title: name.clone(),
+                iso_639: SmolStr::new("und"),
+                metadata: Some(v4::MediaTrackMetadata::Subtitle),
+            });
         }
 
+        let serialized_msg = v4::MessageBuilder::new().tracks_available(tracks.into_iter());
+        // senders drop the connection on an oversized packet
+        if serialized_msg.len() + 64 > v4::MAX_PACKET_SIZE {
+            error!(len = serialized_msg.len(), "TracksAvailable too large to send");
+            None
+        } else {
+            Some(serialized_msg)
+        }
+    }
+
+    fn set_gui_tracks(
+        &mut self,
+        external_stream_idxs: &[u32],
+        externals: &[(u32, Option<SmolStr>)],
+    ) {
         let mut videos = Vec::new();
         let mut audios = Vec::new();
         let mut subtitles = Vec::new();
@@ -5216,7 +5277,7 @@ impl Application {
                 });
             }
         }
-        for (id, name) in &externals {
+        for (id, name) in externals {
             subtitles.push(UiMediaTrack {
                 id: *id as i32,
                 name: name
@@ -7409,6 +7470,43 @@ impl Application {
         })
     }
 
+    /// What a v4 sender connecting now needs to stand where the others do:
+    /// the item or queue a v4 sender cast, its state, where it is, its rate
+    /// and its tracks. Without it a newcomer to a queue got selections and
+    /// progress for items it was never given.
+    fn initial_v4_state(&self) -> Option<InitialV4State> {
+        let media = self.current_media.as_ref()?;
+        let load = match &media.source {
+            MediaSource::Single(play_data) => match play_data.as_ref() {
+                fcast::WrappedPlayMessage::V4(play) => v4::MessageBuilder::new()
+                    .from_play_stripped(&play.borrow_dependent())?,
+                _ => return None,
+            },
+            MediaSource::Queue(queue) => queue_load_msg(queue),
+            _ => return None,
+        };
+        // senders drop the connection on an oversized packet
+        if load.len() + 64 > v4::MAX_PACKET_SIZE {
+            error!(len = load.len(), "Load too large to send to a new sender");
+            return None;
+        }
+        let mut tracks = Vec::new();
+        if self.have_media_info {
+            let (external_stream_idxs, externals) = self.external_tracks();
+            tracks.extend(self.tracks_available_msg(&external_stream_idxs, &externals));
+            tracks.extend(selected_track_msgs(self.selected_track_ids()));
+        }
+        let duration = self.current_duration.unwrap_or(gst::ClockTime::ZERO);
+        let progress = self.player.get_position().map(|position| (position, duration));
+        Some(InitialV4State {
+            load,
+            playback_state: self.player.player_state().as_fcast_v4(),
+            progress,
+            rate: self.player.rate() as f32,
+            tracks,
+        })
+    }
+
     fn handle_new_fcast_session(&mut self, stream: tokio::net::TcpStream, session_id: SenderId) {
         debug!("New connection id={session_id}");
         // a silent session times out on the ping, so a full table drains
@@ -7429,21 +7527,10 @@ impl Application {
             let companion_ctx = self.companion_ctx.clone();
             let (comp_tx, comp_rx) = mpsc::unbounded_channel();
             let receiver_info = Arc::clone(&self.receiver_info);
-            let initial_v4_state = if let Some(current_media) = self.current_media.as_ref()
-                && let MediaSource::Single(play_data) = &current_media.source
-                && matches!(play_data.as_ref(), fcast::WrappedPlayMessage::V4(_))
-            {
-                Some(InitialV4State {
-                    play_data: Arc::clone(play_data),
-                    playback_state: self.player.player_state().as_fcast_v4(),
-                })
-            } else {
-                None
-            };
             let seed = SessionSeed {
                 volume: self.player.volume(),
                 display_name: self.device_name.clone(),
-                v4: initial_v4_state,
+                v4: self.initial_v4_state(),
                 legacy: self.initial_legacy_state(),
             };
             async move {
@@ -7880,6 +7967,43 @@ mod tests {
         // paused past its end, nothing is left and nothing underflows
         assert!(show_timer_pause(&mut timer, t1 + Duration::from_secs(100)));
         assert_eq!(timer.remaining, Duration::ZERO);
+    }
+
+    /// A sender connecting mid-queue gets the queue as it stands now, from
+    /// the current item, without the headers of whoever cast it.
+    #[test]
+    fn a_queue_is_rebuilt_as_a_load_for_a_new_sender() {
+        let item = |n: u32| QueueItem {
+            content_type: "video/mp4".into(),
+            url: format!("http://h/{n}.mp4"),
+            time: None,
+            volume: None,
+            speed: None,
+            show_duration: (n == 1).then_some(5.0),
+            headers: Some(HashMap::from([("Authorization".to_owned(), "secret".to_owned())])),
+            title: Some(format!("item {n}")),
+            thumbnail_url: None,
+        };
+        let queue = QueueState {
+            items: (0..3).map(item).collect(),
+            current_idx: 2,
+            autoplay: true,
+        };
+        let WrappedPlayMessage::V4(load) = v4(&queue_load_msg(&queue)) else {
+            unreachable!()
+        };
+        let queue = load.borrow_dependent().source_as_queue().unwrap();
+        assert_eq!(queue.start_index(), Some(2));
+        assert!(queue.autoplay());
+        let items = queue.items();
+        assert_eq!(items.len(), 3);
+        for (n, item) in items.iter().enumerate() {
+            let media = item.media_item();
+            assert_eq!(media.source_url(), format!("http://h/{n}.mp4"));
+            assert_eq!(media.title(), Some(format!("item {n}").as_str()));
+            assert!(media.headers().is_none(), "headers stay with their sender");
+            assert_eq!(item.playback_duration().is_some(), n == 1);
+        }
     }
 
     #[test]
