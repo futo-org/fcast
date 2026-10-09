@@ -136,6 +136,9 @@ jni = "0.21.1"
 ndk-context = "0.1"
 reqwest = { version = "0.13", default-features = false, features = [ "charset", "http2", "system-proxy", "rustls-no-provider", "gzip", "cookies" ] }
 tokio-rustls = { version = "0.26.4", default-features = false, features = [ "logging", "aws-lc-rs", "tls12" ] }
+# The roots the receiver's own HTTP client verifies against, as flapjack's
+# media client does on android (see `android_tls` in application.rs).
+webpki-roots = "1"
 # the self-update channel serves zstd-compressed apks
 zstd = { version = "0.13", default-features = false }
 

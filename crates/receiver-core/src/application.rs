@@ -470,6 +470,29 @@ fn cacheable_duration(queried: Option<gst::ClockTime>) -> Option<gst::ClockTime>
     queried.filter(|duration| !duration.is_zero())
 }
 
+/// TLS for the receiver's own HTTP client on android (thumbnails, JSON
+/// playlists, the queue prefetch, the update check). reqwest's default
+/// verifier there is the platform one, which panics at the first handshake
+/// unless the app set it up through JNI and ships its java half, so every
+/// HTTPS fetch of the receiver's killed its task. Verified against the
+/// bundled roots instead, as flapjack's media client is on android, with the
+/// same trade: roots frozen at build time and no user-installed CAs.
+#[cfg(target_os = "android")]
+fn android_tls() -> Result<tokio_rustls::rustls::ClientConfig> {
+    use tokio_rustls::rustls;
+    let roots = rustls::RootCertStore {
+        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
+    };
+    let provider = Arc::new(rustls::crypto::aws_lc_rs::default_provider());
+    let mut tls = rustls::ClientConfig::builder_with_provider(provider)
+        .with_safe_default_protocol_versions()?
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    // reqwest takes a preconfigured backend as given, ALPN included
+    tls.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+    Ok(tls)
+}
+
 /// Convert a wire `showDuration` (seconds, as a bare `f64`) into a timer delay.
 fn show_duration_delay(show_duration: f64) -> Option<Duration> {
     Duration::try_from_secs_f64(show_duration).ok()
@@ -1432,8 +1455,10 @@ impl Application {
         // but moving update download is fine.
         let http_client = reqwest::Client::builder()
             .connect_timeout(Duration::from_secs(10))
-            .read_timeout(Duration::from_secs(30))
-            .build()?;
+            .read_timeout(Duration::from_secs(30));
+        #[cfg(target_os = "android")]
+        let http_client = http_client.tls_backend_preconfigured(android_tls()?);
+        let http_client = http_client.build()?;
         #[cfg(target_os = "android")]
         tokio::spawn(crate::android_updater::run_checker(
             http_client.clone(),
