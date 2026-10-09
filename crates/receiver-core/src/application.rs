@@ -1626,6 +1626,16 @@ impl Application {
         self.broadcast_legacy_update(PlaybackState::Idle, 0.0, 0.0, 0.0);
     }
 
+    /// Stop and error for v4 senders. Nothing moves the player's transport
+    /// to stopped, so no state change of its own reports them.
+    fn broadcast_v4_idle(&self) {
+        if self.should_broadcast() {
+            self.broadcast_update(ReceiverToSenderMessage::V4(
+                fcast::V4Message::PlaybackStateChanged(fcast_protocol::v4::PlaybackState::Idle),
+            ));
+        }
+    }
+
     /// The image lane skips LoadingMedia, so a decode in flight is not up yet.
     fn image_shown(&self) -> bool {
         self.shown_app_state == AppState::Playing
@@ -2306,6 +2316,7 @@ impl Application {
         if self.should_broadcast() {
             // with times, a v1 or v2 update cannot leave them out
             self.broadcast_legacy_idle();
+            self.broadcast_v4_idle();
             self.broadcast_update(ReceiverToSenderMessage::Error(PlaybackErrorMessage {
                 message: diagnostic.clone(),
             }))
@@ -3460,6 +3471,7 @@ impl Application {
             self.current_media = None;
             self.queue_cache.clear();
             self.broadcast_legacy_idle();
+            self.broadcast_v4_idle();
             #[cfg(not(target_os = "android"))]
             self.screensaver_inhibitor.un_inhibit();
         }
@@ -4499,6 +4511,11 @@ impl Application {
                     self.supersede_playlist_fetch();
                     self.end_raop_session();
                     self.stop_playback();
+                    // a stop by another name, the other senders hear of it the same
+                    self.relay_to_other_senders(
+                        origin,
+                        fcast_protocol::v4::MessageBuilder::new().stop_playback(),
+                    );
                 }
                 _ => (),
             },
