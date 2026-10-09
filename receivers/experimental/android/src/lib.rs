@@ -82,6 +82,9 @@ fn probe_version() -> String {
 /// first frame costs Vulkan until the next update, not forever.
 /// `debug.fcast.renderer` (gles or vulkan) overrides it all.
 fn choose_renderer(files_dir: Option<&Path>) -> Renderer {
+    // A Vulkan attempt that failed in this process left its hook behind, and
+    // the GLES frame of this launch would record Vulkan as working.
+    rcore::android_forget_first_frame();
     match renderer_prop().as_deref() {
         Some("gles") => return Renderer::Gles,
         Some("vulkan") => return Renderer::Vulkan,

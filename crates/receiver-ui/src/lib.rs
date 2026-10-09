@@ -631,6 +631,13 @@ pub fn android_on_first_frame(f: impl FnOnce() + Send + 'static) {
     *ANDROID_FIRST_FRAME.lock().unwrap() = Some(Box::new(f));
 }
 
+/// Drops an unfired first-frame hook. One left by a UI that never painted
+/// would fire on the next UI's first frame.
+#[cfg(target_os = "android")]
+pub fn android_forget_first_frame() {
+    *ANDROID_FIRST_FRAME.lock().unwrap() = None;
+}
+
 /// `_exit`, not `exit`: static destructors run under MediaCodec threads still
 /// releasing, a crash on the way out that hides the real cause. The sticky
 /// service stays so the system restarts the receiver.

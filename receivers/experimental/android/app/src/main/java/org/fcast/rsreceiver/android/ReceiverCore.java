@@ -354,7 +354,8 @@ public final class ReceiverCore {
     /// singleTask MainActivity comes up as a fresh instance.
     static void relaunchUi() {
         handler.postDelayed(() -> {
-            Intent launch = new Intent(app, SplashActivity.class);
+            // the launcher component, SplashActivity itself is not declared
+            Intent launch = new Intent(app, com.futo.fcast.receiver.MainActivity.class);
             launch.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             try {
                 app.startActivity(launch);
