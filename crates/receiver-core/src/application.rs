@@ -952,6 +952,10 @@ pub struct Application {
     /// The hold resumes when the activity shows, unless paused meanwhile.
     #[cfg(target_os = "android")]
     android_hold_resumes: bool,
+    /// The end in progress is an error's, whose toast or report stays on
+    /// screen. Set only across `end_presentation` in `media_error`.
+    #[cfg(target_os = "android")]
+    android_error_end: bool,
     /// When a cast last ended while playing in the background, not held. A
     /// cast following it closely is the sender's next item (a playlist it
     /// advances itself) and plays on in the background like the one before.
@@ -1387,6 +1391,8 @@ impl Application {
             android_hidden_hold: false,
             #[cfg(target_os = "android")]
             android_hold_resumes: false,
+            #[cfg(target_os = "android")]
+            android_error_end: false,
             #[cfg(target_os = "android")]
             android_last_end: None,
             #[cfg(target_os = "android")]
@@ -2220,7 +2226,15 @@ impl Application {
         // what was playing and who cast it.
         let context = self.report_context();
         self.cleanup_playback_data();
+        #[cfg(target_os = "android")]
+        {
+            self.android_error_end = true;
+        }
         self.end_presentation(true, false);
+        #[cfg(target_os = "android")]
+        {
+            self.android_error_end = false;
+        }
         self.current_media = None;
         self.queue_cache.clear();
 
@@ -2707,7 +2721,12 @@ impl Application {
                 self.android_set_paused(false);
                 // a real end, loads never pass through Idle (PiP leaves)
                 if self.android_playback.0 {
-                    self.call_activity("castEnded", "(Z)V", &[jni::objects::JValue::Bool(0)]);
+                    if self.android_error_end {
+                        // the error goes up on this window, which a leave takes away
+                        self.call_activity("castFailed", "()V", &[]);
+                    } else {
+                        self.call_activity("castEnded", "(Z)V", &[jni::objects::JValue::Bool(0)]);
+                    }
                 }
                 if self.android_playback.0 {
                     // back to the display's default mode between items

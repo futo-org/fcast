@@ -1038,6 +1038,21 @@ public final class ReceiverCore {
         });
     }
 
+    /// The cast ended on an error the core is putting on screen. A window
+    /// the cast brought forward stays so the error can be read, and the app
+    /// is the user's from here. PiP still leaves, as for any end. Any thread.
+    static void castFailed() {
+        onMain(() -> {
+            MainActivity a = activity.get();
+            if (a != null && a.isInPictureInPictureMode()) {
+                castEnded(false);
+                return;
+            }
+            handler.removeCallbacks(endedCastLeave);
+            castFromBackground = false;
+        });
+    }
+
     private static void leaveEndedCast() {
         boolean toBack = castFromBackground;
         castFromBackground = false;
