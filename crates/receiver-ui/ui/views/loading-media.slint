@@ -1,24 +1,29 @@
 import { Icons, FText } from "../../../../ui-components/std-widgets.slint";
-import { Assets, Bridge, AppState } from "../globals.slint";
+import { Assets, Bridge } from "../globals.slint";
 
 export component LoadingMediaView inherits Rectangle {
     // A server-directed backoff fills the bar with the wait; otherwise it sweeps.
     property <bool> backing-off: Bridge.source-backoff-remaining-ms > 0
         && Bridge.source-backoff-total-ms > 0;
     property <int> backoff-seconds: Math.ceil(Bridge.source-backoff-remaining-ms / 1000.0);
+    // While the view is up, which outlasts the loading state: a video item
+    // is playing from its stream collection and the view stays until its
+    // first frame. A source that names its streams before it has media
+    // spends a server backoff there, with no text and the playing view's
+    // notice under this one.
+    in property <bool> active;
     // The background covers the video hole at once, the text and bar wait
     // 1500ms so a fast load flashes nothing.
-    property <bool> loading: Bridge.app-state == AppState.LoadingMedia;
     property <bool> content-shown: false;
-    changed loading => {
-        if !self.loading {
+    changed active => {
+        if !self.active {
             self.content-shown = false;
         }
     }
 
     Timer {
         interval: 1500ms;
-        running: root.loading && !root.content-shown;
+        running: root.active && !root.content-shown;
         triggered => {
             root.content-shown = true;
         }
@@ -50,9 +55,9 @@ export component LoadingMediaView inherits Rectangle {
             opacity: 70%;
         }
 
-        // Guarded by app-state, not opacity: the view stays in the tree at
+        // Guarded by active, not opacity: the view stays in the tree at
         // opacity 0 and an always-on animation-tick() would redraw forever.
-        if root.loading && root.content-shown: HorizontalLayout {
+        if root.active && root.content-shown: HorizontalLayout {
             alignment: center;
 
             Rectangle {

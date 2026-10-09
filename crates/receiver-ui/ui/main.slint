@@ -244,8 +244,9 @@ export component MainWindow inherits Window {
         }
 
         loading-view := LoadingMediaView {
-            opacity: (Bridge.app-state == AppState.LoadingMedia && !root.loading-behind)
-                || root.video-starting ? 100% : 0%;
+            active: (Bridge.app-state == AppState.LoadingMedia && !root.loading-behind)
+                || root.video-starting;
+            opacity: self.active ? 100% : 0%;
             visible: self.opacity > 0%;
 
             animate opacity {
