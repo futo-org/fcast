@@ -94,6 +94,10 @@ build_receiver_android_native:
       printf '{\n    "version": "%s",\n    "version_code": %s,\n    "files": {%b\n    }\n}\n' \
         "$ANDROID_VERSION_NAME" "$ANDROID_VERSION_CODE" "$FILES" > "$OUT/latest.json"
       cat "$OUT/latest.json"
+      # The manual download, plain since a person cannot open a .zst. Not in
+      # latest.json, the updater takes the smaller build for its own ABI.
+      cp "$APKS/app-defaultFlavor-universal-release.apk" \
+        "$OUT/fcast-receiver-android-$ANDROID_VERSION_CODE-universal.apk"
   artifacts:
     untracked: false
     when: on_success
