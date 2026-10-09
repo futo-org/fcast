@@ -270,7 +270,10 @@ mod android {
     use crate::android_jni::with_core;
     use crate::message::{AppUpdate, MessageSender};
 
-    const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+    /// A receiver stays up for weeks, so a check at startup alone, or once
+    /// a day, leaves a release unseen for long. The manifest is a few
+    /// hundred bytes.
+    const CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(3 * 60 * 60);
     const RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60 * 60);
     /// Debug builds only: the channel to test against, e.g.
     /// `adb shell setprop debug.fcast.update_url http://192.168.1.2:8000/`.
@@ -319,7 +322,8 @@ mod android {
         .unwrap_or_default()
     }
 
-    /// Checks at startup and then daily, an hour after a failed check.
+    /// Checks at startup and then every three hours, an hour after a failed
+    /// check.
     pub async fn run_checker(client: reqwest::Client, msg_tx: MessageSender) {
         let Some((channel, installed)) = channel() else {
             info!("self-update is off for this build");
