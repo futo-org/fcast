@@ -45,6 +45,9 @@ pub mod imp {
     const MAX_STILL_PIXELS: u64 = 128_000_000;
     /// Directly built decoders skip image's own 512 MB allocation limit.
     const MAX_STILL_BYTES: u64 = 512 << 20;
+    /// The GIF decoder holds a full RGBA canvas next to each full RGBA frame,
+    /// whatever the frames themselves cover.
+    const MAX_GIF_PIXELS: u64 = MAX_STILL_BYTES / 8;
     /// Every frame of an animation decodes at full size, again on each loop.
     const MAX_ANIMATION_PIXELS: u64 = 4096 * 4096;
     /// Longest side a still goes out at: above a 4K screen and within every
@@ -485,11 +488,14 @@ pub mod imp {
                 if self.input.aborted() {
                     return Ok(());
                 }
-                let decoder = GifDecoder::new(reader)?;
+                let mut decoder = GifDecoder::new(reader)?;
+                // built with no limits, and the frame iterator allocates under them
+                let mut limits = image::Limits::default();
+                limits.max_alloc = Some(MAX_STILL_BYTES);
+                decoder.set_limits(limits)?;
                 if first_pass {
                     let (w, h) = decoder.dimensions();
-                    // one frame makes it a still, see push_pass
-                    check_pixels(w, h, MAX_STILL_PIXELS)?;
+                    check_pixels(w, h, MAX_GIF_PIXELS)?;
                     self.post_stream_info("gif", w, h, true);
                 }
                 match self.push_pass(decoder)? {
@@ -1413,6 +1419,37 @@ mod tests {
             start.elapsed() < std::time::Duration::from_secs(5),
             "teardown after flush must be bounded"
         );
+    }
+
+    /// A GIF's canvas is refused by its logical screen, before the decoder
+    /// allocates it. 100 MP is under the still cap and over the GIF one.
+    #[test]
+    fn a_gif_with_a_huge_canvas_is_refused() {
+        init();
+        let mut gif = b"GIF89a".to_vec();
+        gif.extend(10_000u16.to_le_bytes());
+        gif.extend(10_000u16.to_le_bytes());
+        gif.extend([0, 0, 0]);
+        // one 1x1 frame with a two-color local table
+        gif.extend([0x2c, 0, 0, 0, 0, 1, 0, 1, 0, 0x80]);
+        gif.extend([0, 0, 0, 255, 255, 255]);
+        gif.extend([0x02, 0x02, 0x4c, 0x01, 0x00, 0x3b]);
+
+        let (pipeline, appsrc, _dec, _appsink) = direct_pipeline("image/gif");
+        let bus = pipeline.bus().unwrap();
+        pipeline.set_state(gst::State::Playing).unwrap();
+        appsrc.push_buffer(gst::Buffer::from_slice(gif)).unwrap();
+        appsrc.end_of_stream().unwrap();
+
+        let msg = bus
+            .timed_pop_filtered(gst::ClockTime::from_seconds(10), &[gst::MessageType::Error])
+            .expect("an oversized canvas must post an error");
+        let gst::MessageView::Error(err) = msg.view() else {
+            unreachable!()
+        };
+        let text = format!("{} {:?}", err.error(), err.debug());
+        assert!(text.contains("too large"), "{text}");
+        pipeline.set_state(gst::State::Null).unwrap();
     }
 
     /// EOS with no buffers must post a StreamError rather than hang.
