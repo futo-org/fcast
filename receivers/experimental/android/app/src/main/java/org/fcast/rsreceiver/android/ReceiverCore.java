@@ -138,7 +138,8 @@ public final class ReceiverCore {
         nativeCoreInit(app);
         // the Rust core too: a boot start has no activity to start it
         String filesDir = app.getFilesDir().getPath();
-        nativeCoreStart(filesDir);
+        // the installed build's versionCode keys the renderer probe
+        nativeCoreStart(filesDir, Updater.installedVersionCode(app));
         startOnBoot = nativeStartOnBoot(filesDir);
         if (startOnBoot == -1 && upgradedFromKotlin(app)) {
             // the Kotlin receiver came up at boot (a tap-to-start notice from
@@ -1129,7 +1130,8 @@ public final class ReceiverCore {
     /// Quits the receiver and ends the process.
     private static native void nativeShutdown();
     /// Starts the Rust core once per process, with the config in `filesDir`.
-    private static native void nativeCoreStart(String filesDir);
+    /// `versionCode` is the installed build's, -1 when it cannot be read.
+    private static native void nativeCoreStart(String filesDir, long versionCode);
     /// The start-on-boot setting: 1 on, 0 off, -1 never asked.
     private static native int nativeStartOnBoot(String filesDir);
     private static native void nativeSetStartOnBoot(boolean on);

@@ -57,17 +57,30 @@ enum Renderer {
 /// of Vulkan until its first frame, then `ok <version>`, or `gles <version>`
 /// once a launch died on it.
 const RENDERER_PROBE: &str = "renderer-probe";
-const APP_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// The installed build's versionCode, from Java at the core's start. The probe
+/// is keyed by it: the crate version changes only when someone bumps it, so a
+/// record keyed by that outlived every update built at the same version.
+static VERSION_CODE: std::sync::OnceLock<i64> = std::sync::OnceLock::new();
+
+/// What a probe record is keyed by. The crate version only until Java has
+/// said which build this is.
+fn probe_version() -> String {
+    match VERSION_CODE.get() {
+        Some(code) => code.to_string(),
+        None => env!("CARGO_PKG_VERSION").to_owned(),
+    }
+}
 
 /// Vulkan when an adapter enumerates, unless an earlier launch died on it
-/// before its first frame. A buggy driver fails anywhere from device creation
-/// to the first pipeline, as an error or a SIGSEGV, and the one test that
-/// catches both is the launch itself: the probe file reads `pending` from
-/// here until the first frame lands, so `pending` found at launch means the
-/// previous attempt never painted and GLES is used from then on. Per app
-/// version, so a death of another cause before the first frame costs Vulkan
-/// until the next update, not forever. `debug.fcast.renderer` (gles or
-/// vulkan) overrides it all.
+/// before its first frame. A buggy driver fails anywhere from instance
+/// creation to the first pipeline, as an error or a SIGSEGV, and the one test
+/// that catches both is the launch itself: the probe file reads `pending`
+/// from before the adapter check until the first frame lands, so `pending`
+/// found at launch means the previous attempt never painted and GLES is used
+/// from then on. Per installed build, so a death of another cause before the
+/// first frame costs Vulkan until the next update, not forever.
+/// `debug.fcast.renderer` (gles or vulkan) overrides it all.
 fn choose_renderer(files_dir: Option<&Path>) -> Renderer {
     match renderer_prop().as_deref() {
         Some("gles") => return Renderer::Gles,
@@ -81,7 +94,7 @@ fn choose_renderer(files_dir: Option<&Path>) -> Renderer {
     let record = record.trim();
     let (state, version) = record.split_once(' ').unwrap_or((record, ""));
     match state {
-        "gles" if version == APP_VERSION => return Renderer::Gles,
+        "gles" if version == probe_version() => return Renderer::Gles,
         "pending" => {
             warn!("the last launch died on Vulkan before its first frame, rendering with GLES");
             write_probe(&probe, "gles");
@@ -89,12 +102,27 @@ fn choose_renderer(files_dir: Option<&Path>) -> Renderer {
         }
         _ => {}
     }
+    // Open before the adapter check: a driver that dies inside instance creation or
+    // enumeration took the process with no record behind, and every launch died the
+    // same way.
+    write_probe(&probe, "pending");
     if !has_vulkan_adapter() {
+        // No Vulkan to blame, and nothing to carry over.
+        let _ = std::fs::remove_file(&probe);
         return Renderer::Gles;
     }
-    write_probe(&probe, "pending");
     rcore::android_on_first_frame(move || write_probe(&probe, "ok"));
     Renderer::Vulkan
+}
+
+/// A UI that returned without a frame did not die on Vulkan, so the probe it
+/// left open is closed, or the next launch would read a crash into it.
+fn close_renderer_probe(files_dir: Option<&Path>) {
+    if let Some(dir) = files_dir
+        && renderer_probe_pending(Some(dir))
+    {
+        write_probe(&dir.join(RENDERER_PROBE), "ok");
+    }
 }
 
 /// Whether this launch's Vulkan probe is still open: the UI failed before
@@ -106,7 +134,7 @@ fn renderer_probe_pending(files_dir: Option<&Path>) -> bool {
 }
 
 fn write_probe(probe: &Path, state: &str) {
-    if let Err(err) = std::fs::write(probe, format!("{state} {APP_VERSION}\n")) {
+    if let Err(err) = std::fs::write(probe, format!("{state} {}\n", probe_version())) {
         error!(?err, state, "renderer probe not written");
     }
 }
@@ -175,7 +203,12 @@ fn android_main(app: slint::android::AndroidApp) {
     let event_rx = EVENT_CHANNEL.1.lock().take();
 
     let keep_core = match rcore::run(app, event_rx, settings) {
-        Ok(keep) => keep,
+        Ok(keep) => {
+            if renderer == Renderer::Vulkan {
+                close_renderer_probe(files_dir.as_deref());
+            }
+            keep
+        }
         Err(err) => {
             error!(?err, "receiver UI failed");
             if renderer == Renderer::Vulkan && renderer_probe_pending(files_dir.as_deref()) {
@@ -237,7 +270,13 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeCoreStart
     mut env: jni::JNIEnv<'local>,
     _class: jni::objects::JClass<'local>,
     files_dir: jni::objects::JString<'local>,
+    version_code: jni::sys::jlong,
 ) {
+    // The renderer probe keys its records by this. -1 is Java saying it could not read
+    // its own package, then the crate version stands in.
+    if version_code >= 0 {
+        let _ = VERSION_CODE.set(version_code);
+    }
     let Ok(files_dir) = env.get_string(&files_dir) else {
         let _ = env.exception_clear();
         return;
