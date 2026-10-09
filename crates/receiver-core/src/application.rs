@@ -828,6 +828,20 @@ enum MediaSource {
     },
 }
 
+/// Where an operation plays an ended item again from, `None` for one that
+/// does not. The end stopped the player, so a resume or a seek the item
+/// was kept for is a load of the same item at that position.
+fn replay_position(op: &Operation) -> Option<gst::ClockTime> {
+    use fcast_protocol::v4::PlaybackState as P;
+    match op {
+        Operation::Resume | Operation::ResumeOrPause | Operation::SetPlaybackState(P::Playing) => {
+            Some(gst::ClockTime::ZERO)
+        }
+        Operation::Seek(time) => Some(*time),
+        _ => None,
+    }
+}
+
 /// The mini OSD's reading of a transport operation, `None` for one that is
 /// not transport or whose effect depends on a state the player is not in.
 fn remote_transport_kind(
@@ -1072,6 +1086,11 @@ pub struct Application {
     /// v1-v3 gets nothing.
     seek_quiet: bool,
     seek_quiet_epoch: u64,
+    /// The current item played to its end and is kept for the senders still
+    /// connected, paused at the end for v1 to v3 and Ended for v4. Its
+    /// player is stopped: a resume or a seek loads it again, the last sender
+    /// leaving returns the receiver to idle.
+    item_ended: bool,
     /// The current item's show-duration countdown, when it has one.
     show_timer: Option<ShowTimer>,
     /// Names the sleeping task that may still fire, bumped per spawn and pause.
@@ -1497,6 +1516,7 @@ impl Application {
             pending_seek_op: None,
             pending_seek_epoch: 0,
             seek_quiet: false,
+            item_ended: false,
             show_timer: None,
             show_timer_epoch: 0,
             seek_quiet_epoch: 0,
@@ -1980,6 +2000,7 @@ impl Application {
     /// [`Self::end_presentation`] or replaced by the next load.
     fn cleanup_playback_data(&mut self) {
         self.current_duration = None;
+        self.item_ended = false;
         self.show_timer = None;
         // Playback is stopping or being replaced: a real Idle must go out.
         self.seek_quiet = false;
@@ -2888,14 +2909,32 @@ impl Application {
 
         // An autoplay queue with a next item is exempt: the receiver-side advance must
         // keep working after the last sender disconnects.
-        if self.updates_tx.receiver_count() == 0 && self.autoplay_next_index().is_none() {
-            self.cleanup_playback_data();
-            self.end_presentation(false, true);
-            self.current_media = None;
+        if self.autoplay_next_index().is_none() {
+            if self.should_broadcast() {
+                // kept for the senders, with the play button the replay is behind
+                self.item_ended = true;
+                self.gui.set_playback_state(GuiPlaybackState::Paused);
+            } else {
+                self.leave_ended_item();
+            }
         }
 
         #[cfg(not(target_os = "android"))]
         self.screensaver_inhibitor.un_inhibit();
+    }
+
+    /// Nobody is left to play the ended item again, the receiver goes idle.
+    fn leave_ended_item(&mut self) {
+        self.cleanup_playback_data();
+        self.end_presentation(false, true);
+        self.current_media = None;
+    }
+
+    /// Plays the kept, ended item again from `position`.
+    fn replay_ended_item(&mut self, position: gst::ClockTime) {
+        info!(?position, "Playing the ended item again");
+        let rate = self.player.rate() as f32;
+        self.reload_current_item_at(position, rate);
     }
 
     /// Settings consulted from shared code paths. Android has no
@@ -4431,6 +4470,13 @@ impl Application {
                 _ => None,
             };
             self.gui.transport_from_sender(kind, by);
+        }
+        if self.item_ended
+            && let Some(position) = replay_position(&op)
+        {
+            let position = self.clamp_seek_target(origin, position);
+            self.replay_ended_item(position);
+            return Ok(false);
         }
         match op {
             Operation::Pause => self.pause(),
@@ -7356,6 +7402,10 @@ impl Application {
                 if self.senders.remove(&id).is_some() {
                     self.gui.set_senders(self.senders.values().cloned().collect());
                 }
+                // the ended item was kept for the senders, the last one just left
+                if self.item_ended && !self.should_broadcast() {
+                    self.leave_ended_item();
+                }
             }
             Message::SenderIntroduced { sender_id, info } => {
                 self.senders.insert(sender_id, info);
@@ -7458,9 +7508,12 @@ impl Application {
                 generation_time: current_time_millis(),
                 time: Some(time),
                 duration: self.current_duration.map(|d| d.seconds_f64()),
-                // a legacy image has no player behind it
+                // a legacy image has no player behind it, an ended item a
+                // stopped one
                 state: if self.image_shown() {
                     PlaybackState::Playing
+                } else if self.item_ended {
+                    PlaybackState::Paused
                 } else {
                     self.player.wire_playback_state()
                 },
@@ -7491,16 +7544,26 @@ impl Application {
             return None;
         }
         let mut tracks = Vec::new();
-        if self.have_media_info {
+        // an ended item's stopped player has no streams left to list
+        if self.have_media_info && !self.item_ended {
             let (external_stream_idxs, externals) = self.external_tracks();
             tracks.extend(self.tracks_available_msg(&external_stream_idxs, &externals));
             tracks.extend(selected_track_msgs(self.selected_track_ids()));
         }
         let duration = self.current_duration.unwrap_or(gst::ClockTime::ZERO);
-        let progress = self.player.get_position().map(|position| (position, duration));
+        let progress = if self.item_ended {
+            Some((duration, duration))
+        } else {
+            self.player.get_position().map(|position| (position, duration))
+        };
         Some(InitialV4State {
             load,
-            playback_state: self.player.player_state().as_fcast_v4(),
+            // the stopped player of an ended item reads as Idle
+            playback_state: if self.item_ended {
+                v4::PlaybackState::Ended
+            } else {
+                self.player.player_state().as_fcast_v4()
+            },
             progress,
             rate: self.player.rate() as f32,
             tracks,
@@ -7967,6 +8030,21 @@ mod tests {
         // paused past its end, nothing is left and nothing underflows
         assert!(show_timer_pause(&mut timer, t1 + Duration::from_secs(100)));
         assert_eq!(timer.remaining, Duration::ZERO);
+    }
+
+    #[test]
+    fn only_a_resume_or_a_seek_plays_an_ended_item_again() {
+        use fcast_protocol::v4::PlaybackState as P;
+        let start = Some(gst::ClockTime::ZERO);
+        assert_eq!(replay_position(&Operation::Resume), start);
+        assert_eq!(replay_position(&Operation::ResumeOrPause), start);
+        assert_eq!(replay_position(&Operation::SetPlaybackState(P::Playing)), start);
+        let at = gst::ClockTime::from_seconds(42);
+        assert_eq!(replay_position(&Operation::Seek(at)), Some(at));
+        assert_eq!(replay_position(&Operation::Pause), None);
+        assert_eq!(replay_position(&Operation::Stop), None);
+        assert_eq!(replay_position(&Operation::SetPlaybackState(P::Paused)), None);
+        assert_eq!(replay_position(&Operation::SetVolume(0.5)), None);
     }
 
     /// A sender connecting mid-queue gets the queue as it stands now, from
