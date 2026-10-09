@@ -170,7 +170,66 @@ component CrossfadeImage inherits Rectangle {
 export component AudioPlayerView inherits Rectangle {
     background: FCastPalette.neutral-1100;
 
-    property <bool> small-mode: root.height <= (500px + (Bridge.media-title.is-empty ? 0px : 35px) + (Bridge.artist-name.is-empty ? 0px : 25px));
+    // What the paddings, the labels, the scrubber and the buttons take next
+    // to the cover in the large layout.
+    property <length> chrome: 300px;
+    // By height alone. This used to count the labels in, and a title or an
+    // artist coming or going flipped the layout: a TV's 540px canvas sat
+    // inside that band, so every track change flashed the large cover before
+    // the tags brought the small one back. The switch sits where the two
+    // layouts' height limits meet.
+    property <bool> small-mode: root.height < 375px;
+
+    // The labels hold their text through a track change, as the cover does.
+    // The core clears them when the next item takes over and its tags bring
+    // the new ones a moment later, and rows that left and came back moved the
+    // whole column twice. A label that stays empty past the grace is dropped.
+    property <string> title-src: Bridge.media-title;
+    property <string> artist-src: Bridge.artist-name;
+    property <string> shown-title;
+    property <string> shown-artist;
+    property <duration> label-grace: 400ms;
+
+    init => {
+        shown-title = title-src;
+        shown-artist = artist-src;
+    }
+
+    changed title-src => {
+        if title-src.is-empty && !shown-title.is-empty && Bridge.app-state != AppState.Idle {
+            title-grace.running = true;
+        } else {
+            title-grace.running = false;
+            shown-title = title-src;
+        }
+    }
+
+    changed artist-src => {
+        if artist-src.is-empty && !shown-artist.is-empty && Bridge.app-state != AppState.Idle {
+            artist-grace.running = true;
+        } else {
+            artist-grace.running = false;
+            shown-artist = artist-src;
+        }
+    }
+
+    title-grace := Timer {
+        interval: label-grace;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.shown-title = root.title-src;
+        }
+    }
+
+    artist-grace := Timer {
+        interval: label-grace;
+        running: false;
+        triggered => {
+            self.running = false;
+            root.shown-artist = root.artist-src;
+        }
+    }
 
     blurred-bg := CrossfadeImage {
         width: 100%;
@@ -201,7 +260,9 @@ export component AudioPlayerView inherits Rectangle {
 
             pure function thumbnail-size() -> length {
                 let width = Math.min(root.width * (!small-mode ? 35% : 10%), 400px);
-                let height = Math.min(root.height * (!small-mode ? 50% : 20%), 550px);
+                // large: half the height, or what the chrome leaves when
+                // that is less
+                let height = small-mode ? root.height * 20% : Math.min(root.height * 50%, root.height - chrome);
                 Math.min(width, height)
             }
 
@@ -218,9 +279,9 @@ export component AudioPlayerView inherits Rectangle {
             height: !small-mode ? 10px : 5px;
         }
 
-        if !Bridge.media-title.is-empty: FText {
+        if !shown-title.is-empty: FText {
             horizontal-alignment: center;
-            text: Bridge.media-title;
+            text: shown-title;
             // one line: a long tag title pushed the controls off screen
             overflow: elide;
             font-size: 28px;
@@ -228,9 +289,9 @@ export component AudioPlayerView inherits Rectangle {
             color: FCastPalette.neutral-100;
         }
 
-        if !Bridge.artist-name.is-empty: FText {
+        if !shown-artist.is-empty: FText {
             horizontal-alignment: center;
-            text: Bridge.artist-name;
+            text: shown-artist;
             // one line: a long tag title pushed the controls off screen
             overflow: elide;
             font-size: 18px;
