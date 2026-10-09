@@ -195,6 +195,8 @@ fn build_android_native(
     targets: &[AndroidAbiTarget],
 ) -> Result<()> {
     reject_emulator_abis(targets)?;
+    // The lane that ships to devices, so the same pin guard as the desktop builds.
+    crate::gst_pin::check_matches_flapjack()?;
 
     let out_dir = concat_path(
         root_path,
