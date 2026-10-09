@@ -391,6 +391,9 @@ pub struct Engine<'a> {
     /// The queue index of the most recent `QueueItemSelected` the receiver
     /// broadcast to this sender (e.g. an autoplay or gapless advance).
     last_queue_selected: Option<u8>,
+    /// The current item's duration in seconds, from its progress updates.
+    /// Forgotten at a queue advance, the next item reports its own.
+    last_duration_v4: Option<f64>,
 }
 
 struct CompanionResource {
@@ -444,6 +447,7 @@ impl<'a> Engine<'a> {
             state_log: Vec::new(),
             state_mark: 0,
             last_queue_selected: None,
+            last_duration_v4: None,
             second_track_ids: Default::default(),
             second_last_track_state: [None; 3],
             last_state_v4: None,
@@ -720,6 +724,11 @@ impl<'a> Engine<'a> {
                         .payload_as_progress_changed()
                         .ok_or_else(|| anyhow!("malformed ProgressChanged"))?;
                     self.progress_times.push(Instant::now());
+                    if let Some(duration) = progress.duration().map(|t| t.micros())
+                        && duration > 0
+                    {
+                        self.last_duration_v4 = Some(duration as f64 / 1_000_000.0);
+                    }
                     let pos_secs = progress
                         .position()
                         .map(|t| t.micros() as f64 / 1_000_000.0)
@@ -812,6 +821,7 @@ impl<'a> Engine<'a> {
                     if let Some(index) = selected.position_as_index() {
                         debug!(index = index.index(), "QueueItemSelected broadcast");
                         self.last_queue_selected = Some(index.index());
+                        self.last_duration_v4 = None;
                     }
                     FlatAction::None
                 }
@@ -1157,6 +1167,7 @@ impl<'a> Engine<'a> {
             Step::AwaitQueueSelect { index } => {
                 self.await_queue_select(*index).await?;
             }
+            Step::SeekFromEndV4 { secs } => self.seek_from_end_v4(*secs).await?,
             Step::OpenSecondSender => self.open_second_sender().await?,
             Step::ExpectInitialOnNewV3Sender { item, state } => {
                 self.expect_initial_on_new_v3_sender(*item, *state).await?
@@ -2123,6 +2134,28 @@ impl<'a> Engine<'a> {
                 self.handle_incoming(pkt?).await?;
             }
         }
+    }
+
+    async fn seek_from_end_v4(&mut self, secs: f64) -> Result<()> {
+        let deadline = Instant::now() + MAX_SETTLE;
+        let duration = loop {
+            if let Some(duration) = self.last_duration_v4 {
+                break duration;
+            }
+            let now = Instant::now();
+            ensure!(now < deadline, "the receiver never reported the item's duration");
+            let wait = Duration::from_millis(100).min(deadline - now);
+            if let Ok(pkt) = tokio::time::timeout(wait, self.conn.recv()).await {
+                self.handle_incoming(pkt?).await?;
+            }
+        };
+        let target = (duration - secs).max(0.0);
+        info!(duration, target, "seeking to {secs}s before the end");
+        let micros = Duration::from_secs_f64(target).as_micros() as u64;
+        let msg = v4::MessageBuilder::new()
+            .progress_changed(v4::flat::Time::new(micros), v4::flat::Time::new(0));
+        self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
+        Ok(())
     }
 
     /// The protocol id of the `n`th advertised track of the given kind.

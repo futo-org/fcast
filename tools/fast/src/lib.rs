@@ -262,6 +262,12 @@ pub enum Step {
     AwaitQueueSelect {
         index: u8,
     },
+    /// Seek the current item to this many seconds before its end, by the
+    /// duration the receiver reports for it. Waits for that duration first, a
+    /// queue advance forgets the previous item's.
+    SeekFromEndV4 {
+        secs: f64,
+    },
     OpenSecondSender,
     SetSecondSenderInterval {
         millis: u64,

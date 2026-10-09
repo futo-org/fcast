@@ -29,6 +29,151 @@ enum Command {
     /// Run test cases in a random order forever, until interrupted or one
     /// fails.
     Stress,
+    /// Cast files as an autoplay queue and hear each boundary: every item is
+    /// seeked to its last seconds, the receiver's advance is awaited, and the
+    /// next item plays a little before its own seek.
+    Gapless {
+        /// The files to queue, in order.
+        #[arg(num_args = 1.., required = true)]
+        files: Vec<PathBuf>,
+        /// How far before an item's end the seek lands, in seconds.
+        #[arg(long, default_value_t = 10.0)]
+        tail_secs: f64,
+        /// How long an item plays after an advance before its seek, in seconds.
+        #[arg(long, default_value_t = 5.0)]
+        dwell_secs: f64,
+        /// Fail when the receiver reports Ended or Idle across a boundary, a
+        /// gapless advance reports neither.
+        #[arg(long)]
+        strict: bool,
+    },
+}
+
+/// The container a file is cast as, by its extension.
+fn mime_for(path: &Path) -> Option<&'static str> {
+    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    Some(match ext.as_str() {
+        "mp3" => "audio/mpeg",
+        "flac" => "audio/flac",
+        "m4a" | "aac" => "audio/mp4",
+        "ogg" | "opus" | "oga" => "audio/ogg",
+        "wav" => "audio/wav",
+        "mp4" | "m4v" => "video/mp4",
+        "mkv" => "video/x-matroska",
+        "webm" => "video/webm",
+        _ => return None,
+    })
+}
+
+/// The steps of the `gapless` command for `mimes.len()` served files, whose
+/// paths `paths` holds in the same order.
+fn gapless_steps(
+    paths: &[&'static str],
+    mimes: &[&'static str],
+    tail_secs: f64,
+    dwell_secs: f64,
+    strict: bool,
+) -> Vec<fast::Step> {
+    use fast::{PlaylistItem, Receive, Send, Step};
+    use fcast_protocol::v4::flat::PlaybackState;
+
+    let count = paths.len();
+    let mut steps = vec![
+        Step::Receive(Receive::Version),
+        Step::Send(Send::Version(4)),
+        Step::Send(Send::SenderIntroduction),
+        Step::Receive(Receive::ReceiverIntroduction),
+    ];
+    for (id, (path, mime)) in paths.iter().zip(mimes).enumerate() {
+        steps.push(Step::ServeFile {
+            path,
+            id: id as u32,
+            mime,
+            headers: None,
+        });
+    }
+    let items: Vec<PlaylistItem> =
+        (0..count as u32).map(|file_id| PlaylistItem { file_id }).collect();
+    steps.push(Step::Send(Send::LoadQueueV4 {
+        items: items.leak(),
+        start_index: Some(0),
+        autoplay: true,
+    }));
+    steps.push(Step::AwaitPlaybackState(PlaybackState::Playing));
+    // The engine waits 16 s per step, so a longer tail sleeps out its head.
+    let head_ms = ((tail_secs - 8.0).max(0.0) * 1000.0) as u64;
+    let dwell_ms = (dwell_secs.max(0.0) * 1000.0) as u64;
+    for index in 0..count {
+        if index > 0 {
+            steps.push(Step::SleepMillis(dwell_ms));
+        }
+        if strict {
+            steps.push(Step::MarkPlaybackStates);
+        }
+        steps.push(Step::SeekFromEndV4 { secs: tail_secs });
+        for _ in 0..head_ms / 10_000 {
+            steps.push(Step::SleepMillis(10_000));
+        }
+        steps.push(Step::SleepMillis(head_ms % 10_000));
+        if index + 1 < count {
+            steps.push(Step::AwaitQueueSelect {
+                index: (index + 1) as u8,
+            });
+            if strict {
+                steps.push(Step::AssertNoPlaybackStateSinceMark(PlaybackState::Ended));
+                steps.push(Step::AssertNoPlaybackStateSinceMark(PlaybackState::Idle));
+            }
+        } else {
+            steps.push(Step::AwaitPlaybackState(PlaybackState::Ended));
+        }
+    }
+    steps.push(Step::Send(Send::StopV4));
+    steps
+}
+
+async fn gapless(
+    receiver: SocketAddr,
+    files: Vec<PathBuf>,
+    tail_secs: f64,
+    dwell_secs: f64,
+    strict: bool,
+    fingerprint: Option<Vec<u8>>,
+) -> bool {
+    let mut paths = Vec::new();
+    let mut mimes = Vec::new();
+    for file in &files {
+        let Some(mime) = mime_for(file) else {
+            println!("{RED}{}: not a media type this command knows{RESET}", file.display());
+            return false;
+        };
+        // served by absolute path, which the sample media directory then
+        // does not prefix
+        let absolute = match std::fs::canonicalize(file) {
+            Ok(path) => path,
+            Err(err) => {
+                println!("{RED}{}: {err}{RESET}", file.display());
+                return false;
+            }
+        };
+        let Some(path) = absolute.to_str() else {
+            println!("{RED}{}: not a UTF-8 path{RESET}", file.display());
+            return false;
+        };
+        println!("{BLUE}{}{RESET} {}", paths.len(), file.display());
+        paths.push(&*path.to_owned().leak());
+        mimes.push(mime);
+    }
+    let steps = gapless_steps(&paths, &mimes, tail_secs, dwell_secs, strict);
+    let case = TestCase {
+        name: "gapless",
+        steps: steps.leak(),
+    };
+    let file_server = FileServer::new(0).await.unwrap();
+    let passed = run_test(&case, &receiver, &file_server, Path::new("/"), fingerprint.as_deref()).await;
+    if passed {
+        println!("test {} ... {GREEN}OK{RESET}", case.name);
+    }
+    passed
 }
 
 #[derive(Parser)]
@@ -301,5 +446,15 @@ async fn main() {
             run_tests(receiver, sample_media, tests, fingerprint, case_gap).await
         }
         Command::Stress => stress(receiver, sample_media, fingerprint, cli.exclude, cli.only).await,
+        Command::Gapless {
+            files,
+            tail_secs,
+            dwell_secs,
+            strict,
+        } => {
+            if !gapless(receiver, files, tail_secs, dwell_secs, strict, fingerprint).await {
+                std::process::exit(1);
+            }
+        }
     }
 }
