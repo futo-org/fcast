@@ -219,6 +219,9 @@ export global Bridge {
     // tray) to its first frame. State changed while nothing rendered, and an
     // animated view would only start fading out the old state now.
     in property <bool> fresh-surface: false;
+    // The display is between two modes and shows nothing, see
+    // android_display.rs. What should be seen arriving waits it out.
+    in property <bool> display-settling: false;
     // True from launch until the FCast port is committed. Drives the startup
     // screen (spinner / port-conflict prompt) shown over the idle background.
     in property <bool> starting-up: true;

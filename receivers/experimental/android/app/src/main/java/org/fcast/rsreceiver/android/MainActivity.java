@@ -53,6 +53,10 @@ public class MainActivity extends NativeActivity {
         // the ring stream whenever nothing is actively playing.
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
 
+        lastModeId = getWindowManager().getDefaultDisplay().getMode().getModeId();
+        getSystemService(android.hardware.display.DisplayManager.class)
+                .registerDisplayListener(modeListener, null);
+
         ReceiverCore.attachActivity(this);
         Updater.onActivityCreated(this);
         // TVs too: tap-to-play, the boot and the update notices are the
@@ -269,8 +273,43 @@ public class MainActivity extends NativeActivity {
             Log.i(TAG, "preferred display mode " + modeId + " for " + fps + " fps");
             lp.preferredDisplayModeId = modeId;
             getWindow().setAttributes(lp);
+            // the switch itself is reported by modeListener, this covers the
+            // time until it is
+            nativeDisplaySettling(MODE_REQUEST_SETTLE_MS);
         }
     }
+
+    /// How long the UI holds what should be seen arriving, see
+    /// android_display.rs. From a mode request until the switch would have
+    /// been reported, and from the switch until a TV has locked onto the new
+    /// mode, which takes most of them one to two seconds.
+    private static final int MODE_REQUEST_SETTLE_MS = 1000;
+    private static final int MODE_SWITCH_SETTLE_MS = 2000;
+
+    static native void nativeDisplaySettling(int millis);
+
+    private int lastModeId = -1;
+    private final android.hardware.display.DisplayManager.DisplayListener modeListener =
+            new android.hardware.display.DisplayManager.DisplayListener() {
+                @Override
+                public void onDisplayAdded(int displayId) {}
+
+                @Override
+                public void onDisplayRemoved(int displayId) {}
+
+                // also fires for brightness and state, only a mode counts
+                @Override
+                public void onDisplayChanged(int displayId) {
+                    if (displayId != android.view.Display.DEFAULT_DISPLAY) {
+                        return;
+                    }
+                    int modeId = getWindowManager().getDefaultDisplay().getMode().getModeId();
+                    if (modeId != lastModeId) {
+                        lastModeId = modeId;
+                        nativeDisplaySettling(MODE_SWITCH_SETTLE_MS);
+                    }
+                }
+            };
 
     private static boolean rateFits(float rate, float fps) {
         int multiple = Math.round(rate / fps);
@@ -512,6 +551,8 @@ public class MainActivity extends NativeActivity {
         // up, the native side decides whether the process ends with it.
         destroyed = true;
         painted = false;
+        getSystemService(android.hardware.display.DisplayManager.class)
+                .unregisterDisplayListener(modeListener);
         ReceiverCore.detachActivity(this);
         super.onDestroy();
     }

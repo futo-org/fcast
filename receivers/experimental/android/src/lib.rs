@@ -680,6 +680,17 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_Updater_nativeInstallFailed<
         ));
 }
 
+/// The display is switching modes and shows nothing for about `millis`.
+#[allow(non_snake_case)]
+#[unsafe(no_mangle)]
+pub extern "C" fn Java_org_fcast_rsreceiver_android_MainActivity_nativeDisplaySettling<'local>(
+    _env: jni::JNIEnv<'local>,
+    _class: jni::objects::JClass<'local>,
+    millis: jni::sys::jint,
+) {
+    rcore::android_display_settling(millis.max(0) as u32);
+}
+
 /// The overlay grant, pushed by the activity on every window focus gain.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]

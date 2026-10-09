@@ -70,6 +70,14 @@ pub fn android_app_visibility(visible: bool) {
 pub fn android_overlay_state(granted: bool, can_open_settings: bool) {
     android_overlay::set_state(granted, can_open_settings);
 }
+/// The display is switching modes and shows nothing for about this long,
+/// from the activity.
+#[cfg(target_os = "android")]
+pub fn android_display_settling(millis: u32) {
+    android_display::settling(std::time::Duration::from_millis(millis.into()));
+}
+#[cfg(target_os = "android")]
+mod android_display;
 #[cfg(target_os = "android")]
 mod android_overlay;
 #[cfg(target_os = "android")]

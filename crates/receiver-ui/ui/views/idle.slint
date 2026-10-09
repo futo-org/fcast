@@ -48,8 +48,46 @@ component IdleText inherits FText {
 }
 
 export component IdleView inherits Rectangle {
+    // Idle is the state on screen. The view itself comes up at once to cover
+    // the player, and its contents fade in over the background behind them,
+    // so the end of a cast does not snap to a full screen of text.
+    in property <bool> active;
     // Connected-senders card, off until a later UI iteration reworks it.
     property <bool> show-senders-card: false;
+
+    // The fade waits for a display that is switching modes, as it does when
+    // a cast ends with refresh-rate matching on, or it plays to a TV that
+    // is showing nothing yet. Latched, so a switch after the contents are
+    // up does not take them away again.
+    property <bool> settling: Bridge.display-settling;
+    property <bool> revealed: root.active && !root.settling;
+    changed active => {
+        root.revealed = root.active && !root.settling;
+    }
+    changed settling => {
+        if root.active && !root.settling {
+            root.revealed = true;
+        }
+    }
+
+    states [
+        shown when root.revealed: {
+            content.opacity: 1.0;
+            in {
+                // a new surface's first frame shows the state as it is
+                // Slow at the start. An ease-out put most of the change into
+                // the first frames, which a TV box draws late and far apart
+                // right after a teardown, and it read as no fade at all.
+                animate content.opacity {
+                    duration: Bridge.fresh-surface ? 0ms : 700ms;
+                    easing: ease-in-out;
+                }
+            }
+            out {
+                animate content.opacity { duration: 100ms; }
+            }
+        }
+    ]
 
     Image {
         source: Assets.background-dark;
@@ -57,7 +95,8 @@ export component IdleView inherits Rectangle {
         height: 100%;
     }
 
-    VerticalLayout {
+    content := VerticalLayout {
+        opacity: 0.0;
         padding-top: 32px + Bridge.safe-area-top;
         padding-bottom: 32px + Bridge.safe-area-bottom;
         padding-right: 58px + Bridge.safe-area-right;
