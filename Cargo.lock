@@ -3052,7 +3052,7 @@ checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 [[package]]
 name = "flapjack"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "anyhow",
  "arc-swap",
@@ -3085,7 +3085,7 @@ dependencies = [
 [[package]]
 name = "flapjack-androidmedia"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3101,7 +3101,7 @@ dependencies = [
 [[package]]
 name = "flapjack-audiostretch"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3114,7 +3114,7 @@ dependencies = [
 [[package]]
 name = "flapjack-core"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3131,7 +3131,7 @@ dependencies = [
 [[package]]
 name = "flapjack-decode"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "flapjack-decodebin-core",
  "flapjack-decodebin-owner",
@@ -3144,12 +3144,12 @@ dependencies = [
 [[package]]
 name = "flapjack-decodebin-core"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 
 [[package]]
 name = "flapjack-decodebin-owner"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "flapjack-decodebin-core",
  "flapjack-lockorder",
@@ -3159,7 +3159,7 @@ dependencies = [
 [[package]]
 name = "flapjack-decodebin-queue"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "flapjack-lockorder",
 ]
@@ -3167,7 +3167,7 @@ dependencies = [
 [[package]]
 name = "flapjack-lockorder"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "loom",
 ]
@@ -3175,7 +3175,7 @@ dependencies = [
 [[package]]
 name = "flapjack-mqueue"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "flapjack-decodebin-queue",
  "gst-static-env",
@@ -3186,7 +3186,7 @@ dependencies = [
 [[package]]
 name = "flapjack-pango-markup"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "flapjack-subparse-formats",
 ]
@@ -3194,7 +3194,7 @@ dependencies = [
 [[package]]
 name = "flapjack-pwaudiosink"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3211,7 +3211,7 @@ dependencies = [
 [[package]]
 name = "flapjack-rsadaptivesrc"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "aes",
  "bytes",
@@ -3236,7 +3236,7 @@ dependencies = [
 [[package]]
 name = "flapjack-rsfilesrc"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3249,7 +3249,7 @@ dependencies = [
 [[package]]
 name = "flapjack-rshttpsrc"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "flapjack-core",
  "futures-util",
@@ -3270,7 +3270,7 @@ dependencies = [
 [[package]]
 name = "flapjack-sabrump"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -3290,7 +3290,7 @@ dependencies = [
 [[package]]
 name = "flapjack-sabrumpsrc"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "base64 0.22.1",
  "bytes",
@@ -3311,7 +3311,7 @@ dependencies = [
 [[package]]
 name = "flapjack-srcbin"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "gst-static-env",
  "gst-static-link",
@@ -3323,7 +3323,7 @@ dependencies = [
 [[package]]
 name = "flapjack-subparse"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "encoding_rs",
  "flapjack-pango-markup",
@@ -3339,7 +3339,7 @@ dependencies = [
 [[package]]
 name = "flapjack-subparse-formats"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 
 [[package]]
 name = "flatbuffers"
@@ -9547,7 +9547,7 @@ checksum = "fcf6e9b9bc7cd39363ba9032692b5303940ab16f600fedf844de215c657ec508"
 [[package]]
 name = "simulator"
 version = "0.1.0"
-source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#bb2110290bf145bb980e516862eaa209a9b4a514"
+source = "git+https://gitlab.futo.org/fcast/flapjack.git?branch=master#aae5b3c10e594026e22e57e4aa28953988fe5bf4"
 dependencies = [
  "ctor 0.2.9",
  "gst-static-env",
