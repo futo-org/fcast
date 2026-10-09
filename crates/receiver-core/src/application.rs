@@ -5197,8 +5197,10 @@ impl Application {
         {
             self.set_playback_active(true);
         }
-        self.notify_updates(true)?;
+        // The state first: a settled one ends a seek's quiet window, which
+        // held back the legacy update of a seek made while paused.
         self.playback_state_changed(state.as_fcast_v4());
+        self.notify_updates(true)?;
         #[cfg(feature = "google-cast")]
         self.gcast_tx.send(gcast::StatusUpdate::PlayerState(state));
         Ok(())
