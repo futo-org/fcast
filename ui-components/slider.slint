@@ -77,9 +77,20 @@ export component Slider {
     }
 
     for range in root.buffered-ranges: Rectangle {
-        x: rail.x + range.start * rail.width;
+        // Along the rail, as the played length is. Horizontal only.
+        property <length> played: thumb.x;
+        property <length> start: range.start * rail.width;
+        property <length> stop: range.stop * rail.width;
+        // A range the track reaches starts under the track, a corner radius
+        // behind its end, so the track's rounded end sits on the range and
+        // not on a notch of bare rail. One further ahead is a pill of its own.
+        property <length> from: start > played + rail.border-radius ? start : min(start, max(0px, played - rail.border-radius));
+
+        x: rail.x + from;
         y: rail.y;
-        width: max(0px, (range.stop - range.start) * rail.width);
+        width: max(0px, stop - from);
+        // the track's end corners would show one that stops under it
+        visible: stop > played;
         height: rail.height;
         background: root.buffered-color;
         border-radius: rail.border-radius;

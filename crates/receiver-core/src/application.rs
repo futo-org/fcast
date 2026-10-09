@@ -66,8 +66,8 @@ const PROGRESS_TICK_INTERVAL: Duration = Duration::from_millis(100);
 /// Idle this long, free heap pages go back to the system. Long enough that a
 /// sender skipping between items never pays for it.
 const IDLE_RELEASE_AFTER: Duration = Duration::from_secs(8);
-/// Deliberately far above the progress tick: the stream-mode nub walks the
-/// pipeline.
+/// How often the buffered indicator is refreshed while the shown second
+/// stands still, as it does paused or stalled.
 const BUFFERED_RANGES_INTERVAL: Duration = Duration::from_millis(1000);
 /// Tolerance for releasing the optimistic thumb hold; absorbs tick sampling
 /// drift only.
@@ -1101,6 +1101,8 @@ pub struct Application {
     pending_subtitle_add_epoch: u64,
     last_progress_broadcast: Option<Instant>,
     last_buffered_push: Option<Instant>,
+    /// The shown second the last buffered push was made for.
+    last_buffered_second: Option<u32>,
     last_volume_cmd: Option<Instant>,
     pending_seek_op: Option<(PacketOrigin, gst::ClockTime)>,
     pending_seek_epoch: u64,
@@ -1537,6 +1539,7 @@ impl Application {
             pending_subtitle_add_epoch: 0,
             last_progress_broadcast: None,
             last_buffered_push: None,
+            last_buffered_second: None,
             last_volume_cmd: None,
             pending_seek_op: None,
             pending_seek_epoch: 0,
@@ -1744,16 +1747,22 @@ impl Application {
         }
     }
 
-    /// Push the scrubber's buffered indicator, throttled to
-    /// [`BUFFERED_RANGES_INTERVAL`]. Real timeline ranges when available,
-    /// else a stream-mode buffered-ahead nub.
-    fn push_buffered_ranges(&mut self) {
-        if self
-            .last_buffered_push
-            .is_some_and(|at| at.elapsed() < BUFFERED_RANGES_INTERVAL)
+    /// Push the scrubber's buffered indicator. Real timeline ranges when
+    /// available, else a stream-mode buffered-ahead nub. Keyed to the second
+    /// the scrubber shows, so the indicator moves in the frame the track
+    /// does. On a clock of its own the nub stood still while the track
+    /// stepped under it, and its visible length jumped by up to a second
+    /// every second.
+    fn push_buffered_ranges(&mut self, position: f64) {
+        let second = shown_second(position);
+        if self.last_buffered_second == Some(second)
+            && self
+                .last_buffered_push
+                .is_some_and(|at| at.elapsed() < BUFFERED_RANGES_INTERVAL)
         {
             return;
         }
+        self.last_buffered_second = Some(second);
         self.last_buffered_push = Some(Instant::now());
 
         let ranges = self.player.buffered_ranges();
@@ -1766,21 +1775,10 @@ impl Application {
             return;
         }
 
-        let nub = self.buffered_ahead_range();
+        let nub = self.current_duration.zip(self.player.buffered_ahead()).and_then(
+            |(duration, ahead)| nub_range(position, ahead.seconds_f64(), duration.seconds_f64()),
+        );
         self.gui.set_buffered_ranges(nub.into_iter().collect());
-    }
-
-    /// The buffered-ahead nub as a `(start, stop)` timeline fraction.
-    fn buffered_ahead_range(&self) -> Option<(f32, f32)> {
-        let duration = self.current_duration?.seconds_f64();
-        if duration <= 0.0 {
-            return None;
-        }
-        let ahead = self.player.buffered_ahead()?.seconds_f64();
-        let position = self.player.get_position()?.seconds_f64();
-        let start = (position / duration).clamp(0.0, 1.0);
-        let stop = ((position + ahead) / duration).clamp(0.0, 1.0);
-        (stop > start).then_some((start as f32, stop as f32))
     }
 
     fn playback_progress_changed(&mut self) {
@@ -1793,7 +1791,7 @@ impl Application {
             .update_playback_progress(position.seconds_f64() as f32, duration.seconds_f64() as f32);
         #[cfg(target_os = "android")]
         self.android_media_progress(position.seconds_f64(), duration.seconds_f64());
-        self.push_buffered_ranges();
+        self.push_buffered_ranges(position.seconds_f64());
 
         // Bypasses per-sender intervals on purpose; debounced because the start/seek
         // dance emits bursts of state edges (observed: 5 within 14ms).
@@ -1992,7 +1990,7 @@ impl Application {
             .update_playback_progress(position as f32, duration as f32);
         #[cfg(target_os = "android")]
         self.android_media_progress(position, duration);
-        self.push_buffered_ranges();
+        self.push_buffered_ranges(position);
 
         if self.should_broadcast()
             && !self.seek_quiet
@@ -7990,6 +7988,25 @@ fn load_waits_for_window(
     rising && !drawn && fcast_item && !image && !follows_a_cast
 }
 
+/// The whole second the scrubber shows for a position. Floored at the width
+/// the GUI is sent, where the UI floors it to gate its own progress writes.
+fn shown_second(position: f64) -> u32 {
+    (position as f32).floor().max(0.0) as u32
+}
+
+/// The buffered-ahead nub as a `(start, stop)` timeline fraction. It starts
+/// at the shown second, not the live position: the track ends there, so the
+/// nub never starts ahead of it and keeps its length through that second.
+fn nub_range(position: f64, ahead: f64, duration: f64) -> Option<(f32, f32)> {
+    if duration <= 0.0 {
+        return None;
+    }
+    let shown = f64::from(shown_second(position));
+    let start = (shown / duration).clamp(0.0, 1.0);
+    let stop = ((shown + ahead) / duration).clamp(0.0, 1.0);
+    (stop > start).then_some((start as f32, stop as f32))
+}
+
 /// Whether a finished load is told to the activity, from the (item id, rise
 /// generation) pair on each side of it. An item load must have started (not
 /// an async playlist fetch or a rejected select), with no rising edge of its
@@ -8303,6 +8320,31 @@ mod tests {
 
     /// Only a load that started an item over a still active cast, with no
     /// rising edge of its own, is told to the activity.
+    #[test]
+    fn the_nub_starts_at_the_shown_second_and_keeps_its_length_through_it() {
+        let early = nub_range(12.05, 3.0, 100.0);
+        assert_eq!(early, Some((0.12, 0.15)));
+        assert_eq!(nub_range(12.95, 3.0, 100.0), early, "a late push moves nothing");
+        assert_eq!(nub_range(13.0, 3.0, 100.0), Some((0.13, 0.16)));
+    }
+
+    #[test]
+    fn the_nub_floors_the_position_the_gui_is_sent() {
+        // 13.0 once narrowed, which is the second the scrubber's track is on
+        let position = 12.999_999_9_f64;
+        assert_eq!(shown_second(position), 13);
+        assert_eq!(nub_range(position, 2.0, 100.0), Some((0.13, 0.15)));
+        assert_eq!(shown_second(-0.5), 0);
+    }
+
+    #[test]
+    fn the_nub_is_clamped_to_the_timeline_and_dropped_when_empty() {
+        assert_eq!(nub_range(98.5, 10.0, 100.0), Some((0.98, 1.0)));
+        assert_eq!(nub_range(100.0, 10.0, 100.0), None);
+        assert_eq!(nub_range(12.0, 0.0, 100.0), None);
+        assert_eq!(nub_range(12.0, 3.0, 0.0), None);
+    }
+
     #[test]
     fn only_an_edgeless_load_over_an_active_cast_is_told() {
         assert!(cast_loaded_due((4, 2), (5, 2), true));
