@@ -454,8 +454,10 @@ impl Settings {
             .and_then(parse_log_level)
     }
 
+    /// Always. FCast is the only protocol on android and its switch is not
+    /// shown, so one left off by an older build could not be turned back on.
     pub fn fcast_enabled(&self) -> bool {
-        self.config.get().fcast.enabled
+        true
     }
 }
 
@@ -469,11 +471,11 @@ pub fn android_start_on_boot(files_dir: &std::path::Path) -> Option<bool> {
 }
 
 /// The FCast name the activity registers, read from the config in
-/// `files_dir`, `None` while FCast is disabled. `hostname` fills `{hostname}`
-/// and the `FCast-<hostname>` default. The activity asks before the receiver
-/// is up, so this reads the file itself.
+/// `files_dir`. `hostname` fills `{hostname}` and the `FCast-<hostname>`
+/// default. The activity asks before the receiver is up, so this reads the
+/// file itself.
 #[cfg(target_os = "android")]
-pub fn android_fcast_name(files_dir: &std::path::Path, hostname: &str) -> Option<String> {
+pub fn android_fcast_name(files_dir: &std::path::Path, hostname: &str) -> String {
     config::ConfigStore::open(files_dir.join(ANDROID_CONFIG_FILE))
         .get()
         .advertised_fcast_name(hostname)

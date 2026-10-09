@@ -696,7 +696,8 @@ export component SettingsDrawer inherits Rectangle {
                         title: @tr("FCast");
                         icon: Icons.fcast-small;
                     }
-                    ToggleRow {
+                    // the only protocol on android, where the core ignores it
+                    if !Bridge.android: ToggleRow {
                         label: @tr("Enabled");
                         setting-key: "fcast.enabled";
                         value <=> Bridge.cfg-fcast-enabled;

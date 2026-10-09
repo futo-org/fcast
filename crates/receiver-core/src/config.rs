@@ -234,15 +234,16 @@ impl Config {
 }
 
 impl Config {
-    /// The FCast name to advertise, `None` while FCast is disabled.
-    /// `hostname` fills `{hostname}` and the `FCast-<hostname>` default. The
-    /// android activity registers it itself.
+    /// The FCast name the android activity registers. `hostname` fills
+    /// `{hostname}` and the `FCast-<hostname>` default. Whatever
+    /// `fcast.enabled` holds: FCast is the only protocol there and its
+    /// switch is not shown.
     #[cfg_attr(not(target_os = "android"), allow(dead_code))]
-    pub fn advertised_fcast_name(&self, hostname: &str) -> Option<String> {
-        self.fcast.enabled.then(|| match self.fcast.name.as_deref() {
+    pub fn advertised_fcast_name(&self, hostname: &str) -> String {
+        match self.fcast.name.as_deref() {
             Some(name) => name.replace("{hostname}", hostname),
             None => format!("FCast-{hostname}"),
-        })
+        }
     }
 }
 
@@ -724,18 +725,16 @@ mod tests {
     fn advertised_fcast_name_follows_the_config() {
         let mut config = Config::default();
         assert_eq!(
-            config.advertised_fcast_name("samsung-SM-G950F").as_deref(),
-            Some("FCast-samsung-SM-G950F")
+            config.advertised_fcast_name("samsung-SM-G950F"),
+            "FCast-samsung-SM-G950F"
         );
 
         config.set_string("fcast.name", "Living room ({hostname})");
-        assert_eq!(
-            config.advertised_fcast_name("box").as_deref(),
-            Some("Living room (box)")
-        );
+        assert_eq!(config.advertised_fcast_name("box"), "Living room (box)");
 
+        // a switch left off from a build that showed it
         config.set_bool("fcast.enabled", false);
-        assert_eq!(config.advertised_fcast_name("box"), None);
+        assert_eq!(config.advertised_fcast_name("box"), "Living room (box)");
     }
 
     /// A name edited in the drawer is read back by the next start, which is
@@ -755,8 +754,8 @@ mod tests {
 
         let reopened = ConfigStore::open(path);
         assert_eq!(
-            reopened.get().advertised_fcast_name("host").as_deref(),
-            Some("Kitchen")
+            reopened.get().advertised_fcast_name("host"),
+            "Kitchen"
         );
         let _ = std::fs::remove_dir_all(dir);
     }

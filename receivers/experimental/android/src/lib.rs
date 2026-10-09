@@ -365,8 +365,8 @@ fn log_filter(level: rcore::tracing::level_filters::LevelFilter) -> log::LevelFi
     }
 }
 
-/// The FCast name to register as `{fcast}`, a null element while FCast is
-/// disabled and a null array when the call failed. Read from the config
+/// The FCast name to register as `{fcast}`, a null array when the call
+/// failed. Read from the config
 /// before the receiver is up.
 #[allow(non_snake_case)]
 #[unsafe(no_mangle)]
@@ -391,13 +391,11 @@ pub extern "C" fn Java_org_fcast_rsreceiver_android_ReceiverCore_nativeServiceNa
     else {
         return null_names(&env);
     };
-    if let Some(name) = fcast {
-        let Ok(name) = env.new_string(name) else {
-            return null_names(&env);
-        };
-        if env.set_object_array_element(&names, 0, name).is_err() {
-            return null_names(&env);
-        }
+    let Ok(name) = env.new_string(fcast) else {
+        return null_names(&env);
+    };
+    if env.set_object_array_element(&names, 0, name).is_err() {
+        return null_names(&env);
     }
     names.into_raw()
 }
