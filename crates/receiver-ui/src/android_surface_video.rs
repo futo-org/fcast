@@ -44,9 +44,12 @@
 //!   to the buffer alone, it showed for a frame stretched over the window
 //!   in the full-window pre-open. A give-up timer bounds the wait.
 //! * Clear the player's window BEFORE the surface dies, never after. Both the
-//!   caps-drop path and `app_visibility(false)` do set_video_window null first;
-//!   the generation bump it causes is also what lets a codec that already
-//!   grabbed the dying window recover instead of erroring.
+//!   caps-drop path and `app_visibility(false)` do set_video_window null first.
+//!   The call returns once the decoder has stopped its codec on that window,
+//!   a build in flight included, so it can block for a codec build. A codec
+//!   stopped after its surface died never returned from the stop on Amlogic
+//!   TV boxes, and the pipeline could not come down. Clear and mark under
+//!   the handoff lock, so a surface created during the wait is handed after.
 //! * The view reports its surface's life (`SurfaceEvent`) on the android UI
 //!   thread. A creation is handed to the player at once; a destruction takes
 //!   the window off the player before it returns, which is before the
@@ -133,8 +136,10 @@ pub(crate) fn app_visibility(visible: bool) {
     if visible {
         this.relayout();
     } else {
+        // under the lock, as the caps-drop path has it
+        let mut st = this.handoff.lock().unwrap();
         crate::set_video_window(std::ptr::null_mut());
-        this.handoff.lock().unwrap().handed_seq = 0;
+        st.handed_seq = 0;
     }
 }
 
@@ -490,13 +495,23 @@ pub fn make_sink() -> Option<gst::Element> {
             }
             // Caps drop when the item unlinks. Take the window away
             // from the player first, the next codec must not configure
-            // against a surface that is about to die.
-            crate::set_video_window(std::ptr::null_mut());
-            let load_waiting = view.as_ref().is_some_and(|this| {
-                let mut st = this.handoff.lock().unwrap();
-                st.handed_seq = 0;
-                st.preopen_pending
-            });
+            // against a surface that is about to die. Under the handoff
+            // lock, since the call waits for the decoder to let go of its
+            // codec. A surface created meanwhile was handed in that gap,
+            // then marked unhanded here and destroyed below with the
+            // player still on it.
+            let load_waiting = match &view {
+                Some(this) => {
+                    let mut st = this.handoff.lock().unwrap();
+                    crate::set_video_window(std::ptr::null_mut());
+                    st.handed_seq = 0;
+                    st.preopen_pending
+                }
+                None => {
+                    crate::set_video_window(std::ptr::null_mut());
+                    false
+                }
+            };
             // also ends a zero-size relayout retry chain
             *sink().video_size.lock().unwrap() = (0, 0);
             // the next item is unrotated until its own tag arrives;
