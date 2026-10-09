@@ -121,6 +121,8 @@ pub enum Send {
     PauseV4,
     ResumeV4,
     StopV4,
+    /// `PlaybackStateChanged(Idle)`, a stop by another name.
+    IdleV4,
     ChangeTrack {
         kind: TrackKind,
         index: Option<usize>,
@@ -299,6 +301,19 @@ pub enum Step {
         extra: &'static [(&'static str, &'static str)],
     },
     ExpectStopOnSecondSender,
+    /// Wait for a `PlaybackStateChanged` with this state on the second sender.
+    ExpectPlaybackStateOnSecondSender(fcast_protocol::v4::flat::PlaybackState),
+    /// Wait for a `Load` on the second sender carrying a queue of `len` items
+    /// that starts at `start_index`, what a sender connecting mid-queue is
+    /// caught up with.
+    ExpectQueueLoadOnSecondSender {
+        len: usize,
+        start_index: u8,
+    },
+    /// Wait for a `ProgressChanged` with a known duration on the second
+    /// sender. Progress only ticks while playing, so on a paused item this is
+    /// the catch-up of a new connection and nothing else.
+    ExpectProgressOnSecondSender,
     ExpectVolumeOnSecondSender(f64),
     ExpectQueueMutationOnSecondSender(QueueMutationKind),
     MeasureProgressBothSenders {
@@ -480,6 +495,9 @@ cases!(
     multi_sender_queue_remove_broadcast_v4,
     multi_sender_queue_select_broadcast_v4,
     multi_sender_stop_broadcast_v4,
+    multi_sender_error_idle_broadcast_v4,
+    multi_sender_state_idle_relayed_v4,
+    late_joiner_gets_queue_state_v4,
     multi_sender_external_subs_v4,
     seek_v3,
     unsubscribe_event_v3,
@@ -3650,6 +3668,88 @@ define_test_case!(
         // initiator).
         send!(Send::StopV4),
         Step::ExpectStopOnSecondSender,
+    ]
+);
+
+// A cast that fails ends for every sender, not only the one that sent it.
+// The other sender had the Load relayed and would show it playing for good.
+define_test_case!(
+    multi_sender_error_idle_broadcast_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        Step::OpenSecondSender,
+        send!(Send::PlayFakeUrlV4 {
+            container: "video/mp4",
+        }),
+        recv!(Receive::Error(ErrorKind::ResourceNotFound)),
+        Step::ExpectLoadOnSecondSender,
+        Step::ExpectPlaybackStateOnSecondSender(fcast_protocol::v4::flat::PlaybackState::Idle),
+        send!(Send::StopV4),
+    ]
+);
+
+// PlaybackStateChanged(Idle) stops playback like StopPlayback does, and the
+// other sender must hear of it the same way. The state goes out with the
+// stop itself, the relay follows it.
+define_test_case!(
+    multi_sender_state_idle_relayed_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        Step::OpenSecondSender,
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        send!(Send::PlayV4 { file_id: 0 }),
+        Step::ExpectLoadOnSecondSender,
+        Step::SleepMillis(500),
+        send!(Send::IdleV4),
+        Step::ExpectPlaybackStateOnSecondSender(fcast_protocol::v4::flat::PlaybackState::Idle),
+        Step::ExpectStopOnSecondSender,
+    ]
+);
+
+// A sender that connects mid-queue is caught up: the queue from its current
+// item, the state, where the item is and its tracks. Paused on purpose, a
+// paused item sends no progress of its own, so what arrives is the catch-up.
+define_test_case!(
+    late_joiner_gets_queue_state_v4,
+    &[
+        recv!(Receive::Version),
+        send!(Send::Version(4)),
+        send!(Send::SenderIntroduction),
+        recv!(Receive::ReceiverIntroduction),
+        serve!("video/BigBuckBunny.mp4", 0, "video/mp4"),
+        serve!("video/BigBuckBunny.mp4", 1, "video/mp4"),
+        send!(Send::LoadQueueV4 {
+            items: &[PlaylistItem { file_id: 0 }, PlaylistItem { file_id: 1 }],
+            start_index: Some(1),
+            autoplay: false,
+        }),
+        Step::AwaitTracks {
+            video: 1,
+            audio: 1,
+            subtitle: 0,
+        },
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Playing),
+        send!(Send::PauseV4),
+        Step::AwaitPlaybackState(fcast_protocol::v4::flat::PlaybackState::Paused),
+        Step::OpenSecondSender,
+        Step::ExpectQueueLoadOnSecondSender {
+            len: 2,
+            start_index: 1,
+        },
+        Step::ExpectPlaybackStateOnSecondSender(fcast_protocol::v4::flat::PlaybackState::Paused),
+        Step::ExpectProgressOnSecondSender,
+        Step::AwaitTracksOnSecondSender {
+            video: 1,
+            audio: 1,
+            subtitle: 0,
+        },
+        send!(Send::StopV4),
     ]
 );
 

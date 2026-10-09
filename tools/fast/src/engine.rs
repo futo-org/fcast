@@ -1242,6 +1242,14 @@ impl<'a> Engine<'a> {
                 self.expect_flat_on_second_sender(v4::flat::Message::StopPlayback, "StopPlayback")
                     .await?
             }
+            Step::ExpectPlaybackStateOnSecondSender(state) => {
+                self.expect_playback_state_on_second_sender(*state).await?
+            }
+            Step::ExpectQueueLoadOnSecondSender { len, start_index } => {
+                self.expect_queue_load_on_second_sender(*len, *start_index)
+                    .await?
+            }
+            Step::ExpectProgressOnSecondSender => self.expect_progress_on_second_sender().await?,
             Step::ExpectVolumeOnSecondSender(volume) => {
                 self.expect_volume_on_second_sender(*volume as f32).await?
             }
@@ -1821,6 +1829,86 @@ impl<'a> Engine<'a> {
                 return Ok(());
             }
         }
+    }
+
+    /// The next Flatbuf packets on the second sender until `matches` accepts
+    /// one. `what` names the wait in the failure.
+    async fn expect_on_second_sender(
+        &mut self,
+        what: &str,
+        mut matches: impl FnMut(&v4::flat::Packet<'_>) -> Result<bool>,
+    ) -> Result<()> {
+        let deadline = Instant::now() + MAX_SETTLE;
+        loop {
+            let now = Instant::now();
+            ensure!(now < deadline, "second sender never received {what}");
+            let Some(pkt) = self.recv_second_strict(deadline - now).await? else {
+                continue;
+            };
+            if pkt.opcode != Opcode::Flatbuf {
+                continue;
+            }
+            let Some(body) = pkt.body.as_deref() else {
+                continue;
+            };
+            let packet =
+                v4::flat::root_as_packet(body).map_err(|e| anyhow!("invalid flatbuffer: {e}"))?;
+            if matches(&packet)? {
+                info!("second sender received {what}");
+                return Ok(());
+            }
+        }
+    }
+
+    async fn expect_playback_state_on_second_sender(
+        &mut self,
+        expected: v4::flat::PlaybackState,
+    ) -> Result<()> {
+        self.expect_on_second_sender(&format!("PlaybackStateChanged({expected:?})"), |packet| {
+            Ok(packet
+                .payload_as_playback_state_changed()
+                .is_some_and(|state| state.state() == expected))
+        })
+        .await
+    }
+
+    /// A `Load` that is not the expected queue fails at once: the catch-up
+    /// sends one, and waiting on would only hide which one it was.
+    async fn expect_queue_load_on_second_sender(
+        &mut self,
+        len: usize,
+        start_index: u8,
+    ) -> Result<()> {
+        self.expect_on_second_sender("a queue Load", |packet| {
+            let Some(load) = packet.payload_as_load() else {
+                return Ok(false);
+            };
+            let queue = load
+                .source_as_queue()
+                .ok_or_else(|| anyhow!("the Load on the second sender was not a queue"))?;
+            ensure!(
+                queue.items().len() == len,
+                "queue Load has {} items, expected {len}",
+                queue.items().len()
+            );
+            ensure!(
+                queue.start_index() == Some(start_index),
+                "queue Load starts at {:?}, expected {start_index}",
+                queue.start_index()
+            );
+            Ok(true)
+        })
+        .await
+    }
+
+    async fn expect_progress_on_second_sender(&mut self) -> Result<()> {
+        self.expect_on_second_sender("ProgressChanged with a duration", |packet| {
+            Ok(packet
+                .payload_as_progress_changed()
+                .and_then(|progress| progress.duration().map(|d| d.micros()))
+                .is_some_and(|micros| micros > 0))
+        })
+        .await
     }
 
     async fn expect_volume_on_second_sender(&mut self, target: f32) -> Result<()> {
@@ -2437,6 +2525,11 @@ impl<'a> Engine<'a> {
             }
             Op::StopV4 => {
                 let msg = v4::MessageBuilder::new().stop_playback();
+                self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
+            }
+            Op::IdleV4 => {
+                let msg = v4::MessageBuilder::new()
+                    .playback_state_changed(v4::flat::PlaybackState::Idle);
                 self.conn.write(Opcode::Flatbuf, Some(&msg)).await?;
             }
             Op::AddSubtitleSourceV4 {
