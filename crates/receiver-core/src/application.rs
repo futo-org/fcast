@@ -646,14 +646,29 @@ fn scheme_allowed(url: &str) -> bool {
         .is_some_and(|(scheme, _)| REMOTE_SCHEMES.iter().any(|s| s.eq_ignore_ascii_case(scheme)))
 }
 
+/// Containers an item may carry inline as `content` instead of a URL.
+const CONTENT_CONTAINERS: &[&str] = &[
+    "application/dash+xml",
+    "application/vnd.apple.mpegurl",
+    "audio/mpegurl",
+];
+
+/// Why a playlist item cannot be loaded, checked before the playlist moves
+/// to it, so a bad item leaves what is playing alone. A playlist has no
+/// companion provider, an fcomp item is someone else's.
+fn playlist_item_rejection(item: &v3::MediaItem) -> Option<ErrorKind> {
+    match item.url.as_deref().filter(|u| !u.is_empty()) {
+        Some(url) if !scheme_allowed(url) || is_fcomp(url) => Some(ErrorKind::UnsupportedFormat),
+        Some(_) => None,
+        None if item.content.is_none() => Some(ErrorKind::MalformedBody),
+        None => (!CONTENT_CONTAINERS.contains(&item.container.as_str()))
+            .then_some(ErrorKind::UnsupportedFormat),
+    }
+}
+
 /// Why a Play cannot be loaded, checked before it replaces the current item,
 /// so a malformed one leaves what is playing alone.
 fn play_rejection(play: &WrappedPlayMessage) -> Option<ErrorKind> {
-    const CONTENT_CONTAINERS: &[&str] = &[
-        "application/dash+xml",
-        "application/vnd.apple.mpegurl",
-        "audio/mpegurl",
-    ];
     match play {
         WrappedPlayMessage::Legacy(msg) => {
             let url = msg.url.as_deref().filter(|u| !u.is_empty());
@@ -4323,6 +4338,14 @@ impl Application {
                         error!(new_index, "Playlist item not found");
                         return Ok(false);
                     }
+                    // the playlist's own advance and the GUI keep their old path
+                    if is_sender_origin(origin)
+                        && let Some(kind) = playlist_item_rejection(&content.items[new_index])
+                    {
+                        error!(new_index, ?kind, "Playlist item cannot be loaded");
+                        self.send_refusal(origin, kind);
+                        return Ok(false);
+                    }
                     *index = new_index;
                 } else {
                     error!("Cannot set playlist item when no playlist is loaded");
@@ -6875,6 +6898,11 @@ impl Application {
                     self.send_refusal(origin, ErrorKind::MalformedBody);
                     return Ok(false);
                 }
+                if let Some(kind) = playlist_item_rejection(&playlist.items[start_idx]) {
+                    error!(start_idx, ?kind, "Playlist's start item cannot be loaded");
+                    self.send_refusal(origin, kind);
+                    return Ok(false);
+                }
 
                 // the playlist takes over only now, AirPlay audio ends here
                 self.end_raop_session();
@@ -7769,6 +7797,26 @@ mod tests {
         let items = [v4_item("http://h/a.mp4"), v4_item("file:///b.mp4")].into_iter().map(|i| (i, None));
         let queue = v4(&fcast_protocol::v4::MessageBuilder::new().load_queue(items, None, true));
         assert_eq!(r(queue), Some(ErrorKind::UnsupportedFormat));
+    }
+
+    #[test]
+    fn playlist_items_that_cannot_load_are_refused_up_front() {
+        use ErrorKind as E;
+        let r = |json: &str| playlist_item_rejection(&serde_json::from_str(json).unwrap());
+        assert_eq!(r(r#"{"container":"video/mp4","url":"http://h/a.mp4"}"#), None);
+        assert_eq!(r(r#"{"container":"application/dash+xml","content":"<MPD/>"}"#), None);
+        assert_eq!(
+            r(r#"{"container":"video/mp4","url":"file:///etc/passwd"}"#),
+            Some(E::UnsupportedFormat)
+        );
+        // no companion provider behind a playlist
+        assert_eq!(
+            r(r#"{"container":"video/mp4","url":"fcomp://1/2"}"#),
+            Some(E::UnsupportedFormat)
+        );
+        assert_eq!(r(r#"{"container":"video/mp4"}"#), Some(E::MalformedBody));
+        assert_eq!(r(r#"{"container":"video/mp4","url":""}"#), Some(E::MalformedBody));
+        assert_eq!(r(r#"{"container":"video/mp4","content":"x"}"#), Some(E::UnsupportedFormat));
     }
 
     #[test]
