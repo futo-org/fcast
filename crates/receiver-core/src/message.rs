@@ -225,7 +225,12 @@ pub enum Message {
         /// The Play's sender, errors go back to it.
         origin: crate::application::PacketOrigin,
     },
-    MediaItemFinish(MediaItemId),
+    /// An item's show duration ran out. `epoch` names the countdown, one a
+    /// pause or a newer item replaced is ignored.
+    MediaItemFinish {
+        id: MediaItemId,
+        epoch: u64,
+    },
     SelectTrack {
         id: i32,
         variant: player::TrackKind,

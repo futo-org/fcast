@@ -442,6 +442,37 @@ fn show_duration_delay(show_duration: f64) -> Option<Duration> {
     Duration::try_from_secs_f64(show_duration).ok()
 }
 
+/// An item's show-duration countdown. It pauses and resumes with the item,
+/// as the old receiver's did, where a detached sleep advanced a paused
+/// slideshow.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct ShowTimer {
+    item: MediaItemId,
+    /// What is left, as of `since` while it runs.
+    remaining: Duration,
+    /// When the countdown last started, `None` while paused.
+    since: Option<Instant>,
+}
+
+/// Stops the countdown and keeps what is left. False when it was not running.
+fn show_timer_pause(timer: &mut ShowTimer, now: Instant) -> bool {
+    let Some(since) = timer.since.take() else {
+        return false;
+    };
+    timer.remaining = timer.remaining.saturating_sub(now.saturating_duration_since(since));
+    true
+}
+
+/// Restarts a paused countdown and returns what is left to wait. `None` when
+/// it was already running.
+fn show_timer_resume(timer: &mut ShowTimer, now: Instant) -> Option<Duration> {
+    if timer.since.is_some() {
+        return None;
+    }
+    timer.since = Some(now);
+    Some(timer.remaining)
+}
+
 fn image_download_error_kind(err: &image::DownloadImageError) -> ErrorKind {
     use image::DownloadImageError as E;
     match err {
@@ -1008,6 +1039,10 @@ pub struct Application {
     /// v1-v3 gets nothing.
     seek_quiet: bool,
     seek_quiet_epoch: u64,
+    /// The current item's show-duration countdown, when it has one.
+    show_timer: Option<ShowTimer>,
+    /// Names the sleeping task that may still fire, bumped per spawn and pause.
+    show_timer_epoch: u64,
     /// Pins the slider thumb at the seek target so a stale position tick can't
     /// spring it back.
     gui_seek_hold: Option<GuiSeekHold>,
@@ -1429,6 +1464,8 @@ impl Application {
             pending_seek_op: None,
             pending_seek_epoch: 0,
             seek_quiet: false,
+            show_timer: None,
+            show_timer_epoch: 0,
             seek_quiet_epoch: 0,
             gui_seek_hold: None,
             load_watchdog_epoch: 0,
@@ -1900,6 +1937,7 @@ impl Application {
     /// [`Self::end_presentation`] or replaced by the next load.
     fn cleanup_playback_data(&mut self) {
         self.current_duration = None;
+        self.show_timer = None;
         // Playback is stopping or being replaced: a real Idle must go out.
         self.seek_quiet = false;
         self.gapless_prearm = None;
@@ -2126,17 +2164,44 @@ impl Application {
     /// Arm the show-duration timer for `id`. `show_duration` is a bare wire
     /// `f64`, so a negative/NaN/huge value is rejected here rather than
     /// panicking in `Duration`.
-    fn arm_show_duration(&self, show_duration: f64, id: MediaItemId) {
+    fn arm_show_duration(&mut self, show_duration: f64, id: MediaItemId) {
         let Some(after) = show_duration_delay(show_duration) else {
             warn!(show_duration, "Ignoring invalid showDuration");
             return;
         };
+        self.show_timer = Some(ShowTimer {
+            item: id,
+            remaining: after,
+            since: Some(Instant::now()),
+        });
+        self.spawn_show_timer(id, after);
+    }
 
+    fn spawn_show_timer(&mut self, id: MediaItemId, after: Duration) {
+        self.show_timer_epoch += 1;
+        let epoch = self.show_timer_epoch;
         let msg_tx = self.msg_tx.clone();
         tokio::spawn(async move {
             tokio::time::sleep(after).await;
-            msg_tx.send(Message::MediaItemFinish(id));
+            msg_tx.send(Message::MediaItemFinish { id, epoch });
         });
+    }
+
+    /// The current item was paused or resumed, its countdown follows.
+    fn show_timer_follow(&mut self, paused: bool) {
+        let current = self.current_media_item_id;
+        let Some(timer) = self.show_timer.as_mut().filter(|t| t.item == current) else {
+            return;
+        };
+        let now = Instant::now();
+        if paused {
+            if show_timer_pause(timer, now) {
+                // the sleeping task is of the old epoch now
+                self.show_timer_epoch += 1;
+            }
+        } else if let Some(left) = show_timer_resume(timer, now) {
+            self.spawn_show_timer(current, left);
+        }
     }
 
     fn media_loaded_successfully(&mut self) {
@@ -4175,6 +4240,7 @@ impl Application {
         // preroll.
         if self.is_playing() {
             self.player.pause();
+            self.show_timer_follow(true);
         }
     }
 
@@ -4196,6 +4262,7 @@ impl Application {
         }
         if self.is_playing() {
             self.player.play();
+            self.show_timer_follow(false);
         }
     }
 
@@ -6950,15 +7017,15 @@ impl Application {
 
                 self.gui.update_playlist(start_idx as i32, length as i32);
             }
-            Message::MediaItemFinish(id) => {
+            Message::MediaItemFinish { id, epoch } => {
+                if id != self.current_media_item_id || epoch != self.show_timer_epoch {
+                    debug!(id, epoch, "Ignoring media item finish event");
+                    return Ok(false);
+                }
+                self.show_timer = None;
                 let Some(media) = &self.current_media else {
                     return Ok(false);
                 };
-
-                if id != self.current_media_item_id {
-                    debug!(id, "Ignoring media item finish event");
-                    return Ok(false);
-                }
 
                 // A queue item's playback_duration elapsed: the spec's autoplay trigger.
                 if matches!(media.source, MediaSource::Queue(_)) {
@@ -7775,6 +7842,27 @@ mod tests {
     fn v4_queue(n: usize, start: Option<u8>) -> WrappedPlayMessage {
         let items = (0..n).map(|i| (v4_item(&format!("http://h/{i}.mp4")), None));
         v4(&fcast_protocol::v4::MessageBuilder::new().load_queue(items, start, true))
+    }
+
+    #[test]
+    fn a_show_timer_keeps_what_is_left_across_a_pause() {
+        let t0 = Instant::now();
+        let mut timer = ShowTimer {
+            item: 7,
+            remaining: Duration::from_secs(10),
+            since: Some(t0),
+        };
+        assert_eq!(show_timer_resume(&mut timer, t0), None, "already running");
+        assert!(show_timer_pause(&mut timer, t0 + Duration::from_secs(4)));
+        assert_eq!(timer.remaining, Duration::from_secs(6));
+        assert!(!show_timer_pause(&mut timer, t0 + Duration::from_secs(9)), "already paused");
+        assert_eq!(timer.remaining, Duration::from_secs(6), "a pause does not count down");
+        let t1 = t0 + Duration::from_secs(60);
+        assert_eq!(show_timer_resume(&mut timer, t1), Some(Duration::from_secs(6)));
+        assert_eq!(timer.since, Some(t1));
+        // paused past its end, nothing is left and nothing underflows
+        assert!(show_timer_pause(&mut timer, t1 + Duration::from_secs(100)));
+        assert_eq!(timer.remaining, Duration::ZERO);
     }
 
     #[test]
