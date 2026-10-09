@@ -4375,7 +4375,16 @@ impl Application {
                     origin,
                     MediaSource::Single(Arc::new(fcast::WrappedPlayMessage::Legacy(play_message))),
                 ));
+                // As every other sender-initiated load: a mirror started over an active
+                // cast with the UI stopped raises no active edge, and without this it
+                // played into a window nobody saw (the bring-forward predates mirroring).
+                #[cfg(target_os = "android")]
+                let mark = self.android_load_mark();
                 self.load_media();
+                #[cfg(target_os = "android")]
+                if is_sender_origin(origin) {
+                    self.android_cast_loaded(mark);
+                }
             }
             Operation::SetPlaybackState(state) => match state {
                 fcast_protocol::v4::PlaybackState::Paused => {
