@@ -220,6 +220,7 @@ class PlayerActivity : AppCompatActivity() {
                 else -> {}
             }
             viewModel.source = null
+            updateKeepScreenOnFlag()
         } catch (e: Exception) {
             Log.e(TAG, "WHEP client failed to disconnect: $e")
         }
@@ -787,7 +788,14 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     fun updateKeepScreenOnFlag() {
-        if (_exoPlayer.playWhenReady && (_exoPlayer.playbackState == Player.STATE_READY || _exoPlayer.playbackState == Player.STATE_BUFFERING)) {
+        // Mirroring renders a WebRTC track and never touches ExoPlayer, so the
+        // player state says nothing about it. Without the first condition the
+        // screen saver takes over in the middle of a cast.
+        val isMirroring = viewModel.source is PlayerSource.Whep
+        val isPlaying = _exoPlayer.playWhenReady
+                && (_exoPlayer.playbackState == Player.STATE_READY || _exoPlayer.playbackState == Player.STATE_BUFFERING)
+
+        if (isMirroring || isPlaying) {
             window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         } else {
             window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
@@ -956,6 +964,7 @@ class PlayerActivity : AppCompatActivity() {
             viewModel.errorMessage = null
             viewModel.hasDuration = false
             _wasPlaying = false
+            updateKeepScreenOnFlag()
 
             sendPlaybackUpdate()
             onMediaLoad(message, 0)
