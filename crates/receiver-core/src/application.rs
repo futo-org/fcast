@@ -507,14 +507,22 @@ fn media_warning_toast_kind(kind: player::MediaWarningKind) -> UiToastKind {
     }
 }
 
-/// Query and fragment stripped, so tokens and signatures in media URLs
-/// cannot end up in a bug-report screenshot.
-fn strip_uri_query(uri: &str) -> &str {
+/// Query, fragment and userinfo stripped, so tokens, signatures and
+/// credentials in media URLs cannot end up in a bug-report screenshot.
+fn scrub_uri(uri: &str) -> std::borrow::Cow<'_, str> {
     let end = uri.find(['?', '#']).unwrap_or(uri.len());
-    &uri[..end]
+    let uri = &uri[..end];
+    if let Some(authority) = uri.find("://").map(|i| i + 3) {
+        let authority_end = uri[authority..].find('/').map_or(uri.len(), |i| authority + i);
+        if let Some(at) = uri[authority..authority_end].rfind('@') {
+            let host = &uri[authority + at + 1..];
+            return format!("{}{host}", &uri[..authority]).into();
+        }
+    }
+    uri.into()
 }
 
-/// Every URL inside free text with its query and fragment stripped. A
+/// Every URL inside free text put through `scrub_uri`. A
 /// pipeline error quotes the URL it failed on, signatures included.
 fn scrub_urls(text: &str) -> String {
     let mut out = String::with_capacity(text.len());
@@ -526,7 +534,7 @@ fn scrub_urls(text: &str) -> String {
             .find(|c: char| c.is_whitespace() || c == '"')
             .map_or(rest.len(), |e| start + e);
         out.push_str(&rest[..start]);
-        out.push_str(strip_uri_query(&rest[start..end]));
+        out.push_str(&scrub_uri(&rest[start..end]));
         rest = &rest[end..];
     }
     out.push_str(rest);
@@ -2328,7 +2336,7 @@ impl Application {
             .unwrap_or_default();
         let location = url
             .as_deref()
-            .map(|url| strip_uri_query(url).to_owned())
+            .map(|url| scrub_uri(url).into_owned())
             .unwrap_or_default();
         (
             Some(fcast_bug_report::Source {
@@ -5633,7 +5641,7 @@ impl Application {
                         };
                         let mut diagnostic = message;
                         if let Some(uri) = &failed_uri {
-                            diagnostic.push_str(&format!(" (uri {})", strip_uri_query(uri)));
+                            diagnostic.push_str(&format!(" (uri {})", scrub_uri(uri)));
                         }
                         // A photographed bug report should say which of the two
                         // ladders ran out, and flapjack's half of the message
@@ -8312,14 +8320,19 @@ mod tests {
         // DASH/HLS URLs carry tokens and signatures in the query; the
         // diagnostic block must not.
         assert_eq!(
-            strip_uri_query("https://cdn.example.com/v/main.mpd?token=SECRET&sig=x"),
+            scrub_uri("https://cdn.example.com/v/main.mpd?token=SECRET&sig=x"),
             "https://cdn.example.com/v/main.mpd"
         );
         assert_eq!(
-            strip_uri_query("https://cdn.example.com/v/main.mpd#t=10"),
+            scrub_uri("https://cdn.example.com/v/main.mpd#t=10"),
             "https://cdn.example.com/v/main.mpd"
         );
-        assert_eq!(strip_uri_query("file:///a/b.mkv"), "file:///a/b.mkv");
+        assert_eq!(scrub_uri("file:///a/b.mkv"), "file:///a/b.mkv");
+        assert_eq!(scrub_uri("http://user:pa@ss@nas:8080/film.mkv?x=1"), "http://nas:8080/film.mkv");
+        assert_eq!(scrub_uri("rtsp://admin:pw@cam"), "rtsp://cam");
+        // an '@' in the path is not userinfo
+        assert_eq!(scrub_uri("http://h/a@b.mkv"), "http://h/a@b.mkv");
+        assert_eq!(scrub_urls("failed on http://u:p@h/x?t=1 twice"), "failed on http://h/x twice");
     }
 
     #[test]
