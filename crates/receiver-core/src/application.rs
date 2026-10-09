@@ -795,7 +795,6 @@ impl PacketOrigin {
 }
 
 /// A load a sender asked for, as opposed to the receiver's own GUI or advance.
-#[cfg(target_os = "android")]
 fn is_sender_origin(origin: PacketOrigin) -> bool {
     matches!(origin, PacketOrigin::FCast { .. } | PacketOrigin::GCast { .. })
 }
@@ -2435,22 +2434,22 @@ impl Application {
         }
     }
 
-    /// Taken before a sender-initiated load, read by `android_cast_loaded`.
-    #[cfg(target_os = "android")]
-    fn android_load_mark(&self) -> (MediaItemId, u32) {
-        (self.current_media_item_id, self.android_rise_gen)
-    }
-
-    /// A load over an active cast raises no active edge (loads never pass
-    /// through Idle), so the activity hears of it here to come forward or
-    /// post tap-to-play. A load after an end has its rising edge do it.
-    /// Skipped too when no item load started (an async playlist fetch, a
-    /// rejected select).
-    #[cfg(target_os = "android")]
-    fn android_cast_loaded(&self, mark: (MediaItemId, u32)) {
-        if self.current_media_item_id != mark.0
-            && self.android_rise_gen == mark.1
-            && self.android_playback.0
+    /// Every load a sender asked for runs through here. A load over an
+    /// active cast raises no active edge (loads never pass through Idle), so
+    /// the activity hears of it here to come forward or post tap-to-play.
+    /// `by_sender` is false for the receiver's own loads, which stay quiet.
+    #[cfg_attr(not(target_os = "android"), allow(unused_variables))]
+    fn sender_load(&mut self, by_sender: bool, load: impl FnOnce(&mut Self)) {
+        #[cfg(target_os = "android")]
+        let before = (self.current_media_item_id, self.android_rise_gen);
+        load(self);
+        #[cfg(target_os = "android")]
+        if by_sender
+            && cast_loaded_due(
+                before,
+                (self.current_media_item_id, self.android_rise_gen),
+                self.android_playback.0,
+            )
         {
             self.call_activity("castLoaded", "()V", &[]);
         }
@@ -4335,14 +4334,8 @@ impl Application {
                     media.clear_external_subtitles();
                 }
 
-                #[cfg(target_os = "android")]
-                let mark = self.android_load_mark();
-                self.load_media();
                 // the playlist's own advance comes in as AutoPlay, excluded here
-                #[cfg(target_os = "android")]
-                if is_sender_origin(origin) {
-                    self.android_cast_loaded(mark);
-                }
+                self.sender_load(is_sender_origin(origin), Self::load_media);
                 self.gui.set_playlist_index(new_index as i32);
             }
             Operation::SetVolume(volume) => {
@@ -4375,16 +4368,7 @@ impl Application {
                     origin,
                     MediaSource::Single(Arc::new(fcast::WrappedPlayMessage::Legacy(play_message))),
                 ));
-                // As every other sender-initiated load: a mirror started over an active
-                // cast with the UI stopped raises no active edge, and without this it
-                // played into a window nobody saw (the bring-forward predates mirroring).
-                #[cfg(target_os = "android")]
-                let mark = self.android_load_mark();
-                self.load_media();
-                #[cfg(target_os = "android")]
-                if is_sender_origin(origin) {
-                    self.android_cast_loaded(mark);
-                }
+                self.sender_load(is_sender_origin(origin), Self::load_media);
             }
             Operation::SetPlaybackState(state) => match state {
                 fcast_protocol::v4::PlaybackState::Paused => {
@@ -4402,13 +4386,9 @@ impl Application {
                 _ => (),
             },
             Operation::PlayNew(msg) => {
-                #[cfg(target_os = "android")]
-                let mark = self.android_load_mark();
-                self.handle_play_message(msg, origin);
-                #[cfg(target_os = "android")]
-                if is_sender_origin(origin) {
-                    self.android_cast_loaded(mark);
-                }
+                self.sender_load(is_sender_origin(origin), |app| {
+                    app.handle_play_message(msg, origin)
+                });
             }
             Operation::ChangeTrack { id, typ } => {
                 debug!(id, ?typ, "changing track");
@@ -4464,13 +4444,9 @@ impl Application {
                 return self.add_subtitle_source(origin, url, select, name);
             }
             Operation::SelectQueueItem(position) => {
-                #[cfg(target_os = "android")]
-                let mark = self.android_load_mark();
-                self.play_queue_item(origin, position, true);
-                #[cfg(target_os = "android")]
-                if is_sender_origin(origin) {
-                    self.android_cast_loaded(mark);
-                }
+                self.sender_load(is_sender_origin(origin), |app| {
+                    app.play_queue_item(origin, position, true)
+                });
             }
             Operation::RemoveQueueItem(position) => {
                 self.remove_queue_item(origin, position);
@@ -6913,11 +6889,7 @@ impl Application {
                 self.current_media = Some(media);
                 // the tail of a sender's JSON playlist PlayNew, whose fetch
                 // started no load of its own
-                #[cfg(target_os = "android")]
-                let mark = self.android_load_mark();
-                self.load_media();
-                #[cfg(target_os = "android")]
-                self.android_cast_loaded(mark);
+                self.sender_load(true, Self::load_media);
 
                 self.gui.update_playlist(start_idx as i32, length as i32);
             }
@@ -7694,6 +7666,15 @@ fn load_waits_for_window(
     rising && !drawn && fcast_item && !image && !follows_a_cast
 }
 
+/// Whether a finished load is told to the activity, from the (item id, rise
+/// generation) pair on each side of it. An item load must have started (not
+/// an async playlist fetch or a rejected select), with no rising edge of its
+/// own to carry the news, over a cast still active.
+#[cfg(any(target_os = "android", test))]
+fn cast_loaded_due(before: (MediaItemId, u32), after: (MediaItemId, u32), active: bool) -> bool {
+    after.0 != before.0 && after.1 == before.1 && active
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -7901,6 +7882,16 @@ mod tests {
         assert!(!load_waits_for_window(true, false, false, false, false), "not an fcast item");
         assert!(!load_waits_for_window(true, false, true, true, false), "an image");
         assert!(!load_waits_for_window(true, false, true, false, true), "the sender's next item");
+    }
+
+    /// Only a load that started an item over a still active cast, with no
+    /// rising edge of its own, is told to the activity.
+    #[test]
+    fn only_an_edgeless_load_over_an_active_cast_is_told() {
+        assert!(cast_loaded_due((4, 2), (5, 2), true));
+        assert!(!cast_loaded_due((4, 2), (4, 2), true), "no item load started");
+        assert!(!cast_loaded_due((4, 2), (5, 3), true), "its rising edge tells it");
+        assert!(!cast_loaded_due((4, 2), (5, 2), false), "the cast is not active");
     }
 
     /// Only a hide or a fullscreen exit at the end earns the long hold.
