@@ -84,6 +84,9 @@ struct Sink {
     buffer_seen: AtomicBool,
     /// Bumped per fill, so a reveal give-up only drops its own.
     fill_gen: AtomicU32,
+    /// The surface sink was built. Without it the software bridge plays and
+    /// nothing here would ever clear `frame_pending`.
+    made: AtomicBool,
 }
 
 /// The view behind one attached UI, and its surface handoff.
@@ -209,6 +212,9 @@ fn resume_after_retire() {
 /// item hook, on the core thread right before the pipeline load, so ahead of
 /// the new item's caps (see the lifecycle notes).
 pub(crate) fn item_boundary() {
+    if !sink().made.load(Ordering::Relaxed) {
+        return;
+    }
     set_frame_pending(true);
     *sink().video_size.lock().unwrap() = (0, 0);
     sink().rotation.store(0, Ordering::Relaxed);
@@ -430,6 +436,7 @@ pub fn make_sink() -> Option<gst::Element> {
         warn!("amcsurfacesink without a sink pad?");
         return None;
     };
+    sink().made.store(true, Ordering::Relaxed);
     info!("surface video: sink ready, waiting for caps");
     // The first buffer after a boundary reaches the sink just before it is
     // presented (preroll shows it at once, a playing sink is at most a
