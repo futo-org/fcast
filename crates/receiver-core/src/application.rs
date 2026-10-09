@@ -2364,6 +2364,9 @@ impl Application {
         {
             self.android_error_end = false;
         }
+        // as a stop and an end do, or a failed cast held the display on
+        #[cfg(not(target_os = "android"))]
+        self.screensaver_inhibitor.un_inhibit();
         self.current_media = None;
         self.queue_cache.clear();
 

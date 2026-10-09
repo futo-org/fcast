@@ -4,33 +4,48 @@ pub struct Options {
 
 pub struct Inhibitor {
     imp: InhibitorImpl,
+    inhibited: bool,
 }
 
 impl Inhibitor {
     pub fn new(options: Options) -> Self {
         Self {
             imp: InhibitorImpl::new(options),
+            inhibited: false,
         }
     }
 
+    /// Held once however often it is asked for. A caller inhibits per item
+    /// and releases per cast, and a second request on top of the first lost
+    /// the first one's handle on macOS and its way back on Windows.
     pub fn inhibit(&mut self, reason: &str) {
-        self.imp.inhibit(reason);
+        if edge(&mut self.inhibited, true) {
+            self.imp.inhibit(reason);
+        }
     }
 
     pub fn un_inhibit(&mut self) {
-        self.imp.un_inhibit();
+        if edge(&mut self.inhibited, false) {
+            self.imp.un_inhibit();
+        }
     }
+}
+
+/// Moves `held` to `want` and says whether that changed anything.
+fn edge(held: &mut bool, want: bool) -> bool {
+    std::mem::replace(held, want) != want
 }
 
 #[cfg(target_os = "windows")]
 use windows::InhibitorImpl;
 #[cfg(target_os = "windows")]
 mod windows {
+    use std::sync::mpsc;
+
     use tracing::{error, instrument};
     use windows::{
         Win32::System::Power::{
-            ES_AWAYMODE_REQUIRED, ES_CONTINUOUS, ES_DISPLAY_REQUIRED, ES_SYSTEM_REQUIRED,
-            EXECUTION_STATE, SetThreadExecutionState,
+            ES_CONTINUOUS, ES_DISPLAY_REQUIRED, EXECUTION_STATE, SetThreadExecutionState,
         },
         core::Error as WindowsError,
     };
@@ -39,34 +54,67 @@ mod windows {
 
     pub type Error = WindowsError;
 
+    /// `SetThreadExecutionState` binds the request to the thread that made
+    /// it, and the caller's task moves between runtime workers: a release
+    /// from another worker left the first one holding the display on. One
+    /// thread of its own holds the state, told what to hold over a channel,
+    /// and its exit lets go of it.
     pub struct InhibitorImpl {
         #[allow(unused)]
         options: Options,
-        previous: EXECUTION_STATE,
+        holder: Option<mpsc::Sender<bool>>,
+    }
+
+    fn hold_display(rx: mpsc::Receiver<bool>) {
+        for display in rx {
+            let state = if display {
+                ES_CONTINUOUS | ES_DISPLAY_REQUIRED
+            } else {
+                ES_CONTINUOUS
+            };
+            if unsafe { SetThreadExecutionState(state) } == EXECUTION_STATE(0) {
+                error!(err = ?WindowsError::from_thread(), "Failed to set execution state");
+            }
+        }
     }
 
     impl InhibitorImpl {
         pub fn new(options: Options) -> Self {
             InhibitorImpl {
                 options,
-                previous: Default::default(),
+                holder: None,
+            }
+        }
+
+        fn hold(&mut self, display: bool) {
+            if self.holder.is_none() {
+                let (tx, rx) = mpsc::channel();
+                let spawned = std::thread::Builder::new()
+                    .name("screensaver-inhibit".to_owned())
+                    .spawn(move || hold_display(rx));
+                match spawned {
+                    Ok(_) => self.holder = Some(tx),
+                    Err(err) => {
+                        error!(?err, "No thread to hold the execution state on");
+                        return;
+                    }
+                }
+            }
+            if let Some(holder) = &self.holder {
+                let _ = holder.send(display);
             }
         }
 
         #[instrument(skip_all)]
         pub fn inhibit(&mut self, _reason: &str) {
-            unsafe {
-                self.previous = SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED);
-                if self.previous == EXECUTION_STATE(0) {
-                    error!(err = ?WindowsError::from_thread(), "Failed to set execution state");
-                }
-            }
+            self.hold(true);
         }
 
         #[instrument(skip_all)]
         pub fn un_inhibit(&mut self) {
-            unsafe {
-                SetThreadExecutionState(self.previous);
+            // nothing was ever held without the thread
+            if self.holder.is_some() {
+                self.hold(false);
             }
         }
     }
@@ -128,8 +176,10 @@ mod macos {
 
         #[instrument(skip_all)]
         pub fn un_inhibit(&mut self) {
-            if self.display_assertion != 0 {
-                IOPMAssertionRelease(self.display_assertion);
+            // taken, a released id must not be released again
+            let assertion = std::mem::take(&mut self.display_assertion);
+            if assertion != 0 {
+                IOPMAssertionRelease(assertion);
             }
         }
     }
@@ -200,7 +250,8 @@ mod linux {
 
         #[instrument(skip_all)]
         pub fn un_inhibit(&mut self) {
-            if let (Some(p), Some(cookie)) = (self.screensaver_proxy.as_ref(), self.cookie) {
+            // taken, a cookie is good for one release
+            if let (Some(p), Some(cookie)) = (self.screensaver_proxy.as_ref(), self.cookie.take()) {
                 if let Err(err) = p.un_inhibit(cookie) {
                     error!(?err, "Failed to un inhibit");
                 }
@@ -212,5 +263,23 @@ mod linux {
         fn drop(&mut self) {
             self.un_inhibit();
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::edge;
+
+    /// Repeated requests reach the platform once, in either direction.
+    #[test]
+    fn only_a_change_reaches_the_platform() {
+        let mut held = false;
+        assert!(!edge(&mut held, false), "nothing to release");
+        assert!(edge(&mut held, true));
+        assert!(!edge(&mut held, true), "a second item of the same cast");
+        assert!(held);
+        assert!(edge(&mut held, false));
+        assert!(!edge(&mut held, false), "an end after a stop");
+        assert!(!held);
     }
 }
