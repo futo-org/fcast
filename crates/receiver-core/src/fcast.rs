@@ -1227,6 +1227,25 @@ pub fn sanitize_rate(speed: f32) -> (f32, bool) {
     }
 }
 
+/// Whether an action draws on the transport budget (true) or the general
+/// one (false), `None` for the actions that queue no work on the application.
+/// Transport has its own so a flood of other ops cannot starve a stop.
+fn budgeted_as_transport(action: &Action) -> Option<bool> {
+    match action {
+        Action::Op(op) => Some(matches!(
+            op,
+            Operation::Stop
+                | Operation::Pause
+                | Operation::Resume
+                | Operation::ResumeOrPause
+                | Operation::SetPlaybackState(_)
+        )),
+        // a full load on the application, as a Play is
+        Action::StartMirroringSession { .. } => Some(false),
+        _ => None,
+    }
+}
+
 /// Token bucket over a session's operations. Slider drags send tens a
 /// second, a flood sends them as fast as TCP delivers and would queue
 /// without bound on the way to the app.
@@ -1532,16 +1551,8 @@ impl SessionDriver {
         res: Result<Action, StateError>,
         internal_msg_tx: &tokio::sync::mpsc::UnboundedSender<InternalMessage>,
     ) -> anyhow::Result<bool> {
-        if let Ok(Action::Op(op)) = &res
+        if let Some(transport) = res.as_ref().ok().and_then(budgeted_as_transport)
             && !{
-                let transport = matches!(
-                    op,
-                    Operation::Stop
-                        | Operation::Pause
-                        | Operation::Resume
-                        | Operation::ResumeOrPause
-                        | Operation::SetPlaybackState(_)
-                );
                 let budget = if transport { &mut self.transport_budget } else { &mut self.op_budget };
                 budget.take(std::time::Instant::now())
             }
@@ -2083,8 +2094,17 @@ mod rate_tests {
 
 #[cfg(test)]
 mod op_budget_tests {
-    use super::OpBudget;
+    use super::{Action, OpBudget, Operation, budgeted_as_transport};
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn every_action_that_queues_work_is_budgeted() {
+        assert_eq!(budgeted_as_transport(&Action::Op(Operation::Stop)), Some(true));
+        assert_eq!(budgeted_as_transport(&Action::Op(Operation::SetVolume(0.5))), Some(false));
+        let mirror = Action::StartMirroringSession { session_id: 1 };
+        assert_eq!(budgeted_as_transport(&mirror), Some(false));
+        assert_eq!(budgeted_as_transport(&Action::Ping), None);
+    }
 
     #[test]
     fn a_flood_is_cut_to_the_rate_and_a_drag_is_not() {
