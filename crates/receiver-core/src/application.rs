@@ -7552,7 +7552,13 @@ impl Application {
             let accept_streams = listeners.into_iter().map(|listener| {
                 // `Box::pin` so the `Unfold` streams are `Unpin`, as `select_all` requires.
                 Box::pin(futures::stream::unfold(listener, |listener| async move {
-                    Some((listener.accept().await, listener))
+                    let session = listener.accept().await;
+                    // Backed off in the stream, which the loop polls beside its
+                    // other arms. Slept in the loop it held up every message.
+                    if session.is_err() {
+                        tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
+                    }
+                    Some((session, listener))
                 }))
             });
             let mut listener_stream = futures::stream::select_all(accept_streams);
@@ -7600,7 +7606,6 @@ impl Application {
                             // the event loop while the UI and mDNS keep running.
                             Err(err) => {
                                 warn!(?err, "Failed to accept an FCast connection");
-                                tokio::time::sleep(ACCEPT_ERROR_BACKOFF).await;
                             }
                         }
                     }
