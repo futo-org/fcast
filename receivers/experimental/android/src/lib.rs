@@ -225,12 +225,21 @@ fn android_main(app: slint::android::AndroidApp) {
                 rcore::android_jni::call("relaunchUi", "()V", &[]);
                 return;
             }
-            false
+            // only the UI failed, the receiver behind it is settled as for
+            // a UI that left
+            rcore::android_settle_core()
         }
     };
     // With no service to keep it, the process ends with its activity, as
     // before: the next launch gets an honest cold start under the splash.
     if !keep_core {
+        if rcore::android_core_failed() {
+            // Not an exit on purpose. The sticky service stays, so the
+            // system restarts the receiver as it does when the core dies
+            // with no UI up.
+            error!("the receiver core died, exiting for the service to restart it");
+            unsafe { libc::_exit(1) }
+        }
         // a running sticky service would bring the process straight back
         rcore::android_jni::call("stopServiceForExit", "()V", &[]);
         end_process();

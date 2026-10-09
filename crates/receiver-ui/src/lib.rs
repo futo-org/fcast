@@ -136,6 +136,9 @@ fn event_loop_ended(result: std::result::Result<Result<()>, tokio::task::JoinErr
     #[cfg(target_os = "android")]
     {
         ANDROID_CORE_ENDED.store(true, std::sync::atomic::Ordering::Release);
+        if !matches!(result, Ok(Ok(()))) {
+            ANDROID_CORE_FAILED.store(true, std::sync::atomic::Ordering::Release);
+        }
         // no window to quit, nothing else would end the process. The sticky
         // service is left running on purpose so the system restarts it
         if !matches!(result, Ok(Ok(()))) && android_ui::current().is_none() {
@@ -563,6 +566,9 @@ static ANDROID_MEDIA: std::sync::OnceLock<AndroidMedia> = std::sync::OnceLock::n
 /// The Application task returned or died, a kept-alive process has no core.
 #[cfg(target_os = "android")]
 static ANDROID_CORE_ENDED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// It died (an error or a panic), as opposed to a quit.
+#[cfg(target_os = "android")]
+static ANDROID_CORE_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Bridge.fresh-surface from the window's render lifecycle: set when the
 /// surface goes (backgrounded, hidden to the tray), cleared after the first
@@ -913,18 +919,37 @@ pub fn run(
     };
     let (ui, generation) = attach_ui(&android_app, core)?;
     info!(initialized_in = ?start.elapsed());
-    ui.run()?;
+    let ran = ui.run();
+    // on the error path too, or the core keeps a dead UI attached
     detach_ui(core, generation);
     drop(ui);
+    ran?;
+    Ok(android_settle_core())
+}
 
+/// Whether the receiver outlives the UI that just left or failed (the
+/// service keeps it), quitting it when not. A failed UI is no reason to take
+/// a healthy always-on receiver down with it.
+#[cfg(target_os = "android")]
+pub fn android_settle_core() -> bool {
+    let Some(core) = ANDROID_CORE.get() else {
+        return false;
+    };
     if !ANDROID_CORE_ENDED.load(std::sync::atomic::Ordering::Acquire)
         && receiver_core::android_jni::keep_alive()
     {
         info!("UI gone, the receiver stays up for its service");
-        return Ok(true);
+        return true;
     }
     quit_core(core);
-    Ok(false)
+    false
+}
+
+/// The core died instead of quitting. The process then exits without
+/// stopping the sticky service, so the system brings the receiver back.
+#[cfg(target_os = "android")]
+pub fn android_core_failed() -> bool {
+    ANDROID_CORE_FAILED.load(std::sync::atomic::Ordering::Acquire)
 }
 
 /// Starts the receiver core once per process, without a UI: ReceiverCore
