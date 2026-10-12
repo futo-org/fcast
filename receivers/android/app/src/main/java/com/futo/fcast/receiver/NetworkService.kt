@@ -9,6 +9,7 @@ import android.content.Intent
 import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.widget.Toast
@@ -228,6 +229,8 @@ class NetworkService : Service() {
 
                 _scope.launch(Dispatchers.Main) {
                     try {
+                        wakeUpDisplay()
+
                         if (PlayerActivity.instance == null) {
                             Log.i(TAG, "Launching player activity with play message: $playMessage")
                             val i = Intent(this@NetworkService, PlayerActivity::class.java)
@@ -320,6 +323,30 @@ class NetworkService : Service() {
             } catch (e: Throwable) {
                 Log.e(TAG, "Failed to seek", e)
             }
+        }
+    }
+
+    /// Nudges a sleeping device awake so that the player's `turnScreenOn` has
+    /// something to act on, which in turn makes the platform send CEC One Touch
+    /// Play to the TV. Deprecated API with no public replacement for this, and
+    /// newer Android versions may refuse it, so failure is not fatal.
+    private fun wakeUpDisplay() {
+        try {
+            val powerManager = getSystemService(POWER_SERVICE) as PowerManager
+            if (powerManager.isInteractive) {
+                return
+            }
+
+            Log.i(TAG, "Device is asleep, waking the display for the incoming cast")
+            @Suppress("DEPRECATION")
+            val wakeLock = powerManager.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or PowerManager.ACQUIRE_CAUSES_WAKEUP,
+                "fcast:wake-for-cast"
+            )
+            // The player's own FLAG_KEEP_SCREEN_ON takes over from here.
+            wakeLock.acquire(3000)
+        } catch (e: Throwable) {
+            Log.w(TAG, "Failed to wake the display", e)
         }
     }
 
