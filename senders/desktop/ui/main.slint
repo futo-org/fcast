@@ -139,6 +139,7 @@ export enum UiMediaTrackType {
 export global Bridge {
     in property <string> app-version;
     in property <bool> is-audio-supported: false;
+    in property <bool> is-local-mute-supported: false;
     in property <bool> is-mirroring-supported: false;
     in property <string> current-directory: "";
     in property <[UiDevice]> devices: [];
@@ -176,6 +177,9 @@ export global Bridge {
     in-out property <string> mirroring-server-port: 0;
     in-out property <bool> allow-ipv6: true;
     in-out property <string> mirroring-source-name;
+    // Whether the receiver gets system audio, shown while mirroring. Empty
+    // when audio was not requested.
+    in-out property <string> mirroring-audio-note;
     in-out property <bool> is-reconnecting: false;
     in-out property <UiMediaFileType> current-media-type;
     in-out property <bool> update-available: false;
@@ -195,6 +199,7 @@ export global Bridge {
         playback-position = 0.0;
         track-duration = 0.0;
         mirroring-source-name = "";
+        mirroring-audio-note = "";
     }
 
     public function clear-yt-dlp-state() {
@@ -248,7 +253,7 @@ export global Bridge {
 
     callback connect-to-device(string);
     callback select-input-type(input-type: UiInputType);
-    callback start-cast(video_uid: int, include-audio: bool, scale-width: int, scale-height: int, max-framerate: int);
+    callback start-cast(video_uid: int, include-audio: bool, mute-local: bool, scale-width: int, scale-height: int, max-framerate: int);
     callback stop-cast(disconnect: bool);
     callback reload-video-sources();
     callback reload-audio-sources();
@@ -1577,6 +1582,11 @@ component MirroringView inherits Rectangle {
                 }
             }
 
+            if Bridge.mirroring-audio-note != "": SecondaryText {
+                text: Bridge.mirroring-audio-note;
+                horizontal-alignment: center;
+            }
+
             Button {
                 text: "Stop";
 
@@ -2114,6 +2124,7 @@ component MirroringPopup inherits FCastPopupWindow {
         }
 
         property <bool> include-audio: false;
+        property <bool> mute-local: false;
 
         if Bridge.is-audio-supported: CheckBox {
             checked <=> include-audio;
@@ -2122,6 +2133,15 @@ component MirroringPopup inherits FCastPopupWindow {
 
         if Bridge.is-audio-supported: SecondaryText {
             text: "Captures desktop output sounds";
+        }
+
+        if Bridge.is-local-mute-supported && include-audio: CheckBox {
+            checked <=> mute-local;
+            text: "Mute this PC while casting";
+        }
+
+        if Bridge.is-local-mute-supported && include-audio: SecondaryText {
+            text: "The speakers come back when the cast stops";
         }
 
         HorizontalLayout {
@@ -2137,6 +2157,7 @@ component MirroringPopup inherits FCastPopupWindow {
                     Bridge.start-cast(
                         Bridge.selected-video-src,
                         include-audio,
+                        mute-local,
                         scale.width,
                         scale.height,
                         Utils.video-framerates[video-framerate-idx].to-float(),

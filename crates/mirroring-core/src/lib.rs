@@ -21,6 +21,10 @@ pub mod yt_dlp;
 pub enum AudioSource {
     #[cfg(target_os = "linux")]
     PulseVirtualSink,
+    /// WASAPI loopback capture of the default output device. Passive: the
+    /// audio keeps playing locally, unlike the Pulse null sink.
+    #[cfg(target_os = "windows")]
+    WasapiLoopback,
     #[cfg(target_os = "android")]
     None,
 }
@@ -31,9 +35,11 @@ impl AudioSource {
         match self {
             AudioSource::PulseVirtualSink => "System Audio".to_owned(),
         }
-        #[cfg(target_os = "macos")]
-        return "n/a".to_string();
         #[cfg(target_os = "windows")]
+        match self {
+            AudioSource::WasapiLoopback => "System Audio".to_owned(),
+        }
+        #[cfg(target_os = "macos")]
         return "n/a".to_string();
         #[cfg(target_os = "android")]
         return "n/a".to_string();
@@ -196,6 +202,10 @@ pub enum Event {
         video_uid: Option<usize>,
         // audio_uid: Option<usize>,
         include_audio: bool,
+        /// Silence this machine's speakers while the cast carries its audio
+        /// (Windows: loopback capture is passive, the sound keeps playing
+        /// locally otherwise).
+        mute_local: bool,
         scale_width: u32,
         scale_height: u32,
         max_framerate: u32,
