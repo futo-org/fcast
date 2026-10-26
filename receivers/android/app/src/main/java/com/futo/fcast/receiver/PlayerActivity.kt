@@ -229,6 +229,14 @@ class PlayerActivity : AppCompatActivity() {
         super.onDestroy()
         Log.i(TAG, "onDestroy")
 
+        // `finish()` is not the only way out: the system destroys the activity on
+        // its own as well (resource pressure, the screen saver taking over). A
+        // stale `instance` makes NetworkService hand the next cast to a dead
+        // window, which is why casting then only works after a force-close.
+        if (instance === this) {
+            instance = null
+        }
+
         _mediaSession.release()
         _exoPlayer.removeListener(_playerEventListener)
         _exoPlayer.stop()
