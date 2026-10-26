@@ -45,6 +45,7 @@ pub mod companion;
 pub mod receiver;
 #[cfg(feature = "tokio-sender")]
 pub mod sender;
+pub mod session;
 // Public only for the fuzz harness, crate internal otherwise
 #[cfg(feature = "__fuzz")]
 pub mod spki;

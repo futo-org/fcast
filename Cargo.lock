@@ -2782,7 +2782,6 @@ dependencies = [
  "mime",
  "parking_lot",
  "pin-project-lite",
- "self_cell",
  "tokio",
  "tokio-rustls",
  "tracing",
@@ -2794,10 +2793,12 @@ name = "fcast-protocol"
 version = "0.2.0"
 dependencies = [
  "base64 0.22.1",
+ "bitflags 2.13.0",
  "bytes",
  "flatbuffers",
  "rcgen",
  "rustls-pki-types",
+ "self_cell",
  "serde",
  "serde_json",
  "sha2 0.11.0",
@@ -2805,6 +2806,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "tracing",
+ "url",
  "x509-parser 0.17.0",
 ]
 

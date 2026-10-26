@@ -14,6 +14,9 @@ serde_json.workspace = true
 smol_str.workspace = true
 flatbuffers = "25.12.19"
 base64.workspace = true
+self_cell.workspace = true
+bitflags = "2.10"
+url = "2"
 
 tokio = { workspace = true, optional = true }
 tokio-rustls = { workspace = true, default-features = false, optional = true }
@@ -34,7 +37,9 @@ x509-parser.workspace = true
 
 [features]
 default = []
-tokio-sender = ["dep:tokio-rustls", "dep:tokio", "dep:tracing", "dep:sha2", "dep:rustls-pki-types"]
-tokio-receiver= ["dep:tokio-rustls", "dep:tokio", "dep:tracing"]
+tokio-sender = ["tracing", "dep:tokio-rustls", "dep:tokio", "dep:tracing", "dep:sha2", "dep:rustls-pki-types"]
+tokio-receiver = ["tracing", "dep:tokio-rustls", "dep:tokio", "dep:tracing"]
+# Debug and error lines of the session state machine
+tracing = ["dep:tracing"]
 # Exposes the spki module for the fuzz harness, not part of the public API
 __fuzz = []

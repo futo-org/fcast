@@ -19,7 +19,6 @@ bytes.workspace = true
 tracing.workspace = true
 fcast-runtime = { path = "../fcast-runtime" }
 fcast-protocol = { path = "../fcast-protocol", features = ["tokio-receiver"] }
-self_cell.workspace = true
 url = "2"
 mime = "0.3"
 headers = "0.4"

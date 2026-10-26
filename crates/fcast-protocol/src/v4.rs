@@ -928,6 +928,19 @@ pub enum QueuePosition {
     Back,
 }
 
+self_cell::self_cell!(
+    /// A received `CompanionResourceInfoResponse`, borrowing from its packet.
+    pub struct ResourceInfoResponseCell {
+        owner: Vec<u8>,
+        #[covariant]
+        dependent: CompanionResourceInfoResponse,
+    }
+
+    impl {Debug, PartialEq}
+);
+
+use flat::CompanionResourceInfoResponse;
+
 #[cfg(test)]
 mod tests {
     use super::*;

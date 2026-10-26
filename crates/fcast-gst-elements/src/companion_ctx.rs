@@ -13,17 +13,7 @@ use parking_lot::Mutex;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tracing::debug;
 
-use v4::flat::CompanionResourceInfoResponse;
-
-self_cell::self_cell!(
-    pub struct ResourceInfoResponseCell {
-        owner: Vec<u8>,
-        #[covariant]
-        dependent: CompanionResourceInfoResponse,
-    }
-
-    impl {Debug, PartialEq}
-);
+pub use fcast_protocol::v4::ResourceInfoResponseCell;
 
 pub type CompanionMsgSender = UnboundedSender<CompanionMessage>;
 pub type CompanionMsgReceiver = UnboundedReceiver<CompanionMessage>;

@@ -10,6 +10,35 @@ const OPCODE_SIZE: usize = 1;
 pub const MAX_RESOURCE_READ_SIZE: usize =
     crate::v4::MAX_PACKET_SIZE - ResourceResponse::max_overhead() - OPCODE_SIZE;
 
+/// A parsed `fcomp://<provider>.fcast/<resource>` url.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FCompUrl {
+    pub provider_id: ProviderId,
+    pub resource_id: ResourceId,
+}
+
+impl FCompUrl {
+    pub fn new(url: &url::Url) -> Option<Self> {
+        let url::Host::Domain(host) = url.host()? else {
+            return None;
+        };
+        if url.scheme() != "fcomp" {
+            return None;
+        }
+        let mut host_parts = host.split('.');
+        let provider_id = host_parts.next()?.parse::<u16>().ok()?;
+        if host_parts.next()? != "fcast" {
+            return None;
+        }
+        let resource_id = url.path().strip_prefix('/')?.parse::<u32>().ok()?;
+
+        Some(Self {
+            provider_id,
+            resource_id,
+        })
+    }
+}
+
 #[derive(Debug)]
 pub enum ParseError {
     MissingData,

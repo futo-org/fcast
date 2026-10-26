@@ -1803,8 +1803,8 @@ impl Application {
             self.last_progress_broadcast = Some(Instant::now());
             self.broadcast_update(ReceiverToSenderMessage::V4(
                 fcast::V4Message::ProgressUpdated {
-                    pos: position,
-                    dur: duration,
+                    pos: position.into(),
+                    dur: duration.into(),
                 },
             ));
         }
@@ -7581,7 +7581,8 @@ impl Application {
             Some((duration, duration))
         } else {
             self.player.get_position().map(|position| (position, duration))
-        };
+        }
+        .map(|(pos, dur)| (pos.into(), dur.into()));
         Some(InitialV4State {
             load,
             // the stopped player of an ended item reads as Idle

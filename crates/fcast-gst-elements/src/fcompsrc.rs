@@ -1,34 +1,6 @@
-use fcast_protocol::companion;
 use gst::{glib, prelude::*};
-use url::Url;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct FCompUrl {
-    pub provider_id: companion::ProviderId,
-    pub resource_id: companion::ResourceId,
-}
-
-impl FCompUrl {
-    pub fn new(url: &Url) -> Option<Self> {
-        let url::Host::Domain(host) = url.host()? else {
-            return None;
-        };
-        if url.scheme() != "fcomp" {
-            return None;
-        }
-        let mut host_parts = host.split('.');
-        let provider_id = host_parts.next()?.parse::<u16>().ok()?;
-        if host_parts.next()? != "fcast" {
-            return None;
-        }
-        let resource_id = url.path().strip_prefix('/')?.parse::<u32>().ok()?;
-
-        Some(Self {
-            provider_id,
-            resource_id,
-        })
-    }
-}
+pub use fcast_protocol::companion::FCompUrl;
 
 pub mod imp {
     use fcast_protocol::{companion, v4};
