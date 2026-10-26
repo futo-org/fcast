@@ -1,4 +1,8 @@
-#![cfg(all(feature = "tokio-sender", feature = "tokio-receiver"))]
+#![cfg(all(
+    feature = "tokio-sender",
+    feature = "tokio-receiver",
+    feature = "session"
+))]
 
 use std::{sync::Arc, time::Duration};
 

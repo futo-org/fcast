@@ -33,38 +33,10 @@ macro_rules! log_at {
 /// session.
 pub const TICKS_BEFORE_PING: u32 = 3;
 
-/// Body limit of a v1-v3 packet. Senders refuse larger ones, as did the
-/// Kotlin receiver.
-pub const LEGACY_MAX_BODY: usize = 32 * 1000;
+pub use crate::{Header, LEGACY_MAX_BODY};
 
 /// Id of a sender session.
 pub type SenderId = u32;
-
-#[derive(Debug, PartialEq)]
-pub struct Header {
-    pub size: u32,
-    pub opcode: Opcode,
-}
-
-impl Header {
-    pub fn new(opcode: Opcode, size: u32) -> Self {
-        Self {
-            size: size + 1,
-            opcode,
-        }
-    }
-
-    pub fn encode(&self) -> [u8; 5] {
-        let size_slice = u32::to_le_bytes(self.size);
-        [
-            size_slice[0],
-            size_slice[1],
-            size_slice[2],
-            size_slice[3],
-            self.opcode as u8,
-        ]
-    }
-}
 
 #[derive(Debug)]
 pub enum PacketError {

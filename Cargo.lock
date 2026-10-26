@@ -12334,6 +12334,7 @@ dependencies = [
  "arbitrary",
  "fcast-protocol 0.2.0",
  "libfuzzer-sys",
+ "serde_json",
 ]
 
 [[package]]

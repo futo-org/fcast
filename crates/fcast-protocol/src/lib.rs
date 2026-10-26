@@ -1,18 +1,31 @@
 //! # FCast Protocol
 //!
 //! Implementation of the data models documented [here](https://gitlab.futo.org/videostreaming/fcast/-/wikis/Protocol-version-3).
+//!
+//! Features
+//! - none: packet framing, opcodes and the v4 flatbuffers types, on flatbuffers
+//!   alone
+//! - `serde`: the v1-v3 serde types, which v2 and v3 senders use too, and
+//!   `FCastNetworkConfig`
+//! - `session` (default): the receiver `session`, `companion` resources and
+//!   `PacketReader`, implies `serde`
 
+#[cfg(feature = "serde")]
 use std::collections::HashMap;
 
+#[cfg(feature = "serde")]
 use base64::{
     alphabet::URL_SAFE,
     engine::{general_purpose::GeneralPurpose, DecodePaddingMode, GeneralPurposeConfig},
     Engine as _,
 };
+#[cfg(feature = "session")]
 use bytes::{Buf as _, Bytes, BytesMut};
+#[cfg(feature = "serde")]
 use serde::{Deserialize, Serialize};
 
 // Serializes a fieldless u8 repr enum as its discriminant, replaces serde_repr
+#[cfg(feature = "serde")]
 macro_rules! impl_serde_u8_repr {
     ($ty:ident { $($variant:ident = $value:literal),+ $(,)? }) => {
         impl serde::Serialize for $ty {
@@ -38,25 +51,115 @@ macro_rules! impl_serde_u8_repr {
 /// Re-exported so consumers can name the types this crate hands out
 /// ([`ReadResult::Read`], [`companion::GetResourceResult::Success`]) without
 /// taking their own `bytes` dependency.
+#[cfg(feature = "session")]
 pub use bytes;
 
+#[cfg(feature = "session")]
 pub mod companion;
 #[cfg(feature = "tokio-receiver")]
 pub mod receiver;
 #[cfg(feature = "tokio-sender")]
 pub mod sender;
+#[cfg(feature = "session")]
 pub mod session;
-// Public only for the fuzz harness, crate internal otherwise
-#[cfg(feature = "__fuzz")]
 pub mod spki;
-#[cfg(all(not(feature = "__fuzz"), any(test, feature = "tokio-sender")))]
-pub(crate) mod spki;
+#[cfg(feature = "serde")]
 pub mod v1;
+#[cfg(feature = "serde")]
 pub mod v2;
+#[cfg(feature = "serde")]
 pub mod v3;
 pub mod v4;
 
 pub const HEADER_LENGTH: usize = 5;
+
+/// Body limit of a v1-v3 packet. Senders refuse larger ones, as did the
+/// Kotlin receiver.
+pub const LEGACY_MAX_BODY: usize = 32 * 1000;
+
+/// Limit of the size field, opcode included, for a protocol `version`.
+pub const fn max_packet_size(version: u64) -> usize {
+    if version >= 4 {
+        v4::MAX_PACKET_SIZE
+    } else {
+        LEGACY_MAX_BODY
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct Header {
+    pub size: u32,
+    pub opcode: Opcode,
+}
+
+impl Header {
+    pub fn new(opcode: Opcode, size: u32) -> Self {
+        Self {
+            size: size + 1,
+            opcode,
+        }
+    }
+
+    pub fn encode(&self) -> [u8; 5] {
+        let size_slice = u32::to_le_bytes(self.size);
+        [
+            size_slice[0],
+            size_slice[1],
+            size_slice[2],
+            size_slice[3],
+            self.opcode as u8,
+        ]
+    }
+}
+
+/// One packet borrowed from a receive buffer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Frame<'a> {
+    /// Raw opcode, unknown ones included so the caller can skip them
+    pub opcode: u8,
+    pub body: &'a [u8],
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameError {
+    /// Size field over the limit
+    TooLarge(usize),
+    /// Size field of zero, no room for the opcode
+    Empty,
+}
+
+impl std::error::Error for FrameError {}
+
+impl std::fmt::Display for FrameError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FrameError::TooLarge(size) => write!(f, "Packet size {size} over the limit"),
+            FrameError::Empty => write!(f, "Packet size 0 has no opcode"),
+        }
+    }
+}
+
+/// Splits the first packet off `buf` without copying. Returns it with the
+/// number of bytes it took, or `None` while it is incomplete. `max_size`
+/// bounds the size field, see [`max_packet_size`].
+pub fn split_frame(buf: &[u8], max_size: usize) -> Result<Option<(Frame<'_>, usize)>, FrameError> {
+    const LEN_SIZE: usize = size_of::<u32>();
+    let Some(len) = buf.first_chunk::<LEN_SIZE>() else {
+        return Ok(None);
+    };
+    let size = u32::from_le_bytes(*len) as usize;
+    if size > max_size {
+        return Err(FrameError::TooLarge(size));
+    }
+    let end = LEN_SIZE.saturating_add(size);
+    let Some(packet) = buf.get(LEN_SIZE..end) else {
+        return Ok(None);
+    };
+    let Some((&opcode, body)) = packet.split_first() else {
+        return Err(FrameError::Empty);
+    };
+    Ok(Some((Frame { opcode, body }, end)))
+}
 
 #[derive(Debug)]
 pub enum TryFromByteError {
@@ -174,44 +277,52 @@ pub enum PlaybackState {
     Paused = 2,
 }
 
+#[cfg(feature = "serde")]
 impl_serde_u8_repr!(PlaybackState {
     Idle = 0,
     Playing = 1,
     Paused = 2,
 });
 
+#[cfg(feature = "serde")]
 #[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct PlaybackErrorMessage {
     pub message: String,
 }
 
+#[cfg(feature = "serde")]
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 pub struct VersionMessage {
     pub version: u64,
 }
 
+#[cfg(feature = "serde")]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SetSpeedMessage {
     pub speed: f64,
 }
 
+#[cfg(feature = "serde")]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SetVolumeMessage {
     pub volume: f64,
 }
 
+#[cfg(feature = "serde")]
 #[derive(Debug, Clone, PartialEq, Deserialize, Serialize)]
 pub struct SeekMessage {
     pub time: f64,
 }
 
+#[cfg(feature = "serde")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FCastService {
     pub port: u16,
     pub r#type: i32,
 }
 
+#[cfg(feature = "serde")]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct FCastNetworkConfig {
     pub name: String,
@@ -220,6 +331,7 @@ pub struct FCastNetworkConfig {
     pub txt: Option<HashMap<String, String>>,
 }
 
+#[cfg(feature = "serde")]
 impl FCastNetworkConfig {
     pub fn parse_url(url: &str) -> Option<Self> {
         let connection_info = url.strip_prefix("fcast://r/")?;
@@ -243,6 +355,7 @@ impl FCastNetworkConfig {
     }
 }
 
+#[cfg(feature = "session")]
 #[derive(Debug, PartialEq, Eq)]
 enum ReaderState {
     MissingLength,
@@ -250,6 +363,7 @@ enum ReaderState {
     ShouldClear { body_length: usize },
 }
 
+#[cfg(feature = "session")]
 #[derive(Debug, PartialEq, Eq)]
 pub enum ReadResult {
     NeedData,
@@ -264,11 +378,13 @@ pub enum ReadResult {
     PacketTooLarge(usize),
 }
 
+#[cfg(feature = "session")]
 #[derive(Debug)]
 pub enum PushDataError {
     BufferTooBig,
 }
 
+#[cfg(feature = "session")]
 pub struct PacketReader {
     /// Read window: `buffer[..len]` is received data, `buffer[len..]` is spare
     /// room to read into.
@@ -288,6 +404,7 @@ pub struct PacketReader {
     window: usize,
 }
 
+#[cfg(feature = "session")]
 impl PacketReader {
     pub fn new(max_packet_size: usize, padding: usize) -> Self {
         let window = size_of::<u32>() + max_packet_size + padding;
@@ -490,7 +607,7 @@ impl PacketReader {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "session"))]
 mod tests {
     use super::*;
 
@@ -1110,5 +1227,48 @@ mod tests {
         for bad in ["3", "-1", "256", "1.5", "\"Playing\"", "null"] {
             assert!(serde_json::from_str::<PlaybackState>(bad).is_err(), "{bad}");
         }
+    }
+}
+
+#[cfg(test)]
+mod frame_tests {
+    use super::*;
+
+    #[test]
+    fn split_frame_edges() {
+        assert_eq!(split_frame(&[], 10), Ok(None));
+        assert_eq!(split_frame(&[1, 0, 0], 10), Ok(None));
+        assert_eq!(split_frame(&[0, 0, 0, 0], 10), Err(FrameError::Empty));
+        assert_eq!(
+            split_frame(&[11, 0, 0, 0], 10),
+            Err(FrameError::TooLarge(11))
+        );
+        assert_eq!(
+            split_frame(&[0xff, 0xff, 0xff, 0xff], usize::MAX),
+            Ok(None),
+            "a huge size waits for data instead of overflowing"
+        );
+        assert_eq!(split_frame(&[3, 0, 0, 0, 9, 1], 10), Ok(None));
+        assert_eq!(
+            split_frame(&[3, 0, 0, 0, 200, 1, 2, 7], 10),
+            Ok(Some((
+                Frame {
+                    opcode: 200,
+                    body: &[1, 2]
+                },
+                7
+            )))
+        );
+        assert_eq!(max_packet_size(1), LEGACY_MAX_BODY);
+        assert_eq!(max_packet_size(3), 32000);
+        assert_eq!(max_packet_size(4), v4::MAX_PACKET_SIZE);
+        assert_eq!(max_packet_size(4), 512 * 1024);
+        let at_cap = (LEGACY_MAX_BODY as u32).to_le_bytes();
+        assert_eq!(split_frame(&at_cap, LEGACY_MAX_BODY), Ok(None));
+        let over = (LEGACY_MAX_BODY as u32 + 1).to_le_bytes();
+        assert_eq!(
+            split_frame(&over, LEGACY_MAX_BODY),
+            Err(FrameError::TooLarge(LEGACY_MAX_BODY + 1))
+        );
     }
 }

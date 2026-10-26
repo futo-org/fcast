@@ -9,8 +9,9 @@ cargo-fuzz = true
 
 [dependencies]
 libfuzzer-sys = "0.4"
-fcast-protocol = { path = "../crates/fcast-protocol", features = ["__fuzz"] }
+fcast-protocol = { path = "../crates/fcast-protocol" }
 arbitrary = { version = "1", features = ["derive"] }
+serde_json.workspace = true
 
 [[bin]]
 name = "fcast_packet_reader"
@@ -22,6 +23,13 @@ bench = false
 [[bin]]
 name = "fcast_spki"
 path = "fuzz_targets/fcast_spki.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "fcast_legacy"
+path = "fuzz_targets/fcast_legacy.rs"
 test = false
 doc = false
 bench = false

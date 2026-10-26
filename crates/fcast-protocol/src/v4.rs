@@ -46,6 +46,7 @@ pub struct MessageBuilder<'a> {
     builder: flatbuffers::FlatBufferBuilder<'a>,
 }
 
+#[cfg(feature = "session")]
 use smol_str::SmolStr;
 
 macro_rules! create_msg {
@@ -635,6 +636,7 @@ impl<'a> MessageBuilder<'a> {
         create_msg!(self, QueueItemSelected / QueueItemSelectedArgs, position_type, position: Some(position))
     }
 
+    #[cfg(feature = "session")]
     pub fn tracks_available(
         mut self,
         tracks: impl Iterator<Item = MediaTrack>,
@@ -914,6 +916,7 @@ pub enum MediaTrackMetadata {
     Subtitle,
 }
 
+#[cfg(feature = "session")]
 pub struct MediaTrack {
     pub id: u32,
     pub title: Option<SmolStr>,
@@ -928,6 +931,7 @@ pub enum QueuePosition {
     Back,
 }
 
+#[cfg(feature = "session")]
 self_cell::self_cell!(
     /// A received `CompanionResourceInfoResponse`, borrowing from its packet.
     pub struct ResourceInfoResponseCell {
@@ -939,6 +943,7 @@ self_cell::self_cell!(
     impl {Debug, PartialEq}
 );
 
+#[cfg(feature = "session")]
 use flat::CompanionResourceInfoResponse;
 
 #[cfg(test)]
@@ -1199,21 +1204,24 @@ mod tests {
         assert_eq!(sel.position_type(), flat::QueuePosition::Back);
         assert!(sel.position_as_back().is_some());
 
-        let msg = MessageBuilder::new().tracks_available(std::iter::once(MediaTrack {
-            id: 8,
-            title: Some("English".into()),
-            iso_639: "eng".into(),
-            metadata: Some(MediaTrackMetadata::Subtitle),
-        }));
-        let p = flat::root_as_packet(&msg).unwrap();
-        assert_eq!(p.payload_type(), flat::Message::TracksAvailable);
-        let tracks = p.payload_as_tracks_available().unwrap().tracks().unwrap();
-        assert_eq!(tracks.len(), 1);
-        let track = tracks.get(0);
-        assert_eq!(track.id(), 8);
-        assert_eq!(track.title(), Some("English"));
-        assert_eq!(track.iso_639(), "eng");
-        assert_eq!(track.metadata_type(), flat::MediaTrackMetadata::Subtitle);
+        #[cfg(feature = "session")]
+        {
+            let msg = MessageBuilder::new().tracks_available(std::iter::once(MediaTrack {
+                id: 8,
+                title: Some("English".into()),
+                iso_639: "eng".into(),
+                metadata: Some(MediaTrackMetadata::Subtitle),
+            }));
+            let p = flat::root_as_packet(&msg).unwrap();
+            assert_eq!(p.payload_type(), flat::Message::TracksAvailable);
+            let tracks = p.payload_as_tracks_available().unwrap().tracks().unwrap();
+            assert_eq!(tracks.len(), 1);
+            let track = tracks.get(0);
+            assert_eq!(track.id(), 8);
+            assert_eq!(track.title(), Some("English"));
+            assert_eq!(track.iso_639(), "eng");
+            assert_eq!(track.metadata_type(), flat::MediaTrackMetadata::Subtitle);
+        }
 
         let msg = MessageBuilder::new().error(Some(11), flat::ErrorKind::SeekOutOfRange);
         let p = flat::root_as_packet(&msg).unwrap();
