@@ -19,11 +19,12 @@ use fcast_sender_sdk::{
 use file_server::FileServer;
 use gst_video::prelude::*;
 use image::ImageFormat;
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use mcore::AudioSource;
 #[cfg(target_os = "windows")]
 use mcore::VideoSource;
 use mcore::{
-    AudioSource, Event, FileSystemEntry, MediaFileEntry, RootDirType, ShouldQuit,
-    transmission::WhepSink,
+    Event, FileSystemEntry, MediaFileEntry, RootDirType, ShouldQuit, transmission::WhepSink,
 };
 use mimalloc::MiMalloc;
 use serde::{Deserialize, Serialize};
@@ -319,6 +320,9 @@ enum SessionSpecificState {
         video_source_fetcher_tx: Sender<FetchEvent>,
         our_source_url: Option<String>,
         video_sources: Vec<(usize, PreviewPipeline)>,
+        /// Unmutes the speakers again when the mirroring state is dropped.
+        #[cfg(target_os = "windows")]
+        local_mute: Option<desktop_sender::windows::LocalMute>,
     },
     LocalMedia {
         current_id: u32,
@@ -1329,6 +1333,7 @@ impl Application {
             Event::StartCast {
                 video_uid,
                 include_audio,
+                mute_local,
                 scale_width,
                 scale_height,
                 max_framerate,
@@ -1339,6 +1344,8 @@ impl Application {
                             fakey,
                             tx_sink,
                             video_sources,
+                            #[cfg(target_os = "windows")]
+                            local_mute,
                             ..
                         } => {
                             debug!(?video_sources, "Video sources");
@@ -1358,51 +1365,110 @@ impl Application {
                             } else {
                                 None
                             };
-                            #[cfg(not(target_os = "linux"))]
+                            #[cfg(target_os = "windows")]
+                            let audio_src = if include_audio {
+                                Some(AudioSource::WasapiLoopback)
+                            } else {
+                                None
+                            };
+                            #[cfg(not(any(target_os = "linux", target_os = "windows")))]
                             let audio_src = None;
 
                             debug!(?video_src, ?audio_src, "Adding pipeline");
-                            if session
+                            let audio_unavailable = if session
                                 .device
                                 .supports_feature(DeviceFeature::FWRTCSignalling)
                             {
-                                *fakey = Some(
-                                    mcore::transmission::FSink::from_preview(
-                                        mcore::transmission::SinkConfig::FCast,
-                                        self.event_tx.clone(),
-                                        tokio::runtime::Handle::current(),
-                                        video_src,
-                                        audio_src,
-                                        scale_width,
-                                        scale_height,
-                                        max_framerate,
-                                    )
-                                    .await
-                                    .context("Failed to create FCast sink from preview pipeline")?,
-                                );
-                                let signaller = fakey.as_ref().unwrap().signaller.clone();
+                                let sink = mcore::transmission::FSink::from_preview(
+                                    mcore::transmission::SinkConfig::FCast,
+                                    self.event_tx.clone(),
+                                    tokio::runtime::Handle::current(),
+                                    video_src,
+                                    audio_src,
+                                    scale_width,
+                                    scale_height,
+                                    max_framerate,
+                                )
+                                .await
+                                .context("Failed to create FCast sink from preview pipeline")?;
+                                let audio_unavailable = sink.audio_unavailable.clone();
+                                let signaller = sink.signaller.clone();
+                                *fakey = Some(sink);
                                 session
                                     .device
                                     .start_mirroring_session(Arc::new(signaller))
                                     .unwrap();
+                                audio_unavailable
                             } else {
-                                *tx_sink = Some(
-                                    mcore::transmission::WhepSink::from_preview(
-                                        mcore::transmission::SinkConfig::Whep {
-                                            server_port: self.settings.mirroring().server_port(),
-                                        },
-                                        self.event_tx.clone(),
-                                        tokio::runtime::Handle::current(),
-                                        video_src,
-                                        audio_src,
-                                        scale_width,
-                                        scale_height,
-                                        max_framerate,
-                                    )
-                                    .await
-                                    .context("Failed to create WHEP sink from preview pipeline")?,
-                                );
-                            }
+                                let sink = mcore::transmission::WhepSink::from_preview(
+                                    mcore::transmission::SinkConfig::Whep {
+                                        server_port: self.settings.mirroring().server_port(),
+                                    },
+                                    self.event_tx.clone(),
+                                    tokio::runtime::Handle::current(),
+                                    video_src,
+                                    audio_src,
+                                    scale_width,
+                                    scale_height,
+                                    max_framerate,
+                                )
+                                .await
+                                .context("Failed to create WHEP sink from preview pipeline")?;
+                                let audio_unavailable = sink.audio_unavailable.clone();
+                                *tx_sink = Some(sink);
+                                audio_unavailable
+                            };
+
+                            // Only once capture is known to run: a muted PC
+                            // with no audio reaching the receiver is silence
+                            // everywhere.
+                            #[cfg(target_os = "windows")]
+                            let local_muted =
+                                if include_audio && mute_local && audio_unavailable.is_none() {
+                                    let marker_dir = self
+                                        .base_dirs
+                                        .as_ref()
+                                        .map(|dirs| dirs.config_dir().join("fcast-sender"));
+                                    match desktop_sender::windows::LocalMute::engage(
+                                        marker_dir.as_deref(),
+                                    ) {
+                                        // `None` means the user had already muted.
+                                        Ok(guard) => {
+                                            *local_mute = guard;
+                                            true
+                                        }
+                                        Err(err) => {
+                                            warn!(?err, "Could not mute this PC for the cast");
+                                            false
+                                        }
+                                    }
+                                } else {
+                                    false
+                                };
+                            #[cfg(not(target_os = "windows"))]
+                            let local_muted = {
+                                let _ = mute_local;
+                                false
+                            };
+
+                            // Loopback capture leaves no trace in the OS, so
+                            // the sender is the only place that can say
+                            // whether the receiver gets sound.
+                            let audio_note = match (include_audio, audio_unavailable) {
+                                (false, _) => "",
+                                (true, None) if local_muted => {
+                                    "Sharing system audio, this PC is muted"
+                                }
+                                (true, None) => "Sharing system audio",
+                                (true, Some(reason)) => {
+                                    warn!(%reason, "System audio unavailable, casting video only");
+                                    "System audio unavailable, casting video only"
+                                }
+                            };
+                            self.ui_weak.upgrade_in_event_loop(move |ui| {
+                                ui.global::<Bridge>()
+                                    .set_mirroring_audio_note(audio_note.to_shared_string());
+                            })?;
                         }
                         _ => warn!("Cannot start mirroring in non mirroring session"),
                     }
@@ -1710,6 +1776,8 @@ impl Application {
                         video_source_fetcher_tx,
                         our_source_url: None,
                         video_sources: vec![],
+                        #[cfg(target_os = "windows")]
+                        local_mute: None,
                     };
                 }
 
@@ -2038,6 +2106,8 @@ impl Application {
                             video_source_fetcher_tx,
                             our_source_url: None,
                             video_sources: vec![],
+                            #[cfg(target_os = "windows")]
+                            local_mute: None,
                         };
                         session
                             .device
@@ -2065,6 +2135,8 @@ impl Application {
                             video_source_fetcher_tx,
                             our_source_url: None,
                             video_sources: vec![],
+                            #[cfg(target_os = "windows")]
+                            local_mute: None,
                         };
                     }
                 }
@@ -2705,6 +2777,13 @@ fn main() -> Result<()> {
         unsafe { std::env::set_var("GST_PLUGIN_PATH", plugin_dir) };
     }
 
+    // A crash mid-cast can leave the speakers muted; undo that before
+    // anything else makes noise.
+    #[cfg(target_os = "windows")]
+    if let Some(dirs) = BaseDirs::new() {
+        desktop_sender::windows::LocalMute::recover(&dirs.config_dir().join("fcast-sender"));
+    }
+
     let fmt_layer = tracing_subscriber::fmt::layer().with_filter(create_log_filter(log_level()));
     let tracing_events: Arc<parking_lot::Mutex<std::collections::VecDeque<String>>> =
         Arc::new(parking_lot::Mutex::new(std::collections::VecDeque::new()));
@@ -2771,7 +2850,12 @@ fn main() -> Result<()> {
 
     bridge.on_start_cast({
         let event_tx = event_tx.clone();
-        move |video_uid, include_audio, scale_width: i32, scale_height: i32, max_framerate: i32| {
+        move |video_uid,
+              include_audio,
+              mute_local,
+              scale_width: i32,
+              scale_height: i32,
+              max_framerate: i32| {
             event_tx
                 .send(Event::StartCast {
                     video_uid: if video_uid >= 0 {
@@ -2780,6 +2864,7 @@ fn main() -> Result<()> {
                         None
                     },
                     include_audio,
+                    mute_local,
                     scale_width: scale_width.max(1) as u32,
                     scale_height: scale_height.max(1) as u32,
                     max_framerate: max_framerate.max(1) as u32,
@@ -3038,11 +3123,14 @@ fn main() -> Result<()> {
 
     bridge.on_is_valid_url(|url| url::Url::parse(&url).is_ok());
 
-    #[cfg(any(target_os = "macos", target_os = "windows"))]
+    #[cfg(target_os = "macos")]
     bridge.set_is_audio_supported(false);
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "windows"))]
     bridge.set_is_audio_supported(true);
+
+    #[cfg(target_os = "windows")]
+    bridge.set_is_local_mute_supported(true);
 
     bridge.set_app_version(env!("CARGO_PKG_VERSION").to_shared_string());
 

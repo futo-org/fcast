@@ -6,6 +6,8 @@ use crate::{SourceConfig, VideoSource};
 use futures::StreamExt;
 use gst::{glib, prelude::*};
 use std::net::IpAddr;
+#[cfg(target_os = "windows")]
+use tracing::warn;
 use tracing::{debug, error};
 
 #[cfg(not(target_os = "android"))]
@@ -41,12 +43,340 @@ pub enum ExtraVideoContext {
 #[derive(Debug)]
 pub struct ExtraVideoContext(());
 
+/// What came of attaching a system audio source to a transmission pipeline.
+// Only the Windows arm can decline, and macOS has no source at all, so off
+// Windows one or both variants are never built.
 #[cfg(not(target_os = "android"))]
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[derive(Debug)]
+enum AudioBranch {
+    /// Capture is running. The context keeps any OS-side state alive.
+    Attached(Option<ExtraAudioContext>),
+    /// Capture could not be started; the cast can go on without it.
+    Unavailable(String),
+}
+
+/// Pre-flight result: the source to attach, or why there is none.
+#[cfg(not(target_os = "android"))]
+type PreflightAudio = (Option<AudioSource>, Option<String>);
+
+/// Name of the capture element, so the bus handler can tell its messages
+/// apart from the rest of the pipeline's.
+#[cfg(target_os = "windows")]
+const SYSTEM_AUDIO_SRC_NAME: &str = "system-audio-src";
+
+/// How long the pre-flight probe waits for the first captured buffer. Loopback
+/// delivers within a couple of 10 ms engine periods once the endpoint is up,
+/// but an idle Bluetooth or power-saving USB endpoint can take a few seconds
+/// to bring its render path up, and a false negative here silently costs the
+/// whole cast its audio.
+#[cfg(target_os = "windows")]
+const WASAPI_PROBE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Pause before re-opening the endpoint after the OS invalidated it (default
+/// output switched or unplugged); long enough for the new device to settle.
+#[cfg(target_os = "windows")]
+const WASAPI_REOPEN_DELAY: std::time::Duration = std::time::Duration::from_millis(1500);
+
+/// Loopback capture of the default render endpoint, i.e. the mix the user
+/// hears. `wasapi2src` follows default-device changes; the legacy `wasapisrc`
+/// is the fallback for builds that only ship the old plugin.
+#[cfg(target_os = "windows")]
+fn make_wasapi_loopback_src(continue_on_error: bool) -> anyhow::Result<gst::Element> {
+    let factory = ["wasapi2src", "wasapisrc"]
+        .into_iter()
+        .find(|name| gst::ElementFactory::find(name).is_some())
+        .ok_or(anyhow::anyhow!("No WASAPI capture element is available"))?;
+    debug!(factory, "Creating WASAPI loopback source");
+
+    // `loopback` is only mutable in READY, so it has to go in at construction.
+    // Never combine it with `exclusive` (Windows rejects the pair), and never
+    // set `loopback-target-pid`: a non-zero pid silently turns the element
+    // back into a microphone capture. `low-latency` is left off: loopback
+    // cannot take the IAudioClient3 path it exists for.
+    //
+    // The pipeline keeps the system clock the preview already runs on rather
+    // than the audio device's: an audio master clock stops the moment the
+    // capture stalls (endpoint invalidated, headset asleep), and the screen
+    // capture paces itself on the pipeline clock, so video would freeze with
+    // it. Slaving the source instead (skew, the default) keeps the audio
+    // aligned within its drift tolerance and turns a stall into silence.
+    let src = gst::ElementFactory::make(factory)
+        .name(SYSTEM_AUDIO_SRC_NAME)
+        .property("loopback", true)
+        .property("provide-clock", false)
+        .build()?;
+
+    // wasapi2src >= 1.28: losing the endpoint mid-cast (headset unplugged,
+    // exclusive-mode app taking over) turns into silence plus a warning
+    // instead of an ERROR. Re-opening is up to us, see `add_bus_handler`.
+    if continue_on_error && src.has_property("continue-on-error") {
+        src.set_property("continue-on-error", true);
+    }
+
+    Ok(src)
+}
+
+/// `audioconvert ! audioresample ! capsfilter` pinning what webrtcsink gets.
+///
+/// Loopback hands out the endpoint's mix format as-is: usually F32LE, and
+/// 44.1 kHz or 5.1/7.1 on some outputs. webrtcsink resamples but never
+/// downmixes (more than two channels would negotiate MULTIOPUS, which
+/// receivers don't take) and needs the audio caps to stay fixed for the whole
+/// session, so everything is pinned here, channel mask included so nothing
+/// depends on audioconvert's fixation. Convert before resample so the
+/// downmix happens first.
+#[cfg(target_os = "windows")]
+fn make_audio_conversion_chain() -> anyhow::Result<[gst::Element; 3]> {
+    let convert = gst::ElementFactory::make("audioconvert").build()?;
+    let resample = gst::ElementFactory::make("audioresample").build()?;
+    let audio_caps = gst::Caps::builder("audio/x-raw")
+        .field("format", "S16LE")
+        .field("layout", "interleaved")
+        .field("channels", 2i32)
+        .field("channel-mask", gst::Bitmask::new(0x3))
+        .field("rate", 48000i32)
+        .build();
+    let capsfilter = gst::ElementFactory::make("capsfilter")
+        .property("caps", audio_caps)
+        .build()?;
+    Ok([convert, resample, capsfilter])
+}
+
+#[cfg(target_os = "windows")]
+fn describe_error_message(msg: &gst::Message) -> String {
+    match msg.view() {
+        gst::MessageView::Error(err) => format!(
+            "{} ({})",
+            err.error(),
+            err.debug().map(|d| d.to_string()).unwrap_or_default()
+        ),
+        _ => "unknown error".to_owned(),
+    }
+}
+
+/// Runs a throwaway capture chain on its own until it delivers a buffer.
+///
+/// WASAPI reports most failures (endpoint held in exclusive mode, missing
+/// mfplat.dll on Windows N, no output device at all) only when the stream is
+/// initialized on the streaming thread, not on the state change. webrtcsink
+/// starts codec discovery per pad on its first buffer and the WHEP server
+/// only once every pad is discovered, so an audio branch that never produces
+/// would leave the whole cast without video as well. Finding out here lets
+/// the cast go on without audio instead. The probe runs the same conversion
+/// chain as the real branch so a negotiation failure shows up here too.
+///
+/// Blocks for up to [`WASAPI_PROBE_TIMEOUT`] plus the teardown; run it off
+/// the event loop.
+#[cfg(target_os = "windows")]
+fn probe_wasapi_loopback() -> anyhow::Result<()> {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    };
+
+    fn wait_for_first_buffer(
+        pipeline: &gst::Pipeline,
+        bus: &gst::Bus,
+        got_buffer: &AtomicBool,
+    ) -> anyhow::Result<()> {
+        if pipeline.set_state(gst::State::Playing).is_err() {
+            let detail = bus
+                .timed_pop_filtered(
+                    gst::ClockTime::from_mseconds(100),
+                    &[gst::MessageType::Error],
+                )
+                .map(|msg| describe_error_message(&msg))
+                .unwrap_or_else(|| "state change failed".to_owned());
+            anyhow::bail!("failed to start: {detail}");
+        }
+
+        let deadline = std::time::Instant::now() + WASAPI_PROBE_TIMEOUT;
+        while !got_buffer.load(Ordering::Relaxed) {
+            if std::time::Instant::now() >= deadline {
+                anyhow::bail!("no audio arrived within {WASAPI_PROBE_TIMEOUT:?}");
+            }
+            if let Some(msg) = bus.timed_pop_filtered(
+                gst::ClockTime::from_mseconds(50),
+                &[gst::MessageType::Error],
+            ) {
+                anyhow::bail!("{}", describe_error_message(&msg));
+            }
+        }
+
+        Ok(())
+    }
+
+    // No `continue-on-error` here: it would paper over an unopenable
+    // endpoint with a silent dummy device.
+    let src = make_wasapi_loopback_src(false)?;
+    let [convert, resample, capsfilter] = make_audio_conversion_chain()?;
+    let fakesink = gst::ElementFactory::make("fakesink")
+        .property("sync", false)
+        .build()?;
+
+    let pipeline = gst::Pipeline::new();
+    pipeline.add_many([&src, &convert, &resample, &capsfilter, &fakesink])?;
+    gst::Element::link_many([&src, &convert, &resample, &capsfilter, &fakesink])?;
+
+    let got_buffer = Arc::new(AtomicBool::new(false));
+    let probe_added = fakesink
+        .static_pad("sink")
+        .ok_or(anyhow::anyhow!("fakesink is missing its sink pad"))?
+        .add_probe(
+            gst::PadProbeType::BUFFER | gst::PadProbeType::BUFFER_LIST,
+            {
+                let got_buffer = Arc::clone(&got_buffer);
+                move |_, _| {
+                    got_buffer.store(true, Ordering::Relaxed);
+                    gst::PadProbeReturn::Remove
+                }
+            },
+        )
+        .is_some();
+    if !probe_added {
+        anyhow::bail!("Failed to add buffer probe to fakesink");
+    }
+
+    let bus = pipeline
+        .bus()
+        .ok_or(anyhow::anyhow!("Pipeline without bus"))?;
+
+    let result = wait_for_first_buffer(&pipeline, &bus, &got_buffer);
+
+    if let Err(err) = pipeline.set_state(gst::State::Null) {
+        error!(?err, "Failed to stop the audio probe pipeline");
+    }
+
+    result
+}
+
+/// Checks that the system audio source can actually deliver before the cast
+/// commits to it. Off the event loop, since the probe blocks.
+#[cfg(not(target_os = "android"))]
+async fn preflight_audio_src(src: Option<AudioSource>) -> PreflightAudio {
+    #[cfg(target_os = "windows")]
+    if matches!(src, Some(AudioSource::WasapiLoopback)) {
+        return preflight_wasapi_loopback().await;
+    }
+    (src, None)
+}
+
+#[cfg(target_os = "windows")]
+async fn preflight_wasapi_loopback() -> PreflightAudio {
+    // Leave the probe a moment past its own deadline for the teardown; if it
+    // is still stuck, it finishes on its own thread and the elements it holds
+    // never touch the real pipeline.
+    let deadline = WASAPI_PROBE_TIMEOUT + std::time::Duration::from_secs(2);
+    let probed =
+        tokio::time::timeout(deadline, tokio::task::spawn_blocking(probe_wasapi_loopback)).await;
+    let reason = match probed {
+        Ok(Ok(Ok(()))) => return (Some(AudioSource::WasapiLoopback), None),
+        Ok(Ok(Err(err))) => err.to_string(),
+        Ok(Err(err)) => format!("probe task failed: {err}"),
+        Err(_) => "probe did not finish in time".to_owned(),
+    };
+    warn!(%reason, "System audio capture failed, casting without audio");
+    (None, Some(reason))
+}
+
+/// Attaches the (already probed) loopback capture to a pipeline holding
+/// `sink`. Any failure past this point is unwound and reported as
+/// [`AudioBranch::Unavailable`] rather than propagated, because a stream that
+/// webrtcsink knows about but never gets a buffer for would hold up the
+/// whole cast: only genuinely programmatic errors bubble up.
+#[cfg(target_os = "windows")]
+fn add_wasapi_loopback_src(
+    pipeline: &gst::Pipeline,
+    sink: &gst::Element,
+) -> anyhow::Result<AudioBranch> {
+    let src = make_wasapi_loopback_src(true)?;
+    let [convert, resample, capsfilter] = make_audio_conversion_chain()?;
+    // Decouples the WASAPI reader thread from webrtcsink's scheduling, like
+    // the video branch's queue does for the screen capture.
+    let queue = gst::ElementFactory::make("queue").build()?;
+    let elems = [&src, &convert, &resample, &capsfilter, &queue];
+
+    pipeline.add_many(elems)?;
+
+    // Bring the branch up to the parent's state before webrtcsink learns of
+    // it, downstream first so the source never pushes into a NULL element.
+    // With the parent in READY this is where the device is opened for real,
+    // which can still fail in the window since the probe.
+    let attach = || -> anyhow::Result<gst::Pad> {
+        gst::Element::link_many(elems)?;
+        for elem in elems.iter().rev() {
+            elem.sync_state_with_parent()?;
+        }
+        let audio_pad = sink
+            .request_pad_simple("audio_%u")
+            .ok_or(anyhow::anyhow!("webrtcsink has no audio_%u pad"))?;
+        if let Err(err) = queue
+            .static_pad("src")
+            .ok_or(anyhow::anyhow!("queue is missing its src pad"))?
+            .link(&audio_pad)
+        {
+            sink.release_request_pad(&audio_pad);
+            return Err(err.into());
+        }
+        Ok(audio_pad)
+    };
+
+    match attach() {
+        Ok(_) => Ok(AudioBranch::Attached(None)),
+        Err(err) => {
+            warn!(?err, "Could not attach system audio, casting without audio");
+            for elem in elems {
+                if let Err(err) = elem.set_state(gst::State::Null) {
+                    error!(?err, "Failed to stop {}", elem.name());
+                }
+            }
+            if let Err(err) = pipeline.remove_many(elems) {
+                error!(?err, "Failed to remove the audio branch");
+            }
+            Ok(AudioBranch::Unavailable(err.to_string()))
+        }
+    }
+}
+
+/// Re-opens the capture endpoint after Windows invalidated it, which
+/// `continue-on-error` reports as a warning (default output switched or
+/// unplugged). wasapi2src only re-opens from a property write, and setting
+/// `device` to its current value is that write once the element has flagged
+/// the loss. If the endpoint is still gone the re-open warns again and lands
+/// back here, which paces the retries.
+#[cfg(target_os = "windows")]
+fn maybe_reopen_system_audio(msg: &gst::message::Warning, rt_handle: &tokio::runtime::Handle) {
+    let Some(src) = msg
+        .src()
+        .and_then(|obj| obj.downcast_ref::<gst::Element>())
+        .filter(|elem| elem.name().as_str() == SYSTEM_AUDIO_SRC_NAME)
+        .filter(|elem| elem.has_property("continue-on-error"))
+    else {
+        return;
+    };
+
+    let src = src.clone();
+    rt_handle.spawn(async move {
+        tokio::time::sleep(WASAPI_REOPEN_DELAY).await;
+        // The cast may have ended meanwhile.
+        if src.current_state() < gst::State::Paused {
+            return;
+        }
+        debug!("Re-opening the system audio endpoint");
+        src.set_property("device", None::<&str>);
+    });
+}
+
+// macOS has no audio source variant: the match below is empty there (type
+// `!`, so no trailing expression is needed) and the parameters go unused.
+#[cfg(not(target_os = "android"))]
+#[cfg_attr(target_os = "macos", allow(unused_variables))]
 fn add_audio_src(
     pipeline: &gst::Pipeline,
     sink: &gst::Element,
     src: AudioSource,
-) -> anyhow::Result<Option<ExtraAudioContext>> {
+) -> anyhow::Result<AudioBranch> {
     match src {
         #[cfg(target_os = "linux")]
         AudioSource::PulseVirtualSink => {
@@ -266,22 +596,20 @@ fn add_audio_src(
             pipeline.add_many([&src, &capsfilter])?;
             gst::Element::link_many([&src, &capsfilter, sink])?;
 
-            src.sync_state_with_parent()?;
+            // Downstream first, so the source never pushes into a NULL element.
             capsfilter.sync_state_with_parent()?;
+            src.sync_state_with_parent()?;
 
             let extra = Some(ExtraAudioContext::PulseVirtualSink {
                 jh: Some(jh),
                 pair: from_main_pair,
             });
 
-            Ok(extra)
+            Ok(AudioBranch::Attached(extra))
         }
-        #[cfg(target_os = "android")]
-        _ => todo!(),
+        #[cfg(target_os = "windows")]
+        AudioSource::WasapiLoopback => add_wasapi_loopback_src(pipeline, sink),
     }
-
-    #[cfg(not(target_os = "linux"))]
-    Ok(None)
 }
 
 fn add_bus_handler(
@@ -289,7 +617,7 @@ fn add_bus_handler(
     event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
     rt_handle: tokio::runtime::Handle,
 ) -> anyhow::Result<()> {
-    rt_handle.spawn({
+    rt_handle.clone().spawn({
         let bus = pipeline
             .bus()
             .ok_or(anyhow::anyhow!("Pipeline without bus"))?;
@@ -317,6 +645,16 @@ fn add_bus_handler(
                         // if let Err(err) = event_tx.send(Event::EndSession { disconnect: true }) {
                         //     error!(?err, "Failed to send event");
                         // }
+                    }
+                    MessageView::Warning(warning) => {
+                        debug!(
+                            src = ?warning.src().map(|s| s.path_string()),
+                            err = ?warning.error(),
+                            debug = ?warning.debug(),
+                            "Warning",
+                        );
+                        #[cfg(target_os = "windows")]
+                        maybe_reopen_system_audio(warning, &rt_handle);
                     }
                     MessageView::StateChanged(state_changed) => {
                         let Some(pipeline) = pipeline_weak.upgrade() else {
@@ -453,7 +791,9 @@ enum ExtraAudioContext {
     },
 }
 
+// Never constructed off Linux: WASAPI loopback is passive, nothing to undo.
 #[cfg(not(target_os = "linux"))]
+#[allow(dead_code)]
 #[derive(Debug)]
 struct ExtraAudioContext(());
 
@@ -506,13 +846,13 @@ impl Pipeline {
 fn sink_from_preview(
     sink: gstrswebrtc::webrtcsink::BaseWebRTCSink,
     preview_pipeline: Option<PreviewPipeline>,
-    audio_src: Option<AudioSource>,
+    (audio_src, audio_unavailable): PreflightAudio,
     max_width: u32,
     max_height: u32,
     max_framerate: u32,
     event_tx: tokio::sync::mpsc::UnboundedSender<Event>,
     rt_handle: tokio::runtime::Handle,
-) -> anyhow::Result<(Pipeline, Option<ExtraAudioContext>)> {
+) -> anyhow::Result<(Pipeline, Option<ExtraAudioContext>, Option<String>)> {
     if let Some(mut preview_pipeline) = preview_pipeline {
         let elems = &mut preview_pipeline.elems;
 
@@ -587,8 +927,13 @@ fn sink_from_preview(
         debug!("Removed capsfilter blocking probe");
 
         let mut extra_audio = None;
+        let mut audio_unavailable = audio_unavailable;
         if let Some(audio_src) = audio_src {
-            extra_audio = add_audio_src(&preview_pipeline.pipeline, sink.upcast_ref(), audio_src)?;
+            match add_audio_src(&preview_pipeline.pipeline, sink.upcast_ref(), audio_src)? {
+                AudioBranch::Attached(extra) => extra_audio = extra,
+                // Video is still worth casting on its own.
+                AudioBranch::Unavailable(reason) => audio_unavailable = Some(reason),
+            }
         }
 
         sink.sync_state_with_parent()?;
@@ -599,13 +944,23 @@ fn sink_from_preview(
 
         add_bus_handler(&preview_pipeline.pipeline, event_tx, rt_handle)?;
 
-        Ok((Pipeline::Preview(preview_pipeline), extra_audio))
+        Ok((
+            Pipeline::Preview(preview_pipeline),
+            extra_audio,
+            audio_unavailable,
+        ))
     } else if let Some(audio_src) = audio_src {
         let pipeline = gst::Pipeline::new();
 
         pipeline.add(&sink)?;
 
-        let extra_audio = add_audio_src(&pipeline, sink.upcast_ref(), audio_src)?;
+        let extra_audio = match add_audio_src(&pipeline, sink.upcast_ref(), audio_src)? {
+            AudioBranch::Attached(extra) => extra,
+            // There is nothing else to cast.
+            AudioBranch::Unavailable(reason) => {
+                anyhow::bail!("System audio capture is unavailable: {reason}")
+            }
+        };
 
         pipeline.call_async(|pipeline| {
             pipeline.set_state(gst::State::Playing).unwrap();
@@ -613,7 +968,11 @@ fn sink_from_preview(
 
         add_bus_handler(&pipeline, event_tx, rt_handle)?;
 
-        Ok((Pipeline::Simple(pipeline), extra_audio))
+        Ok((Pipeline::Simple(pipeline), extra_audio, None))
+    } else if let Some(reason) = audio_unavailable {
+        // Audio was all there was to cast. Reaches the crash window with the
+        // log, which is where the reason ends up being read.
+        anyhow::bail!("System audio capture is unavailable: {reason}");
     } else {
         anyhow::bail!("Missing source");
     }
@@ -626,6 +985,10 @@ pub struct WhepSink {
     /// Keeps RAII guards alive so stream sources are not prematurely torn down
     #[cfg(not(target_os = "android"))]
     _extra_audio: Option<ExtraAudioContext>,
+    /// Set when system audio was asked for but capture could not start, so
+    /// the cast carries video only. Holds the reason.
+    #[cfg(not(target_os = "android"))]
+    pub audio_unavailable: Option<String>,
 }
 
 impl WhepSink {
@@ -685,10 +1048,11 @@ impl WhepSink {
             }
             _ => todo!(),
         };
-        let (pipeline, _extra_audio) = sink_from_preview(
+        let audio = preflight_audio_src(audio_src).await;
+        let (pipeline, _extra_audio, audio_unavailable) = sink_from_preview(
             sink,
             preview_pipeline,
-            audio_src,
+            audio,
             max_width,
             max_height,
             max_framerate,
@@ -698,6 +1062,7 @@ impl WhepSink {
         Ok(Self {
             pipeline,
             _extra_audio,
+            audio_unavailable,
         })
     }
 
@@ -721,6 +1086,10 @@ pub struct FSink {
     /// Keeps RAII guards alive so stream sources are not prematurely torn down
     #[cfg(not(target_os = "android"))]
     _extra_audio: Option<ExtraAudioContext>,
+    /// Set when system audio was asked for but capture could not start, so
+    /// the cast carries video only. Holds the reason.
+    #[cfg(not(target_os = "android"))]
+    pub audio_unavailable: Option<String>,
 }
 
 impl FSink {
@@ -777,10 +1146,11 @@ impl FSink {
             SinkConfig::FCast => create_f_webrtcsink(rt_handle.clone(), event_tx.clone())?,
             _ => unreachable!(),
         };
-        let (pipeline, _extra_audio) = sink_from_preview(
+        let audio = preflight_audio_src(audio_src).await;
+        let (pipeline, _extra_audio, audio_unavailable) = sink_from_preview(
             sink,
             preview_pipeline,
-            audio_src,
+            audio,
             max_width,
             max_height,
             max_framerate,
@@ -791,6 +1161,7 @@ impl FSink {
             pipeline,
             signaller,
             _extra_audio,
+            audio_unavailable,
         })
     }
 
