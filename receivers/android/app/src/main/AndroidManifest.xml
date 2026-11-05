@@ -47,7 +47,9 @@
             android:name=".PlayerActivity"
             android:configChanges="keyboardHidden|orientation|screenSize"
             android:launchMode="singleInstance"
-            android:theme="@style/Theme.Player" />
+            android:showWhenLocked="true"
+            android:theme="@style/Theme.Player"
+            android:turnScreenOn="true" />
 
         <receiver
             android:name=".BootReceiver"
