@@ -160,11 +160,12 @@ Run on 2026-11-10 and 11 on Windows 11, against the service and the frontend ext
 
 | Test | 8.12.0 | 12.21.0 | 12.22.2 | 20.12.2 |
 |------|--------|---------|---------|---------|
-| Unit | not run (the test bundle needs Node.js 12) | 130/130 | 130/130 | 130/130 |
+| Unit | not applicable, see below | 130/130 | 130/130 | 130/130 |
 | Service, version 3 | 27/27 | 19/19 | 19/19 | 19/19 |
 | Service, version 4 | no version 4 | 43/43 | 43/43 | 43/43 |
 | Service and frontend | 33/33, 67 version 4 cases skipped | 100/100 | 100/100 | 100/100 |
 
+- Unit, 8.12.0: 99 of the 130 tests exercise the version 4 code (encoding and decoding, the coordinator with version 4 senders, the TLS identity, companion resources). That code needs `TextEncoder`, `BigInt` and TLS 1.3, which Node.js 8.12 does not have, and the receiver keeps it switched off there. Run on 8.12.0 anyway, 31 tests pass and those 99 fail, the first with `TextEncoder is not defined`. What matters on that runtime is covered by the two service rows, and by a unit test, run on the other versions, that removes `TextEncoder` and `BigInt` and checks that nothing of version 4 is built when only older senders are connected.
 - Service, version 3: on 8.12.0 the receiver announces version 3, so the upstream terminal sender is used as well (8 more steps). On the other versions it announces version 4 and the terminal sender is covered by the version 4 test.
 - Service, version 4: includes 16 FAST cases (handshake, heartbeat, protocol errors), the upstream terminal sender with the right and with a wrong fingerprint, and mDNS discovery with the upstream sender.
 - Service and frontend: one check of the connection URL drawn as QR code, plus 99 FAST cases (32 for versions 2 and 3, 67 for version 4).
