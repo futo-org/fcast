@@ -1,0 +1,18 @@
+diff --git a/node_modules/@types/webos-service/index.d.ts b/node_modules/@types/webos-service/index.d.ts
+index a860f4f..ca94645 100644
+--- a/node_modules/@types/webos-service/index.d.ts
++++ b/node_modules/@types/webos-service/index.d.ts
+@@ -1,5 +1,5 @@
+-export as namespace WebosService;
+-
++export = Service;
++export as namespace Service;
+ import { ActivityManager } from "./activity-manager";
+ import { Message } from "./message";
+ import { Method } from "./method";
+@@ -7,4 +7,4 @@ import { Service } from "./service";
+ import { Subscription } from "./subscription";
+ 
+ export { ActivityManager, Message, Method, Subscription };
+-export default Service;
++

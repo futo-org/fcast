@@ -1,0 +1,59 @@
+/* WebOS custom player styles */
+
+html {
+    overflow: hidden;
+}
+
+.container {
+    height: 140px;
+    background: linear-gradient(to top, rgba(0, 0, 0, 1.0) 0%, rgba(0, 0, 0, 0.0) 100%);
+}
+
+.iconSize {
+    width: 48px;
+    height: 48px;
+    background-size: cover;
+}
+
+#leftButtonContainer {
+    left: 48px;
+
+    font-family: InterRegular;
+    font-size: 28px;
+}
+
+#centerButtonContainer {
+    font-family: InterRegular;
+    font-size: 28px;
+}
+
+#playlistLength {
+    margin-right: 28px;
+}
+
+.buttonContainer {
+    bottom: 24px;
+    height: 96px;
+    /* gap: 48px; */
+    gap: unset;
+}
+
+.buttonFocusContainer {
+    margin-right: 28px;
+    padding: 20px;
+    border-radius: 20px;
+}
+
+.buttonFocus {
+    /* background-image: linear-gradient(to bottom, #008BD7 35%, #0069AA); */
+    background-image: linear-gradient(to bottom, #808080 35%, #202020);
+    border: 1px solid #4E4E4E;
+}
+
+#toast-notification {
+    gap: unset;
+}
+
+#toast-text {
+    font-family: InterRegular;
+}

@@ -1,0 +1,9 @@
+{
+  "id": "com.futo.fcast.receiver.service",
+  "description": "FCast network service",
+  "services": [
+    {
+      "name": "com.futo.fcast.receiver.service"
+    }
+  ]
+}
