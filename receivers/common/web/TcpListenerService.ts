@@ -1,8 +1,9 @@
 import * as net from 'net';
 import { ListenerService } from 'common/ListenerService';
 import { FCastSession } from 'common/FCastSession';
-import { Opcode, PROTOCOL_VERSION, VersionMessage } from 'common/Packets';
+import { Opcode, VersionMessage } from 'common/Packets';
 import { Logger, LoggerType } from 'common/Logger';
+import { getV4Context } from 'src/Main';
 const logger = new Logger('TcpListenerService', LoggerType.BACKEND);
 
 export class TcpListenerService extends ListenerService {
@@ -54,24 +55,35 @@ export class TcpListenerService extends ListenerService {
             this.disconnect(session.sessionId);
         });
 
-        socket.on("data", buffer => {
+        const onData = (buffer: Buffer) => {
             try {
-                session.processBytes(buffer);
+                const upgradeHead = session.processBytes(buffer);
+                if (upgradeHead !== null) {
+                    socket.removeListener("data", onData);
+                    session.upgradeToTls(upgradeHead);
+                }
             } catch (e) {
                 logger.warn(`Error while handling packet from ${socket.remoteAddress}:${socket.remotePort}.`, e);
-                socket.end();
+                if (session.isUpgradingToTls) {
+                    socket.destroy();
+                } else {
+                    socket.end();
+                }
             }
-        });
+        };
+        socket.on("data", onData);
 
         socket.on("close", () => {
+            session.dispose();
             this.sessionMap.delete(session.sessionId);
             this.emitter.emit('disconnect', { sessionId: session.sessionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
         });
 
         this.emitter.emit('connect', { sessionId: session.sessionId, type: 'tcp', data: { address: socket.remoteAddress, port: socket.remotePort }});
         try {
-            logger.info('Sending version');
-            session.send(Opcode.Version, new VersionMessage(PROTOCOL_VERSION));
+            const maxVersion = getV4Context() !== null ? 4 : 3;
+            logger.info(`Sending version ${maxVersion}`);
+            session.send(Opcode.Version, new VersionMessage(maxVersion));
         } catch (e) {
             logger.info('Failed to send version', e);
         }

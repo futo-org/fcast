@@ -46,6 +46,24 @@ export abstract class ListenerService {
         }
     }
 
+    // Sends a v4 Flatbuf packet to the given session, or to every v4 session when no id is given.
+    public sendV4(bytes: Uint8Array, sessionId: string = null) {
+        const sessions = sessionId ? [this.sessionMap.get(sessionId)] : [...this.sessionMap.values()];
+
+        for (const session of sessions) {
+            if (!session) {
+                continue;
+            }
+
+            try {
+                session.sendFlatbuf(bytes);
+            } catch (e) {
+                logger.warn("Failed to send v4 message.", e);
+                session.close();
+            }
+        }
+    }
+
     public subscribeEvent(sessionId: string, event: EventSubscribeObject) {
         if (!this.eventSubscribers.has(sessionId)) {
             this.eventSubscribers.set(sessionId, []);
@@ -73,8 +91,22 @@ export abstract class ListenerService {
         return [...this.sessionMap.keys()];
     }
 
+    // Ids of the sessions that completed the v4 handshake.
+    public getV4Sessions(): string[] {
+        return [...this.sessionMap.values()].filter((session) => session.isV4Secure).map((session) => session.sessionId);
+    }
+
+    // Ids of the sessions that speak protocol version 1 to 3.
+    public getLegacySessions(): string[] {
+        return [...this.sessionMap.values()].filter((session) => session.protocolVersion < 4 && !session.isUpgradingToTls).map((session) => session.sessionId);
+    }
+
     public getSessionProtocolVersion(sessionId: string) {
         return this.sessionMap.get(sessionId)?.protocolVersion;
+    }
+
+    public isSessionPingable(sessionId: string): boolean {
+        return this.sessionMap.get(sessionId)?.canPing ?? false;
     }
 
     public getAllSubscribedKeys(): { keyDown: Set<string>, keyUp: Set<string> } {
@@ -105,7 +137,8 @@ export abstract class ListenerService {
         let isSubscribed = false;
 
         if (this.eventSubscribers.has(sessionId)) {
-            for (const e of this.eventSubscribers.get(sessionId).values()) {
+            // Iterates the array itself: Array.prototype.values() is missing in the Node.js of webOS 5 and 6.
+            for (const e of this.eventSubscribers.get(sessionId)) {
                 if (e.type === event.type) {
                     if (e.type === EventType.KeyDown.valueOf() || e.type === EventType.KeyUp.valueOf()) {
                         const subscribeEvent = e.type === EventType.KeyDown.valueOf() ? e as KeyDownEvent : e as KeyUpEvent;

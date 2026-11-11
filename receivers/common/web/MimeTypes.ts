@@ -29,6 +29,7 @@ export const supportedAudioTypes = [
     'audio/flac',
     'audio/x-flac',
     'audio/mpeg',
+    'audio/mp3',
     'audio/mp4',
     'audio/ogg',
     'audio/wav',

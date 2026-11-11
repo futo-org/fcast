@@ -53,7 +53,6 @@ module.exports = [
                         from: '../common/assets/**',
                         to: '[path][name][ext]',
                         context: path.resolve(__dirname, '..', '..', 'common'),
-                        globOptions: { ignore: ['**/*.txt'] }
                     },
                     // Target assets
                     { from: 'appinfo.json', to: '[name][ext]' },
@@ -67,7 +66,6 @@ module.exports = [
                         from: '**',
                         to: 'lib/[name][ext]',
                         context: path.resolve(__dirname, 'lib'),
-                        globOptions: { ignore: ['**/*.txt'] }
                     },
                     { from: './src/index.html', to: '[name][ext]' }
                 ],

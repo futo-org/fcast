@@ -54,7 +54,7 @@ export class ConnectionMonitor {
                 for (const sessionId of ConnectionMonitor.backendConnections.keys()) {
                     const listener = ConnectionMonitor.backendConnections.get(sessionId);
 
-                    if (listener.getSessionProtocolVersion(sessionId) >= 2) {
+                    if (listener.isSessionPingable(sessionId)) {
                         if (ConnectionMonitor.heartbeatRetries.get(sessionId) > 3) {
                             ConnectionMonitor.logger.warn(`Could not ping device with connection id ${sessionId}. Disconnecting...`);
                             listener.disconnect(sessionId);

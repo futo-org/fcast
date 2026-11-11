@@ -1,0 +1,13 @@
+diff --git a/node_modules/dns-js/lib/dnspacket.js b/node_modules/dns-js/lib/dnspacket.js
+index e525956..ba011e6 100644
+--- a/node_modules/dns-js/lib/dnspacket.js
++++ b/node_modules/dns-js/lib/dnspacket.js
+@@ -231,7 +231,7 @@ function each(section /*[,filter], callback*/) {
+  * @returns {Buffer} A Node.js Buffer
+  */
+ DNSPacket.toBuffer = function (packet) {
+-  var writer = new BufferWriter();
++  var writer = new BufferWriter(9000);
+   var sections = ['question'].concat(SECTION_NAMES);
+   writeHeader(writer, packet);
+ 

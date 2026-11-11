@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { preloadData } from 'common/player/Preload';
+import { preloadData } from 'common/Preload';
 import { EventMessage, PlaybackErrorMessage, PlaybackUpdateMessage, PlayMessage, VolumeUpdateMessage } from 'common/Packets';
-import { ServiceManager, initializeWindowSizeStylesheet } from 'lib/common';
+import { ServiceManager, initializeWindowSizeStylesheet, reportVisibilityChanges } from 'lib/common';
 import { toast, ToastIcon } from 'common/components/Toast';
 require('lib/webOSTVjs-1.2.10/webOSTV.js');
 require('lib/webOSTVjs-1.2.10/webOSTV-dev.js');
@@ -40,7 +40,7 @@ try {
                             window.parent.webOSApp.pendingPlay = message.value;
                         }
                         else {
-                            preloadData.onPlayPlaylistCb(null, message.value.rendererMessage);
+                            preloadData.onPlayPlaylistCb(null, message.value.rendererMessage, message.value.playerVolume ?? null);
                         }
                     }
                     else {
@@ -48,7 +48,7 @@ try {
                             window.parent.webOSApp.pendingPlay = message.value;
                         }
                         else {
-                            preloadData.onPlayCb(null, message.value.rendererMessage);
+                            preloadData.onPlayCb(null, message.value.rendererMessage, message.value.proxyUrl ?? null, message.value.playerVolume ?? null, message.value.options ?? {});
                         }
                     }
                 }
@@ -64,6 +64,8 @@ try {
                 break;
 
             case 'stop':
+                // Replacing the page takes a moment; the media must not play on meanwhile.
+                preloadData.onPauseCb();
                 window.parent.webOSApp.loadPage('main_window/index.html');
                 break;
 
@@ -81,6 +83,14 @@ try {
 
             case 'setplaylistitem':
                 preloadData.onSetPlaylistItemCb(null, message.value);
+                break;
+
+            case 'changetrack':
+                preloadData.onChangeTrackCb(null, message.value);
+                break;
+
+            case 'addsubtitle':
+                preloadData.onAddSubtitleCb(null, message.value);
                 break;
 
             case 'event_subscribed_keys_update':
@@ -118,6 +128,12 @@ try {
     preloadData.sendPlayRequestCb = (message: PlayMessage, playlistIndex: number) => {
         serviceManager.call('play_request', { message: message, playlistIndex: playlistIndex }, null, (message: any) => { logger.error(`Player: play_request ${playlistIndex} ${JSON.stringify(message)}`); });
     };
+    preloadData.sendTracksCb = (report: any) => {
+        serviceManager.call('send_tracks', report, null, (message: any) => { logger.error(`Player: send_tracks ${JSON.stringify(message)}`); });
+    };
+    preloadData.sendQueueSelectCb = (offset: number) => {
+        serviceManager.call('queue_select_request', { offset: offset }, null, (message: any) => { logger.error(`Player: queue_select_request ${JSON.stringify(message)}`); });
+    };
     window.targetAPI.getSessions(() => {
         return new Promise((resolve, reject) => {
             serviceManager.call('get_sessions', {}, (message: any) => resolve(message.value), (message: any) => reject(message));
@@ -145,7 +161,7 @@ try {
     };
 
     window.parent.webOSApp.setLaunchHandler(launchHandler);
-    document.addEventListener('visibilitychange', () => serviceManager.call('visibility_changed', { hidden: document.hidden, window: contentViewer }));
+    reportVisibilityChanges(serviceManager, contentViewer);
 }
 catch (err) {
     logger.error(`Player: preload`, err);

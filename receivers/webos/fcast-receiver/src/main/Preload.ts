@@ -1,9 +1,9 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { preloadData } from 'common/main/Preload';
+import { preloadData } from 'common/Preload';
 import { ToastIcon } from 'common/components/Toast';
 import { EventMessage } from 'common/Packets';
-import { ServiceManager, initializeWindowSizeStylesheet } from 'lib/common';
+import { ServiceManager, initializeWindowSizeStylesheet, reportVisibilityChanges } from 'lib/common';
 require('lib/webOSTVjs-1.2.10/webOSTV.js');
 require('lib/webOSTVjs-1.2.10/webOSTV-dev.js');
 
@@ -20,6 +20,13 @@ try {
     initializeWindowSizeStylesheet();
 
     const serviceManager: ServiceManager = window.parent.webOSApp.serviceManager;
+
+    const fetchConnectionTxt = (): Promise<any> => {
+        return new Promise((resolve) => {
+            serviceManager.call('get_connection_info', {}, (message: any) => resolve(message.value && message.value.txt ? message.value.txt : null), () => resolve(null));
+        });
+    };
+    const connectionTxt = fetchConnectionTxt();
     serviceManager.subscribeToServiceChannel((message: any) => {
         switch (message.event) {
             case 'toast':
@@ -77,8 +84,10 @@ try {
                         connections.push({ type: 'wired', name: 'Ethernet', address: ipAddr });
                     }
 
-                    preloadData.deviceInfo = { name: deviceName, interfaces: connections };
-                    preloadData.onDeviceInfoCb();
+                    connectionTxt.then((txt: any) => {
+                        preloadData.deviceInfo = { name: deviceName, interfaces: connections, txt: txt };
+                        preloadData.onDeviceInfoCb();
+                    });
                 }, (message: any) => {
                     logger.error('Main: preload - error fetching network interfaces', message);
                     preloadData.onToastCb('Error detecting network interfaces', ToastIcon.ERROR);
@@ -86,8 +95,10 @@ try {
             }
             else {
                 serviceManager.call('network_changed', { fallback: fallback });
-                preloadData.deviceInfo = { name: deviceName, interfaces: connections };
-                preloadData.onDeviceInfoCb();
+                connectionTxt.then((txt: any) => {
+                    preloadData.deviceInfo = { name: deviceName, interfaces: connections, txt: txt };
+                    preloadData.onDeviceInfoCb();
+                });
             }
         },
         onFailure: (message: any) => {
@@ -128,7 +139,7 @@ try {
     };
 
     window.parent.webOSApp.setLaunchHandler(launchHandler);
-    document.addEventListener('visibilitychange', () => { serviceManager.call('visibility_changed', { hidden: document.hidden, window: 'main' }); });
+    reportVisibilityChanges(serviceManager, 'main');
 
     const play = (messageInfo: any) => {
         sessionStorage.setItem('playInfo', JSON.stringify(messageInfo));

@@ -1,6 +1,7 @@
 {
   "compilerOptions": {
     "target": "ES2015",
+    "lib": ["ES2015", "ES2020.BigInt", "DOM", "ScriptHost"],
     "module": "ES2015",
     "moduleResolution": "node10",
     "sourceMap": false,
@@ -15,6 +16,7 @@
       "src/*": ["./src/*"],
       "modules/*": ["./node_modules/*"],
       "common/*": ["../../common/web/*"],
+      "flatbuffers": ["./node_modules/flatbuffers"],
     }
   },
   "exclude": [ "node_modules", "test" ]

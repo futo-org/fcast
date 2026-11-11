@@ -2,6 +2,8 @@ import dashjs from 'modules/dashjs';
 import Hls, { LevelLoadedData } from 'modules/hls.js';
 import { EventMessage, EventType, GenericMediaMetadata, KeyEvent, MediaItem, MediaItemEvent, MetadataType, PlaybackState, PlaybackUpdateMessage, PlaylistContent, PlayMessage, SeekMessage, SetPlaylistItemMessage, SetSpeedMessage, SetVolumeMessage } from 'common/Packets';
 import { Player, PlayerType } from './Player';
+import { ExternalSubtitle, TrackController } from './Tracks';
+import { MediaTrackType } from 'common/v4/generated/fcast/v4/media-track-type';
 import * as connectionMonitor from 'common/ConnectionMonitor';
 import { supportedAudioTypes } from 'common/MimeTypes';
 import { mediaItemFromPlayMessage, playMessageFromMediaItem, Timer } from 'common/UtilityFrontend';
@@ -81,6 +83,11 @@ let cachedSpeed: number = 1.0;
 let playlistIndex = 0;
 let isMediaItem = false;
 let playItemCached = false;
+// True while the item belongs to a queue the service manages: previous and next go through it.
+let serviceQueue = false;
+// True from the end of the media until it plays again or other media is loaded.
+let mediaEnded = false;
+const tracks = new TrackController(videoElement, (report) => { window.targetAPI.sendTracks(report); });
 
 let uiHideTimer = new Timer(() => { playerCtrlStateUpdate(PlayerControlEvent.UiFadeOut); }, 3000);
 let loadingTimer = new Timer(() => { loadingSpinner.style.display = 'block'; }, 100, false);
@@ -160,9 +167,12 @@ function onPlayerLoad(value: PlayMessage) {
     else {
         setIdleScreenVisible(true, false, value);
     }
+
+    tracks.publish();
 }
 
-function onPlay(_event, value: PlayMessage, proxyUrl: string = null, cachedPlayerVolume: number = null) {
+function onPlay(_event, value: PlayMessage, proxyUrl: string = null, cachedPlayerVolume: number = null, options: { queued?: boolean, reload?: boolean } = {}) {
+    serviceQueue = options.queued === true;
     if (!playItemCached) {
         cachedPlayMediaItem = mediaItemFromPlayMessage(value);
         isMediaItem = false;
@@ -179,7 +189,7 @@ function onPlay(_event, value: PlayMessage, proxyUrl: string = null, cachedPlaye
 
     const url = proxyUrl ? proxyUrl : value.url;
     if (player) {
-        if ((player.getSource() === url) || (player.getSource() === value.content)) {
+        if (options.reload !== true && ((player.getSource() === url) || (player.getSource() === value.content))) {
             if (value.time) {
                 console.info('Skipped changing video URL because URL is the same. Discarding time and using current receiver time instead');
             }
@@ -190,6 +200,8 @@ function onPlay(_event, value: PlayMessage, proxyUrl: string = null, cachedPlaye
         player = null;
     }
 
+    tracks.reset();
+    mediaEnded = false;
     setIdleScreenVisible(true, true);
     sendPlaybackUpdate(PlaybackState.Idle);
     playerPrevTime = 0;
@@ -216,6 +228,10 @@ function onPlay(_event, value: PlayMessage, proxyUrl: string = null, cachedPlaye
                 }
             });
             player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_RATE_CHANGED, () => { sendPlaybackUpdate(playbackState); });
+            player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_SEEKED, () => {
+                sendPlaybackUpdate(playbackState);
+                playerPrevTime = player.dashPlayer.time();
+            });
 
             // Buffering UI update when paused
             player.dashPlayer.on(dashjs.MediaPlayer.events.PLAYBACK_PROGRESS, () => { playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate); });
@@ -332,11 +348,17 @@ function onPlay(_event, value: PlayMessage, proxyUrl: string = null, cachedPlaye
             // Buffering UI update when paused
             videoElement.onprogress = () => { playerCtrlStateUpdate(PlayerControlEvent.TimeUpdate); };
             videoElement.onratechange = () => { sendPlaybackUpdate(playbackState); };
+            // Senders learn the new position at once, also while paused.
+            videoElement.onseeked = () => {
+                sendPlaybackUpdate(playbackState);
+                playerPrevTime = videoElement.currentTime;
+            };
             videoElement.onvolumechange = () => {
                 const updateVolume = videoElement.muted ? 0 : videoElement.volume;
                 playerCtrlStateUpdate(PlayerControlEvent.VolumeChange);
 
-                if (Math.abs(updateVolume - playerPrevVolume) >= playerVolumeUpdateInterval) {
+                // Silence from a disabled audio track is not a volume change.
+                if (!tracks.isAudioDisabled && Math.abs(updateVolume - playerPrevVolume) >= playerVolumeUpdateInterval) {
                     window.targetAPI.sendVolumeUpdate({ generationTime: Date.now(), volume: updateVolume });
                     playerPrevVolume = updateVolume;
                 }
@@ -377,6 +399,16 @@ window.targetAPI.onPause(() => { player?.pause(); });
 window.targetAPI.onResume(() => { player?.play(); });
 window.targetAPI.onSeek((_event, value: SeekMessage) => { player?.setCurrentTime(value.time); });
 window.targetAPI.onSetVolume((_event, value: SetVolumeMessage) => { volumeChangeHandler(value.volume); });
+window.targetAPI.onChangeTrack((_event, value: { trackType: MediaTrackType, id: number | null }) => {
+    if (player) {
+        tracks.change(value.trackType, value.id);
+    }
+});
+window.targetAPI.onAddSubtitle((_event, value: ExternalSubtitle) => {
+    if (player) {
+        tracks.addSubtitle(value);
+    }
+});
 window.targetAPI.onSetSpeed((_event, value: SetSpeedMessage) => {
     cachedSpeed = Math.min(16.0, Math.max(0.0, value.speed));
     player?.setPlaybackRate(value.speed);
@@ -422,6 +454,16 @@ function setPlaylistItem(index: number) {
     }
 }
 
+// Moves to the previous (-1) or next (+1) item of the playlist or of the service's queue.
+function selectAdjacentItem(offset: number) {
+    if (serviceQueue) {
+        window.targetAPI.sendQueueSelect(offset);
+    }
+    else if (isMediaItem) {
+        setPlaylistItem(playlistIndex + offset);
+    }
+}
+
 connectionMonitor.setUiUpdateCallbacks({
     onConnect: (connections: string[], initialUpdate: boolean = false) => {
         if (!initialUpdate) {
@@ -464,7 +506,7 @@ function playerCtrlStateUpdate(event: PlayerControlEvent) {
 
     switch (event) {
         case PlayerControlEvent.Load: {
-            if (isMediaItem) {
+            if (isMediaItem || serviceQueue) {
                 playerCtrlPlayPrevious.style.display = 'block';
                 playerCtrlPlayNext.style.display = 'block';
             }
@@ -697,8 +739,8 @@ playerCtrlAction.onclick = () => {
     }
 };
 
-playerCtrlPlayPrevious.onclick = () => { setPlaylistItem(playlistIndex - 1); }
-playerCtrlPlayNext.onclick = () => { setPlaylistItem(playlistIndex + 1); }
+playerCtrlPlayPrevious.onclick = () => { selectAdjacentItem(-1); }
+playerCtrlPlayNext.onclick = () => { selectAdjacentItem(1); }
 playerCtrlVolume.onclick = () => { player?.setMute(!player?.isMuted()); };
 
 playerCtrlProgressBarInteractiveArea.onmousedown = (e: MouseEvent) => { scrubbing = true; scrubbingMouseHandler(e) };
@@ -852,6 +894,11 @@ function setIdleScreenVisible(visible: boolean, loading: boolean = false, messag
 }
 
 function mediaPlayHandler(message: PlayMessage) {
+    if (mediaEnded) {
+        mediaEnded = false;
+        setIdleScreenVisible(false, false, message);
+    }
+
     if (playbackState === PlaybackState.Idle) {
         logger.info('Media playback start:', cachedPlayMediaItem);
         window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemStart, cachedPlayMediaItem)));
@@ -883,23 +930,23 @@ function mediaEndHandler() {
         }
         else {
             logger.info('End of playlist:', cachedPlayMediaItem);
-            sendPlaybackUpdate(PlaybackState.Idle);
-
-            setIdleScreenVisible(true);
-            player.setAutoPlay(false);
-            player.stop();
+            showMediaEnded();
         }
     }
     else {
         logger.info('Media playback ended:', cachedPlayMediaItem);
-        sendPlaybackUpdate(PlaybackState.Idle);
-
-        setIdleScreenVisible(true);
-        player.setAutoPlay(false);
-        player.stop();
+        showMediaEnded();
     }
 
     window.targetAPI.sendEvent(new EventMessage(Date.now(), new MediaItemEvent(EventType.MediaItemEnd, cachedPlayMediaItem)));
+}
+
+// The media stays loaded, paused at its end, so that a seek or a resume plays it again.
+function showMediaEnded() {
+    mediaEnded = true;
+    sendPlaybackUpdate(PlaybackState.Paused);
+    playerCtrlStateUpdate(PlayerControlEvent.Pause);
+    setIdleScreenVisible(true);
 }
 
 // Component hiding
@@ -1105,6 +1152,7 @@ export {
     onPlay,
     onPlayPlaylist,
     setPlaylistItem,
+    selectAdjacentItem,
     playerCtrlStateUpdate,
     skipBack,
     skipForward,

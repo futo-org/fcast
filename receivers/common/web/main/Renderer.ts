@@ -5,6 +5,7 @@ import { onQRCodeRendered, targetKeyUpEventListener } from 'src/main/Renderer';
 import { toast, ToastIcon } from '../components/Toast';
 import { EventMessage, EventType, KeyEvent } from 'common/Packets';
 import { targetKeyDownEventListener } from 'src/main/Renderer';
+import { buildConnectionUrl } from 'common/ConnectionUrl';
 
 const connectionStatusText = document.getElementById('connection-status-text');
 const connectionStatusSpinner = document.getElementById('connection-spinner');
@@ -82,19 +83,8 @@ function renderIPsAndQRCode() {
     }
 
     renderedAddresses = addresses;
-    const fcastConfig = {
-        name: value.name,
-        addresses: addresses,
-        services: [
-            { port: 46899, type: 0 }, //TCP
-        ]
-    };
-
-    const json = JSON.stringify(fcastConfig);
-    let base64 = btoa(json);
-    base64 = base64.replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-    qrCodeUrl = `fcast://r/${base64}`;
-    logger.info('QR Code:', {json, qrCodeUrl, base64});
+    qrCodeUrl = buildConnectionUrl(value.name, addresses, value.txt ? value.txt : null);
+    logger.info('QR Code:', { qrCodeUrl });
 
     calculateQRCodeWidth();
     if (!renderedConnectionInfo) {

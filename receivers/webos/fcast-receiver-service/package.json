@@ -1,13 +1,16 @@
 {
     "name": "com.futo.fcast.receiver.service",
-    "version": "2.0.1",
+    "version": "3.0.0",
     "description": "FCast network service",
     "author": "FUTO",
     "license": "MIT",
     "main": "main.js",
     "scripts": {
         "build": "rm -rf dist/ && webpack --config ./webpack.config.js",
-        "test": "echo \"Error: no test specified\" && exit 1",
+        "build:unit": "webpack --config ../test/webpack.unit.config.js",
+        "build:e2e": "webpack --config ../test/webpack.e2e.config.js",
+        "test": "npm run test:unit",
+        "test:unit": "npm run build:unit && node ../test/dist/unit-tests.js",
         "postinstall": "patch-package"
     },
     "devDependencies": {
@@ -34,9 +37,11 @@
     "@comment dependencies.uuid": "Versions > 9.0.1 are broken on webOS",
     "dependencies": {
         "bufferutil": "^4.0.8",
+        "flatbuffers": "25.9.23",
         "follow-redirects": "^1.15.9",
         "log4js": "^6.9.1",
         "memfs": "^4.17.2",
+        "node-forge": "1.4.3",
         "url": "^0.11.4",
         "uuid": "^9.0.1"
     },

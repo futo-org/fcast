@@ -126,6 +126,10 @@ if (TARGET === 'electron') {
     preloadData.onSetPlaylistItemCb = () => { logger.error('RendererWindow: Callback "onSetPlaylistItem" not set'); };
     preloadData.sendPlayRequestCb = () => { logger.error('RendererWindow: Callback "sendPlayRequest" not set'); };
     preloadData.onPlayPlaylistCb = () => { logger.error('RendererWindow: Callback "onPlayPlaylist" not set'); };
+    preloadData.onChangeTrackCb = () => { logger.error('RendererWindow: Callback "onChangeTrack" not set'); };
+    preloadData.onAddSubtitleCb = () => { logger.error('RendererWindow: Callback "onAddSubtitle" not set'); };
+    preloadData.sendTracksCb = () => { logger.error('RendererWindow: Callback "sendTracks" not set'); };
+    preloadData.sendQueueSelectCb = () => { logger.error('RendererWindow: Callback "sendQueueSelect" not set'); };
 
     preloadData.onEventSubscribedKeysUpdate = (value: { keyDown: string[], keyUp: string[] }) => {
         preloadData.subscribedKeys.keyDown = new Set(value.keyDown);
@@ -180,6 +184,11 @@ if (TARGET === 'electron') {
         onSetPlaylistItem: (callback: any) => { preloadData.onSetPlaylistItemCb = callback; },
         sendPlayRequest: (message: PlayMessage, playlistIndex: number) => { preloadData.sendPlayRequestCb(message, playlistIndex); },
         onPlayPlaylist: (callback: any) => { preloadData.onPlayPlaylistCb = callback; },
+        onChangeTrack: (callback: any) => { preloadData.onChangeTrackCb = callback; },
+        onAddSubtitle: (callback: any) => { preloadData.onAddSubtitleCb = callback; },
+        sendTracks: (report: any) => { preloadData.sendTracksCb(report); },
+        // Asks the service for the previous (-1) or next (+1) item of a queue it manages.
+        sendQueueSelect: (offset: number) => { preloadData.sendQueueSelectCb(offset); },
     };
 } else {
     // @ts-ignore

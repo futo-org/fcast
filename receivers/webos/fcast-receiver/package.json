@@ -1,6 +1,6 @@
 {
   "name": "com.futo.fcast.receiver",
-  "version": "2.0.1",
+  "version": "3.0.0",
   "description": "An application implementing a FCast receiver.",
   "author": "FUTO",
   "license": "MIT",

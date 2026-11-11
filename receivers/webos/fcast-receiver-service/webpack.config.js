@@ -35,6 +35,8 @@ module.exports = [
                 'common': path.resolve(__dirname, '../../common/web'),
             },
             extensions: ['.tsx', '.ts', '.js'],
+            extensionAlias: { '.js': ['.ts', '.js'] },
+            modules: [path.resolve(__dirname, 'node_modules'), 'node_modules'],
         },
         output: {
             filename: '[name].js',

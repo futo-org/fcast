@@ -34,6 +34,11 @@ export class ServiceManager {
     private static serviceChannelSuccessCbHandler?: (message: any) => void;
     private static serviceChannelFailureCbHandler?: (message: any) => void;
     private static serviceChannelCompleteCbHandler?: (message: any) => void;
+    // Service messages that arrived while no page could take them: the page in the frame is being
+    // replaced and the next one has not subscribed yet.
+    private static pendingMessages: any[] = [];
+    private static held = true;
+    private static readonly maxPendingMessages = 64;
 
     constructor() {
         // @ts-ignore
@@ -44,7 +49,13 @@ export class ServiceManager {
                 if (message.value?.subscribed === true) {
                     logger.info(`requestService: Registered 'service_channel' handler with service`);
                 }
-                else if (ServiceManager.serviceChannelSuccessCbHandler) {
+                else if (ServiceManager.held || !ServiceManager.serviceChannelSuccessCbHandler) {
+                    ServiceManager.pendingMessages.push(message);
+                    if (ServiceManager.pendingMessages.length > ServiceManager.maxPendingMessages) {
+                        ServiceManager.pendingMessages.shift();
+                    }
+                }
+                else {
                     ServiceManager.serviceChannelSuccessCbHandler(message);
                 }
             },
@@ -66,10 +77,45 @@ export class ServiceManager {
     }
 
 
+    // Called before the page in the frame is replaced. Until the next page subscribes, service
+    // messages are kept instead of being handed to the page that is going away, where a play
+    // request arriving right after a stop would be lost.
+    public holdServiceChannel() {
+        ServiceManager.held = true;
+    }
+
+    // True from the moment the page in the frame starts being replaced until the next page has
+    // subscribed.
+    public isReplacingPage(): boolean {
+        return ServiceManager.held;
+    }
+
     public subscribeToServiceChannel(successCb: (message: any) => void, failureCb?: (message: any) => void, onCompleteCb?: (message: any) => void) {
         ServiceManager.serviceChannelSuccessCbHandler = successCb;
         ServiceManager.serviceChannelFailureCbHandler = failureCb;
         ServiceManager.serviceChannelCompleteCbHandler = onCompleteCb;
+
+        // The kept messages are delivered once the subscribing page's script has finished: its
+        // handler may use what the script defines after this call. A microtask runs right then; a
+        // timer could be held back for a long time while the app is in the background.
+        Promise.resolve().then(() => {
+            if (ServiceManager.serviceChannelSuccessCbHandler !== successCb) {
+                return;
+            }
+            ServiceManager.held = false;
+
+            const pending = ServiceManager.pendingMessages;
+            ServiceManager.pendingMessages = [];
+            for (const message of pending) {
+                // A page left during the delivery takes the rest with it to the next page.
+                if (ServiceManager.held) {
+                    ServiceManager.pendingMessages.push(message);
+                }
+                else {
+                    successCb(message);
+                }
+            }
+        });
     }
 
     public call(method: string, parameters?: any, successCb?: (message: any) => void, failureCb?: (message: any) => void, onCompleteCb?: (message: any) => void) {
@@ -100,6 +146,17 @@ export class ServiceManager {
 
         return service;
     }
+}
+
+// Tells the service when the app goes to the background, is closed or comes back. A page that
+// is being replaced inside the app also becomes hidden; that is not the app leaving the screen,
+// and reporting it would make the service relaunch the app on the next play request.
+export function reportVisibilityChanges(serviceManager: ServiceManager, windowName: string) {
+    document.addEventListener('visibilitychange', () => {
+        if (!serviceManager.isReplacingPage()) {
+            serviceManager.call('visibility_changed', { hidden: document.hidden, window: windowName });
+        }
+    });
 }
 
 // CSS media queries do not work on older webOS versions...

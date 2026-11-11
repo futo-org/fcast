@@ -1,7 +1,7 @@
 import {
     onPlay,
     onPlayPlaylist,
-    setPlaylistItem,
+    selectAdjacentItem,
     playerCtrlStateUpdate,
     playlistIndex,
     player,
@@ -189,10 +189,10 @@ export function targetKeyDownEventListener(event: KeyboardEvent): { handledCase:
                     }
                 }
                 else if (controlFocus === ControlFocus.PlayPrevious) {
-                    setPlaylistItem(playlistIndex - 1);
+                    selectAdjacentItem(-1);
                 }
                 else if (controlFocus === ControlFocus.PlayNext) {
-                    setPlaylistItem(playlistIndex + 1);
+                    selectAdjacentItem(1);
                 }
             }
 
@@ -335,10 +335,10 @@ export function targetKeyUpEventListener(event: KeyboardEvent): { handledCase: b
 
 if (window.parent.webOSApp.pendingPlay !== null) {
     if (window.parent.webOSApp.pendingPlay.rendererEvent === 'play-playlist') {
-        onPlayPlaylist(null, window.parent.webOSApp.pendingPlay.rendererMessage);
+        onPlayPlaylist(null, window.parent.webOSApp.pendingPlay.rendererMessage, window.parent.webOSApp.pendingPlay.playerVolume ?? null);
     }
     else {
-        onPlay(null, window.parent.webOSApp.pendingPlay.rendererMessage);
+        onPlay(null, window.parent.webOSApp.pendingPlay.rendererMessage, window.parent.webOSApp.pendingPlay.proxyUrl ?? null, window.parent.webOSApp.pendingPlay.playerVolume ?? null, window.parent.webOSApp.pendingPlay.options ?? {});
     }
 }
 

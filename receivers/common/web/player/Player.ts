@@ -90,7 +90,9 @@ export class Player {
     }
 
     private destroy_html_player() {
-        this.player.src = "";
+        // Unloads the media without the error event that an empty src would raise on the next player.
+        this.player.removeAttribute('src');
+        this.player.load();
         this.player.onerror = null;
         this.player.onloadedmetadata = null;
         this.player.ontimeupdate = null;

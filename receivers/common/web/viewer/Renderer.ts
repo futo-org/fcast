@@ -73,6 +73,23 @@ function onPlay(_event, value: PlayMessage, proxyUrl: string = null) {
             loadingSpinner.style.display = 'none';
             mediaPlayHandler();
             playerCtrlStateUpdate(PlayerControlEvent.Load);
+
+            // An image on screen counts as playing for the senders. The viewer's own state is
+            // left as it is: it only tracks the timed slideshow.
+            if (imageViewerPlaybackState === PlaybackState.Idle) {
+                window.targetAPI.sendPlaybackUpdate(new PlaybackUpdateMessage(Date.now(), PlaybackState.Playing, 0, 0, 1, isMediaItem ? playlistIndex : null));
+            }
+        };
+
+        imageViewer.onerror = () => {
+            // Clearing the image also raises an error event; only the requested image counts.
+            if (imageViewer.getAttribute('src') !== src) {
+                return;
+            }
+            loadingTimer.stop();
+            loadingSpinner.style.display = 'none';
+            logger.error('Image failed to load:', value.url);
+            window.targetAPI.sendPlaybackError({ message: 'Image failed to load' });
         };
 
         genericViewer.onload = (ev) => {};

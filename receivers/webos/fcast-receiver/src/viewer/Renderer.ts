@@ -290,6 +290,6 @@ if (window.parent.webOSApp.pendingPlay !== null) {
         onPlayPlaylist(null, window.parent.webOSApp.pendingPlay.rendererMessage);
     }
     else {
-        onPlay(null, window.parent.webOSApp.pendingPlay.rendererMessage);
+        onPlay(null, window.parent.webOSApp.pendingPlay.rendererMessage, window.parent.webOSApp.pendingPlay.proxyUrl ?? null);
     }
 }

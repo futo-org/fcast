@@ -16,6 +16,7 @@ let keyDownEventHandler = () => { logger.warn('No keyDown event handler set'); }
 let keyUpEventHandler = () => { logger.warn('No keyUp event handler set'); };
 
 function loadPage(path: string) {
+    window.webOSApp.serviceManager.holdServiceChannel();
     // @ts-ignore
     webPage.src = path;
 }

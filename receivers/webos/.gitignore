@@ -6,3 +6,4 @@ fcast-receiver-service/node_modules
 
 .env
 *.ipk
+test/dist

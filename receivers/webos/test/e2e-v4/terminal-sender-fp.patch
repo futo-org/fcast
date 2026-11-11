@@ -1,0 +1,34 @@
+diff --git a/senders/terminal/src/main.rs b/senders/terminal/src/main.rs
+index 545f495e..a8ba841c 100644
+--- a/senders/terminal/src/main.rs
++++ b/senders/terminal/src/main.rs
+@@ -107,6 +107,10 @@ struct TerminalSender {
+     /// The port to send the command to
+     #[arg(long, short, default_value_t = 46899)]
+     port: u16,
++    /// Test-only: receiver SPKI fingerprint (base64) injected as the `fp` TXT record
++    /// when connecting with --host, which makes the SDK upgrade to protocol v4.
++    #[arg(long)]
++    fp: Option<String>,
+ 
+     #[command(subcommand)]
+     command: Command,
+@@ -359,13 +363,17 @@ async fn main() {
+     #[allow(unused)]
+     let file_server;
+ 
+-    let device_info = resolve_target(
++    let mut device_info = resolve_target(
+         &context,
+         app.host.as_deref(),
+         app.name.as_deref(),
+         app.discovery_timeout,
+         app.port,
+     );
++    if let Some(fp) = app.fp.as_ref() {
++        device_info.txt_records.insert("fp".to_owned(), fp.clone());
++        device_info.txt_records.insert("v".to_owned(), "4".to_owned());
++    }
+ 
+     let device = context.create_device_from_info(device_info);
+ 
