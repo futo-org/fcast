@@ -8,7 +8,7 @@ This receiver was deprecated on 2026-04-28 (`92d4d3d0`) and removed from the rep
 
 Version 3.0.0 is that receiver restored, together with the `receivers/common` code it shares, and extended to protocol version 4.
 
-It has been tested mostly with automated tests on a desktop machine. On a TV it has only been installed, opened and connected to once. See [Tests on a TV](#tests-on-a-tv).
+It has been tested mostly with automated tests on a desktop machine. On a TV it has had one manual test: installed on an LG C2 and used to play two videos cast from Grayjay. See [Tests on a TV](#tests-on-a-tv).
 
 ## Protocol versions
 
@@ -195,9 +195,10 @@ What those cases cover apart from embedded tracks (track change checks, automati
 Done once, on an LG C2 in Developer Mode with version 3.0.0:
 
 - the package installs and the app opens on its main screen, with the QR code and the IP address;
-- Grayjay finds the receiver and connects to it.
+- Grayjay for Android, which speaks protocol version 4, finds the receiver and connects to it;
+- two videos cast from Grayjay played correctly: a YouTube video with subtitles and a 4K HDR video with subtitles.
 
-Nothing else has been checked on a TV. In particular it was not checked whether that connection used protocol version 4, and no media was played. The automated tests run the service on desktop Node.js and the frontend in a desktop browser; they say nothing about the TV's video decoder, its browser, the remote control or the app lifecycle.
+Nothing else has been checked on a TV. The automated tests run the service on desktop Node.js and the frontend in a desktop browser; they say nothing about the TV's video decoder, its browser, the remote control or the app lifecycle.
 
 Checklist for the rest, on a webOS 22 or later TV:
 
